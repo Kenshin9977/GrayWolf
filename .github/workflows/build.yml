@@ -200,6 +200,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
 
     steps:
+      # the scripts only, before the build output: a checkout cleans the workspace
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Download build output
         uses: actions/download-artifact@v8
         with:
@@ -218,27 +222,20 @@ jobs:
           known-hosts: ${{ secrets.SIGN_SSH_KNOWN_HOSTS }}
           ssh-port: ${{ secrets.SIGN_SSH_PORT }}
 
-      # Hash packages = the hand-maintained base set (asset package_index.zip of the prerelease
-      # tagged `hash-packages`: BO3 script hashes, BO4 recovered names, ...) with echo000/cod-name-db's
-      # current CSVs converted over it by GrayWolf's own update-name-db. No base yet: the CSVs alone.
+      # Hash packages: .github/scripts/hash-packages.ps1 (the hand-maintained base merged with
+      # cod-name-db); hash-packages.yml rebuilds them in this release when their sources move.
       - name: Build the hash packages
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force pkg, base | Out-Null
-          gh release download hash-packages --repo "${{ github.repository }}" --pattern package_index.zip --dir base
-          if ($LASTEXITCODE -eq 0) { Expand-Archive base/package_index.zip -DestinationPath pkg -Force }
-          else { Write-Warning "no hash-packages base release: cod-name-db's CSVs only"; $global:LASTEXITCODE = 0 }
-          $p = Start-Process app/GrayWolf.exe -ArgumentList 'update-name-db','--name-db-dir',"$PWD/pkg",'--report',"$PWD/name-db.txt" -Wait -PassThru
-          Get-Content name-db.txt
-          if ($p.ExitCode -gt 1) { throw "update-name-db failed ($($p.ExitCode))" }
-          # the updater stamps its own hash-packages.json, a base's copy would be stale
-          Remove-Item pkg/hash-packages.json -ErrorAction SilentlyContinue
+          $sources = & ./.github/scripts/hash-packages.ps1 -Repo "${{ github.repository }}" -Exe app/GrayWolf.exe -Out pkg | Select-Object -Last 1
+          "PKG_SOURCES=$sources" >> $env:GITHUB_ENV
 
       - name: Zip and write manifest.json
         shell: pwsh
         run: |
           $ver = "${{ github.ref_name }}".TrimStart('v')
-          $pver = (Get-Date).ToUniversalTime().ToString('yyyy.MM.dd') + ".${{ github.run_number }}"
+          # the packages' version orders by build time: hash-packages.yml's rebuilds come after
+          $pver = (Get-Date).ToUniversalTime().ToString('yyyy.MM.dd.HHmm')
           $appZip = "GrayWolf-$ver-x64.zip"
           $pkgZip = "hash-packages-$pver.zip"
           Compress-Archive -Path app/* -DestinationPath $appZip
@@ -246,7 +243,7 @@ jobs:
           $manifest = [ordered]@{
             schema   = 1
             app      = [ordered]@{ version = $ver;  file = $appZip; sha256 = (Get-FileHash $appZip -Algorithm SHA256).Hash.ToLower() }
-            packages = [ordered]@{ version = $pver; file = $pkgZip; sha256 = (Get-FileHash $pkgZip -Algorithm SHA256).Hash.ToLower() }
+            packages = [ordered]@{ version = $pver; file = $pkgZip; sha256 = (Get-FileHash $pkgZip -Algorithm SHA256).Hash.ToLower(); sources = $env:PKG_SOURCES }
           }
           $manifest | ConvertTo-Json | Set-Content manifest.json -Encoding utf8NoBOM
           Get-Content manifest.json

@@ -20,8 +20,9 @@ namespace NameDbUpdater
         std::string Error;     // set when Downloaded or Converted is false
     };
 
-    // Downloads every mapped CSV from the repo's default branch, converts each to a .wni file
-    // under OutputDir (created if missing), and returns one FileResult per mapped file - callers
+    // Downloads every mapped CSV from the repo's default branch, merges each into its .wni file
+    // under OutputDir (created if missing; the names the file already holds are kept, the CSV's
+    // win for a hash both give), and returns one FileResult per mapped file - callers
     // decide what counts as an acceptable partial failure (a network hiccup on one file
     // shouldn't discard the rest). OutputDir is normally <app dir>\package_index.
     std::vector<FileResult> Update(const std::string& OutputDir);

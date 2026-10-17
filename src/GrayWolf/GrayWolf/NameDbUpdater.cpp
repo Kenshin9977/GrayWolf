@@ -83,6 +83,15 @@ namespace NameDbUpdater
         return Entries;
     }
 
+    // The names a .wni already holds, whole 64-bit keys: a CSV is merged over them (its name wins
+    // for a hash both give), so the names of a hand-made base package are kept
+    static WraithNameIndex Existing(const std::string& WniPath)
+    {
+        WraithNameIndex Index;
+        Index.LoadIndex(WniPath, ~0ull);
+        return Index;
+    }
+
     FileResult ConvertLocalCsv(const std::string& CsvPath, const std::string& WniName,
                               const std::string& OutputDir)
     {
@@ -112,7 +121,8 @@ namespace NameDbUpdater
         }
         Result.Downloaded = true;  // "acquired", same meaning Update's own field carries
 
-        WraithNameIndex Index;
+        const auto WniPath = (std::filesystem::path(OutputDir) / (WniName + std::string(".wni"))).string();
+        WraithNameIndex Index = Existing(WniPath);
         Result.Entries = ParseCsvInto(Data.data(), Data.size(), Index);
         if (Result.Entries == 0)
         {
@@ -120,7 +130,6 @@ namespace NameDbUpdater
             return Result;
         }
 
-        const auto WniPath = (std::filesystem::path(OutputDir) / (WniName + std::string(".wni"))).string();
         Index.SaveIndex(WniPath);
         Result.Converted = std::filesystem::is_regular_file(WniPath, Ec);
         if (!Result.Converted)
@@ -161,7 +170,8 @@ namespace NameDbUpdater
             }
             Result.Downloaded = true;
 
-            WraithNameIndex Index;
+            const auto WniPath = (std::filesystem::path(OutputDir) / (Map.WniName + std::string(".wni"))).string();
+            WraithNameIndex Index = Existing(WniPath);
             Result.Entries = ParseCsvInto(Data->data(), Data->size(), Index);
 
             if (Result.Entries == 0)
@@ -171,7 +181,6 @@ namespace NameDbUpdater
                 continue;
             }
 
-            const auto WniPath = (std::filesystem::path(OutputDir) / (Map.WniName + std::string(".wni"))).string();
             Index.SaveIndex(WniPath);
             Result.Converted = std::filesystem::is_regular_file(WniPath, Ec);
             if (!Result.Converted)

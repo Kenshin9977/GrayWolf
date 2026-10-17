@@ -1,0 +1,84 @@
+name: Hash packages
+
+# Rebuilds the latest release's hash packages when their sources moved (echo000/cod-name-db's main
+# branch, or the `hash-packages` prerelease's package_index.zip), without a new GrayWolf: the new
+# zip goes into that release and its manifest.json points to it, so the updater installs it at the
+# next start. Weekly, or by hand (force: rebuild even when nothing moved).
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even when the sources did not move
+        type: boolean
+        default: false
+
+concurrency: hash-packages
+
+jobs:
+  packages:
+    name: Rebuild hash packages
+    runs-on: windows-2022
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Compare the sources with the latest release's
+        id: check
+        shell: pwsh
+        run: |
+          $tag = gh release view --repo $env:REPO --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $tag) { Write-Warning 'no release yet'; "build=false" >> $env:GITHUB_OUTPUT; exit 0 }
+          gh release download $tag --repo $env:REPO --pattern manifest.json --dir old
+          $old = Get-Content old/manifest.json -Raw | ConvertFrom-Json
+          $sources = & ./.github/scripts/hash-packages.ps1 -Repo $env:REPO -SourcesOnly
+          "release $tag, packages $($old.packages.version): '$($old.packages.sources)' -> '$sources'"
+          $build = '${{ inputs.force }}' -eq 'true' -or $old.packages.sources -ne $sources
+          "build=$($build.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          "TAG=$tag" >> $env:GITHUB_ENV
+
+      # update-name-db from master's last build (its merge rules may be newer than the release's),
+      # else from the release's own GrayWolf.exe (the build output is kept 90 days)
+      - name: Build the hash packages
+        if: steps.check.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $run = gh run list --repo $env:REPO --workflow build.yml --branch master --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if ($run) { gh run download $run --repo $env:REPO --name graywolf-release-x64 --dir app }
+          if (-not (Test-Path app/GrayWolf.exe)) {
+            $global:LASTEXITCODE = 0
+            $old = Get-Content old/manifest.json -Raw | ConvertFrom-Json
+            gh release download $env:TAG --repo $env:REPO --pattern $old.app.file --dir appzip
+            Expand-Archive "appzip/$($old.app.file)" -DestinationPath app -Force
+          }
+          $sources = & ./.github/scripts/hash-packages.ps1 -Repo $env:REPO -Exe app/GrayWolf.exe -Out pkg | Select-Object -Last 1
+          "PKG_SOURCES=$sources" >> $env:GITHUB_ENV
+
+      # the new zip first, then the manifest naming it, then the old zip: an updater reading the
+      # release meanwhile finds every file its manifest names
+      - name: Replace the release's packages
+        if: steps.check.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $old = Get-Content old/manifest.json -Raw | ConvertFrom-Json
+          $pver = (Get-Date).ToUniversalTime().ToString('yyyy.MM.dd.HHmm')
+          $pkgZip = "hash-packages-$pver.zip"
+          Compress-Archive -Path pkg/* -DestinationPath $pkgZip
+          $manifest = [ordered]@{
+            schema   = $old.schema
+            app      = $old.app
+            packages = [ordered]@{ version = $pver; file = $pkgZip; sha256 = (Get-FileHash $pkgZip -Algorithm SHA256).Hash.ToLower(); sources = $env:PKG_SOURCES }
+          }
+          $manifest | ConvertTo-Json | Set-Content manifest.json -Encoding utf8NoBOM
+          Get-Content manifest.json
+          gh release upload $env:TAG $pkgZip --repo $env:REPO
+          gh release upload $env:TAG manifest.json --repo $env:REPO --clobber
+          if ($old.packages.file -and $old.packages.file -ne $pkgZip) { gh release delete-asset $env:TAG $old.packages.file --repo $env:REPO --yes }
