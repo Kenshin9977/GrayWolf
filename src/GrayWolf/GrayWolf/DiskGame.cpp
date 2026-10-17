@@ -10,6 +10,7 @@
 #include "Games/GameModule.h"
 #include "MaterialGdt.h"
 #include "MemoryBudget.h"
+#include "XboxPackages.h"
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +24,14 @@ namespace DiskGame
 {
 namespace
 {
+    // A zone file: a .ff that holds something (a Game Pass package keeps an empty .ff for each zone
+    // of the game it does not ship, those of DLC not installed among them)
+    bool IsZoneFile(const fs::directory_entry& E)
+    {
+        std::error_code Ec;
+        return ExportNaming::Lower(E.path().extension().string()) == ".ff" && E.is_regular_file(Ec) && E.file_size(Ec) > 0;
+    }
+
     std::vector<const IDiskGame*>& Registry()
     {
         static std::vector<const IDiskGame*> List;
@@ -222,7 +231,7 @@ bool IDiskGame::Zones(const std::string& Input, const ExportOptions&, std::vecto
     if (fs::is_directory(In, Ec))
     {
         for (const auto& E : fs::recursive_directory_iterator(In, Ec))
-            if (ExportNaming::Lower(E.path().extension().string()) == ".ff") Out.push_back(E.path().string());
+            if (IsZoneFile(E)) Out.push_back(E.path().string());
         std::sort(Out.begin(), Out.end());
     }
     else if (ExportNaming::Lower(In.extension().string()) == ".txt")
@@ -245,9 +254,19 @@ bool IDiskGame::ListZones(const std::string& Install, const ExportOptions&, std:
 {
     std::error_code Ec;
     for (const auto& E : fs::recursive_directory_iterator(Install, fs::directory_options::skip_permission_denied, Ec))
-        if (ExportNaming::Lower(E.path().extension().string()) == ".ff")
+        if (IsZoneFile(E))
             Names.push_back(fs::relative(E.path(), Install, Ec).string());
     std::sort(Names.begin(), Names.end());
+    // an Xbox app game's DLC, each its own package beside the game's: its zones as
+    // "<package name>\<path in it>" (ResolveZones maps them back)
+    for (const auto& D : XboxPackages::Dlc(Install))
+    {
+        const size_t First = Names.size();
+        for (const auto& E : fs::recursive_directory_iterator(D.Root, fs::directory_options::skip_permission_denied, Ec))
+            if (IsZoneFile(E))
+                Names.push_back((fs::path(D.Name) / fs::relative(E.path(), D.Root, Ec)).string());
+        std::sort(Names.begin() + (std::ptrdiff_t)First, Names.end());
+    }
     if (Names.empty()) Error = "no zone in " + Install;
     return !Names.empty();
 }
@@ -255,7 +274,17 @@ bool IDiskGame::ListZones(const std::string& Install, const ExportOptions&, std:
 bool IDiskGame::ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions&,
                              std::vector<std::string>& Out, std::string& Error) const
 {
-    for (const auto& N : Names) Out.push_back((fs::path(Install) / N).string());
+    const auto Dlc = XboxPackages::Dlc(Install);
+    for (const auto& N : Names)
+    {
+        fs::path Path = fs::path(Install) / N;
+        for (const auto& D : Dlc)
+        {
+            const std::string Prefix = ExportNaming::Lower(D.Name) + "\\";
+            if (ExportNaming::Lower(N).rfind(Prefix, 0) == 0) Path = fs::path(D.Root) / N.substr(Prefix.size());
+        }
+        Out.push_back(Path.string());
+    }
     if (Out.empty()) Error = "no zone picked";
     return !Out.empty();
 }
@@ -295,7 +324,7 @@ const IDiskGame* Detect(const std::string& Input)
     {
         First.clear();
         for (const auto& E : fs::recursive_directory_iterator(Input, Ec))
-            if (ExportNaming::Lower(E.path().extension().string()) == ".ff") { First = E.path().string(); break; }
+            if (IsZoneFile(E)) { First = E.path().string(); break; }
     }
     if (First.empty()) return nullptr;
     const auto Info = FastFile::Identify(First);

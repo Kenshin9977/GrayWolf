@@ -2,6 +2,7 @@
 
 #include "GameInstalls.h"
 #include "Strings.h"
+#include "XboxPackages.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -278,6 +279,11 @@ namespace GameInstalls
         for (const auto& [Dir, Launcher] : UninstallLocations())
             if (const Title* T = ByMarker(Dir)) Add(Dir, *T, Launcher.c_str());
 
+        // the Xbox app (PC Game Pass, Microsoft Store): its packages, the game told by its exe (a
+        // DLC package has none: its zones are listed with the game's, IDiskGame::ListZones)
+        for (const auto& P : XboxPackages::Installed())
+            if (const Title* T = ByMarker(P.Root)) Add(P.Root, *T, "Xbox");
+
         // copies no launcher manages: the usual folders, and Steam library folders without a manifest
         std::vector<fs::path> Roots = CommonRoots();
         for (const auto& Lib : Libraries) Roots.push_back(Lib / "steamapps" / "common");
@@ -297,7 +303,10 @@ namespace GameInstalls
         for (auto& I : Found)
         {
             const auto Same = std::count_if(Found.begin(), Found.end(), [&](const Install& O) { return O.Display == I.Display; });
-            if (Same > 1) I.Label = I.Display + "  (" + I.Path.substr(0, 2) + " " + fs::path(I.Path).filename().string() + ")";
+            // an Xbox app game's folder is <its folder>\Content: the folder above names it
+            fs::path Folder(I.Path);
+            if (Lower(Folder.filename().string()) == "content" && Folder.has_parent_path()) Folder = Folder.parent_path();
+            if (Same > 1) I.Label = I.Display + "  (" + I.Path.substr(0, 2) + " " + Folder.filename().string() + ")";
         }
         return Found;
     }

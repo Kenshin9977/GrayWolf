@@ -25,7 +25,7 @@ namespace DiskGame
 {
     // The asset kinds, one row each in Kinds below. A new kind is a row there (and here) plus its
     // exporter in the readers that support it: --type, the report and the GUI read the table.
-    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles };
+    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons };
 
     struct KindInfo
     {
@@ -69,6 +69,10 @@ namespace DiskGame
         // (ZonekitZone::ExportsScriptBundles): the numbers behind perks, upgrades, ammo mods...;
         // asked for by name only
         { Kind::ScriptBundles, "bundles", "bundles", "Script bundles (JSON)", false },
+        // the weapon assets (weapon, its tunables, accuracy, trigger, archetype, blueprint, attachments)
+        // as raw struct dumps, one JSON per asset under its zone and type (ZonekitZone::ExportsStructDumps):
+        // every field by offset, the blocks it points to followed; for naming the fields; by name only
+        { Kind::Weapons, "weapons", "weapons", "Weapon data (struct dumps, JSON)", false },
     };
     constexpr bool KindsInOrder()
     {
@@ -324,8 +328,9 @@ namespace DiskGame
         virtual bool Zones(const std::string& Input, const ExportOptions& Options,
                            std::vector<std::string>& Out, std::string& Error) const;
         // The zones an install holds, by name, without reading or extracting any (what a user picks
-        // from); then the picked names as zones Open takes. By default every .ff under the folder,
-        // named by its path relative to it.
+        // from); then the picked names as zones Open takes. By default every non-empty .ff under the
+        // folder, named by its path relative to it, then those of an Xbox app game's DLC packages
+        // (XboxPackages::Dlc), named "<package name>\<path in it>".
         virtual bool ListZones(const std::string& Install, const ExportOptions& Options,
                                std::vector<std::string>& Names, std::string& Error) const;
         virtual bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names,

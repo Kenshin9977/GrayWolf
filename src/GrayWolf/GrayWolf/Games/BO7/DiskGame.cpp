@@ -76,6 +76,17 @@ namespace
             ExportsScriptBundles({}, Decrypted);
             ExportsAssetRefs(Decrypted);
             ExportsColumnTables(ColumnTypes::Bo6, Decrypted);
+            // the weapon assets as struct dumps, a weapon's name at 8, an attachment's at 0x248, its
+            // tunables, accuracy, blueprints named after it; the fields proven so far named (WeaponFields)
+            ExportsStructDumps(Kind::Weapons,
+                               { { "weapon", 8, WeaponFields() }, { "attachment", 0x248, AttachmentFields() }, { "weapontunables", -1, TunablesFields() },
+                                 { "weaponaccuracy" }, { "weapontrigger" }, { "weaponarchetype" }, { "weaponblueprint" }, { "attachmentblueprint" },
+                                 { "grappleweapontunables" }, { "deployableweaponconfig" }, { "animpkg", -1, AnimPkgFields() },
+                                 // the suit a player state's 0x1a48 indexes (0x4528a40: DB find, type 0x51); 0x43cde50
+                                 // returns 0xe18 as the sprint multiplier (0xdec under a perk; a dvar >= 0
+                                 // overrides both), 0x43a28f0 multiplies 0xe78 in when super sprinting
+                                 { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } } } },
+                               Decrypted);
         }
 
         // each sndasset, named by its hash, decoded by GameBlackOps7::ReadXSound (Games/IW/IwctxReaders'
@@ -91,6 +102,148 @@ namespace
         }
 
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+
+        // ---- the weapon fields named in the weapons kind's dumps. Each is proven by the game's code
+        // (the GSC builtin reading it, from its table at 0xcbf78a0 of the decrypted exe, names by their
+        // script hash; addresses are RVAs of that exe, PE timestamp 0x6aadce0e) or by published stats
+        // (codmunity.gg, base weapons, 2026-10-17) the dump equals on the weapons listed. Ranges in
+        // inches (39.37 a metre), times in ms. Candidates not proven stay unnamed.
+        static std::map<std::string, DumpField> WeaponFields()
+        {
+            return {
+                // its name as GSC names it: equal to the asset's on all 241 weapons of global_stream_mp
+                { "0x0008", { "name", "" } },
+                // the weapon definition: weaponclipsize/weaponfiretime reach the tunables through
+                // weapon->0x20->0x1b30 (0x4637cf8, 0x463ac27)
+                { "0x0020", { "weapon_def", "" } },
+                { "0x0020/0x1b30", { "tunables", "" } },
+                // the localize key of its display name: sat_weapon/<name>, AK-27 for sat_ar_kite (ens_global)
+                { "0x0040", { "display_name", "" } },
+            };
+        }
+        static std::map<std::string, DumpField> TunablesFields()
+        {
+            std::map<std::string, DumpField> F = {
+                // ms between shots: weaponfiretime (0x463aca4, read with 0x5ce8, returned * 0.001)
+                { "0x5cd4", { "fire_time", "i32" } },
+                // weaponburstcount (0x4654000)
+                { "0x5d1c", { "burst_count", "i32" } },
+                // weaponstartammo (0x46795ca): 0x5d38 when not 0, else 0x5d34; weaponmaxammo (0x4669196)
+                // takes 0x5d3c when not 0
+                { "0x5d34", { "start_ammo", "i32" } },
+                { "0x5d38", { "start_ammo_override", "i32" } },
+                { "0x5d3c", { "max_ammo_override", "i32" } },
+                // weaponclipsize (0x4637d06), scaled by the attachments' clip_size_scale
+                { "0x5d48", { "clip_size", "i32" } },
+                // Equal to every value the patch notes give (codmunity.gg, 2026-10-17), the mode's
+                // tunables: m/s, M15 Mod 0 BR/RES 920, M10 Breacher BR/RES 450, M8A1 900, Sokol 545 BR/RES 890
+                { "0x0030", { "muzzle_velocity", "f32" } },
+                // ms, first of 4 times 0x462ee30 reads together (0 or less: a default); equal to every
+                // aim-down-sight time the patch notes give: Akita BR/RES 210, M8A1 265, M10 Breacher 250,
+                // Sturmwolf 45 160
+                { "0x5dac", { "ads_time", "i32" } },
+                // 0x461f8d0: sprint out time = max(1, (int)(animpkg time * this * the attachments' and perks'
+                // scales)): M8A1 220 * 0.91 = 200, M10 Breacher 210 * 0.74 = 155 (patch notes)
+                { "0x5a9c", { "sprint_out_time_scale", "f32" } },
+                // 0x43a28f0 speed slot 2 (the speed times 0x43cde50's sprint multiplier, times the suit's
+                // super sprint multiplier when super sprinting) goes through 0x439f4e0's scale built
+                // from 0x5c14, or 0x5c28 when super sprinting
+                { "0x5c14", { "sprint_speed_scale", "f32" } },
+                { "0x5c28", { "super_sprint_speed_scale", "f32" } },
+                // u8 0x5dfc the fire type (weaponisauto, weaponissemiauto, weaponisbeam: 0x46559c0), u8
+                // 0x5dfd bolt action (weaponisboltaction: 0x4662f50)
+                { "0x5dfc", { "fire_type_u8.bolt_action_u8", "" } },
+            };
+            // Damage by range. A record (0x28): i32 damage min 0, mid1 4, mid2 8, mid3 0xc, max 0x10
+            // (0x46386d0 copies them out, scaled by the attachments' damage scales), f32 ranges 0x14
+            // (end of max), 0x18 (end of mid1), 0x1c, 0x20 (0x464a150, scaled by the attachments'
+            // range scale in 0x464cb80). 0x464c9e0 picks: distance < range_max -> max, else the first
+            // mid whose range is > 0 and > distance, else min (0x4636740: the same record lerped
+            // between max and min). A table holds 3 profiles of 3 records (profile * 0x78 + record *
+            // 0x28, both chosen by the caller); 0x46386d0 takes the table at 0x70, at 0x1d8 in mode 1,
+            // at 0x340 in mode 2 when u8 0x52c is set, the 3 records at 0x4a8 in mode 3. What the
+            // modes, profiles and records stand for is not proven: they are numbered.
+            const auto Record = [&F](int64_t At, const std::string& Prefix) {
+                static const char* Ints[] = { "damage_min", "damage_mid1", "damage_mid2", "damage_mid3", "damage_max" };
+                static const char* Floats[] = { "range_max_damage", "range_mid1", "range_mid2", "range_mid3" };
+                for (int K = 0; K < 5; K++) F[std::format("0x{:04x}", At + K * 4)] = { Prefix + Ints[K], "i32" };
+                for (int K = 0; K < 4; K++) F[std::format("0x{:04x}", At + 0x14 + K * 4)] = { Prefix + Floats[K], "f32" };
+            };
+            for (const auto& [Table, Name] : { std::pair<int64_t, const char*>{ 0x70, "" }, { 0x1d8, "mode1." }, { 0x340, "mode2." } })
+                for (int P = 0; P < 3; P++)
+                    for (int R = 0; R < 3; R++)
+                    {
+                        // the first record of the first profile of the main table: the plain names
+                        const std::string Prefix = *Name == 0 && P == 0 && R == 0 ? "" : std::format("{}p{}.r{}.", Name, P, R);
+                        Record(Table + P * 0x78 + R * 0x28, Prefix);
+                    }
+            for (int R = 0; R < 3; R++) Record(0x4a8 + R * 0x28, std::format("mode3.r{}.", R));
+            // The damage multiplier of a hit location: 22 floats indexed by the hit location, whose
+            // names are the game's table at 0xb8f0620 (0xb1805f0 returns one; 0x737b330 hashes them
+            // in that order, 0x737ae40 turns a name back into its index); 0x4642180 gives the table at
+            // 0x530, at 0x588 in mode 2 when u8 0x67a is set, at 0x5e0 in mode 3, and the callers
+            // multiply by table[index] (0x74e4912, 0x737b23b, 0x77004c8)
+            static const char* Locations[] = { "none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
+                                               "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
+                                               "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower", "right_foot",
+                                               "left_foot", "gun", "shield", "armor", "soft" };
+            for (const auto& [Table, Name] : { std::pair<int64_t, const char*>{ 0x530, "" }, { 0x588, "mode2." }, { 0x5e0, "mode3." } })
+                for (int K = 0; K < 22; K++)
+                    F[std::format("0x{:04x}", Table + K * 4)] = { std::string(Name) + "hit_multiplier_" + Locations[K], "f32" };
+            return F;
+        }
+        // An animpkg's u16 ms times (block 0x18), read by 0x46556b0 at a byte offset. 0x2:
+        // weaponfirstraisetime (0x462cc60). 0xac / 0xae: getweaponreloadtime (0x735cdf0) with an
+        // empty / non-empty clip (0x4673070 / 0x4675450); 0xb0 / 0xb2 when traits 0x45b / 0x458
+        // hold; player weapon state bits 21-23 pick the other sets
+        static std::map<std::string, DumpField> AnimPkgFields()
+        {
+            const std::pair<int, const char*> Times[] = {
+                { 0x002, "first_raise_time" },
+                { 0x0ac, "reload_empty_time" },
+                { 0x0ae, "reload_time" },
+                { 0x0b0, "reload_empty_time.trait45b" },
+                { 0x0b2, "reload_time.trait458" },
+                { 0x12a, "reload_empty_time.state21" },
+                { 0x220, "reload_empty_time.state21.trait45b" },
+                { 0x11e, "reload_time.state21" },
+                { 0x214, "reload_time.state21.trait458" },
+                { 0x172, "reload_empty_time.state22" },
+                { 0x268, "reload_empty_time.state22.trait45b" },
+                { 0x166, "reload_time.state22" },
+                { 0x25c, "reload_time.state22.trait458" },
+                { 0x1c4, "reload_empty_time.state23" },
+                { 0x2ba, "reload_empty_time.state23.trait45b" },
+                { 0x1b8, "reload_time.state23" },
+                { 0x2ae, "reload_time.state23.trait458" },
+                // sprint to fire: 0x45891e0 waits max(0x522 - time since sprint end (ps 0x4c8), 0x524 -
+                // time since super sprint end (ps 0x4d0)); 0x4678c80 / 0x467a360 read them (0x50e instead
+                // of 0x522 when flag 0xb439c26 is off), 0x461f8d0 scales by tunables 0x5a9c
+                { 0x522, "sprint_out_time" },
+                { 0x524, "super_sprint_out_time" },
+                { 0x50e, "sprint_out_time.flag_off" },
+            };
+            std::map<int, std::pair<std::string, std::string>> Words;   // word offset -> low, high names
+            for (const auto& [At, Name] : Times)
+            {
+                auto& W = Words[At & ~3];
+                (At & 2 ? W.second : W.first) = Name;
+            }
+            std::map<std::string, DumpField> F;
+            for (const auto& [At, W] : Words)
+                F[std::format("0x0018/0x{:04x}", At)] = { (W.first.empty() ? "_" : W.first) + "|" + (W.second.empty() ? "_" : W.second), "u16x2" };
+            return F;
+        }
+        static std::map<std::string, DumpField> AttachmentFields()
+        {
+            return {
+                { "0x0248", { "name", "" } },
+                // weaponclipsize (0x4637d88, 0x4637e2c): the weapon's clip size * (1 + the sum of the
+                // attachments' scale - 1), or the u32 at +8 of the block at 0x400 when one sets it
+                { "0x0400", { "clip_size_override", "" } },
+                { "0x0b90", { "clip_size_scale", "f32" } },
+            };
+        }
 
     protected:
         const char* Profile() const override { return "bo7"; }

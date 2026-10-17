@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -47,10 +48,43 @@ namespace
         return Icon;
     }
 
+    // The Xbox app's icon as the Start menu shows it: a packaged app has no exe icon to extract, so
+    // its shell item draws it (a premultiplied 32-bit bitmap, made a straight-alpha icon here)
+    HICON XboxAppIcon()
+    {
+        const HRESULT Com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        HICON Icon = nullptr;
+        ComPtr<IShellItemImageFactory> Item;
+        HBITMAP Bitmap = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(L"shell:AppsFolder\\Microsoft.GamingApp_8wekyb3d8bbwe!Microsoft.Xbox.App",
+                                                  nullptr, IID_PPV_ARGS(&Item))) &&
+            SUCCEEDED(Item->GetImage({ IconPixels, IconPixels }, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &Bitmap)))
+        {
+            BITMAP Bm{};
+            if (GetObject(Bitmap, sizeof(Bm), &Bm) && Bm.bmBitsPixel == 32 && Bm.bmBits)
+            {
+                // a DIB section: its rows are bottom-up when bmHeight is positive, which an icon's colour bitmap keeps
+                auto* Px = static_cast<uint8_t*>(Bm.bmBits);
+                for (size_t K = 0; K < (size_t)Bm.bmWidthBytes * Bm.bmHeight; K += 4)
+                    if (const uint8_t A = Px[K + 3]; A != 0 && A != 255)
+                        for (int C = 0; C < 3; ++C) Px[K + C] = (uint8_t)std::min(255, Px[K + C] * 255 / A);
+                HBITMAP Mask = CreateBitmap(Bm.bmWidth, Bm.bmHeight, 1, 1, nullptr);
+                ICONINFO Ii{ TRUE, 0, 0, Mask, Bitmap };
+                Icon = CreateIconIndirect(&Ii);
+                DeleteObject(Mask);
+            }
+            DeleteObject(Bitmap);
+        }
+        if (SUCCEEDED(Com)) CoUninitialize();
+        return Icon;
+    }
+
     HICON IconFor(const std::string& Source)
     {
         if (Source == "Steam") return Extract(RegString(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamExe"), 0);
         if (Source == "Battle.net") return Extract(BattleNetExe(), 0);
+        if (Source == "Xbox")
+            if (HICON Icon = XboxAppIcon()) return Icon;
         SHSTOCKICONINFO Info{};
         Info.cbSize = sizeof(Info);
         if (FAILED(SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICONLOCATION, &Info))) return nullptr;
@@ -123,7 +157,7 @@ namespace LauncherIcons
         static std::mutex Lock;
         static std::map<std::string, ComPtr<ID3D11ShaderResourceView>> Cache;   // one per source, tried once
         if (Dev == nullptr) return nullptr;
-        const std::string Key = Source == "Steam" || Source == "Battle.net" ? Source : "folder";
+        const std::string Key = Source == "Steam" || Source == "Battle.net" || Source == "Xbox" ? Source : "folder";
         std::lock_guard<std::mutex> Guard(Lock);
         if (const auto It = Cache.find(Key); It != Cache.end()) return It->second.Get();
         ComPtr<ID3D11ShaderResourceView> S;

@@ -338,6 +338,30 @@ protected:
                                            BundleValue::Raw,    BundleValue::Hash,   BundleValue::Anim };
     };
     void ExportsScriptBundles(const ScriptBundleLayout& L, std::function<std::string(const std::string&)> Decrypt = nullptr);
+    // A struct dumps kind (Exports(K, ...), ZonekitZone.Dump.cpp), for assets whose fields nobody
+    // has named yet: each asset of Types (zone-level or inlined in another), once per type and
+    // hash, as JSON: its struct by offset, each 4-byte word read as a plausible float or an
+    // integer, a pointer field followed: a string, another asset (its type and name), or a block
+    // the walk read (its size: the largest read starting there), dumped the same way; a pointer
+    // left unlinked by the walk (an asset of another zone) as its hash and the type its chain
+    // reads. Keys are offsets: two assets of a type diff field by field. An asset is named by its
+    // hash, else by the string its NameAt field points to, else after the one asset of Types
+    // pointing to it (#n: the n-th of its type there). <kind>/<zone>/<type>/<name>.json
+    // A field named once proven: shown as "<offset> <name>" (the offset kept, so a dump still diffs
+    // by offset), its value read as Kind says ("i32", "f32", "u16x2" two u16 as [low, high]; "" the
+    // dump's own guess)
+    struct DumpField
+    {
+        std::string Name, Kind;
+    };
+    struct DumpType
+    {
+        std::string Type;
+        int64_t NameAt = -1;   // the field pointing to its name, -1: none
+        // its named fields by path from the asset ("0x0020/0x1afb": a field of the block at 0x20)
+        std::map<std::string, DumpField> Fields;
+    };
+    void ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Types, std::function<std::string(const std::string&)> Decrypt = nullptr);
     // A Lua file's name ending as its bytes are: .luac for compiled bytecode (ESC "Lua", LuaJIT's
     // ESC "LJ"), else .lua (in place of the name's own .lua or .luac)
     static void NameLua(std::string& Name, const std::vector<uint8_t>& Bytes);

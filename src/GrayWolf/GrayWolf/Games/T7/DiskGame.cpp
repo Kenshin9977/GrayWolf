@@ -22,6 +22,7 @@
 #include "Games/Treyarch/TreyarchMaps.h"
 #include "MapLive.h"
 #include "XPAKCache.h"
+#include "XboxPackages.h"
 #include "ZonekitZone.h"
 
 #include <cstdio>
@@ -38,7 +39,9 @@ namespace
     constexpr int64_t ImageNameAt = 0xf8;
 
     // The packages beside a zone, loaded once per folder for the run: a BO3 zone folder holds
-    // dozens of .xpak files and indexing them is the slow part.
+    // dozens of .xpak files and indexing them is the slow part. A Game Pass copy splits the zone
+    // folder across its packages (the MP maps' DLC holds no base.xpak): the same folder in the
+    // game's other packages too.
     XPAKCache& PackagesFor(const std::string& FastFilePath)
     {
         static std::mutex Lock;
@@ -50,6 +53,7 @@ namespace
         {
             Cache = std::make_unique<XPAKCache>();
             Cache->LoadPackagesIn(Want);
+            for (const auto& Other : XboxPackages::SameFolderInGame(Want)) Cache->LoadPackagesIn(Other);
             Dir = Want;
         }
         return *Cache;

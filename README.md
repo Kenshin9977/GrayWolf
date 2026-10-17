@@ -14,7 +14,14 @@ localized strings, scripts, effects and whole maps, from Call of Duty (2003) to 
 - **Hashed names back**: name packages (`package_index`) turn the hashed asset names of the recent
   games back into names; they update from the releases (see [Updates](#updates)).
 
-Building: see [BUILDING.md](BUILDING.md).
+## Download
+
+**[Download the latest GrayWolf](https://github.com/Kenshin9977/GrayWolf/releases/latest)**: take
+`GrayWolf-<version>-x64.zip` from the release's assets, unzip it anywhere and run `GrayWolf.exe`
+(Windows 10 or 11, x64; the exe is signed). It then updates itself from the releases (see
+[Updates](#updates)).
+
+Building it yourself: see [BUILDING.md](BUILDING.md).
 
 ## Games and what they export
 

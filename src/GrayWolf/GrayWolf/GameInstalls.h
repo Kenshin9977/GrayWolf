@@ -15,12 +15,13 @@ namespace GameInstalls
         std::string Label;      // Display, plus the drive and folder when another install has the same Display
         int Year = 0;           // release year, the list's order
         std::string DiskId;     // the disk reader (DiskGame::Find), "" when none
-        std::string Source;     // "Steam", "Battle.net" or "installer" (uninstall keys), "folder" (found on disk, no launcher)
+        std::string Source;     // "Steam", "Battle.net" or "installer" (uninstall keys), "Xbox" (Game Pass), "folder" (found on disk, no launcher)
     };
 
     // Steam's app manifests first (every library in libraryfolders.vdf: the app id names the game,
-    // fully installed only), then the uninstall keys (Battle.net, installers) and a shallow sweep of
-    // the usual folders for copies no launcher manages, both by an exe in the folder. One entry per
+    // fully installed only), then the uninstall keys (Battle.net, installers), the Xbox app's
+    // packages (XboxPackages) and a shallow sweep of the usual folders for copies no launcher
+    // manages, all but Steam by an exe in the folder. One entry per
     // folder (the final path, case-insensitive), sorted by release year.
     std::vector<Install> Detect();
 }

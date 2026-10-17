@@ -195,6 +195,7 @@
     <ClCompile Include="ZonekitZone.Data.cpp" />
     <ClCompile Include="ZonekitZone.Tables.cpp" />
     <ClCompile Include="ZonekitZone.Bundles.cpp" />
+    <ClCompile Include="ZonekitZone.Dump.cpp" />
     <ClCompile Include="Techsets.cpp" />
     <ClCompile Include="DxilReflection.cpp" />
     <ClCompile Include="VirtualGameSession.cpp" />
@@ -244,6 +245,7 @@
     <ClCompile Include="GdtWriter.cpp" />
     <ClCompile Include="MaterialGdt.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
+    <ClCompile Include="XboxPackages.cpp" />
     <ClCompile Include="LauncherIcons.cpp" />
     <ClCompile Include="NameDbUpdater.cpp" />
     <ClCompile Include="Updater.cpp" />
@@ -369,6 +371,7 @@
     <ClInclude Include="GdtWriter.h" />
     <ClInclude Include="MaterialGdt.h" />
     <ClInclude Include="GameInstalls.h" />
+    <ClInclude Include="XboxPackages.h" />
     <ClInclude Include="LauncherIcons.h" />
     <ClInclude Include="NameDbUpdater.h" />
     <ClInclude Include="Updater.h" />

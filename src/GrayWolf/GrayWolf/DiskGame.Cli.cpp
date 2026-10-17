@@ -87,7 +87,7 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
     C.NameFilter = Options.NameFilter;
     std::string Error;
     if (!ReadOptions(Game, Options, O, Error) || !ParseKinds(Options.Type, C.Kinds, Error)) return Fail(Error);
-    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles; }) && !C.Kinds.empty();
+    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons; }) && !C.Kinds.empty();
     std::vector<std::string> Zones;
     const auto Start = std::chrono::steady_clock::now();
     if (!Game.Zones(Input, O, Zones, Error)) return Fail(Error);
