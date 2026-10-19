@@ -292,8 +292,28 @@ SoundSource SourceOf(const XSound& X)
     return S;
 }
 
+namespace
+{
+    thread_local DrySounds::Sink DryRun;
+}
+
+DrySounds::DrySounds(Sink Run) : Previous(std::move(DryRun))
+{
+    DryRun = std::move(Run);
+}
+
+DrySounds::~DrySounds()
+{
+    DryRun = std::move(Previous);
+}
+
 bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const std::string& Format, std::string* Why)
 {
+    if (DryRun)
+    {
+        DryRun(S, Path);
+        return true;
+    }
     const std::string F = Strings::ToUpper(Format);
     const std::string Ext = Lower(S.Extension);
     const bool IsFile = S.Is == SoundSource::Form::File;

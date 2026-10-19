@@ -9,6 +9,7 @@
 
 #include "GameInstalls.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "UiAsync.h"
 
 struct ID3D11Device;
@@ -64,6 +65,12 @@ private:
     void ReadZoneCounts(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install);
     // The zone list's table: a zone's tick, its level name, its asset count; sortable, filtered
     void DrawZoneTable(std::vector<uint32_t>& Visible);
+    // Worker, after the counts: a sample of each kind exported and measured (DiskGame::Sizes)
+    void MeasureSizes(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install,
+                      const DiskGame::ZoneIndex& Ix);
+    // The export's estimated size for the kinds, zones and formats picked, and the free space of
+    // the output folder's drive (Target): computed from the counts and the samples, every frame
+    void DrawEstimate(const std::string& Target);
 
     // Guards Log, Status, Installs and the export's progress against the worker thread.
     std::mutex Mutex;
@@ -104,6 +111,9 @@ private:
     std::vector<std::string> DiskZoneLevels;
     std::vector<std::map<DiskGame::Kind, size_t>> DiskZoneCounts;
     bool DiskZoneCounted = false;
+    std::vector<uint64_t> DiskZoneFootprints;    // parallel to DiskZoneNames, from the install index
+    DiskGame::Sizes::Calibration DiskSizes;      // the size samples (kept beside the index), under Mutex
+    UiAsync::Cached<uint64_t> FreeSpace;         // the output drive's free bytes, looked up on a worker
     int DiskZoneSortColumn = 0;                  // 0 zone, 1 level, 2 assets
     bool DiskZoneSortDescending = false;
     std::string DiskZonesFor;

@@ -191,6 +191,7 @@
     <ClCompile Include="DiskGame.Index.cpp" />
     <ClCompile Include="DiskGame.LevelNames.cpp" />
     <ClCompile Include="DiskGame.Monitor.cpp" />
+    <ClCompile Include="DiskGame.Sizes.cpp" />
     <ClCompile Include="ZonekitZone.cpp" />
     <ClCompile Include="ZonekitZone.Data.cpp" />
     <ClCompile Include="ZonekitZone.Tables.cpp" />
@@ -228,6 +229,7 @@
     <ClCompile Include="MapCastWriter.cpp" />
     <ClCompile Include="MapCollision.cpp" />
     <ClCompile Include="MapRadiantWriter.cpp" />
+    <ClCompile Include="MapRadiantTextures.cpp" />
     <ClCompile Include="SoundAliasCsv.cpp" />
     <ClCompile Include="MapCollisionWriter.cpp" />
     <ClCompile Include="MapMaterials.cpp" />
@@ -312,6 +314,7 @@
     <ClInclude Include="ExportWriters.h" />
     <ClInclude Include="DiskGame.h" />
     <ClInclude Include="DiskGame.Monitor.h" />
+    <ClInclude Include="DiskGameSizes.h" />
     <ClInclude Include="DiskGameCli.h" />
     <ClInclude Include="ZonekitZone.h" />
     <ClInclude Include="Techsets.h" />
@@ -353,6 +356,8 @@
     <ClInclude Include="MapCastWriter.h" />
     <ClInclude Include="MapCollision.h" />
     <ClInclude Include="MapRadiantWriter.h" />
+    <ClInclude Include="MapRadiantTextures.h" />
+    <ClInclude Include="MapRadiantGeometry.h" />
     <ClInclude Include="SoundAliasCsv.h" />
     <ClInclude Include="MapCollisionWriter.h" />
     <ClInclude Include="MapSceneWriter.h" />
@@ -434,7 +439,7 @@
        its gdt\<type>\ folders (Gdt.h), Cold War its strings.cipher.txt (Games\T9\StringCipher.h). -->
   <Target Name="CopyZonekitProfiles" AfterTargets="Build">
     <ItemGroup>
-      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\names.wni;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc" />
+      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc" />
     </ItemGroup>
     <Copy SourceFiles="@(ZonekitProfile)" DestinationFiles="@(ZonekitProfile->'$(OutDir)zonekit\profiles\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>

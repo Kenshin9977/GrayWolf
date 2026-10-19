@@ -25,7 +25,7 @@ namespace DiskGame
 {
     // The asset kinds, one row each in Kinds below. A new kind is a row there (and here) plus its
     // exporter in the readers that support it: --type, the report and the GUI read the table.
-    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons };
+    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons, WeaponStats, MapInfo, Scriptables, MapEnts, AiTypes };
 
     struct KindInfo
     {
@@ -73,6 +73,22 @@ namespace DiskGame
         // as raw struct dumps, one JSON per asset under its zone and type (ZonekitZone::ExportsStructDumps):
         // every field by offset, the blocks it points to followed; for naming the fields; by name only
         { Kind::Weapons, "weapons", "weapons", "Weapon data (struct dumps, JSON)", false },
+        // the weapons' stats in user units, one row per weapon and tunables set (CSV + JSON, README with
+        // the units and formulas), only the proven fields; each zone adds its facts, the table is
+        // rebuilt from all of them (Games/BO7/WeaponStats.h); by name only
+        { Kind::WeaponStats, "weaponstats", "weaponstats", "Weapon stats (CSV + JSON)", false },
+        // each map's settings asset as JSON, its key/value tree as the bundles kind writes it (Black
+        // Ops 7's mapinfo: what getactivemapinfobundle() returns: destructibles, their loot...); by name only
+        { Kind::MapInfo, "mapinfo", "mapinfo", "Map info (JSON)", false },
+        // the scriptable assets (and their variants) as struct dumps, one JSON per asset under its zone
+        // and type (ZonekitZone::ExportsStructDumps); by name only
+        { Kind::Scriptables, "scriptables", "scriptables", "Scriptables (struct dumps, JSON)", false },
+        // a map zone's entities, one line per key/value pair "entity_index<TAB>key<TAB>value", one TSV per
+        // zone (Black Ops 6 and 7: the entity strings, spawn points, scriptable instances); by name only
+        { Kind::MapEnts, "mapents", "mapents", "Map entities (TSV)", false },
+        // each AI type's settings as JSON, its key/value tree as the bundles kind writes it (Black Ops
+        // 7's aitype: the AI's settings bundle, its shared functions' settings...); by name only
+        { Kind::AiTypes, "aitypes", "aitypes", "AI types (JSON)", false },
     };
     constexpr bool KindsInOrder()
     {
@@ -89,6 +105,19 @@ namespace DiskGame
     bool ParseKinds(const std::string& Text, std::set<Kind>& Out, std::string& Error);
 
     struct ExportOptions;
+
+    // A sound as a dry run of the sound kind tells it (Context::OnSoundHeader): what its reader
+    // would hand ExportWriters::WriteSound, read from the game's headers, without its samples
+    struct SoundHeader
+    {
+        std::string Name;          // its file under sounds/ without extension: the same file once
+        enum class Form { Wav, Flac, Pcm16, Opus, Other } Is = Form::Wav;
+        uint64_t Stored = 0;       // its bytes as given (a whole .wav or .flac file, samples, packets)
+        uint32_t Rate = 0, Channels = 0;
+        uint64_t Frames = 0;       // samples per channel, 0 when the header does not say
+        uint32_t Bits = 16;        // bits per sample (a FLAC's STREAMINFO says; 16 otherwise)
+        bool KeptUnderWav = false; // a FLAC file written as it is under WAV (Black Ops II's)
+    };
 
     // An asset by kind and name, the name as its reader writes it (its file, without extension),
     // compared without case: what a run can be limited to (Context::Only), what one zone needs
@@ -200,6 +229,13 @@ namespace DiskGame
         // Only these assets when set, whatever NameFilter says: the dependencies a run pulls from
         // the zone that defines them, or the assets a user picked.
         std::shared_ptr<const Selection> Only;
+        // False: what the exported assets need from other zones is not pulled (Export's last
+        // phase): a run measuring a sample of a zone's own assets (DiskGameSizes.h).
+        bool PullDependencies = true;
+        // Set: a dry run of the sound kind. A reader that can tells each sound it would write, as
+        // the game's headers give it, reads no sample, writes nothing and counts the zone under
+        // the counter "sound_headers" (DiskGameSizes.h); one that cannot exports as usual.
+        std::function<void(const SoundHeader&)> OnSoundHeader;
         // The run's settings (ExportOptions::Settings, set by Export): Setting::Of reads them. The
         // tools given in ExportOptions too, as acts_exe and gsc_tool_exe.
         std::map<std::string, std::string> Settings;
@@ -245,6 +281,18 @@ namespace DiskGame
         // where the time went (time_<phase>_ms, rate_<kind>..., slowest_<n>), as the run log sums it
         std::vector<std::pair<std::string, std::string>> Timing;
         void Fail(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why);
+        // the run's asset index: one row per file a data kind wrote (bundles, mapinfo, struct dumps,
+        // mapents), written once after the run as <out>/asset_index.csv (Export)
+        struct IndexRow
+        {
+            Kind K;
+            std::string Id, Type, TypeName, Zone, Name, File;
+        };
+        std::vector<IndexRow> Indexed;
+        void Index(Kind K, std::string Id, std::string Type, std::string TypeName, std::string Zone, std::string Name, std::string File)
+        {
+            Indexed.push_back({ K, std::move(Id), std::move(Type), std::move(TypeName), std::move(Zone), std::move(Name), std::move(File) });
+        }
     };
 
     class IDiskZone

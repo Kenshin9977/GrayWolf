@@ -336,8 +336,28 @@ protected:
                                            BundleValue::Array,  BundleValue::Anim,   BundleValue::Raw,         BundleValue::Hash,
                                            BundleValue::Raw,    BundleValue::Raw,    BundleValue::Raw,         BundleValue::Asset,
                                            BundleValue::Raw,    BundleValue::Hash,   BundleValue::Anim };
+        // the settings type's name hash, which proves a name found for it ("type_name"): Black Ops 6
+        // and 7's FNV-1a 64 of the lowercase name, 63 bits (itemspawnlist 729e042db93842a1)
+        std::function<uint64_t(const std::string&)> TypeNameHash = [](const std::string& S) {
+            uint64_t H = 0xCBF29CE484222325ull;
+            for (const char C : S) H = (H ^ (uint8_t)(C >= 'A' && C <= 'Z' ? C + 0x20 : C)) * 0x100000001B3ull;
+            return H & 0x7FFFFFFFFFFFFFFFull;
+        };
     };
     void ExportsScriptBundles(const ScriptBundleLayout& L, std::function<std::string(const std::string&)> Decrypt = nullptr);
+    // Another asset type holding a script bundle's key/value table at Table (Black Ops 7's mapinfo
+    // at 0xc8), written by K the same way: <kind>/<zone>/<name>.json, plus its string fields (by
+    // name, from Strings) and hash fields (Hashes); its name, when no index knows its hash, the one
+    // of its strings or of the zone's name whose NameHash equals it
+    struct BundleOwner
+    {
+        std::string Type;
+        int64_t Table = 0x10, TypeHash = -1;
+        std::vector<std::pair<std::string, int64_t>> Strings, Hashes;
+        std::function<uint64_t(const std::string&)> NameHash;
+    };
+    void ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> Owners, const ScriptBundleLayout& L,
+                            std::function<std::string(const std::string&)> Decrypt = nullptr);
     // A struct dumps kind (Exports(K, ...), ZonekitZone.Dump.cpp), for assets whose fields nobody
     // has named yet: each asset of Types (zone-level or inlined in another), once per type and
     // hash, as JSON: its struct by offset, each 4-byte word read as a plausible float or an
@@ -360,6 +380,7 @@ protected:
         int64_t NameAt = -1;   // the field pointing to its name, -1: none
         // its named fields by path from the asset ("0x0020/0x1afb": a field of the block at 0x20)
         std::map<std::string, DumpField> Fields;
+        int64_t IdAt = 0;   // the field holding its 63-bit name hash
     };
     void ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Types, std::function<std::string(const std::string&)> Decrypt = nullptr);
     // A Lua file's name ending as its bytes are: .luac for compiled bytecode (ESC "Lua", LuaJIT's

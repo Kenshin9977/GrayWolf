@@ -149,5 +149,7 @@ struct CliOptions
     // disk-export, its aliases and the games' own commands (GameCommand.h): input by command name
     std::map<std::string, std::string> DiskExportIn;
     std::string DiskGameId;   // disk-export --game (DiskGame.h); detected when empty
+    bool EstimateKept = false;  // disk-estimate --kept: the samples kept from the last run, not measured again
+    std::string EstimateZones; // disk-estimate --picked: the zones picked, comma-separated (as the panel lists them)
 };
 

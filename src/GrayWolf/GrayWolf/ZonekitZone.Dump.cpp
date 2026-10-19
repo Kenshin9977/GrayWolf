@@ -22,20 +22,7 @@ namespace fs = std::filesystem;
 namespace
 {
     using Json = nlohmann::ordered_json;
-
-    // a float as its shortest text, read back as the double that prints the same (0.1f -> 0.1)
-    double Shortest(float F)
-    {
-        const std::string S = std::format("{}", F);
-        try
-        {
-            return std::stod(S);
-        }
-        catch (...)
-        {
-            return (double)F;
-        }
-    }
+    using ExportNaming::Shortest;
 
     // A 4-byte word as what it most plausibly holds: 0; a float of a usual magnitude (about 1e-7 to
     // 3e7, either sign: written with its decimal point); a small integer (within +-2^20); anything
@@ -69,7 +56,12 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
             return I.Owner < R.OwnerNames.size() ? R.OwnerNames[I.Owner] : std::string("?");
         };
         std::map<std::string, int64_t> Wanted;   // type -> NameAt
-        for (const auto& D : Types) Wanted[D.Type] = D.NameAt;
+        std::map<std::string, int64_t> IdAtOf;   // type -> where its name hash is
+        for (const auto& D : Types) Wanted[D.Type] = D.NameAt, IdAtOf[D.Type] = D.IdAt;
+        const auto IdOf = [&](const ZoneTables::ZoneResult::Instance& I) {
+            const auto It = IdAtOf.find(TypeOf(I));
+            return At<uint64_t>(Img, I.Pos + (It != IdAtOf.end() ? It->second : 0)) & IdBits;
+        };
         std::vector<size_t> Targets;
         for (size_t I = 0; I < R.Instances.size(); I++)
             if (Wanted.count(TypeOf(R.Instances[I])) != 0) Targets.push_back(I);
@@ -124,7 +116,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
         {
             const int64_t Pos = R.Instances[Index].Pos;
             auto& [Name, From] = NameOf[Index];
-            Name = KnownHash(At<uint64_t>(Img, Pos) & IdBits), From = "hash";
+            Name = KnownHash(IdOf(R.Instances[Index])), From = "hash";
             const int64_t NameAt = Wanted[TypeOf(R.Instances[Index])];
             const uint64_t V = NameAt >= 0 ? At<uint64_t>(Img, Pos + NameAt) : 0;
             int64_t In = -1, Size = 0;
@@ -179,7 +171,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
             {
                 const auto& I = R.Instances[It->second];
                 J["asset"] = TypeOf(I);
-                Named(At<uint64_t>(Img, I.Pos) & IdBits, J);
+                Named(IdOf(I), J);
                 if (const auto N = NameOf.find(It->second); !J.contains("name") && N != NameOf.end() && !N->second.first.empty())
                     J["name"] = N->second.first;
                 return J;
@@ -299,7 +291,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
         {
             const auto& I = R.Instances[Index];
             const std::string Type = TypeOf(I);
-            const uint64_t Id = At<uint64_t>(Img, I.Pos) & IdBits;
+            const uint64_t Id = IdOf(I);
             if (!Done.insert({ I.Owner, Id != 0 ? Id : (uint64_t)I.Pos }).second) continue;
             // its struct: the largest read at its position among its own
             int64_t Size = 0, Bytes = 0;
@@ -336,7 +328,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                 {
                     const size_t Other = By->second[J];
                     const std::string& N = NameOf[Other].first;
-                    List.push_back(TypeOf(R.Instances[Other]) + " " + (N.empty() ? Hex(At<uint64_t>(Img, R.Instances[Other].Pos) & IdBits) : N));
+                    List.push_back(TypeOf(R.Instances[Other]) + " " + (N.empty() ? Hex(IdOf(R.Instances[Other])) : N));
                 }
                 if (By->second.size() > 32) List.push_back(std::format("... {} in all", By->second.size()));
                 A["referenced_by"] = std::move(List);
@@ -352,8 +344,15 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
             const auto Have = FileOf.find(Type + "/" + Stem);
             if (Have != FileOf.end() && Have->second != Key) Stem += "_" + (Id != 0 ? Hex(Id) : std::format("at_{:x}", I.Pos));
             FileOf.emplace(Type + "/" + Stem, Key);
-            if (ExportWriters::WriteBytes(Dir / Type / (Stem + ".json"), (const uint8_t*)S.data(), S.size())) Kt.Written++;
-            else T.Fail(ZoneName, K, File, "write failed");
+            const fs::path Path = Dir / Type / (Stem + ".json");
+            if (ExportWriters::WriteBytes(Path, (const uint8_t*)S.data(), S.size()))
+            {
+                Kt.Written++;
+                // (no settings type: the asset type stands as its type's name)
+                T.Index(K, Hex(Id), "", Type, ZoneName, Name, Path.string());
+            }
+            else
+                T.Fail(ZoneName, K, File, "write failed");
         }
     });
 }

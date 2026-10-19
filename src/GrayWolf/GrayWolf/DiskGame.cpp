@@ -15,8 +15,11 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
+#include <set>
 #include <sstream>
+#include <tuple>
 
 namespace fs = std::filesystem;
 
@@ -757,6 +760,66 @@ namespace
         for (const auto& [K, V] : Options.Settings) Text += "; " + K + "=" + V;
         return Text;
     }
+
+    // the asset index (Totals::Index), <out>/asset_index.csv: kind,id,type,type_name,zone,name,file
+    // (the file under the output root), sorted; a field holding a comma, a quote or a line break
+    // quoted. The rows an earlier run wrote there stay, but for the kinds and zones this run wrote
+    // (runs of one zone each build the index of them all)
+    bool WriteIndex(const std::string& Root, const std::vector<Totals::IndexRow>& Rows)
+    {
+        using Fields = std::vector<std::string>;
+        const auto Quoted = [](const std::string& S) {
+            if (S.find_first_of(",\"\r\n") == std::string::npos) return S;
+            std::string Q = "\"";
+            for (const char Ch : S) Q += Ch == '"' ? std::string("\"\"") : std::string(1, Ch);
+            return Q + "\"";
+        };
+        // a CSV line's fields (as Quoted writes them)
+        const auto Split = [](const std::string& Line) {
+            Fields Out(1);
+            bool InQuotes = false;
+            for (size_t K = 0; K < Line.size(); K++)
+            {
+                const char Ch = Line[K];
+                if (InQuotes && Ch == '"' && K + 1 < Line.size() && Line[K + 1] == '"') Out.back() += '"', K++;
+                else if (Ch == '"') InQuotes = !InQuotes;
+                else if (Ch == ',' && !InQuotes) Out.emplace_back();
+                else Out.back() += Ch;
+            }
+            return Out;
+        };
+        const fs::path File = fs::path(Root) / "asset_index.csv";
+        std::vector<Fields> All;
+        std::set<std::pair<std::string, std::string>> Written;   // (kind, zone) of this run
+        for (const auto& R : Rows)
+        {
+            const fs::path Rel = fs::path(R.File).lexically_relative(Root);
+            All.push_back({ KindName(R.K), R.Id, R.Type, R.TypeName, R.Zone, R.Name, Rel.empty() ? R.File : Rel.generic_string() });
+            Written.emplace(KindName(R.K), R.Zone);
+        }
+        if (std::ifstream In(File, std::ios::binary); In)
+        {
+            std::string Line;
+            for (bool First = true; std::getline(In, Line); First = false)
+            {
+                if (!Line.empty() && Line.back() == '\r') Line.pop_back();
+                if (First || Line.empty()) continue;
+                Fields F = Split(Line);
+                if (F.size() == 7 && !Written.count({ F[0], F[4] })) All.push_back(std::move(F));
+            }
+        }
+        // by kind, zone, type name, type, name, file
+        std::sort(All.begin(), All.end(), [](const Fields& A, const Fields& B) {
+            return std::tie(A[0], A[4], A[3], A[2], A[5], A[6]) < std::tie(B[0], B[4], B[3], B[2], B[5], B[6]);
+        });
+        std::string Out = "kind,id,type,type_name,zone,name,file\n";
+        for (const auto& F : All)
+        {
+            for (size_t K = 0; K < F.size(); K++) Out += (K ? "," : "") + Quoted(F[K]);
+            Out += "\n";
+        }
+        return ExportWriters::WriteBytes(File, (const uint8_t*)Out.data(), Out.size());
+    }
 }
 
 Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::vector<std::string>& Zones,
@@ -878,7 +941,7 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     // what a later zone exported is no dependency; the rest comes from the install
     for (auto It = Pending.begin(); It != Pending.end();)
         It = L.Exported.count(It->first) ? Pending.erase(It) : std::next(It);
-    if (!Pending.empty() && !Cancelled())
+    if (C.PullDependencies && !Pending.empty() && !Cancelled())
     {
         const std::string Install = !Options.Install.empty() ? Options.Install : Game.InstallOfZone(Zones.front());
         P.Zone = Zones.size() - 1;
@@ -896,6 +959,8 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         }
         Mon.AddTime("after", Seconds(Start));
     }
+    // the asset index, once per run, of what the data kinds wrote
+    if (!T.Indexed.empty() && !WriteIndex(C.OutRoot, T.Indexed)) T.Fail("", T.Indexed.front().K, "asset_index.csv", "write failed");
     // the models' material GDT, once their sidecars and textures are all written
     if (MaterialGdts && C.Kinds.count(Kind::Model) && !T.Cancelled)
     {

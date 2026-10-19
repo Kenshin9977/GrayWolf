@@ -2,10 +2,14 @@
 
 // A MapScene as a Radiant source ("iwmap 4": Black Ops III's mod tools, World at War's, Black
 // Ops'), to port a level: <map>.map with worldspawn and the clip map's world brushes (a tool
-// material from their content flags), every entity of the entity string (a brush entity with its
-// brush model's brushes), a misc_model per placement and per piece of world geometry; and
-// <map>_radiant/ the models it names as XMODEL_EXPORT with a GDT of them.
+// material from their content flags; a solid side on drawn world triangles their material and
+// projection, MapRadiantTextures.h), every entity of the entity string (a brush entity with its
+// brush model's brushes, textured the same way from its drawn triangles), the drawn triangles no
+// brush side draws as patches (a 2x2 mesh each, nonColliding), a misc_model per placement (and
+// per piece of world geometry a patch cannot carry); and <map>_radiant/ the models it names as
+// XMODEL_EXPORT with a GDT of them.
 
+#include "MapRadiantTextures.h"
 #include "MapScene.h"
 
 #include <array>
@@ -37,6 +41,12 @@ namespace Maps
         size_t Brushes = 0, BrushesDropped = 0, BrushesUnsound = 0, Faces = 0, Entities = 0, BrushEntities = 0, BrushEntitiesEmpty = 0;
         size_t Placements = 0, WorldModels = 0, ModelFiles = 0, ModelsElsewhere = 0, Triangles = 0, TrianglesDropped = 0, TriggerBrushes = 0;
         size_t TrianglesDuplicate = 0;
+        // the sides given the drawn world's materials: the clip map's world brushes', the collision
+        // triangles' prisms', the brush entities'
+        RadiantTextureStats Textures, PrismTextures, EntityTextures;
+        // the drawn triangles no brush side draws: patches (of them vertex-coloured), left out
+        // (no area), left to the world's misc_models (no material, a coordinate not finite)
+        size_t Patches = 0, PatchesColoured = 0, TrianglesDegenerate = 0, TrianglesInModels = 0;
     };
     // With Gdt (the material_gdt setting), the model files name their materials by their GDT asset
     // names (MaterialGdt::AssetName) and the GDT is left to the caller: its model entries and the

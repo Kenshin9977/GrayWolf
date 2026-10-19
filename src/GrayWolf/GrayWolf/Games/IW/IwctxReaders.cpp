@@ -281,14 +281,14 @@ void IwctxReaders::LoadNameIndexes()
 // scriptbrushmodel one at 0x10 in both.
 // A key is named by IwEntityKeys: the hash of its text (the multiplayer's salt after the first
 // character, the campaign's after the name)
-std::string IwctxReaders::EntityText(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
-                       const std::function<uint64_t(int64_t)>& Ptr, size_t& Count, IwEntityKeys::Scheme KeyScheme, const PairPacking& Packing)
+void IwctxReaders::EntityPairs(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+                               const std::function<uint64_t(int64_t)>& Ptr, std::vector<MapEntity>& Out, IwEntityKeys::Scheme KeyScheme,
+                               const PairPacking& Packing)
 {
     const auto U32 = [&](int64_t At) { return ExportNaming::At<uint32_t>(Img, At); };
     const uint32_t N = U32(Pairs), Keys = U32(Pairs + 4), Vecs = U32(Pairs + 0xc), PoolSize = U32(Pairs + 0x10);
     const int64_t PairAt = Off(Ptr(Pairs + 0x18)), KeyAt = Off(Ptr(Pairs + 0x20)), VecAt = Off(Ptr(Pairs + 0x30)), Pool = Off(Ptr(Pairs + 0x38));
-    if (PairAt < 0 || KeyAt < 0 || N == 0) return std::string();
-    std::string Out;
+    if (PairAt < 0 || KeyAt < 0 || N == 0) return;
     bool Open = false;
     for (uint32_t K = 0; K < N; K++)
     {
@@ -296,12 +296,11 @@ std::string IwctxReaders::EntityText(const std::vector<uint8_t>& Img, int64_t Pa
         const uint32_t At = Pair & ((1u << Packing.AtBits) - 1), Type = Pair >> 28, Key = (Pair & 0x0FFFFFFFu) >> Packing.KeyShift;
         if (Type == Packing.NewEntity)
         {
-            Out += Open ? "}\n{\n" : "{\n";
+            Out.emplace_back();
             Open = true;
-            Count++;
             continue;
         }
-        if (!Open) Out += "{\n", Open = true, Count++;
+        if (!Open) Out.emplace_back(), Open = true;
         std::string Name;
         if (Key < Keys)
         {
@@ -318,12 +317,77 @@ std::string IwctxReaders::EntityText(const std::vector<uint8_t>& Img, int64_t Pa
                                 ExportNaming::At<float>(Img, VecAt + At * 12 + 8));
         else
             Value = std::format("type{}:{}", Type, At);
-        Out += "\"" + Name + "\" \"" + Value + "\"\n";
+        Out.back().emplace_back(std::move(Name), std::move(Value));
     }
-    if (Open) Out += "}\n";
+}
+
+std::string IwctxReaders::EntityText(const std::vector<MapEntity>& Entities)
+{
+    std::string Out;
+    for (const auto& E : Entities)
+    {
+        Out += "{\n";
+        for (const auto& [K, V] : E) Out += "\"" + K + "\" \"" + V + "\"\n";
+        Out += "}\n";
+    }
     return Out;
 }
 
+std::string IwctxReaders::EntityText(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+                       const std::function<uint64_t(int64_t)>& Ptr, size_t& Count, IwEntityKeys::Scheme KeyScheme, const PairPacking& Packing)
+{
+    std::vector<MapEntity> Entities;
+    EntityPairs(Img, Pairs, Off, Ptr, Entities, KeyScheme, Packing);
+    Count += Entities.size();
+    return EntityText(Entities);
+}
+
+void IwctxReaders::ExportMapEnts(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Zone, const std::vector<MapEntity>& Entities)
+{
+    using DiskGame::Kind;
+    auto& Kt = T.Kinds[Kind::MapEnts];
+    if (Entities.empty() || !C.Wants(Kind::MapEnts, Zone)) return;
+    Kt.Seen++;
+    const auto Clean = [](std::string S) {
+        for (char& Ch : S)
+            if (Ch == '\t' || Ch == '\n' || Ch == '\r') Ch = ' ';
+        return S;
+    };
+    std::string Out;
+    size_t Pairs = 0;
+    for (size_t E = 0; E < Entities.size(); E++)
+        for (const auto& [K, V] : Entities[E])
+        {
+            Out += std::to_string(E) + "\t" + Clean(K) + "\t" + Clean(V) + "\n";
+            Pairs++;
+        }
+    const std::string Stem = ExportNaming::SafeFileName(Zone);
+    const auto File = std::filesystem::path(C.KindDir(Kind::MapEnts)) / (Stem + ".tsv");
+    if (!ExportWriters::WriteBytes(File, (const uint8_t*)Out.data(), Out.size()))
+    {
+        T.Fail(Zone, Kind::MapEnts, Zone, "write failed");
+        return;
+    }
+    Kt.Written++;
+    T.Counters["mapents_entities"] += Entities.size();
+    T.Counters["mapents_pairs"] += Pairs;
+    T.Index(Kind::MapEnts, "", "", "", Zone, Zone, File.string());
+}
+
+std::string IwctxReaders::ScriptString32(uint32_t Hash)
+{
+    std::lock_guard Guard(ScriptStringsLock);
+    static std::unordered_map<uint32_t, std::string> Low;
+    static size_t From = 0;
+    if (From != ScriptStrings.size())
+    {
+        Low.clear();
+        for (const auto& [H, Text] : ScriptStrings) Low.try_emplace((uint32_t)H, Text);
+        From = ScriptStrings.size();
+    }
+    const auto It = Low.find(Hash);
+    return It == Low.end() ? std::string() : It->second;
+}
 // ---- xanim (IwctxReaders.h, XAnimLayout)
 namespace
 {

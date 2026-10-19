@@ -1,6 +1,8 @@
 #include "stdafx.h"
 
 #include "DiskGameCli.h"
+#include "DiskGameSizes.h"
+#include "ExportNaming.h"
 
 #include "CliOptions.h"
 #include "CliSupport.h"
@@ -87,7 +89,7 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
     C.NameFilter = Options.NameFilter;
     std::string Error;
     if (!ReadOptions(Game, Options, O, Error) || !ParseKinds(Options.Type, C.Kinds, Error)) return Fail(Error);
-    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons; }) && !C.Kinds.empty();
+    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons || K == Kind::WeaponStats || K == Kind::MapInfo || K == Kind::Scriptables || K == Kind::MapEnts || K == Kind::AiTypes; }) && !C.Kinds.empty();
     std::vector<std::string> Zones;
     const auto Start = std::chrono::steady_clock::now();
     if (!Game.Zones(Input, O, Zones, Error)) return Fail(Error);
@@ -191,5 +193,97 @@ namespace
         AddLevelNamesOptions,
     };
     const GameCommandRegistration DiskIndexRegistered(DiskIndexCommand);
+
+    // disk-estimate <install> --game <id> --picked a,b [--type kinds]: what the Load Game panel's
+    // size estimate says for those zones and kinds (DiskGame::Sizes): samples measured from the
+    // picked zones, then counts times their sizes; each kind's bytes and basis
+    int RunDiskEstimate(const CliOptions& Options, const std::string& Install)
+    {
+        const auto Fail = [&](const std::string& Why) {
+            CliReport(Options, "result=error\nreason=" + Why + "\n");
+            return 1;
+        };
+        const IDiskGame* Game = Options.DiskGameId.empty() ? Detect(Install) : Find(Options.DiskGameId);
+        if (Game == nullptr) return Fail("no disk reader for " + Install);
+        ApplyExportOverrides(Options);
+        ExportOptions O;
+        std::set<Kind> Kinds;
+        std::string Error;
+        if (!ReadOptions(*Game, Options, O, Error) || !ParseKinds(Options.Type, Kinds, Error)) return Fail(Error);
+        if (O.Install.empty()) O.Install = Install;
+        // the kept index whatever its tables (what the panel counts with), else built
+        auto Ix = ZoneIndex::Kept(*Game, O, Install);
+        if (!Ix) Ix = ZoneIndex::Build(*Game, O, Install, nullptr, nullptr, Error);
+        if (!Ix) return Fail(Error);
+        std::vector<size_t> Picked;
+        for (const auto& Name : SplitNameFilter(Options.EstimateZones))
+            for (size_t Z = 0; Z < Ix->Zones().size(); Z++)
+                if (ExportNaming::Lower(Ix->Zones()[Z]) == Name || ExportNaming::Lower(fs::path(Ix->Zones()[Z]).stem().string()) == Name)
+                    Picked.push_back(Z);
+        if (Picked.empty()) return Fail("--picked names none of the install's zones");
+        // the picked zones that are levels, as the panel knows them (their level names)
+        std::set<size_t> Levels;
+        std::string NoNames;
+        const auto Named = Game->LevelNames() ? LevelNames::For(*Game, O, Install, nullptr, NoNames) : nullptr;
+        if (Named)
+            for (size_t Z : Picked)
+                if (!Named->Of(Ix->Zones()[Z]).empty()) Levels.insert(Z);
+        const auto Start = std::chrono::steady_clock::now();
+        Sizes::Calibration C;
+        // the sounds' headers read by an earlier count are kept (not read again)
+        Sizes::Calibration Kept;
+        const bool HasKept = Sizes::Load(KeptFile(*Game, O, Install, ".sizes"), Kept);
+        if (!Options.EstimateKept) C = Sizes::Measure(*Game, O, Install, *Ix, Picked, Levels, Kinds, nullptr, nullptr, HasKept ? &Kept : nullptr);
+        else if (!HasKept) return Fail("no samples kept for this install");
+        else C = std::move(Kept);
+        const double Seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
+        if (!Options.EstimateKept) Sizes::Save(KeptFile(*Game, O, Install, ".sizes"), C);
+
+        Sizes::Picks S;
+        // the kinds the game exports (the panel offers no other)
+        const std::set<Kind> Exported = Game->Kinds();
+        for (Kind K : Kinds)
+            if (Exported.count(K)) S.Kinds.insert(K);
+        S.Settings = O.Settings;
+        S.Formats = Sizes::FormatsNow();
+        S.Zones = Picked.size();
+        for (size_t Z : Picked)
+        {
+            for (const auto& A : Ix->Defined(Z)) S.Counts[A.K]++;
+            S.Footprint += Ix->Footprint(Z);
+            S.Picked.emplace_back(Ix->Zones()[Z], Ix->Footprint(Z));
+            if (Levels.count(Z)) S.Levels++, S.LevelFootprint += Ix->Footprint(Z);
+        }
+        S.LevelsKnown = Named != nullptr;
+        const Sizes::Estimate E = Sizes::Compute(C, S);
+        std::string Lines;
+        for (const auto& [K, R] : E.Kinds)
+            Lines += std::string("kind_") + KindName(K) + "=" + std::to_string(R.Bytes) + (R.Approx ? " approx" : "") + (R.Unknown ? " unknown" : "") +
+                     " " + R.Basis + "\n";
+        for (const auto& [K, M] : C.Kinds)
+            Lines += std::string("sample_") + KindName(K) + "=" + std::to_string(M.Assets) + " assets from " + M.Zone + " in " +
+                     std::to_string(M.Seconds) + " s" + (M.Cut ? " (cut)" : "") + ", wrote " + Sizes::Text(M.Listed ? Sizes::Written(M) : M.ZoneBytes) +
+                     (M.Textures ? ", textures " + Sizes::Text(M.Textures) + " (listed " + Sizes::Text(M.ListedTextures) + ")" : "") + "\n";
+        CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nzones=" + std::to_string(Picked.size()) +
+                               "\nbytes=" + std::to_string(E.Bytes) + "\ntext=" + (E.Approx ? "~" : "") + Sizes::Text(E.Bytes) +
+                               "\nmeasure_seconds=" + std::to_string(Seconds) + "\n" + Lines);
+        return 0;
+    }
+
+    void AddDiskEstimateOptions(CLI::App& Sub, CliOptions& Options)
+    {
+        Sub.add_option("--game", Options.DiskGameId, "The game; detected from the install when omitted");
+        Sub.add_option("--picked", Options.EstimateZones, "The zones picked, comma-separated, as the Load Game panel lists them")->required();
+        Sub.add_flag("--kept", Options.EstimateKept, "The samples the last run kept, not measured again (their formats converted to these)");
+    }
+
+    const GameCommand DiskEstimateCommand{
+        "disk-estimate",
+        "The size an export of some zones would write, as the Load Game panel estimates it (a sample of each kind measured)",
+        "The install folder",
+        RunDiskEstimate,
+        AddDiskEstimateOptions,
+    };
+    const GameCommandRegistration DiskEstimateRegistered(DiskEstimateCommand);
 }
 }

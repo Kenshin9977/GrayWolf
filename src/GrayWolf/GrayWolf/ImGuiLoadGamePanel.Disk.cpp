@@ -9,6 +9,7 @@
 #include "ImGuiBlender.h"
 #include "AppLog.h"
 #include "DiskGame.h"
+#include "ExportNaming.h"
 #include "SettingsManager.h"
 #include "Strings.h"
 #include "WraithX.h"
@@ -27,6 +28,8 @@ namespace
     constexpr const char* ExportLabel = "disk export";
     constexpr const char* ListLabel = "zone list";
     constexpr const char* IndexLabel = "install index";
+
+    using ExportNaming::Thousands;
 
     size_t Total(const std::map<DiskGame::Kind, size_t>& Counts)
     {
@@ -48,14 +51,6 @@ namespace
         for (const DiskGame::Setting* S : Game.AllSettings())
             O.Settings[S->Key] = SettingsManager::GetSetting(SettingKey(Game, *S), S->Default);
         return O;
-    }
-
-    // 1630 as "1,630"
-    std::string Thousands(size_t N)
-    {
-        std::string S = std::to_string(N);
-        for (int At = (int)S.size() - 3; At > 0; At -= 3) S.insert((size_t)At, ",");
-        return S;
     }
 
     // 75 as "1:15", 3725 as "1:02:05"
@@ -179,12 +174,67 @@ void LoadGamePanel::ReadZoneCounts(const DiskGame::IDiskGame& Game, const DiskGa
 {
     const auto Ix = DiskGame::ZoneIndex::Kept(Game, Options, Install);
     std::vector<std::map<DiskGame::Kind, size_t>> Counts(Ix ? Ix->Zones().size() : 0);
+    std::vector<uint64_t> Footprints(Counts.size());
     for (size_t Z = 0; Z < Counts.size(); Z++)
+    {
         for (const auto& A : Ix->Defined(Z)) Counts[Z][A.K]++;
+        Footprints[Z] = Ix->Footprint(Z);
+    }
+    // the size samples measured last time for this install, if any
+    DiskGame::Sizes::Calibration Sizes;
+    if (Ix) DiskGame::Sizes::Load(DiskGame::KeptFile(Game, Options, Install, ".sizes"), Sizes);
     std::lock_guard<std::mutex> Lk(Mutex);
     DiskZoneCounted = Ix && Ix->Zones() == DiskZoneNames;
-    if (DiskZoneCounted) DiskZoneCounts = std::move(Counts);
-    else DiskZoneCounts.assign(DiskZoneNames.size(), {});
+    if (DiskZoneCounted)
+    {
+        DiskZoneCounts = std::move(Counts);
+        DiskZoneFootprints = std::move(Footprints);
+        DiskSizes = std::move(Sizes);
+    }
+    else
+    {
+        DiskZoneCounts.assign(DiskZoneNames.size(), {});
+        DiskZoneFootprints.assign(DiskZoneNames.size(), 0);
+        DiskSizes = {};
+    }
+}
+
+// Worker: the picked zones' kinds sampled (the ticked ones and those exported by default, so that
+// ticking one later needs no new sample), measured into DiskSizes and kept beside the index.
+void LoadGamePanel::MeasureSizes(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install,
+                                 const DiskGame::ZoneIndex& Ix)
+{
+    std::vector<size_t> Picked;
+    std::set<size_t> Levels;
+    std::set<DiskGame::Kind> Kinds;
+    {
+        std::lock_guard<std::mutex> Lk(Mutex);
+        for (size_t Z = 0; Z < DiskZoneNames.size() && Z < Ix.Zones().size(); Z++)
+            if (DiskZoneFlags[Z] && Ix.Zones()[Z] == DiskZoneNames[Z])
+            {
+                Picked.push_back(Z);
+                if (Game.LevelNames() != nullptr && !DiskZoneLevels[Z].empty()) Levels.insert(Z);
+            }
+        for (size_t K = 0; K < DiskKindFlags.size(); K++)
+            if (DiskKindFlags[K] || DiskGame::Kinds[K].ByDefault) Kinds.insert(DiskGame::Kinds[K].Id);
+    }
+    const auto Start = std::chrono::steady_clock::now();
+    size_t Done = 0;
+    DiskGame::Sizes::Calibration Kept;   // the sounds' headers read by an earlier count, not read again
+    {
+        std::lock_guard<std::mutex> Lk(Mutex);
+        Kept = DiskSizes;
+    }
+    const DiskGame::Sizes::Calibration Sizes = DiskGame::Sizes::Measure(Game, Options, Install, Ix, Picked, Levels, Kinds, [&](const std::string& What) {
+        std::lock_guard<std::mutex> Lk(Mutex);
+        DiskFraction = std::min(1.0f, (float)Done++ / (float)(Kinds.size() + 1));
+        DiskStep = "size estimate: " + What;
+    }, &DiskCancel, &Kept);
+    if (DiskCancel.load()) return;
+    DiskGame::Sizes::Save(DiskGame::KeptFile(Game, Options, Install, ".sizes"), Sizes);
+    std::lock_guard<std::mutex> Lk(Mutex);
+    DiskSizes = Sizes;
+    Status += ", sizes sampled in " + Clock(std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count());
 }
 
 // Worker: the install index, built as an export pulling dependencies builds it, then the counts.
@@ -209,12 +259,16 @@ void LoadGamePanel::DoIndexDiskZones()
         Status = DiskStep;
     }, &DiskCancel, Error);
     if (Ix) ReadZoneCounts(Game, Options, Install);
-    std::lock_guard<std::mutex> Lk(Mutex);
-    DiskFraction = 1.0f;
-    Status = Ix ? "install index: " + Thousands(Ix->Entries) + " assets in " + std::to_string(Ix->Zones().size()) + " zones, " +
-                      (Ix->Built ? "built in " : "read in ") +
-                      Clock(std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count())
-                : "install index not built: " + Error;
+    {
+        std::lock_guard<std::mutex> Lk(Mutex);
+        DiskFraction = 1.0f;
+        Status = Ix ? "install index: " + Thousands(Ix->Entries) + " assets in " + std::to_string(Ix->Zones().size()) + " zones, " +
+                          (Ix->Built ? "built in " : "read in ") +
+                          Clock(std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count())
+                    : "install index not built: " + Error;
+    }
+    // then the size estimate's samples, from the zones picked
+    if (Ix && !DiskCancel.load()) MeasureSizes(Game, Options, Install, *Ix);
 }
 
 // Worker: the picked zones resolved, then DiskGame::Export with the progress and the cancel flag.
@@ -345,7 +399,9 @@ void LoadGamePanel::DrawDiskSection()
         if (!Can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s: not exported yet (its reader has no %s exporter)", Disk->Title(), DiskGame::Kinds[i].Name);
     }
-    // the game's settings, each while one of the kinds it concerns is ticked
+    // the game's settings, each while one of the kinds it concerns is ticked; the size estimate
+    // at their right
+    ImGui::BeginGroup();
     for (const DiskGame::Setting* Each : Disk->AllSettings())
     {
         const DiskGame::Setting& S = *Each;
@@ -367,6 +423,9 @@ void LoadGamePanel::DrawDiskSection()
             ImGui::EndCombo();
         }
     }
+    ImGui::EndGroup();
+    ImGui::SameLine(0.0f, ImGui::GetFontSize() * 2.0f);
+    DrawEstimate(Target);
 
     // the name filter, shown disabled for a game whose readers write a kind whole
     ImGui::TextUnformatted("Names");
@@ -411,7 +470,8 @@ void LoadGamePanel::DrawDiskSection()
     }
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Opens every zone once to list what each holds (the install index, kept for next time;\n"
-                          "an export that pulls dependencies builds it too)");
+                          "an export that pulls dependencies builds it too), then exports a small sample of each\n"
+                          "kind from the picked zones to a temporary folder for the size estimate");
     std::vector<uint32_t> Visible;
     for (uint32_t i = 0; i < (uint32_t)DiskZoneNames.size(); i++)
         if (ContainsNoCase(DiskZoneNames[i], DiskZoneFilterBuf) || ContainsNoCase(DiskZoneLevels[i], DiskZoneFilterBuf))
@@ -449,6 +509,84 @@ void LoadGamePanel::DrawDiskSection()
 
     // the maps exported to this folder, each opened in Blender
     DrawMapsInBlender(Target);
+}
+
+void LoadGamePanel::DrawEstimate(const std::string& Target)
+{
+    namespace Sizes = DiskGame::Sizes;
+    // what is picked now, from the counts and samples kept (nothing is read here)
+    Sizes::Picks P;
+    bool Have = false, Sampled = false;
+    Sizes::Calibration Samples;
+    {
+        std::lock_guard<std::mutex> Lock(Mutex);
+        Have = DiskZoneCounted && DiskZoneCounts.size() == DiskZoneNames.size() && DiskZoneFootprints.size() == DiskZoneNames.size() &&
+               DiskZoneFlags.size() == DiskZoneNames.size();
+        Sampled = Have && !DiskSizes.Empty();
+        if (Sampled)
+        {
+            Samples = DiskSizes;
+            for (size_t Z = 0; Z < DiskZoneNames.size(); Z++)
+            {
+                if (!DiskZoneFlags[Z]) continue;
+                P.Zones++;
+                for (const auto& [K, N] : DiskZoneCounts[Z]) P.Counts[K] += N;
+                P.Footprint += DiskZoneFootprints[Z];
+                P.Picked.emplace_back(DiskZoneNames[Z], DiskZoneFootprints[Z]);
+                if (!DiskZoneLevels[Z].empty())
+                {
+                    P.Levels++;
+                    P.LevelFootprint += DiskZoneFootprints[Z];
+                }
+            }
+        }
+    }
+    const std::set<DiskGame::Kind> Exported = Disk->Kinds();
+    for (size_t i = 0; i < DiskKindFlags.size(); i++)
+        if (DiskKindFlags[i] && Exported.count(DiskGame::Kinds[i].Id)) P.Kinds.insert(DiskGame::Kinds[i].Id);
+    P.LevelsKnown = Disk->LevelNames() != nullptr;
+    P.Settings = DiskOptions(*Disk, GameBuf).Settings;
+    P.Formats = Sizes::FormatsNow();
+
+    const uint64_t Free = FreeSpace.Get(Target, 5.0, [Target] { return Sizes::FreeBytes(Target); });
+    ImGui::BeginGroup();
+    Sizes::Estimate E;
+    if (!Sampled)
+    {
+        ImGui::TextDisabled("Count assets to estimate the export's size");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("The estimate needs the install index's counts and a small sample of each kind\n"
+                              "exported for real from the picked zones: \"Count assets\" below does both");
+    }
+    else
+    {
+        E = Sizes::Compute(Samples, P);
+        const std::string Size = (E.Approx ? "\xE2\x89\x88 " : "") + Sizes::Text(E.Bytes) + (E.Unknown ? " or more" : "");
+        const bool Over = Free > 0 && E.Bytes > Free, Near = Free > 0 && E.Bytes > Free / 10 * 8;
+        const ImVec4 Red(1.0f, 0.35f, 0.3f, 1.0f), Amber(1.0f, 0.75f, 0.2f, 1.0f);
+        if (P.Zones == 0 || P.Kinds.empty()) ImGui::TextDisabled("Export size: nothing picked");
+        else if (Over || Near) ImGui::TextColored(Over ? Red : Amber, "Export size: %s", Size.c_str());
+        else ImGui::Text("Export size: %s", Size.c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        {
+            std::string Tip = "What the export would write, kind by kind (\xE2\x89\x88: an approximation):\n";
+            for (const auto& [K, R] : E.Kinds)
+                Tip += "\n" + DiskGame::KindFolder(K) + ": " + (R.Unknown ? std::string("?") : (R.Approx ? "\xE2\x89\x88 " : "") + Sizes::Text(R.Bytes)) +
+                       "\n    " + R.Basis;
+            Tip += "\n\nCounts are the install index's; sizes come from a sample of each kind exported for real\n"
+                   "when the assets were counted, in the formats of then (another format is converted by a\n"
+                   "typical ratio). What the assets need from other zones, pulled as dependencies, comes on top.";
+            ImGui::SetTooltip("%s", Tip.c_str());
+        }
+    }
+    if (Free > 0)
+    {
+        const bool Over = Sampled && P.Zones > 0 && E.Bytes > Free;
+        if (Over) ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s free on its drive: not enough", Sizes::Text(Free).c_str());
+        else ImGui::TextDisabled("%s free on its drive", Sizes::Text(Free).c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("The free space of the output folder's drive (%s)", Target.c_str());
+    }
+    ImGui::EndGroup();
 }
 
 void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)

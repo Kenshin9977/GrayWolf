@@ -216,6 +216,9 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 
 	for (auto& Mesh : Model.Submeshes)
 	{
+		// an empty surface (Ghosts' viewmodel_reticle_evopro has one) has nothing to draw, and
+		// glTF accessors may not be empty
+		if (Mesh.Verticies.empty() || Mesh.Faces.empty()) continue;
 		tinygltf::Mesh GltfMesh;
 		tinygltf::Primitive GltfPrim;
 
@@ -252,7 +255,9 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 			});
 		}
 
-		size_t NumWeights = ((MaxSkinInfluenceBuffer - 1) / 4) + 1;
+		// a set of 4 joints and weights per 4 influences; none for a vertex without weights (0 - 1
+		// wrapped to 2^62 sets once, and an empty surface wrote accessors until memory ran out)
+		size_t NumWeights = MaxSkinInfluenceBuffer == 0 ? 0 : ((MaxSkinInfluenceBuffer - 1) / 4) + 1;
 
 		auto IndicesView = CreateView(GltfModel, 0, GltfBuffer.data.size(), Mesh.Faces.size() * 3 * 4, 0, TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);
 		auto IndicesAccessor = CreateAccessor(GltfModel, IndicesView, 0, Mesh.Faces.size() * 3, 0, TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT, TINYGLTF_TYPE_SCALAR, 0, 0, 0, 0, Mesh.Verticies.size() -1, 0, 0, 0);
@@ -386,7 +391,7 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 			}
 		}
 
-		GltfPrim.material = Mesh.MaterialIndicies[0];
+		GltfPrim.material = Mesh.MaterialIndicies.empty() ? -1 : Mesh.MaterialIndicies[0];
 
 		tinygltf::Node GltfMeshNode;
 		GltfMeshNode.mesh = (int)GltfModel.meshes.size();

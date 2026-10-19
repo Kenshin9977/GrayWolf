@@ -288,8 +288,10 @@ namespace
         auto& Kt = T.Kinds[DiskGame::Kind::Sound];
         std::string Report;
         std::unordered_map<uint32_t, std::string> Files;
+        if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
         const size_t Written = Bo3ExportZoneSounds(FastFilePath(), C.KindDir(DiskGame::Kind::Sound), C.NameFilter,
-                                                   AudioFormat, Report, &Files);
+                                                   AudioFormat, Report, &Files, C.OnSoundHeader);
+        if (C.OnSoundHeader) return;   // a dry run: no file to name in an alias CSV
         Kt.Written += Written;
         Kt.Seen += Written;
         if (!SoundAliasCsv::Wanted(C)) return;

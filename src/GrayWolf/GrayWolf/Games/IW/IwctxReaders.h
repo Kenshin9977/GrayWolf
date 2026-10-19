@@ -125,4 +125,16 @@ namespace IwctxReaders
     std::string EntityText(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
                            const std::function<uint64_t(int64_t)>& Ptr, size_t& Count, IwEntityKeys::Scheme KeyScheme,
                            const PairPacking& Packing = {});
+    // The same entities as key/value pairs, in their order (EntityText writes them as text)
+    using MapEntity = std::vector<std::pair<std::string, std::string>>;
+    void EntityPairs(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+                     const std::function<uint64_t(int64_t)>& Ptr, std::vector<MapEntity>& Out, IwEntityKeys::Scheme KeyScheme,
+                     const PairPacking& Packing = {});
+    std::string EntityText(const std::vector<MapEntity>& Entities);
+    // The mapents kind: a zone's entities, one line per pair "entity_index<TAB>key<TAB>value",
+    // mapents/<zone>.tsv (a tab or line break in a value written as a space), indexed
+    void ExportMapEnts(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Zone, const std::vector<MapEntity>& Entities);
+    // A script string by the low 32 bits of its hash (what map_ents' records keep), from the strings
+    // registered so far; "" when none
+    std::string ScriptString32(uint32_t Hash);
 }

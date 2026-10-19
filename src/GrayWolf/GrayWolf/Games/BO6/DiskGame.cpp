@@ -8,6 +8,7 @@
 
 #include "Games/Common/MeshDecode.h"
 #include "DiskGame.h"
+#include "FileSystems.h"
 #include "Games/BO6/TechsetFormat.h"
 #include "GameBlackOps6.h"
 #include "Games/IW/IwctxReaders.h"
@@ -80,9 +81,17 @@ namespace
             Bundles.Types[9] = Bundles.Types[18] = BundleValue::Raw;
             // (the campaign's value loader 0x25b74c0 differs: not read)
             if (!Campaign) ExportsScriptBundles(Bundles);
+            // the zone's entity strings, one TSV (IwctxReaders::ExportMapEnts)
+            Exports(Kind::MapEnts, [this](const Context& C, Totals& T) {
+                std::vector<IwctxReaders::MapEntity> Ents;
+                EntityStrings(Ents);
+                IwctxReaders::ExportMapEnts(C, T, Name(), Ents);
+            });
         }
 
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the zone's entity strings: map_game_objects' pairs, then each script brush model's
+        void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
 
         // What LoadBeside looks the meshes up in: the install index of this game
         void SetInstall(const DiskGame::IDiskGame* G, const ExportOptions& O, const std::string& I)
@@ -109,13 +118,12 @@ namespace
         VirtualGameSession::Handlers Handlers() override
         {
             GameBlackOps6::PerformInitialSetup();
-            // the bo6 profile's names.wni (the campaign's too): names found for the game's hashes in
-            // its own strings and the package index's names
+            // the package index's bo6_names.wni (the campaign's too): names found for the game's
+            // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
             static std::once_flag Names;
             std::call_once(Names, [] {
-                std::string Error;
-                if (const auto* L = ExportWriters::ZoneProfile("bo6", Error))
-                    CoDAssets::AssetNameCache.LoadIndex((fs::path(L->Profile.Dir) / "names.wni").string());
+                CoDAssets::AssetNameCache.LoadIndex(
+                    (fs::path(FileSystems::GetApplicationPath()) / "package_index" / "bo6_names.wni").string());
             });
             return { SlotString, Campaign ? GameBlackOps6::LoadXImageCampaign : GameBlackOps6::LoadXImage };
         }
@@ -358,6 +366,17 @@ namespace
         return Out;
     }
 
+    void BlackOps6Zone::EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const
+    {
+        const auto OffOf = [this](uint64_t A) { return Off(A); };
+        const auto PtrAt = [this](int64_t P) { return PointerAt(P); };
+        const auto KeyScheme = Campaign ? IwEntityKeys::Scheme::SaltAfter : IwEntityKeys::Scheme::SaltFirst;
+        if (const int64_t Go = Root("map_game_objects"); Go >= 0)
+            if (const int64_t P = Off(PointerAt(Go + 8)); P >= 0) IwctxReaders::EntityPairs(Image(), P, OffOf, PtrAt, Out, KeyScheme);
+        for (const auto& I : Walk().Instances)
+            if (OwnerIs(I, "scriptbrushmodel")) IwctxReaders::EntityPairs(Image(), I.Pos + 0x10, OffOf, PtrAt, Out, KeyScheme);
+    }
+
     bool BlackOps6Zone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
     {
         LoadBeside();
@@ -587,16 +606,13 @@ namespace
             for (const auto& [K, N] : Read) Counter("map_" + K) += N;
         }
 
-        // ---- the entities: map_game_objects' pairs, then each script brush model's
-        size_t Ents = 0;
-        const auto OffOf = [this](uint64_t A) { return Off(A); };
-        const auto PtrAt = [this](int64_t P) { return PointerAt(P); };
-        const auto KeyScheme = Campaign ? IwEntityKeys::Scheme::SaltAfter : IwEntityKeys::Scheme::SaltFirst;
-        if (const int64_t Go = Root("map_game_objects"); Go >= 0)
-            if (const int64_t P = Off(PointerAt(Go + 8)); P >= 0) Scene.MapEnts += IwctxReaders::EntityText(Img, P, OffOf, PtrAt, Ents, KeyScheme);
-        for (const auto& I : Walk().Instances)
-            if (OwnerIs(I, "scriptbrushmodel")) Scene.MapEnts += IwctxReaders::EntityText(Img, I.Pos + 0x10, OffOf, PtrAt, Ents, KeyScheme);
-        Counter("map_ents") += Ents;
+        // ---- the entities (EntityStrings)
+        {
+            std::vector<IwctxReaders::MapEntity> Ents;
+            EntityStrings(Ents);
+            Scene.MapEnts += IwctxReaders::EntityText(Ents);
+            Counter("map_ents") += Ents.size();
+        }
 
         // ---- the lights: GfxWorld's 0xf0-byte records (count u32 0x5778, array 0x5780, read by
         // 0x2835f80 as com_map's single one is): type u8 0 (1 sun, 2 spot, else omni), colour 52,

@@ -358,6 +358,53 @@ std::unique_ptr<XSound> GameWorldWar2::ReadXSound(const CoDSound_t* Sound)
     }
     else
     {
+        const std::string PackagePath = SoundPackagePath(Sound);
+        if (PackagePath.empty())
+            return nullptr;
+
+        auto Reader = BinaryReader();
+        Reader.Open(PackagePath);
+
+        Reader.SetPosition(Sound->AssetPointer);
+
+        uint64_t ResultRead = 0;
+        Reader.Read((uint8_t*)Result->DataBuffer + DataOffset, Sound->AssetSize, ResultRead);
+    }
+
+    return Result;
+}
+
+std::vector<uint8_t> GameWorldWar2::ReadSoundHead(const CoDSound_t* Sound, size_t N)
+{
+    std::vector<uint8_t> Head;
+    N = (size_t)std::min<uint64_t>(N, Sound->AssetSize);
+    if (N == 0) return Head;
+    if (!Sound->IsFileEntry)
+    {
+        uintptr_t Read = 0;
+        auto Buffer = CoDAssets::GameInstance->Read(Sound->AssetPointer, N, Read);
+        if (Buffer == nullptr) return Head;
+        Head.assign((const uint8_t*)Buffer, (const uint8_t*)Buffer + Read);
+        delete[] Buffer;
+        return Head;
+    }
+    const std::string PackagePath = SoundPackagePath(Sound);
+    if (PackagePath.empty()) return Head;
+    auto Reader = BinaryReader();
+    if (!Reader.Open(PackagePath)) return Head;
+    Reader.SetPosition(Sound->AssetPointer);
+    Head.resize(N);
+    uint64_t Read = 0;
+    Reader.Read(Head.data(), N, Read);
+    Head.resize((size_t)Read);
+    return Head;
+}
+
+// A streamed sound's package: soundfile<N>.pak, or a language folder's <prefix>soundfile<N>.pak;
+// "" when it is not there
+std::string GameWorldWar2::SoundPackagePath(const CoDSound_t* Sound)
+{
+    {
         std::error_code Ec;
         auto PackagePath = CoDAssets::GamePackageCache->GetPackagesPath();
 
@@ -382,18 +429,9 @@ std::unique_ptr<XSound> GameWorldWar2::ReadXSound(const CoDSound_t* Sound)
         }
 
         if (!std::filesystem::is_regular_file(PackagePath, Ec))
-            return nullptr;
-
-        auto Reader = BinaryReader();
-        Reader.Open(PackagePath);
-
-        Reader.SetPosition(Sound->AssetPointer);
-
-        uint64_t ResultRead = 0;
-        Reader.Read((uint8_t*)Result->DataBuffer + DataOffset, Sound->AssetSize, ResultRead);
+            return std::string();
+        return PackagePath;
     }
-
-    return Result;
 }
 
 std::unique_ptr<XAnim_t> GameWorldWar2::ReadXAnim(const CoDAnim_t* Animation)

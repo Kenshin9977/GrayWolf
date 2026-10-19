@@ -173,7 +173,8 @@ std::string Bo3SoundFormat(const std::string& AudioFormat)
 
 size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& OutDir,
                             const std::string& NameFilter, const std::string& AudioFormat,
-                            std::string& Report, std::unordered_map<uint32_t, std::string>* WrittenKeys)
+                            std::string& Report, std::unordered_map<uint32_t, std::string>* WrittenKeys,
+                            const std::function<void(const DiskGame::SoundHeader&)>& Headers)
 {
     const fs::path ZoneFile(FastFilePath);
     const std::string ZoneStem = ZoneFile.stem().string();
@@ -226,7 +227,7 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
     const std::string Format = Bo3SoundFormat(AudioFormat);
     const std::string OutExt = ExportWriters::SoundExtension(Format, ".flac");
 
-    fs::create_directories(OutDir, Ec);
+    if (!Headers) fs::create_directories(OutDir, Ec);
 
     size_t Candidates = 0, Matched = 0, Written = 0, WriteFailed = 0, DecodeFailed = 0, DedupSkipped = 0;
     std::set<std::string> WrittenPaths; // de-dup across banks for this zone (plain + .p variant, etc.)
@@ -282,6 +283,18 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
                 continue;
             }
 
+            if (Headers)
+            {
+                // a dry run: the entry as its bank header says (a whole FLAC file)
+                DiskGame::SoundHeader H;
+                H.Name = fs::path(OutPathStr).lexically_relative(OutDir).replace_extension().string();
+                H.Is = DiskGame::SoundHeader::Form::Flac;
+                H.Stored = E.Size;
+                H.Rate = E.FrameRate, H.Channels = E.Channels, H.Frames = E.FrameCount;
+                Headers(H);
+                Written++;
+                continue;
+            }
             std::error_code MkEc;
             fs::create_directories(OutPath.parent_path(), MkEc);
 

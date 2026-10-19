@@ -6,6 +6,8 @@
 #include "GdtWriter.h"
 #include "MapLive.h"
 #include "MapMaterials.h"
+#include "MapRadiantGeometry.h"
+#include "MapRadiantTextures.h"
 #include "MaterialGdt.h"
 #include "MapSceneWriter.h"
 #include "WraithModel.h"
@@ -21,6 +23,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -28,17 +31,7 @@ namespace Maps
 {
 namespace
 {
-    using V3 = std::array<double, 3>;
-
-    V3 Sub(const V3& A, const V3& B) { return { A[0] - B[0], A[1] - B[1], A[2] - B[2] }; }
-    V3 Add(const V3& A, const V3& B) { return { A[0] + B[0], A[1] + B[1], A[2] + B[2] }; }
-    V3 Mul(const V3& A, double S) { return { A[0] * S, A[1] * S, A[2] * S }; }
-    double Dot(const V3& A, const V3& B) { return A[0] * B[0] + A[1] * B[1] + A[2] * B[2]; }
-    V3 Cross(const V3& A, const V3& B)
-    {
-        return { A[1] * B[2] - A[2] * B[1], A[2] * B[0] - A[0] * B[2], A[0] * B[1] - A[1] * B[0] };
-    }
-    double Length(const V3& A) { return std::sqrt(Dot(A, A)); }
+    using namespace RadiantGeometry;
 
     constexpr double OnPlane = 1e-5;     // a point this close to a plane is on it (the planes are exact)
     constexpr double Huge = 262144.0;    // the half size of a side's starting polygon
@@ -62,30 +55,6 @@ namespace
         const V3 Org = Mul(P.N, P.D);
         const V3 U = Mul(Up, Huge), R = Mul(Right, Huge);
         return { Add(Sub(Org, R), U), Add(Add(Org, R), U), Sub(Add(Org, R), U), Sub(Sub(Org, R), U) };
-    }
-
-    // The part of a convex polygon behind the plane (N . p <= D), a point within Eps on it
-    std::vector<V3> Clip(const std::vector<V3>& W, const Plane& P, double Eps = OnPlane)
-    {
-        std::vector<V3> Out;
-        const size_t N = W.size();
-        for (size_t K = 0; K < N; K++)
-        {
-            const V3& A = W[K];
-            const V3& B = W[(K + 1) % N];
-            const double Da = Dot(P.N, A) - P.D, Db = Dot(P.N, B) - P.D;
-            if (Da <= Eps) Out.push_back(A);
-            if ((Da > Eps && Db < -Eps) || (Da < -Eps && Db > Eps))
-                Out.push_back(Add(A, Mul(Sub(B, A), Da / (Da - Db))));
-        }
-        return Out;
-    }
-
-    double Area(const std::vector<V3>& W)
-    {
-        V3 Sum = { 0, 0, 0 };
-        for (size_t K = 1; K + 1 < W.size(); K++) Sum = Add(Sum, Cross(Sub(W[K], W[0]), Sub(W[K + 1], W[0])));
-        return Length(Sum) / 2;
     }
 
     // ---- the text
@@ -200,7 +169,7 @@ namespace
         {
             std::vector<V3> W = BaseWinding(Planes[I]);
             for (size_t J = 0; J < Planes.size() && W.size() >= 3; J++)
-                if (J != I) W = Clip(W, Planes[J], Eps);
+                if (J != I) W = Clip(W, Planes[J].N, Planes[J].D, Eps);
             if (W.size() < 3) return false;
             for (const V3& V : W) Centre = Add(Centre, V);
             Corners += W.size();
@@ -231,13 +200,6 @@ namespace
 
     bool Starts(const std::string& S, const char* Prefix) { return S.rfind(Prefix, 0) == 0; }
 
-    bool IsTool(const std::string& Lower)
-    {
-        for (const char* Tool : { "caulk", "clip", "nodraw", "trigger", "mantle", "ladder", "sky", "hint", "portal", "nosight" })
-            if (Starts(Lower, Tool)) return true;
-        return Lower.size() > 5 && Lower.compare(Lower.size() - 5, 5, "_clip") == 0;   // metal_clip
-    }
-
     // The tool material a brush is written with: a side's own when the clip map names one per side
     // and it is a tool material (IW), else the one Black Ops III's mod tools give the brush's
     // content flags (Quake's lineage, the same bits from CoD4 to Black Ops). A drawn surface's
@@ -255,7 +217,7 @@ namespace
         std::string Of(const Brush& B, const BrushSide& S) const
         {
             const std::string M = ExportNaming::Lower(S.Material);
-            if (IsTool(M)) return M;
+            if (RadiantTool(M)) return M;
             constexpr uint32_t Solid = 0x1, Glass = 0x10, CanShootClip = 0x40, MissileClip = 0x80, VehicleClip = 0x200,
                                ItemClip = 0x400, SkyFlag = 0x800, NoSight = 0x1000, ClipShot = 0x2000, PlayerClip = 0x10000,
                                MonsterClip = 0x20000, Mantle = 0x1000000, Detail = 0x8000000, Structural = 0x10000000,
@@ -263,7 +225,7 @@ namespace
             const uint32_t C = B.Contents & ~Detail;
             if (C & Trigger) return "trigger";
             if (C & SkyFlag) return Sky;
-            if (C & Solid) return M.empty() || IsTool(M) ? "caulk" : "clip_full";
+            if (C & Solid) return M.empty() || RadiantTool(M) ? "caulk" : "clip_full";
             const bool Player = C & PlayerClip, Monster = C & MonsterClip;
             if (Player && Monster) return C & NoSight ? "clip_nosight" : "clip";
             if (Player) return "clip_player";
@@ -285,10 +247,86 @@ namespace
         std::string Sky;
     };
 
+    // A drawn material's name in the .map: as the model files name it (its GDT asset name with a
+    // GDT, which then lists it)
+    std::string MaterialName(const std::string& Material, RadiantGdt* Gdt)
+    {
+        if (!Gdt) return Material.empty() ? "default" : ExportNaming::SafeFileName(Material);
+        Gdt->Materials.insert(Material);
+        return MaterialGdt::AssetName(Material);
+    }
+
+    // The drawn triangles a brush's solid sides take their materials from (none: tool materials
+    // only): Owner's (DrawnWorld::Owner), counted in Stats; the GDT naming them
+    struct Texturing
+    {
+        DrawnWorld* Drawn = nullptr;
+        RadiantGdt* Gdt = nullptr;
+        uint32_t Owner = 0;
+        RadiantTextureStats* Stats = nullptr;
+        const DrawnWorld::HiddenTest* Hidden = nullptr;   // inside another brush (the world's)
+    };
+
+    // The world's solid brushes, to tell a point inside one (what hides a side's face): each
+    // brush's planes, its bounds in a grid of Cell units
+    class Solids
+    {
+    public:
+        explicit Solids(const Collision& C)
+        {
+            for (const Brush& B : C.Brushes)
+            {
+                if (!(B.Contents & 1)) continue;
+                const std::vector<BrushFace> Faces = BrushFaces(B);
+                if (Faces.size() < 4) continue;
+                std::vector<Plane> P;
+                for (const BrushSide& S : B.Sides)
+                {
+                    const double L = std::sqrt((double)S.Normal[0] * S.Normal[0] + (double)S.Normal[1] * S.Normal[1] + (double)S.Normal[2] * S.Normal[2]);
+                    if (L > 0.5) P.push_back({ { S.Normal[0] / L, S.Normal[1] / L, S.Normal[2] / L }, S.Dist / L });
+                }
+                V3 Lo = Faces[0].Points[0], Hi = Lo;
+                for (const BrushFace& F : Faces)
+                    for (const V3& V : F.Points)
+                        for (int A = 0; A < 3; A++) Lo[A] = (std::min)(Lo[A], V[A]), Hi[A] = (std::max)(Hi[A], V[A]);
+                const uint32_t Number = (uint32_t)Planes.size();
+                Planes.push_back(std::move(P));
+                for (int64_t X = CellOf(Lo[0]); X <= CellOf(Hi[0]); X++)
+                    for (int64_t Y = CellOf(Lo[1]); Y <= CellOf(Hi[1]); Y++)
+                        for (int64_t Z = CellOf(Lo[2]); Z <= CellOf(Hi[2]); Z++) Grid[Key(X, Y, Z)].push_back(Number);
+            }
+        }
+        bool Inside(const V3& P) const
+        {
+            const auto It = Grid.find(Key(CellOf(P[0]), CellOf(P[1]), CellOf(P[2])));
+            if (It == Grid.end()) return false;
+            for (const uint32_t B : It->second)
+            {
+                bool In = true;
+                for (const Plane& S : Planes[B]) In = In && Dot(S.N, P) - S.D <= 0.01;
+                if (In) return true;
+            }
+            return false;
+        }
+
+    private:
+        static constexpr double Cell = 512.0;
+        static int64_t CellOf(double V) { return (int64_t)std::floor(V / Cell); }
+        static uint64_t Key(int64_t X, int64_t Y, int64_t Z)
+        {
+            constexpr int64_t Bias = 1 << 20;
+            return ((uint64_t)(X + Bias) << 42) | ((uint64_t)(Y + Bias) << 21) | (uint64_t)(Z + Bias);
+        }
+        std::vector<std::vector<Plane>> Planes;
+        std::unordered_map<uint64_t, std::vector<uint32_t>> Grid;
+    };
+
     // Writes one brush, Origin and Axis moving it (a brush model's, to its entity), all its sides
-    // of material Only when set; false when its planes bound no closed volume
+    // of material Only when set; false when its planes bound no closed volume. Its solid sides
+    // (caulk, clip_full) lying on Tex's drawn triangles take their material, its other solid sides
+    // then caulk.
     bool WriteBrush(std::string& Out, const Brush& B, size_t Number, const float* Origin, const float* Axis, const ToolNames& Tools,
-                    const std::string& Only, RadiantStats& Stats)
+                    const std::string& Only, RadiantStats& Stats, const Texturing& Tex = {})
     {
         Brush Moved = B;
         if (Origin)
@@ -325,19 +363,128 @@ namespace
             (Faces.size() < 4 ? Stats.BrushesDropped : Stats.BrushesUnsound)++;
             return false;
         }
+        // each side's material and projection
+        std::vector<std::string> Names;
+        for (const BrushFace& F : Faces) Names.push_back(Only.empty() ? Tools.Of(Moved, Moved.Sides[F.Side]) : Only);
+        std::vector<SideTexture> Textures(Faces.size());
+        std::vector<char> Textured(Faces.size(), 0);
+        if (Tex.Drawn && Tex.Stats)
+        {
+            RadiantTextureStats& TS = *Tex.Stats;
+            const auto Solid = [](const std::string& Name) { return Name == "caulk" || Name == "clip_full"; };
+            bool Any = false;
+            for (size_t K = 0; K < Faces.size(); K++)
+            {
+                if (!Solid(Names[K])) continue;
+                TS.Sides++;
+                const BrushSide& S = Moved.Sides[Faces[K].Side];
+                const double L = std::sqrt((double)S.Normal[0] * S.Normal[0] + (double)S.Normal[1] * S.Normal[1] + (double)S.Normal[2] * S.Normal[2]);
+                const V3 N = { S.Normal[0] / L, S.Normal[1] / L, S.Normal[2] / L };
+                // the normal Radiant reads back from the three points as written
+                std::array<V3, 3> Read;
+                for (int J = 0; J < 3; J++)
+                    for (int C = 0; C < 3; C++) Read[J][C] = std::strtod(Num(Points[K][J][C]).c_str(), nullptr);
+                V3 Back = Cross(Sub(Read[0], Read[1]), Sub(Read[2], Read[1]));
+                Back = Mul(Back, 1.0 / (std::max)(Length(Back), 1e-12));
+                if (Tex.Drawn->Texture(Faces[K].Points, N, S.Dist / L, Back, Tex.Owner, Tex.Hidden, Textures[K], TS)) Textured[K] = 1, Any = true;
+            }
+            if (Any)
+            {
+                for (size_t K = 0; K < Faces.size(); K++)
+                    if (!Textured[K] && Solid(Names[K])) Names[K] = "caulk";
+                TS.BrushesTextured++;
+            }
+        }
         Out += "// brush " + std::to_string(Number) + "\n{\n";
         for (size_t K = 0; K < Faces.size(); K++)
         {
-            const BrushSide& S = Moved.Sides[Faces[K].Side];
             const auto& Pts = Points[K];
             Out += " ";
             for (const V3& Pt : Pts) Out += "( " + Num(Pt[0]) + " " + Num(Pt[1]) + " " + Num(Pt[2]) + " ) ";
-            Out += (Only.empty() ? Tools.Of(Moved, S) : Only) + " 64 64 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n";
+            if (Textured[K])
+            {
+                const SideTexture& T = Textures[K];
+                Out += MaterialName(T.Material, Tex.Gdt) + " " + Num(T.Width) + " " + Num(T.Height) + " " + Num(T.ShiftX) + " " + Num(T.ShiftY) + " " + Num(T.Rotation) +
+                       " 0 lightmap_gray 16384 16384 0 0 0 0\n";
+            }
+            else
+                Out += Names[K] + " 64 64 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n";
         }
         Out += "}\n";
         Stats.Brushes++;
         Stats.Faces += Faces.size();
         return true;
+    }
+
+    // What becomes of drawn triangle K (indices 3K..3K+2) of a surface no brush side draws: a
+    // patch, nothing (no area: drawn as nothing), or a misc_model (no material to give a patch,
+    // or a value Radiant cannot read)
+    enum class Fate { Patch, None, Model };
+    Fate FateOf(const Surface& S, size_t K)
+    {
+        const uint32_t* I = &S.Indices[K * 3];
+        if (I[0] >= S.Vertices.size() || I[1] >= S.Vertices.size() || I[2] >= S.Vertices.size()) return Fate::None;
+        V3 P[3];
+        for (int J = 0; J < 3; J++)
+        {
+            const Vertex& V = S.Vertices[I[J]];
+            for (const float F : { V.Pos[0], V.Pos[1], V.Pos[2], V.Uv[0], V.Uv[1] })
+                if (!std::isfinite(F)) return Fate::Model;
+            P[J] = { V.Pos[0], V.Pos[1], V.Pos[2] };
+        }
+        if (Length(Cross(Sub(P[1], P[0]), Sub(P[2], P[0]))) < 1e-6) return Fate::None;
+        return S.Material.empty() ? Fate::Model : Fate::Patch;
+    }
+
+    // The drawn triangles of Owner's meshes (DrawnWorld::Owner) no brush side draws, each a patch:
+    // a 2x2 mesh whose fourth vertex repeats the second, one triangle whichever way Radiant splits
+    // the cell, facing as the game's (a compiled mesh's triangles face against (row 1 - row 0) x
+    // (column 1 - column 0)); nonColliding (the clip map's brushes collide); each vertex its
+    // position, colour ("c", left out when white), UV ("t": UV x 1024) and lightmap coordinates
+    // (the plane's texture axes, a texel per 16 units, as "2 2 16 8" says)
+    void WritePatches(std::string& Out, const MapScene& Scene, const DrawnWorld& Drawn, uint32_t Owner, RadiantGdt* Gdt, RadiantStats& Stats,
+                      size_t& Number)
+    {
+        for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
+        {
+            const Mesh& M = Scene.Objects[Oi];
+            if (DrawnWorld::Owner(M.Name) != Owner) continue;
+            for (size_t Si = 0; Si < M.Surfaces.size(); Si++)
+            {
+                const Surface& S = M.Surfaces[Si];
+                std::string Name;
+                for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
+                {
+                    if (Drawn.Removed(Oi, Si, K / 3)) continue;
+                    const Fate F = FateOf(S, K / 3);
+                    if (F == Fate::None) Stats.TrianglesDegenerate++;
+                    if (F != Fate::Patch) continue;
+                    if (Name.empty()) Name = MaterialName(S.Material, Gdt);
+                    const Vertex* V[3] = { &S.Vertices[S.Indices[K]], &S.Vertices[S.Indices[K + 1]], &S.Vertices[S.Indices[K + 2]] };
+                    V3 P[3];
+                    for (int J = 0; J < 3; J++) P[J] = { V[J]->Pos[0], V[J]->Pos[1], V[J]->Pos[2] };
+                    const V3 N = Cross(Sub(P[1], P[0]), Sub(P[2], P[0]));
+                    V3 Ls, Lt;
+                    RadiantBaseAxes(Mul(N, 1.0 / Length(N)), Ls, Lt);
+                    bool Coloured = false;
+                    const auto Text = [&](int J) {
+                        std::string T = "\tv " + Num(P[J][0]) + " " + Num(P[J][1]) + " " + Num(P[J][2]);
+                        const uint8_t* C = V[J]->Color;
+                        if (C[0] != 255 || C[1] != 255 || C[2] != 255 || C[3] != 255)
+                        {
+                            T += " c " + std::to_string(C[0]) + " " + std::to_string(C[1]) + " " + std::to_string(C[2]) + " " + std::to_string(C[3]);
+                            Coloured = true;
+                        }
+                        return T + " t " + Num(V[J]->Uv[0] * 1024.0) + " " + Num(V[J]->Uv[1] * 1024.0) + " " + Num(Dot(P[J], Ls) / 16.0) + " " +
+                               Num(Dot(P[J], Lt) / 16.0) + "\n";
+                    };
+                    Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n  contents nonColliding;\n   " + Name +
+                           "\n   lightmap_gray\n   2 2 16 8\n   (\n" + Text(0) + Text(1) + "   )\n   (\n" + Text(2) + Text(1) + "   )\n  }\n }\n";
+                    Stats.Patches++;
+                    if (Coloured) Stats.PatchesColoured++;
+                }
+            }
+        }
     }
 
     std::string Quote(const std::string& Key, const std::string& Value)
@@ -477,6 +624,25 @@ namespace
                                 { "map_radiant_world_models", Stats.WorldModels },
                                 { "map_radiant_model_files", Stats.ModelFiles },
                                 { "map_radiant_models_elsewhere", Stats.ModelsElsewhere } };
+            Result.Counters.insert(Result.Counters.end(), { { "map_radiant_patches", Stats.Patches },
+                                                            { "map_radiant_patches_coloured", Stats.PatchesColoured },
+                                                            { "map_radiant_triangles_degenerate", Stats.TrianglesDegenerate },
+                                                            { "map_radiant_triangles_in_models", Stats.TrianglesInModels } });
+            for (const auto& [Prefix, T] : { std::make_pair("map_radiant_texture_", &Stats.Textures), std::make_pair("map_radiant_prism_texture_", &Stats.PrismTextures),
+                                             std::make_pair("map_radiant_entity_texture_", &Stats.EntityTextures) })
+            for (const auto& [Key, N] : std::initializer_list<std::pair<const char*, size_t>>{
+                     { "sides_solid", T->Sides }, { "sides_textured", T->SidesTextured }, { "sides_split", T->SidesSplit },
+                     { "sides_no_fit", T->SidesNoFit }, { "sides_mixed_maps", T->SidesMixedMaps }, { "sides_uv_missed", T->SidesUvMissed }, { "sides_undrawn", T->SidesUndrawn }, { "brushes_textured", T->BrushesTextured },
+                     { "uv_error_below_1e4", T->UvExact }, { "uv_error_below_1e3", T->UvBelow1e3 },
+                     { "uv_error_below_1e2", T->UvBelow1e2 }, { "uv_error_below_1e1", T->UvBelow1e1 }, { "uv_error_above_1e1", T->UvAbove },
+                     { "uv_error_mean_1e6", T->SidesTextured + T->SidesUvMissed ? (size_t)std::llround(1e6 * T->UvErrorSum / (double)(T->SidesTextured + T->SidesUvMissed)) : 0 },
+                     { "triangles_drawn", T->TrianglesDrawn }, { "triangles_removed", T->TrianglesRemoved },
+                     { "triangles_coloured", T->TrianglesColoured },
+                     { "plane_distance_0", T->Distance[0] }, { "plane_distance_below_1e3", T->Distance[1] },
+                     { "plane_distance_below_1e2", T->Distance[2] }, { "plane_distance_below_tolerance", T->Distance[3] },
+                     { "coverage_below_10", T->Coverage[0] }, { "coverage_below_50", T->Coverage[1] }, { "coverage_below_90", T->Coverage[2] },
+                     { "coverage_90_up", T->Coverage[3] } })
+                Result.Counters.emplace_back(std::string(Prefix) + Key, N);
             return true;
         }
 
@@ -547,7 +713,7 @@ namespace
             if (!Used[I]) continue;
             std::vector<V3> W = BaseWinding(Planes[I]);
             for (size_t J = 0; J < Planes.size() && W.size() >= 3; J++)
-                if (J != I && Used[J]) W = Clip(W, Planes[J]);
+                if (J != I && Used[J]) W = Clip(W, Planes[J].N, Planes[J].D, OnPlane);
             if (W.size() < 3 || Area(W) < 1e-6) continue;
             V3 A = { 0, 0, 0 };
             for (size_t K = 1; K + 1 < W.size(); K++) A = Add(A, Cross(Sub(W[K], W[0]), Sub(W[K + 1], W[0])));
@@ -772,6 +938,16 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
 
     // worldspawn: its keys, the world's brushes
     const ToolNames Tools(Scene.Collision);
+    DrawnWorld Drawn(Scene, Stats.Textures);
+    Stats.Textures.TrianglesDrawn = Drawn.Count();
+    const Solids SolidBrushes(Scene.Collision);
+    const DrawnWorld::HiddenTest Hidden = [&SolidBrushes](const V3& P) { return SolidBrushes.Inside(P); };
+    const Texturing Tex{ &Drawn, ForGdt, 0, &Stats.Textures, &Hidden };
+    // the brush models a mesh draws
+    std::set<uint32_t> Owners;
+    for (const Mesh& M : Scene.Objects)
+        if (const uint32_t O = DrawnWorld::Owner(M.Name)) Owners.insert(O);
+    std::set<uint32_t> Patched;   // the brush models whose triangles their entity holds as patches
     const Entity* World = nullptr;
     for (const Entity& E : Ents)
         if (E.count("classname") && E.at("classname") == "worldspawn")
@@ -782,7 +958,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     Begin(World, "worldspawn");
     size_t BrushNumber = 0;
     for (const Brush& B : Scene.Collision.Brushes)
-        if (WriteBrush(Out, B, BrushNumber, nullptr, nullptr, Tools, "", Stats)) BrushNumber++;
+        if (WriteBrush(Out, B, BrushNumber, nullptr, nullptr, Tools, "", Stats, Tex)) BrushNumber++;
     Out += "}\n";
 
     // the collision triangles (patches, terrain): each a prism Thick units deep behind its face
@@ -837,7 +1013,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             }
             // counted as triangles, not as the clip map's brushes
             const size_t Dropped = Stats.BrushesDropped, Unsound = Stats.BrushesUnsound;
-            if (WriteBrush(Out, B, Number, nullptr, nullptr, Tools, "clip_full", Stats))
+            if (WriteBrush(Out, B, Number, nullptr, nullptr, Tools, "clip_full", Stats, { Tex.Drawn, ForGdt, 0, &Stats.PrismTextures, &Hidden }))
             {
                 Number++;
                 Stats.Brushes--, Stats.Triangles++;
@@ -871,7 +1047,9 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         if (BrushEntity)
         {
             N = (size_t)std::strtoul(Model->second.c_str() + 1, nullptr, 10);
-            if (N >= From.size() || From[N].empty())
+            // a brush model without brushes still holds its drawn triangles' patches
+            const bool HasDrawn = Kind == '*' && N > 0 && Owners.count((uint32_t)N);
+            if ((N >= From.size() || From[N].empty()) && !HasDrawn)
             {
                 // no brush to give it: kept as the game has it
                 Stats.BrushEntitiesEmpty++;
@@ -894,19 +1072,38 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             const auto Class = E.find("classname");
             const bool Trigger = Kind == '?' || (Class != E.end() && Class->second.rfind("trigger", 0) == 0);
             size_t Number = 0;
-            for (const Brush& B : From[N])
-                if (WriteBrush(Out, B, Number, Origin, Axis, Tools, Trigger ? "trigger" : "", Stats))
-                {
-                    Number++;
-                    if (Kind == '?') Stats.Brushes--, Stats.TriggerBrushes++;   // not the clip map's
-                }
+            // a brush model's brushes take the materials its drawn triangles give them, the others patches
+            const Texturing Own{ Kind == '*' ? Tex.Drawn : nullptr, ForGdt, (uint32_t)N, &Stats.EntityTextures, &Hidden };
+            if (N < From.size())
+                for (const Brush& B : From[N])
+                    if (WriteBrush(Out, B, Number, Origin, Axis, Tools, Trigger ? "trigger" : "", Stats, Own))
+                    {
+                        Number++;
+                        if (Kind == '?') Stats.Brushes--, Stats.TriggerBrushes++;   // not the clip map's
+                    }
+            if (Kind == '*' && N > 0 && Patched.insert((uint32_t)N).second) WritePatches(Out, Scene, Drawn, (uint32_t)N, ForGdt, Stats, Number);
             Stats.BrushEntities++;
         }
         Out += "}\n";
         Stats.Entities++;
     }
 
-    // the placements, then the world geometry, as misc_models; the models they name as files
+    // the world's drawn triangles no brush side draws, and those of brush models no entity holds,
+    // as patches
+    {
+        std::string Group;
+        size_t Number = 0;
+        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number);
+        for (const uint32_t O : Owners)
+            if (!Patched.count(O)) WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number);
+        if (!Group.empty())
+        {
+            Begin(nullptr, "func_group");
+            Out += Group + "}\n";
+        }
+    }
+
+    // the placements, then the world geometry left, as misc_models; the models they name as files
     std::set<std::string> Named;
     const auto Place = [&](const Instance& I) {
         Out += "// entity " + std::to_string(EntityNumber++) + "\n{\n";
@@ -942,20 +1139,25 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         Stats.ModelFiles++;
     }
 
-    // the world in tiles of Tile units (by triangle centre), each its own model; a brush model's
-    // geometry one model each
+    // the world's triangles neither a brush side nor a patch draws in tiles of Tile units (by
+    // triangle centre), each its own model; a brush model's one model each
     constexpr double Tile = 4096.0;
     std::map<std::string, std::vector<Surface>> Pieces;
-    for (const Mesh& M : Scene.Objects)
+    for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
     {
+        const Mesh& M = Scene.Objects[Oi];
         const bool IsWorld = M.Name == "world" || M.Name.compare(0, 11, "brushmodel_") != 0;
-        for (const Surface& S : M.Surfaces)
+        for (size_t Si = 0; Si < M.Surfaces.size(); Si++)
         {
+            const Surface& S = M.Surfaces[Si];
             std::map<std::string, std::map<uint32_t, uint32_t>> Remaps;
             for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
             {
+                if (Drawn.Removed(Oi, Si, K / 3)) continue;
+                if (FateOf(S, K / 3) != Fate::Model) continue;
                 const uint32_t Tri[3] = { S.Indices[K], S.Indices[K + 1], S.Indices[K + 2] };
                 if (Tri[0] >= S.Vertices.size() || Tri[1] >= S.Vertices.size() || Tri[2] >= S.Vertices.size()) continue;
+                Stats.TrianglesInModels++;
                 std::string Piece = Map + "_" + ExportNaming::SafeFileName(M.Name);
                 if (IsWorld)
                 {

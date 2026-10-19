@@ -392,7 +392,7 @@ namespace
         void ExportSounds(const Context& C, Totals& T)
         {
             ExportSoundFiles(C, T);
-            if (!SoundAliasCsv::Wanted(C)) return;
+            if (C.OnSoundHeader || !SoundAliasCsv::Wanted(C)) return;   // (a dry run writes no file)
             // an alias's asset file as ExportSoundFiles writes it: without raw/ or devraw/, .flac or .wav
             const fs::path Root = C.KindDir(Kind::Sound);
             const std::string Format = ExportWriters::SoundFormatSetting();
@@ -415,6 +415,7 @@ namespace
         {
             auto& Kt = T.Kinds[Kind::Sound];
             const auto& Z = Image();
+            if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
             std::map<uint32_t, SoundEntry> Entries;
             std::map<std::string, uint32_t> Files;   // asset file -> asset id
             std::vector<std::string> Banks;
@@ -495,6 +496,33 @@ namespace
                 {
                     Counter("sounds_format_" + std::to_string(S.Format))++;
                     T.Fail(Name(), Kind::Sound, F, "format " + std::to_string(S.Format));
+                    continue;
+                }
+                if (C.OnSoundHeader)
+                {
+                    // a dry run: the entry as its bank's table says - PCM behind the WAV header
+                    // written for it, or a FLAC file kept as it is under WAV
+                    std::string Rel = F;
+                    for (const char* Prefix : { "raw/", "devraw/" })
+                        if (Rel.rfind(Prefix, 0) == 0) Rel = Rel.substr(std::strlen(Prefix));
+                    DiskGame::SoundHeader H;
+                    H.Name = Rel;
+                    H.KeptUnderWav = true;
+                    H.Channels = S.Channels;
+                    H.Rate = S.Rate < std::size(FrameRates) ? FrameRates[S.Rate] : 0;
+                    if (S.Format == 0)
+                    {
+                        H.Is = DiskGame::SoundHeader::Form::Wav;
+                        H.Stored = WavHeader(S.Channels, FrameRates[S.Rate], S.Size).size() + (uint64_t)S.Size;
+                        if (S.Channels) H.Frames = S.Size / (2ull * S.Channels);
+                    }
+                    else
+                    {
+                        H.Is = DiskGame::SoundHeader::Form::Flac;
+                        H.Stored = S.Size;
+                    }
+                    C.OnSoundHeader(H);
+                    Kt.Written++;
                     continue;
                 }
                 std::vector<uint8_t> Data(S.Size);

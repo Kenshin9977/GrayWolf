@@ -1,12 +1,13 @@
 #pragma once
 
 // Small helpers every offline exporter needs: case folding, file-safe names, the comma-separated
-// substring name filter, a bounded read from a zone, and debug switches read from the environment.
+// substring name filter, a bounded read from a zone, numbers as text, and debug switches read from the environment.
 
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,28 @@ namespace ExportNaming
         char B[20];
         snprintf(B, sizeof(B), "%016llx", (unsigned long long)V);
         return B;
+    }
+
+    // 1630 as "1,630"
+    inline std::string Thousands(size_t N)
+    {
+        std::string S = std::to_string(N);
+        for (int At = (int)S.size() - 3; At > 0; At -= 3) S.insert((size_t)At, ",");
+        return S;
+    }
+
+    // a float as its shortest text, read back as the double that prints the same (0.1f -> 0.1)
+    inline double Shortest(float F)
+    {
+        const std::string S = std::format("{}", F);
+        try
+        {
+            return std::stod(S);
+        }
+        catch (...)
+        {
+            return (double)F;
+        }
     }
 
     // The T at Off in a zone (or any buffer), T{} when it does not fit.

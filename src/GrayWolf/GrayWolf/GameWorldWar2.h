@@ -17,6 +17,10 @@ public:
     static std::unique_ptr<XAnim_t> ReadXAnim(const CoDAnim_t* Animation);
     static std::unique_ptr<XModel_t> ReadXModel(const CoDModel_t* Model);
     static std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound);
+    // The first N bytes of a sound's data as ReadXSound reads them (the zone's, or its package's),
+    // before any header it adds: a stored FLAC file's STREAMINFO, read without its samples
+    static std::vector<uint8_t> ReadSoundHead(const CoDSound_t* Sound, size_t N);
+    static std::string SoundPackagePath(const CoDSound_t* Sound);
     static const XMaterial_t ReadXMaterial(uint64_t MaterialPointer);
 
     static std::unique_ptr<XImageDDS> LoadResidentXImage(const XImage_t& Image);

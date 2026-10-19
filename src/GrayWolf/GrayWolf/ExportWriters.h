@@ -142,6 +142,20 @@ namespace ExportWriters
     // takes). A file nothing here decodes (xWMA) is written as it is under its own extension
     // (counted sounds_kept_undecoded). Why says what failed.
     bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const std::string& Format, std::string* Why = nullptr);
+    // While one lives, WriteSound on this thread writes nothing and decodes nothing: it hands each
+    // sound to Run and says it was written (a size estimate's dry run, DiskGameSizes.h)
+    class DrySounds
+    {
+    public:
+        using Sink = std::function<void(const SoundSource&, const std::filesystem::path&)>;
+        explicit DrySounds(Sink Run);
+        ~DrySounds();
+        DrySounds(const DrySounds&) = delete;
+        DrySounds& operator=(const DrySounds&) = delete;
+
+    private:
+        Sink Previous;
+    };
     // The SoundSource a live reader's XSound is (its WAV, FLAC or Opus packets)
     SoundSource SourceOf(const XSound& Sound);
     // Measures of the sounds written in this process (sounds_opus_remuxed, sounds_resampled ...),

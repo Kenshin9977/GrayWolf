@@ -439,7 +439,7 @@ bool RunImGuiShell(const std::string& ModelsDir)
 
     // Segoe UI at physical pixel size; falls back to the default if unavailable.
     // The atlas only rasterizes glyphs in the ranges given (default: up to U+00FF), so the symbols this
-    // shell uses beyond that (U+25B6/U+23F8/U+25A0, U+2212, U+2013, U+2026) are added explicitly.
+    // shell uses beyond that (U+25B6/U+23F8/U+25A0, U+2212, U+2013, U+2026, U+2248) are added explicitly.
     // The games' level names (DiskGame::LevelNames) add Latin Extended (Polish, Czech...), Greek and
     // Cyrillic, from Segoe UI too, and CODOL's Chinese, merged from Microsoft YaHei (its common
     // simplified set, without oversampling: the atlas stays small) when the system has it.
@@ -450,7 +450,7 @@ bool RunImGuiShell(const std::string& ModelsDir)
         Builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
         Builder.AddRanges(LatinExtended);
         Builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-        Builder.AddText("\xE2\x96\xB6\xE2\x8F\xB8\xE2\x96\xA0\xE2\x88\x92\xE2\x80\x93\xE2\x80\xA6"); // ▶⏸■−–…
+        Builder.AddText("\xE2\x96\xB6\xE2\x8F\xB8\xE2\x96\xA0\xE2\x88\x92\xE2\x80\x93\xE2\x80\xA6\xE2\x89\x88"); // ▶⏸■−–…≈
         Builder.BuildRanges(&ExtraGlyphRanges);
     }
     ImFontConfig Fc; Fc.OversampleH = 2; Fc.OversampleV = 2;

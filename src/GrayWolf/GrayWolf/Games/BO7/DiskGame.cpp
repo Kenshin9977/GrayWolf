@@ -10,8 +10,10 @@
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/BO7/TechsetFormat.h"
+#include "Games/BO7/WeaponStats.h"
 #include "ExportWriters.h"
 #include "FastFile.h"
+#include "FileSystems.h"
 #include "GameBlackOps7.h"
 #include "HalfFloats.h"
 #include "MapLive.h"
@@ -74,6 +76,36 @@ namespace
             };
             // scriptbundle (0x30, its loader 0x3887630, a table's 0x3887a40, a value's 0x3888060)
             ExportsScriptBundles({}, Decrypted);
+            // mapinfo (0xe8, its loader 0x386cd80): what getactivemapinfobundle() returns, a
+            // scriptbundle's table at 0xc8 (the table loader 0x3887a40: destructibles, their loot...);
+            // string fields 8 to 0x30, 0x40, 0x48 (8 the map, 0x10 its game types, 0x18 its scripts'
+            // folder, 0x30 its loading image's name, 0x40 its omnvars table: their values on the 104
+            // mapinfos of code_post_gfx and global), an image at 0x38. Named by HashIWAsset (no type
+            // prefix): 0x8 is the name on 84 of them
+            ExportsBundleTrees(Kind::MapInfo,
+                               { { "mapinfo", 0xc8, -1,
+                                   { { "map", 0x08 }, { "gametypes", 0x10 }, { "script_folder", 0x18 }, { "0x20", 0x20 }, { "0x28", 0x28 },
+                                     { "loading_image_name", 0x30 }, { "omnvars_table", 0x40 }, { "0x48", 0x48 } },
+                                   { { "loading_image", 0x38 } },
+                                   [](const std::string& Name) { return GameBlackOps7::HashIWAsset(Name); } } },
+                               {}, Decrypted);
+            // aitype (0x178): a scriptbundle's table at 0xb0 (the table loader 0x3887a40), a string at
+            // 0x78. Named by HashIWAsset("aitype:<name>")
+            ExportsBundleTrees(Kind::AiTypes,
+                               { { "aitype", 0xb0, -1, { { "0x78", 0x78 } }, {},
+                                   [](const std::string& Name) { return GameBlackOps7::HashIWAsset("aitype:" + Name); } } },
+                               {}, Decrypted);
+            // scriptable (0xd8, its loader 0x3888d90) and scriptablevariant (0x58, 0x388f490): no
+            // key/value table, dumped by offset
+            ExportsStructDumps(Kind::Scriptables, { { "scriptable" }, { "scriptablevariant" } }, Decrypted);
+            // the zone's entities, one TSV (IwctxReaders::ExportMapEnts): the entity strings, the spawn
+            // points and the scriptable instances (MapEntities)
+            Exports(Kind::MapEnts, [this](const Context& C, Totals& T) {
+                std::vector<IwctxReaders::MapEntity> Ents;
+                EntityStrings(Ents);
+                MapEntities(Ents);
+                IwctxReaders::ExportMapEnts(C, T, Name(), Ents);
+            });
             ExportsAssetRefs(Decrypted);
             ExportsColumnTables(ColumnTypes::Bo6, Decrypted);
             // the weapon assets as struct dumps, a weapon's name at 8, an attachment's at 0x248, its
@@ -84,9 +116,41 @@ namespace
                                  { "grappleweapontunables" }, { "deployableweaponconfig" }, { "animpkg", -1, AnimPkgFields() },
                                  // the suit a player state's 0x1a48 indexes (0x4528a40: DB find, type 0x51); 0x43cde50
                                  // returns 0xe18 as the sprint multiplier (0xdec under a perk; a dvar >= 0
-                                 // overrides both), 0x43a28f0 multiplies 0xe78 in when super sprinting
-                                 { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } } } },
+                                 // overrides both, default -1.0), 0x43a28f0 multiplies 0xe78 in when super
+                                 // sprinting. Its name hash is at 0x20 (+0 is a key table the zone's suits share)
+                                 { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } }, 0x20 } },
                                Decrypted);
+            // the weapon stats table: this zone's facts, then the table rebuilt from every zone's (WeaponStats.h)
+            Exports(Kind::WeaponStats, [this, Decrypted](const Context& C, Totals& T) {
+                auto& Kt = T.Kinds[Kind::WeaponStats];
+                BO7Stats::ZoneView V;
+                V.Image = &Image();
+                V.Walk = &Walk();
+                V.Off = [this](uint64_t A) { return Off(A); };
+                V.Text = [this, Decrypted](int64_t Field) {
+                    const std::string S = TextAt(Field);
+                    return S.empty() ? S : Decrypted(S);
+                };
+                V.LocalizeText = [this](int64_t Pos) {
+                    std::string Key, Text;
+                    LocalizeEntry(Pos, Key, Text);
+                    return Text;
+                };
+                BO7Stats::FactsCount N;
+                const std::string Zone = fs::path(FastFilePath()).stem().string();
+                const std::string Facts = BO7Stats::Facts(V, Zone, [&C](const std::string& Name) { return C.Wants(Kind::WeaponStats, Name); }, N);
+                Kt.Seen += N.Weapons;
+                if (N.Weapons + N.Tunables + N.AnimPkgs + N.Suits + N.Settings + N.Strings + N.Attachments == 0) return;
+                const fs::path Dir = C.KindDir(Kind::WeaponStats);
+                if (!ExportWriters::WriteBytes(Dir / "facts" / (ExportNaming::SafeFileName(Zone) + ".json"), (const uint8_t*)Facts.data(), Facts.size()))
+                    T.Fail(Zone, Kind::WeaponStats, Zone, "write failed");
+                C.After([Dir, &T] {
+                    size_t Rows = 0;
+                    std::string Error;
+                    if (!BO7Stats::Merge(Dir.string(), Rows, Error)) T.Fail("", Kind::WeaponStats, "weapon_stats", Error);
+                    T.Kinds[Kind::WeaponStats].Written = Rows;
+                });
+            });
         }
 
         // each sndasset, named by its hash, decoded by GameBlackOps7::ReadXSound (Games/IW/IwctxReaders'
@@ -102,6 +166,10 @@ namespace
         }
 
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the zone's entity strings (the map's and its script brush models'), then the entities
+        // map_ents keeps as records (spawn points, scriptable instances)
+        void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
+        void MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const;
 
         // ---- the weapon fields named in the weapons kind's dumps. Each is proven by the game's code
         // (the GSC builtin reading it, from its table at 0xcbf78a0 of the decrypted exe, names by their
@@ -150,6 +218,10 @@ namespace
                 // from 0x5c14, or 0x5c28 when super sprinting
                 { "0x5c14", { "sprint_speed_scale", "f32" } },
                 { "0x5c28", { "super_sprint_speed_scale", "f32" } },
+                // 0x439f4e0 entry e6c: every speed function (0x439ee80, 0x439f0a0, 0x43a05e0, 0x43a0fb0)
+                // hands it to 0x439f3f0 as the stance-1 speed, and stance 1 is ps+0x1c bit 0, the bit
+                // the getstance builtin (0x74f4e20) answers "prone" for
+                { "0x5c08", { "prone_speed_scale", "f32" } },
                 // u8 0x5dfc the fire type (weaponisauto, weaponissemiauto, weaponisbeam: 0x46559c0), u8
                 // 0x5dfd bolt action (weaponisboltaction: 0x4662f50)
                 { "0x5dfc", { "fire_type_u8.bolt_action_u8", "" } },
@@ -250,14 +322,13 @@ namespace
         const ICoDGame& LiveGame() const override { return LiveGames::Get("BO7"); }
         VirtualGameSession::Handlers Handlers() override
         {
-            // the package index's names, then the bo7 profile's names.wni: names found for the
-            // game's hashes in its own strings and the index's
+            // the package index's names, its bo7_names.wni among them: names found for the game's
+            // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
             IwctxReaders::LoadNameIndexes();
             static std::once_flag Names;
             std::call_once(Names, [] {
-                std::string Error;
-                if (const auto* L = ExportWriters::ZoneProfile("bo7", Error))
-                    CoDAssets::AssetNameCache.LoadIndex((fs::path(L->Profile.Dir) / "names.wni").string());
+                CoDAssets::AssetNameCache.LoadIndex(
+                    (fs::path(FileSystems::GetApplicationPath()) / "package_index" / "bo7_names.wni").string());
             });
             return { SlotString, DiskImage };
         }
@@ -908,22 +979,96 @@ namespace
             Counter("map_scriptable_instances") += Dynamic;
         }
 
-        // ---- the entities: map_game_objects' pairs (its 0x60 struct at 0x10), then each script
-        // brush model's (at 0x10); keys by IwEntityKeys' SaltFirst (the parser 0x78bb741)
+        // ---- the entities (EntityStrings)
+        std::vector<IwctxReaders::MapEntity> Ents;
+        EntityStrings(Ents);
+        Scene.MapEnts += IwctxReaders::EntityText(Ents);
+        Counter("map_ents") += Ents.size();
+        return true;
+    }
+
+    void BO7Zone::EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const
+    {
+        // map_game_objects' pairs (its 0x60 struct at 0x10), then each script brush model's (at
+        // 0x10); keys by IwEntityKeys' SaltFirst (the parser 0x78bb741)
         // a pair: type bits 28-31 (0 a string, 4 a vector, 10 starts an entity: its ordinal the
         // value), key bits 21-27, value bits 0-20 (mp_sat_sm_liminal's string pool is past 0xffff)
         constexpr IwctxReaders::PairPacking EntityPairs{ 21, 21, 10, 4 };
-        size_t Ents = 0;
+        const auto& Img = Image();
         const auto OffOf = [this](uint64_t A) { return Off(A); };
         const auto PtrAt = [this](int64_t P) { return PointerAt(P); };
         if (const int64_t Go = Root("map_game_objects"); Go >= 0)
             if (const int64_t P = Off(PointerAt(Go + 0x10)); P >= 0)
-                Scene.MapEnts += IwctxReaders::EntityText(Img, P, OffOf, PtrAt, Ents, IwEntityKeys::Scheme::SaltFirst, EntityPairs);
+                IwctxReaders::EntityPairs(Img, P, OffOf, PtrAt, Out, IwEntityKeys::Scheme::SaltFirst, EntityPairs);
         for (const auto& I : Walk().Instances)
             if (OwnerIs(I, "scriptbrushmodel"))
-                Scene.MapEnts += IwctxReaders::EntityText(Img, I.Pos + 0x10, OffOf, PtrAt, Ents, IwEntityKeys::Scheme::SaltFirst, EntityPairs);
-        Counter("map_ents") += Ents;
-        return true;
+                IwctxReaders::EntityPairs(Img, I.Pos + 0x10, OffOf, PtrAt, Out, IwEntityKeys::Scheme::SaltFirst, EntityPairs);
+    }
+
+    void BO7Zone::MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const
+    {
+        const int64_t Ents = Root("map_ents");
+        if (Ents < 0) return;
+        const auto& Img = Image();
+        // a script string the records keep by the low 32 bits of its hash: its text when a zone
+        // registered it, else "#<hex>"
+        const auto Str = [](uint32_t H) {
+            const std::string S = IwctxReaders::ScriptString32(H);
+            return !S.empty() ? S : std::format("#{:08x}", H);
+        };
+        const auto Vec = [&](int64_t P) { return std::format("{} {} {}", At<float>(Img, P), At<float>(Img, P + 4), At<float>(Img, P + 8)); };
+        // the spawn points: count u32 0x38, 0x48-byte records at 0x40 {classname u32 4, origin 0x10,
+        // angles 0x1c, its pairs: count u32 0x34, 16-byte records at 0x40 {key (IwEntityKeys) 0, u32
+        // value 8}}
+        const uint32_t Spawns = At<uint32_t>(Img, Ents + 0x38);
+        const int64_t SpawnsAt = Off(PointerAt(Ents + 0x40));
+        for (uint32_t K = 0; SpawnsAt >= 0 && K < Spawns && SpawnsAt + (int64_t)(K + 1) * 0x48 <= (int64_t)Img.size(); K++)
+        {
+            const int64_t R = SpawnsAt + (int64_t)K * 0x48;
+            IwctxReaders::MapEntity E;
+            E.emplace_back("classname", Str(At<uint32_t>(Img, R + 4)));
+            E.emplace_back("origin", Vec(R + 0x10));
+            E.emplace_back("angles", Vec(R + 0x1c));
+            const uint32_t N = At<uint32_t>(Img, R + 0x34);
+            const int64_t Pairs = Off(PointerAt(R + 0x40));
+            for (uint32_t J = 0; Pairs >= 0 && J < N && J < 256 && Pairs + (int64_t)(J + 1) * 16 <= (int64_t)Img.size(); J++)
+            {
+                const std::string Key = IwEntityKeys::Name(At<uint64_t>(Img, Pairs + J * 16), IwEntityKeys::Scheme::SaltFirst);
+                if (Key != "classname") E.emplace_back(Key, Str(At<uint32_t>(Img, Pairs + J * 16 + 8)));
+            }
+            Out.push_back(std::move(E));
+        }
+        // the scriptable instances: count u32 0x318, 0x60-byte records at 0x388 {its scriptable 0,
+        // origin 8, angles 0x14 (pitch, yaw, roll), u64 0x20 and 0x28 (one of their own each), u32
+        // script strings: classname 0x30, target 0x34, targetname 0x38, script_noteworthy 0x44, one
+        // more at 0x48 ("1" to "6"); u32 0x4c to 0x54}. The keys: the values the scripts look these
+        // entities up by (getentitylessscriptablearray(value, #key): 1 010 matches over the 7 zm maps,
+        // each in its field only); zm_sat_hornet's 11 lanterns linked by target. A field not named
+        // yet written by its offset when not 0
+        const uint32_t Count = At<uint32_t>(Img, Ents + 0x318);
+        const int64_t Records = Off(PointerAt(Ents + 0x388));
+        for (uint32_t K = 0; Records >= 0 && K < Count && Records + (int64_t)(K + 1) * 0x60 <= (int64_t)Img.size(); K++)
+        {
+            const int64_t R = Records + (int64_t)K * 0x60;
+            IwctxReaders::MapEntity E;
+            const auto Named = [&](const char* Key, int64_t At_) {
+                if (const uint32_t V = At<uint32_t>(Img, R + At_); V != 0) E.emplace_back(Key, Str(V));
+            };
+            Named("classname", 0x30);
+            Named("targetname", 0x38);
+            Named("target", 0x34);
+            Named("script_noteworthy", 0x44);
+            E.emplace_back("origin", Vec(R + 8));
+            E.emplace_back("angles", Vec(R + 0x14));
+            const int64_t Def = Off(PointerAt(R));
+            E.emplace_back("scriptable", Def >= 0 ? GameBlackOps7::HashName("scriptable", At<uint64_t>(Img, Def)) : std::string());
+            for (const int64_t F : { 0x20, 0x28 })
+                if (const uint64_t V = At<uint64_t>(Img, R + F); V != 0) E.emplace_back(std::format("0x{:02x}", F), std::format("{:016x}", V));
+            Named("0x48", 0x48);
+            for (const int64_t F : { 0x3c, 0x40, 0x4c, 0x50, 0x54, 0x58, 0x5c })
+                if (const uint32_t V = At<uint32_t>(Img, R + F); V != 0) E.emplace_back(std::format("0x{:02x}", F), std::format("0x{:08x}", V));
+            Out.push_back(std::move(E));
+        }
     }
 
 
