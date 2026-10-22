@@ -558,7 +558,8 @@ bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileI
             Error = std::format("block at 0x{:x} runs past the end of the file", Block.Offset);
             return false;
         }
-        if (!IsNone && !InflatesWithin(Block.UncompressedSize, Block.CompressedSize))
+        if (!IsNone && !(IsOodle ? OodleInflatesWithin(Block.UncompressedSize, Block.CompressedSize)
+                                 : InflatesWithin(Block.UncompressedSize, Block.CompressedSize)))
         {
             Error = std::format("block at 0x{:x} claims {} bytes from {}", Block.Offset, Block.UncompressedSize, Block.CompressedSize);
             return false;

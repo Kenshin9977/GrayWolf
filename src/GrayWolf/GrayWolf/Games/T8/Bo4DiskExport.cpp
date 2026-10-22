@@ -1,6 +1,9 @@
 #include "stdafx.h"
 
 #include "Bo4DiskExport.h"
+#include "Bo4SoundBanks.h"
+#include "DiskGame.h"
+#include "ICoDGame.h"
 #include "VirtualGameSession.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
@@ -10,7 +13,6 @@
 #include "CoDRawImageTranslator.h"
 #include "DBGameAssets.h"
 #include "GameBlackOps4.h"
-#include "SABSupport.h"
 #include "SettingsManager.h"
 #include "Strings.h"
 #include "FastFile.h"
@@ -23,6 +25,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <format>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -528,60 +531,72 @@ namespace
     }
 }
 
-ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, const std::string& CacheDir,
-                         const std::string& OutDir, const NameTest& Wants, const StepFn& Step)
+ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, const std::string& OutDir,
+                         const NameTest& Wants, const StepFn& Step, const HeaderFn& Headers)
 {
     ExportStats S;
     CoDFileSystem* FS = Packages ? Packages->GetFileSystem() : nullptr;
     if (FS == nullptr) return S;
-    std::error_code Ec;
-    fs::create_directories(CacheDir, Ec);
-    std::vector<std::string> Banks;
-    const std::string Prefix = Lower(Zone) + ".";   // zm_red.all.sabl, zm_red.fr.p.sabl...
-    FS->EnumerateFiles("*.sabl", [&](const std::string& Name, const size_t Size) {
-        if (Lower(fs::path(Name).filename().string()).rfind(Prefix, 0) != 0) return;
-        const fs::path Local = fs::path(CacheDir) / fs::path(Name).filename();
-        if (!(fs::exists(Local, Ec) && fs::file_size(Local, Ec) == Size) && Size > 0)
-        {
-            HANDLE H = FS->OpenFile(Name, "r");
-            if (H == NULL) return;
-            auto Buf = std::make_unique<uint8_t[]>(Size);
-            FS->Read(H, Buf.get(), 0, Size);
-            FS->CloseHandle(H);
-            std::ofstream(Local, std::ios::binary | std::ios::trunc)
-                .write(reinterpret_cast<const char*>(Buf.get()), static_cast<std::streamsize>(Size));
-        }
-        Banks.push_back(Local.string());
-    });
-    std::sort(Banks.begin(), Banks.end());
+    const Bo4SoundBanks::Zone Banks = Bo4SoundBanks::Read(*FS, Zone);
+    for (const auto& Why : Banks.Failures) NoteFailure(S, "bank", Why, 0, 2);
 
-    static std::once_flag Setup;
-    std::call_once(Setup, []() { GameBlackOps4::PerformInitialSetup(); });
-    // each bank names the game reading its sounds (SABSupport::ParseSAB)
-    const auto SavedGame = CoDAssets::Game;
-    auto SavedPool = std::move(CoDAssets::GameAssets);
-    CoDAssets::GameAssets = std::make_unique<AssetPool>();
-    for (const auto& Bank : Banks) SABSupport::ParseSAB(Bank);
+    // the entries' samples read from the banks in place (Bo4SoundBanks::Reader) while they are written
+    const auto Reader = Bo4SoundBanks::Reader(*FS);
+    const ICoDGame* const SavedGame = CoDAssets::Game;
+    CoDAssets::Game = Reader.get();
+    struct Restore { const ICoDGame* Game; ~Restore() { CoDAssets::Game = Game; } } Restored{ SavedGame };
 
+    const bool UseIndex = SettingsManager::GetSetting("usesabindexbo4", "false") == "true";
     const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
-    const auto& Loaded = CoDAssets::GameAssets->LoadedAssets;
-    for (size_t N = 0; N < Loaded.size(); N++)
+    std::error_code Ec;
+    for (size_t N = 0; N < Banks.Entries.size(); N++)
     {
-        const CoDAsset_t* Asset = Loaded[N];
-        if (Step && !Step(N, Loaded.size(), Asset->AssetName)) break;
-        if (Asset->AssetType != WraithAssetType::Sound) continue;
-        const auto* Sound = static_cast<const CoDSound_t*>(Asset);
-        if (Wants && !Wants(Sound->AssetName)) continue;
+        const Bo4SoundBanks::Entry& E = Banks.Entries[N];
+        const Bo4SoundBanks::Bank& Bank = Banks.Banks[E.Bank];
+        const std::string Name = Bo4SoundBanks::NameOf(E.Key, Bank.Language);
+        CoDSound_t Sound;
+        Sound.AssetName = !Name.empty() ? FileSystems::GetFileNamePurgeExtensions(Name)
+                        : UseIndex ? std::format("{}.{}", Bank.File, E.Index) : std::format("xsound_{:x}", E.Key);
+        Sound.FullPath = Bo4SoundBanks::Folder(Name, Bank.Language);
+        Sound.BankFile = Bank.Path;
+        Sound.AssetPointer = E.Offset;
+        Sound.AssetSize = E.Size;
+        Sound.FrameRate = E.Rate;
+        Sound.FrameCount = E.Frames;
+        Sound.ChannelsCount = E.Channels;
+        Sound.Length = E.Rate ? (uint32_t)(1000.0 * E.Frames / E.Rate) : 0;
+        Sound.DataType = SoundDataTypes::FLAC_WithHeader;
+        Sound.AssetType = WraithAssetType::Sound;
+        Sound.AssetStatus = WraithAssetStatus::Loaded;
+        Sound.IsFileEntry = true;
+        if (Step && !Step(N, Banks.Entries.size(), Sound.AssetName)) break;
+        if (Wants && !Wants(Sound.AssetName)) continue;
+        // a placeholder: no bank of its language holds samples for that key
+        if (E.Size == 0)
+        {
+            S.Empty++;
+            continue;
+        }
         S.Images++;
-        const std::string Dir = (fs::path(OutDir) / Sound->FullPath).string();
+        const fs::path Dir = fs::path(OutDir) / Sound.FullPath;
+        if (Headers)
+        {
+            // a dry run: the entry as its bank's table gives it (a whole FLAC file)
+            DiskGame::SoundHeader H;
+            H.Name = (Dir / Sound.AssetName).lexically_relative(OutDir).string();
+            H.Is = DiskGame::SoundHeader::Form::Flac;
+            H.Stored = E.Size;
+            H.Rate = E.Rate, H.Channels = E.Channels, H.Frames = E.Frames;
+            Headers(H);
+            S.Written++;
+            continue;
+        }
         fs::create_directories(Dir, Ec);
         std::string Crash;
-        const int Code = ExportWriters::ExportSound(*Sound, Dir, Extension, Crash);
+        const int Code = ExportWriters::ExportSound(Sound, Dir.string(), Extension, Crash);
         if (Code == static_cast<int>(ExportGameResult::Success)) S.Written++;
-        else NoteFailure(S, "sound", Sound->AssetName, static_cast<int64_t>(Sound->AssetPointer), Code);
+        else NoteFailure(S, "sound", Sound.AssetName, static_cast<int64_t>(E.Offset), Code);
     }
-    CoDAssets::GameAssets = std::move(SavedPool);
-    CoDAssets::Game = SavedGame;
     return S;
 }
 

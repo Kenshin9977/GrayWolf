@@ -4,11 +4,13 @@
 // OatZoneSession per zone, one OAT dump per kind. OAT writes the mod tools' raw tree (images/,
 // xmodel/, model_export/, xanim/...) at <out>/<game>/, which keeps its glTF texture paths
 // (../images/) and its zone_source valid; images/ is the template's own image folder.
-// --name-filter does not apply: OAT dumps a kind whole.
+// --name-filter does not apply: OAT dumps a kind whole (but the weapons and weaponstats kinds,
+// OatWeapons.h).
 
 #include "DiskGame.h"
 #include "ExportWriters.h"
 #include "OatInProcess.h"
+#include "OatWeapons.h"
 
 #include <filesystem>
 
@@ -17,8 +19,8 @@ namespace
     class OatZone final : public DiskGame::IDiskZone
     {
     public:
-        OatZone(std::unique_ptr<OatZoneSession> S, const DiskGame::ExportOptions& Options, bool Maps)
-            : Session(std::move(S)), ZoneName(Session ? Session->ZoneName() : std::string())
+        OatZone(std::unique_ptr<OatZoneSession> S, const DiskGame::ExportOptions& Options, bool Maps, const char* Title)
+            : Session(std::move(S)), ZoneName(Session ? Session->ZoneName() : std::string()), Weapons(Session.get())
         {
             if (!Options.OatModelFormat.empty()) Dump.ModelFormat = Options.OatModelFormat;
             if (!Options.OatImageFormat.empty()) Dump.ImageFormat = Options.OatImageFormat;
@@ -34,6 +36,9 @@ namespace
                 DumpKind(C, T, Kind::Data, "data");
             });
             if (Maps) Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMaps(C, T); });
+            // the weapon files and the stats table read from them (OatWeapons.h)
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, ZoneName, C, T); });
+            Exports(Kind::WeaponStats, [this, Title](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, ZoneName, C, T, Title); });
         }
 
         const std::string& Name() const override { return ZoneName; }
@@ -83,6 +88,7 @@ namespace
 
         std::unique_ptr<OatZoneSession> Session;
         std::string ZoneName;
+        OatWeapons::Source Weapons;
         OatDumpOptions Dump;
     };
 
@@ -98,14 +104,14 @@ namespace
         bool FiltersByName() const override { return false; }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override
         {
-            return std::make_unique<OatZone>(nullptr, DiskGame::ExportOptions(), Maps);
+            return std::make_unique<OatZone>(nullptr, DiskGame::ExportOptions(), Maps, GameTitle);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override
         {
             auto S = OatZoneSession::Open(Path, Error);
             if (!S) return nullptr;
-            return std::make_unique<OatZone>(std::move(S), Options, Maps);
+            return std::make_unique<OatZone>(std::move(S), Options, Maps, GameTitle);
         }
 
     private:

@@ -141,7 +141,7 @@ std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const 
     if (Opus == nullptr || Size < 3) return nullptr;
     // packets {u16 size, Opus packet}: the first one's TOC byte says mono or stereo
     const uint32_t Channels = (Opus[2] & 4) ? 2 : 1;
-    return SABSupport::OpusPackets(Opus, Held, 0, Size, Rate, Channels, Frames);
+    return SABSupport::OpusPackets(Opus, Held, 0, Size, Rate, Channels, Frames, L.PreSkip);
 }
 
 void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Zone, const std::vector<SoundEntry>& Sounds)
@@ -249,6 +249,18 @@ std::string IwctxReaders::HashedName(const char* Type, uint64_t Hash)
     for (const uint64_t Key : { Hash & Mask, Hash & 0xFFFFFFFFFFFFFFFull })
         if (const auto It = Db.find(Key); It != Db.end()) return It->second;
     return std::format("{}_{:x}", Type, Hash & Mask);
+}
+
+uint64_t IwctxReaders::AssetHash(const std::string& Name)
+{
+    uint64_t H = 0x47F5817A5EF961BAull;
+    for (char C : Name)
+    {
+        char L = (char)std::tolower((unsigned char)C);
+        if (L == '\\') L = '/';
+        H = (H ^ (uint8_t)L) * 0x100000001B3ull;
+    }
+    return H & 0x7FFFFFFFFFFFFFFFull;
 }
 
 void IwctxReaders::LoadNameIndexes()

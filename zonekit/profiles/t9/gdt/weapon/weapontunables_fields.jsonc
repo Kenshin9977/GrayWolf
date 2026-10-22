@@ -531,6 +531,9 @@
     {"offset": "0xf94", "name": "adsReloadTransTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    // The offset is proven (2026-10-22): the dump's raise-starting function (7ff637c1fe72, Black Ops 4's
+    // code) reads 0xfb8 for every raise that is not the first (getter -> 0xf54), quick (0x1188), empty
+    // (0xf38) or the special case (0x11e8).
     {"offset": "0xfb8", "name": "raiseTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
     {"offset": "0x1028", "name": "reloadtime", "source": "engine", "kind": "int", "form": "int", "observed": 400, "agreed": 233, "examples": []},
     {"offset": "0xe10", "name": "burstCount", "source": "engine", "kind": "int", "form": "int", "observed": 533, "agreed": 233, "examples": []},
@@ -948,6 +951,7 @@
     {"offset": "0x105c", "name": "lockonmaxrange", "source": "engine", "kind": "int", "form": "int", "observed": 209, "agreed": 233, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    // The offset is proven (2026-10-22): the raise-starting function reads 0x1188 for a quick raise.
     {"offset": "0x1188", "name": "quickRaiseTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.

@@ -3,6 +3,7 @@
 #include "Games/IW/IWZone.h"
 
 #include "CoDAssets.h"
+#include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "FileSystems.h"
 #include "MapLive.h"
@@ -13,9 +14,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+
+namespace fs = std::filesystem;
 
 namespace
 {
@@ -284,36 +290,95 @@ void IWZone::AddPrimaryLights(Maps::MapScene& Scene, const LightLayout& L, const
     }
 }
 
-void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskGame::Context& C, DiskGame::Totals& T)
+namespace
+{
+    // A bank sound's folder (cp\dlc4\p6\i) as a relative path, each part made safe
+    fs::path SoundBankFolder(const std::string& Folder)
+    {
+        fs::path Out;
+        for (const auto& Part : fs::path(Strings::Replace(Folder, "\\", "/")))
+            if (Part != "/" && Part != "." && Part != "..") Out /= ExportNaming::SafeFileName(Part.string());
+        return Out;
+    }
+}
+
+std::string IWZone::SoundBankFile(const std::string& Name, const std::string& Extension)
+{
+    const fs::path File = SoundBankFolder(FileSystems::GetDirectoryName(Name)) /
+                          (ExportNaming::SafeFileName(FileSystems::GetFileNamePurgeExtensions(Name)) + Extension);
+    return File.generic_string();
+}
+
+void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskGame::Context& C, DiskGame::Totals& T,
+                              const std::vector<std::string>& Patches)
 {
     auto& Kt = T.Kinds[DiskGame::Kind::Sound];
-    if (Banks.empty()) return;
+    if (Banks.empty() && Patches.empty()) return;
     auto SavedPool = std::move(CoDAssets::GameAssets);
     auto SavedCache = std::move(CoDAssets::GamePackageCache);
     CoDAssets::GameAssets = std::make_unique<AssetPool>();
     CoDAssets::GamePackageCache = std::make_unique<CoDPackageCache>();
-    for (const auto& Bank : Banks)
+    size_t FromPatches = 0;   // the loaded assets from here on are the patch banks'
+    for (const auto* List : { &Banks, &Patches })
     {
-        CoDAssets::GamePackageCache->LoadPackageCacheAsync(Bank);
-        SABSupport::ParseSAB(Bank);
+        if (List == &Patches) FromPatches = CoDAssets::GameAssets->LoadedAssets.size();
+        for (const auto& Bank : *List)
+        {
+            CoDAssets::GamePackageCache->LoadPackageCacheAsync(Bank);
+            SABSupport::ParseSAB(Bank);
+        }
     }
     const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
     const std::string Dir = C.KindDir(DiskGame::Kind::Sound);
     const auto& Loaded = CoDAssets::GameAssets->LoadedAssets;
+    // a patch bank's entry replaces the banks' entry of the same key
+    std::unordered_set<uint64_t> Patched;
+    for (size_t N = FromPatches; N < Loaded.size(); N++)
+        if (const auto* Sound = dynamic_cast<const CoDSound_t*>(Loaded[N]); Sound != nullptr && Sound->BankKey != 0)
+            Patched.insert(Sound->BankKey);
+    const auto Replaced = [&](size_t N, const CoDSound_t& S) { return N < FromPatches && S.BankKey != 0 && Patched.count(S.BankKey) != 0; };
+    // a sound in both banks (a primed one: its start in the .sabl, the whole of it in the .sabs)
+    // is written once, from the bank holding more of it (a patch bank's first)
+    const auto Same = [](const CoDSound_t& S) {
+        return std::format("{}/{}|{}|{}|{}", ExportNaming::Lower(S.FullPath), ExportNaming::Lower(S.AssetName), S.FrameRate, S.FrameCount,
+                           (unsigned)S.ChannelsCount);
+    };
+    std::unordered_map<std::string, std::pair<const CoDSound_t*, bool>> Fullest;
+    for (size_t N = 0; N < Loaded.size(); N++)
+        if (const auto* Sound = dynamic_cast<const CoDSound_t*>(Loaded[N]); Sound != nullptr && !Replaced(N, *Sound))
+        {
+            auto& [Kept, KeptPatch] = Fullest[Same(*Sound)];
+            const bool Patch = N >= FromPatches;
+            if (Kept == nullptr || (Patch && !KeptPatch) || (Patch == KeptPatch && Sound->AssetSize > Kept->AssetSize)) Kept = Sound, KeptPatch = Patch;
+        }
+    ExportWriters::SoundFiles Files;
     for (size_t N = 0; N < Loaded.size(); N++)
     {
         const auto* Sound = dynamic_cast<const CoDSound_t*>(Loaded[N]);
         if (Sound == nullptr) continue;
         if (!C.Advance(N, Loaded.size(), Sound->AssetName)) break;
         if (!C.Wants(DiskGame::Kind::Sound, Sound->AssetName)) continue;
+        if (Replaced(N, *Sound))
+        {
+            Counter("sounds_replaced_by_patch")++;
+            continue;
+        }
+        if (Fullest[Same(*Sound)].first != Sound)
+        {
+            Counter("sounds_in_both_banks")++;
+            continue;
+        }
+        if (N >= FromPatches) Counter("sounds_from_patch")++;
         Kt.Seen++;
         CoDSound_t Named = *Sound;
         Named.AssetName = ExportNaming::SafeFileName(Sound->AssetName);
         std::string Crash;
-        const int Code = ExportWriters::ExportSound(Named, Dir, Extension, Crash);
+        const int Code = Files.Write(Named, fs::path(Dir) / SoundBankFolder(Sound->FullPath), Extension, Crash);
         if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
         else T.Fail(Name(), DiskGame::Kind::Sound, Sound->AssetName, std::format("code {} {}", Code, Crash.c_str()));
     }
+    if (Files.Renamed) Counter("sounds_renamed") += Files.Renamed;
+    if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
     CoDAssets::GameAssets = std::move(SavedPool);
     CoDAssets::GamePackageCache = std::move(SavedCache);
 }

@@ -21,6 +21,7 @@
 #include "MapLive.h"
 #include <miniz/miniz.h>
 #include "ZonekitZone.h"
+#include "Games/OAT/OatWeapons.h"
 
 #include <algorithm>
 #include <cstring>
@@ -159,8 +160,11 @@ namespace
     class Bo1Zone final : public TreyarchLevelZone
     {
     public:
-        Bo1Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir))
+        Bo1Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir)), Weapons(Path)
         {
+            // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty: Black Ops"); });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             // the rawfile kind's loop is ZonekitZone's, its bytes RawfileBytes'
@@ -215,6 +219,7 @@ namespace
 
     private:
         std::string Install;
+        OatWeapons::Source Weapons;
         std::shared_ptr<IWDCache> Iwd;
 
         // the live image handler reads the .iwd through CoDAssets::GamePackageCache while the

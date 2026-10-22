@@ -10,10 +10,12 @@
 #include "ExportWriters.h"
 #include "GameModernWarfareRM.h"
 #include "GameReaders.h"
+#include "GameWorldWar2.h"
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwWeaponDefs.h"
 #include "Games/H1/EntityKeys.h"
 #include "MapLive.h"
 #include "PAKCache.h"
@@ -82,6 +84,43 @@ namespace
         return Out;
     }
 
+    // The weapon fields (IwWeaponDefs.h): the weapon asset is the WeaponDef itself (0xe20), at x64-zt's
+    // H1 structs.hpp offsets (zonetool rebuilds these zones), checked on common_mp's weapons (README).
+    // weapType, weapClass, fireType and the hit locations are named by the exe's tables (h1_mp64_flat
+    // RVAs: 0x10b2460 entries 0, 6 and 37; 0x10b5370).
+    const IwWeaponDefs::Layout& WeaponLayout()
+    {
+        static const IwWeaponDefs::Layout L = [] {
+            IwWeaponDefs::Layout L;
+            L.Name = 0, L.Display = 8;
+            L.Types = { "none", "bullet", "grenade", "projectile", "riotshield", "energy" };
+            L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher",
+                          "turret", "throwingknife", "non-player", "item", "cone", "beam", "shield", "hover",
+                          "cloak", "ping", "repulsor", "adrenaline", "health", "mute", "underwater", "ball" };
+            L.FireTypes = { "Full Auto", "Single Shot", "2-Round Burst", "3-Round Burst", "4-Round Burst", "5-Round Burst", "Double Barrel" };
+            constexpr int64_t Timers = 0x668;   // stateTimers (StateTimers, 0x12c)
+            L.Fields = { { "weaponType", 0x53c }, { "weaponClass", 0x540 }, { "fireType", 0x554 }, { "startAmmo", 0x62c }, { "maxAmmo", 0x640 },
+                         { "clipSize", 0x648 }, { "shotCount", 0x64c }, { "damage", 0x658 }, { "meleeDamage", 0x660 },
+                         { "fireTime", Timers + 0x10 }, { "reloadTime", Timers + 0x34 }, { "reloadEmptyTime", Timers + 0x3c },
+                         { "reloadAddTime", Timers + 0x40 }, { "reloadEmptyAddTime", Timers + 0x44 }, { "reloadStartTime", Timers + 0x48 },
+                         { "reloadEndTime", Timers + 0x50 }, { "dropTime", Timers + 0x6c }, { "raiseTime", Timers + 0x70 },
+                         { "quickRaiseTime", Timers + 0x80 }, { "firstRaiseTime", Timers + 0x84 }, { "sprintOutTime", Timers + 0x9c },
+                         { "adsTransInTime", 0x9a0 }, { "adsTransOutTime", 0x9a8 },
+                         { "explosionRadius", 0xa7c }, { "explosionRadiusMin", 0xa80 }, { "explosionInnerDamage", 0xa84 },
+                         { "explosionOuterDamage", 0xa88 }, { "projectileSpeed", 0xa98 },
+                         { "minDamage", 0xca4 }, { "maxDamageRange", 0xcb0 }, { "minDamageRange", 0xcb4 }, { "locationDamageMultipliers", 0x470 } };
+            L.Notes = IwWeaponDefs::GameNotes("MW Remastered", "french/fra_code_post_gfx_mp", "common_mp",
+                                              "the WeaponDef (the weapon asset itself) at the offsets of x64-zt's H1 structs.hpp",
+                                              "M4 857 rpm, 30 rounds, 30-20 damage; AK-47 706 rpm, 40-30; MP5 800 rpm; M1014 8 pellets");
+            L.Notes.Source += "The damage falls linearly from damage (0x658) at maxDamageRange (0xcb0) to minDamage at\n"
+                              "minDamageRange (0xcb4) (h1_mp64_flat 0x2e5c50, through the getters 0x2e19c0 and 0x2e17d0 that take\n"
+                              "a field's offset); that minDamage is the i32 at 0xca4, the one x64-zt calls midDamage (its 0xca0 is\n"
+                              "read but not used there).\n";
+            return L;
+        }();
+        return L;
+    }
+
     class MwrZone final : public IWZone
     {
     public:
@@ -95,6 +134,7 @@ namespace
             ExportsScriptFiles(Scripts::GscToolBin("h1"));
             ExportsIwRawfiles();
             ExportsIwStringTables();
+            ExportsIwWeapons(WeaponLayout());
         }
         ~MwrZone() override
         {
@@ -279,6 +319,7 @@ namespace
         Packages.LoadPackageCache(InstallRoot(FastFilePath()).string());
         IWPakSounds::WriteOptions Options;
         Options.EmptyFileFails = true;
+        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
         IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
 
         if (!SoundAliasCsv::Wanted(C)) return;

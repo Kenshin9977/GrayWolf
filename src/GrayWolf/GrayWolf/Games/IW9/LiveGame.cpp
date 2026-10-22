@@ -35,7 +35,7 @@ namespace
         std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound) const override
         {
             if (Sound->IsFileEntry)
-                return SABSupport::LoadOpusSound(Sound);
+                return SABSupport::LoadOpusSound(Sound, SABSupport::OpusPreSkipUnmeasured);
             return GameModernWarfare5::ReadXSound(Sound);
         }
         void LoadStreamedXModel(const std::unique_ptr<XModel_t>& Model, const XModelLod_t& ModelLOD, const std::unique_ptr<WraithModel>& ResultModel) const override

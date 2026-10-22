@@ -3,6 +3,7 @@
 #include "IWSoundAliases.h"
 
 #include "FileSystems.h"
+#include "GameReaders.h"
 #include "Games/IW/IWPakSounds.h"
 
 #include <algorithm>
@@ -37,7 +38,7 @@ std::string LiveName(const SoundAliasCsv::ZoneView& Z, const Layout& L, const st
         // a name-only header (",name") stands for the LoadedSound another zone defines
         std::string S = Loaded < 0 ? std::string() : Z.Text(Loaded);
         if (!S.empty() && S[0] == ',') S.erase(0, 1);
-        return FileSystems::GetFileNameWithoutExtension(S);
+        return GameReaders::LoadedSoundStem(S);
     }
     case 2: {
         std::string Lower = Name;

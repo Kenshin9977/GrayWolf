@@ -23,14 +23,16 @@ void GameModernWarfareRM::AddAliasSounds(const MWRSoundAlias& SoundResult, const
             auto LoadedSoundName = CoDAssets::GameInstance->ReadNullTerminatedString(LoadedSoundInfo.NamePtr);
 
             auto LoadedSound = GameReaders::LoadedSound(LoadedSoundInfo, LoadedSoundName, GameReaders::LoadedFormat(LoadedSoundInfo.Format));
-            // a pak index: the samples are in soundfile<index>.pak, the zone holds zeros for them
+            // a pak index: the samples are in soundfile<index>.pak, the zone holds zeros for them;
+            // the byte at 8 (the StreamFileName's isLocalized, as a streamed spec's first byte)
+            // puts that pak in the language folder (french/fra_soundfile<index>.pak)
             if (LoadedSoundInfo.PackFileIndex > 0)
             {
                 LoadedSound->IsFileEntry = true;
                 LoadedSound->PackageIndex = (uint32_t)LoadedSoundInfo.PackFileIndex;
                 LoadedSound->AssetPointer = LoadedSoundInfo.PackFileOffset;
-            }
-            Out.push_back(LoadedSound);
+                LoadedSound->IsLocalized = LoadedSoundInfo.Padding1[0] != 0;
+            }            Out.push_back(LoadedSound);
         }
         else if (SoundFileSpec.Type == 2)
         {

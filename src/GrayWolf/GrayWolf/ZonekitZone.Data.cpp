@@ -205,11 +205,12 @@ void ZonekitZone::ExportsMaterialLinks(const MaterialLinkLayout& L)
             bool Read = true;
             for (uint32_t K = 0; K < SlotCount && Read; K++)
             {
-                const uint32_t Semantic = Records ? At<uint32_t>(Img, Images + (int64_t)K * 16) : At<uint8_t>(Img, Slots + K * 2);
+                const int64_t Record = Images + (int64_t)K * L.RecordSize;
+                const uint32_t Semantic = Records ? At<uint32_t>(Img, Record + L.RecordSemantic) : At<uint8_t>(Img, Slots + K * 2);
                 const uint32_t Index = Records ? K : At<uint8_t>(Img, Slots + K * 2 + 1);
                 if (Index >= ImageCount) continue;
                 // the image: in this zone, in a zone served beside it, or (bit 63) its hash alone
-                const uint64_t Field = PointerAt(Records ? Images + (int64_t)K * 16 + 8 : Images + (int64_t)Index * 8);
+                const uint64_t Field = PointerAt(Records ? Record + L.RecordImage : Images + (int64_t)Index * 8);
                 const int64_t At0 = Off(Field);
                 uint64_t Hash = 0;
                 uint32_t Width = 0, Height = 0, Format = 0;
@@ -218,16 +219,17 @@ void ZonekitZone::ExportsMaterialLinks(const MaterialLinkLayout& L)
                 {
                     // (a table that does not hold image pointers: the material is not read)
                     if (ImagesHere.count(At0) == 0) Read = false;
-                    Hash = At<uint64_t>(Img, At0) & IdBits, Width = At<uint16_t>(Img, At0 + 0x20), Height = At<uint16_t>(Img, At0 + 0x22);
-                    Format = At<uint8_t>(Img, At0 + 0x2a);
+                    Hash = At<uint64_t>(Img, At0 + L.ImageHash) & IdBits, Width = At<uint16_t>(Img, At0 + L.ImageWidth), Height = At<uint16_t>(Img, At0 + L.ImageHeight);
+                    Format = L.WideFormat ? At<uint32_t>(Img, At0 + L.ImageFormat) : At<uint8_t>(Img, At0 + L.ImageFormat);
                     Where = Width != 0 ? "zone" : "named";
                 }
                 else if (Field >> 63) Hash = Field & IdBits;
                 else if (Field != 0)
                 {
                     auto& Game = *CoDAssets::GameInstance;
-                    Hash = Game.Read<uint64_t>(Field) & IdBits, Width = Game.Read<uint16_t>(Field + 0x20), Height = Game.Read<uint16_t>(Field + 0x22);
-                    Format = Game.Read<uint8_t>(Field + 0x2a);
+                    Hash = Game.Read<uint64_t>(Field + L.ImageHash) & IdBits, Width = Game.Read<uint16_t>(Field + L.ImageWidth),
+                    Height = Game.Read<uint16_t>(Field + L.ImageHeight);
+                    Format = L.WideFormat ? Game.Read<uint32_t>(Field + L.ImageFormat) : Game.Read<uint8_t>(Field + L.ImageFormat);
                     Where = "beside";
                     // an address of no zone served here (another zone's image), or not an address
                     if (Hash == 0) (Field >> 44) == 0 ? Counter("matlinks_unresolved") += 1 : Read = false;
@@ -330,7 +332,7 @@ void ZonekitZone::ExportsSoundLinks(const SoundLinkLayout& L)
         std::set<std::pair<uint64_t, uint64_t>> Done;
         for (const auto& I : R.Instances)
         {
-            if (!OwnerIs(I, "soundbank") && !OwnerIs(I, "soundbanktransient")) continue;
+            if (L.Bank != nullptr ? !OwnerIs(I, L.Bank) : !OwnerIs(I, "soundbank") && !OwnerIs(I, "soundbanktransient")) continue;
             const int64_t Aliases = Off(PointerAt(I.Pos + L.Aliases));
             const uint32_t AliasCount = At<uint32_t>(Img, I.Pos + L.AliasCount);
             // a bank the zone only names has no aliases
@@ -349,9 +351,10 @@ void ZonekitZone::ExportsSoundLinks(const SoundLinkLayout& L)
                 for (uint32_t K = 0; K < Count; K++)
                 {
                     // the file: in this zone, or (bit 63) its hash alone
-                    const uint64_t Field = PointerAt(Entries + (int64_t)K * L.EntrySize + L.EntrySound);
-                    const int64_t At0 = Off(Field);
-                    const uint64_t File = (At0 >= 0 ? At<uint64_t>(Img, At0) : (Field >> 63) ? Field : 0) & IdBits;
+                    const int64_t Entry = Entries + (int64_t)K * L.EntrySize + L.EntrySound;
+                    const uint64_t Field = L.SoundIsHash ? 0 : PointerAt(Entry);
+                    const int64_t At0 = L.SoundIsHash ? -1 : Off(Field);
+                    const uint64_t File = (L.SoundIsHash ? At<uint64_t>(Img, Entry) : At0 >= 0 ? At<uint64_t>(Img, At0) : (Field >> 63) ? Field : 0) & IdBits;
                     if (File == 0)
                     {
                         Counter("sndlinks_no_file") += 1;

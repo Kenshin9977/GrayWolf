@@ -12,6 +12,9 @@
 #include <cstring>
 #include <format>
 #include <intrin.h>
+#include <limits>
+#include <numeric>
+#include <unordered_map>
 
 namespace MeshDecode
 {
@@ -449,6 +452,56 @@ SubmeshStreams RegionStreams(const Regions& R, uint64_t FirstVertex, uint32_t Ve
     return S;
 }
 
+void WeightFromNearest(WraithSubmesh& Mesh, uint32_t Covered)
+{
+    // A grid of the weighted vertices, about two per cell; each other vertex searches outward ring by ring
+    Vector3 Lo = Mesh.Verticies[0].Position, Hi = Lo;
+    for (uint32_t V = 1; V < Covered; V++)
+    {
+        const Vector3& P = Mesh.Verticies[V].Position;
+        Lo = { std::min(Lo.X, P.X), std::min(Lo.Y, P.Y), std::min(Lo.Z, P.Z) };
+        Hi = { std::max(Hi.X, P.X), std::max(Hi.Y, P.Y), std::max(Hi.Z, P.Z) };
+    }
+    const float Volume = std::max(Hi.X - Lo.X, 1e-3f) * std::max(Hi.Y - Lo.Y, 1e-3f) * std::max(Hi.Z - Lo.Z, 1e-3f);
+    const float Cell = std::max(std::cbrt(Volume * 2.0f / (float)Covered), 1e-3f);
+    const auto Key = [&](float C, float L) { return (int32_t)std::floor((C - L) / Cell); };
+    const auto Pack = [](int32_t X, int32_t Y, int32_t Z) { return ((uint64_t)(uint32_t)(X & 0x1fffff) << 42) | ((uint64_t)(uint32_t)(Y & 0x1fffff) << 21) | (uint32_t)(Z & 0x1fffff); };
+    std::unordered_map<uint64_t, std::vector<uint32_t>> Grid;
+    for (uint32_t V = 0; V < Covered; V++)
+    {
+        const Vector3& P = Mesh.Verticies[V].Position;
+        Grid[Pack(Key(P.X, Lo.X), Key(P.Y, Lo.Y), Key(P.Z, Lo.Z))].push_back(V);
+    }
+    const int32_t MaxRing = Key(Hi.X, Lo.X) + Key(Hi.Y, Lo.Y) + Key(Hi.Z, Lo.Z) + 2;
+    for (uint32_t V = Covered; V < (uint32_t)Mesh.Verticies.size(); V++)
+    {
+        const Vector3& P = Mesh.Verticies[V].Position;
+        const int32_t X = Key(P.X, Lo.X), Y = Key(P.Y, Lo.Y), Z = Key(P.Z, Lo.Z);
+        uint32_t Best = 0;
+        float BestD = std::numeric_limits<float>::max();
+        for (int32_t R = 0; R <= MaxRing; R++)
+        {
+            for (int32_t DX = -R; DX <= R; DX++)
+                for (int32_t DY = -R; DY <= R; DY++)
+                    for (int32_t DZ = -R; DZ <= R; DZ++)
+                    {
+                        if (std::max({ std::abs(DX), std::abs(DY), std::abs(DZ) }) != R) continue;
+                        const auto It = Grid.find(Pack(X + DX, Y + DY, Z + DZ));
+                        if (It == Grid.end()) continue;
+                        for (const uint32_t C : It->second)
+                        {
+                            const Vector3& Q = Mesh.Verticies[C].Position;
+                            const float D = (Q.X - P.X) * (Q.X - P.X) + (Q.Y - P.Y) * (Q.Y - P.Y) + (Q.Z - P.Z) * (Q.Z - P.Z);
+                            if (D < BestD) BestD = D, Best = C;
+                        }
+                    }
+            // a vertex found in ring R can be beaten only from a ring whose nearest side is closer than it
+            if (BestD < std::numeric_limits<float>::max() && (float)R * Cell >= std::sqrt(BestD)) break;
+        }
+        Mesh.Verticies[V].Weights = Mesh.Verticies[Best].Weights;
+    }
+}
+
 void DecodeLod(const Bytes& B, const XModelLod_t& Lod, const LodFormat& F, bool Colors, WraithModel& Model)
 {
     Model.PrepareSubmeshes((uint32_t)Lod.Submeshes.size());
@@ -475,6 +528,10 @@ void DecodeLod(const Bytes& B, const XModelLod_t& Lod, const LodFormat& F, bool 
                 ReadSkinnedColumns({ InZone.data(), Skinned }, Sub.WeightCounts, Index, Weights);
             }
             W = Weights.data();
+            const uint64_t Covered = Index + std::accumulate(std::begin(Sub.WeightCounts), std::end(Sub.WeightCounts), 0ull);
+            if (DecodeSubmesh(B, S, F.Mesh, W, Mesh) && Covered > 0 && Covered < Sub.VertexCount)
+                WeightFromNearest(Mesh, (uint32_t)Covered);
+            continue;
         }
         DecodeSubmesh(B, S, F.Mesh, W, Mesh);
     }

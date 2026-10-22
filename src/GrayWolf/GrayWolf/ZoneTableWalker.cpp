@@ -1479,7 +1479,7 @@ static ZoneResult WalkZoneOnThisStack(const std::vector<uint8_t>& Buf, const Tab
     if (Layout)
     {
         for (const auto& A : Assets) R.AssetHeads.push_back(A.Head);
-        R.Start4 = Head.Start;
+        R.Start4 = Head.Start + Rules.StartOffset;
     }
     Walker W(Buf, *T, Rules);
     W.Out = &R;

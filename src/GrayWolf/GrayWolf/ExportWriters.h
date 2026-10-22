@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -112,6 +113,7 @@ namespace ExportWriters
         const uint8_t* Data = nullptr;
         size_t Size = 0, Available = 0;
         uint32_t Rate = 0, Channels = 0, Frames = 0;
+        int32_t PreSkip = -1;   // Opus: the game's (XSound::OpusPreSkip)
         std::string Extension = ".wav";
         // WAV chosen: the file is written as the game keeps it, whatever it holds (Black Ops II's
         // FLAC bank entries stay .flac). Without it, only a WAV or a file that is no FLAC is (an .mp3
@@ -205,6 +207,24 @@ namespace ExportWriters
     int ExportModel(const CoDModel_t& Model, const std::string& Dir, const ModelTextures& Textures, std::string& Crash);
     int ExportAnim(const CoDAnim_t& Anim, const std::string& Dir, std::string& Crash);
     int ExportSound(const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, std::string& Crash);
+
+    // The sound files one zone writes: no sound replaces another of the same name. A second
+    // sound under a file name this object already wrote (its path, case ignored) is written as
+    // <name>_2, <name>_3... in the order met; when that file holds the same bytes as the name's
+    // first one (the same sound met twice) it is removed again.
+    class SoundFiles
+    {
+    public:
+        // ExportSound of Sound (its AssetName the file's stem) in Dir, its folders made first;
+        // File gets the file that holds the sound
+        int Write(const CoDSound_t& Sound, const std::filesystem::path& Dir, const std::string& Extension, std::string& Crash,
+                  std::filesystem::path* File = nullptr);
+        size_t Renamed = 0;   // sounds written under another name than their own
+        size_t Copies = 0;    // sounds dropped as a copy of the name's first file
+
+    private:
+        std::set<std::string> Taken;
+    };
 
     // A model as the live reader gives it: its generic form (materials, LODs) and the LOD an
     // export would write (the biggest loaded one) as a mesh.

@@ -156,8 +156,10 @@ void GameBlackOps6::PerformInitialSetup()
     IwctxReaders::LoadNameIndexes();
 }
 
-const GameBlackOps6::Layout GameBlackOps6::Multiplayer{ ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate, 16, 32, 32, ImageFormats, (uint32_t)std::size(ImageFormats) };
-const GameBlackOps6::Layout GameBlackOps6::Campaign{ 0x70, 0x98, 0xa0, 0x3c, 0x2c, 12, 28, 0, CampaignImageFormats, (uint32_t)std::size(CampaignImageFormats) };
+const GameBlackOps6::Layout GameBlackOps6::Multiplayer{ ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate, 16, 32, 32, SABSupport::OpusPreSkipLookAhead,
+                                                        ImageFormats, (uint32_t)std::size(ImageFormats) };
+const GameBlackOps6::Layout GameBlackOps6::Campaign{ 0x70, 0x98, 0xa0, 0x3c, 0x2c, 12, 28, 0, SABSupport::OpusPreSkipPacket,
+                                                     CampaignImageFormats, (uint32_t)std::size(CampaignImageFormats) };
 thread_local const GameBlackOps6::Layout* GameBlackOps6::Current = &GameBlackOps6::Multiplayer;
 
 std::unique_ptr<XImageDDS> GameBlackOps6::LoadXImageCampaign(const XImage_t& Image)
@@ -309,7 +311,7 @@ std::unique_ptr<XSound> GameBlackOps6::ReadXSound(const CoDSound_t* Sound)
         else S.Key = 0x10;
         return S;
     };
-    return IwctxReaders::ReadXSound(Sound, { Current->SoundFlags, Current->SoundRate, Where, Current->SoundHeader, false });
+    return IwctxReaders::ReadXSound(Sound, { Current->SoundFlags, Current->SoundRate, Where, Current->SoundHeader, false, Current->SoundPreSkip });
 }
 
 // ---- xanim (read by IwctxReaders, shared with Black Ops 7)

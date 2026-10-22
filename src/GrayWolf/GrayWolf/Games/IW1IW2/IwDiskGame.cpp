@@ -12,6 +12,7 @@
 #include "CoDIWIDecoder.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Games/Common/WeaponFiles.h"
 #include "MapSceneExport.h"
 #include "MaterialDescription.h"
 #include "ScriptExport.h"
@@ -88,6 +89,15 @@ namespace
         };
         if (Directly("xmodel/")) { K = Kind::Model; Name = Path.substr(7); return true; }
         if (Directly("xanim/")) { K = Kind::Anim; Name = Path.substr(6); return true; }
+        // weapons/mp/<name>, weapons/sp/<name>: the weapon files (no two share a name)
+        if (Path.compare(0, 8, "weapons/") == 0 && Ext.empty())
+            if (const size_t Slash = Path.find('/', 8); Slash != std::string::npos && Slash + 1 < Path.size() &&
+                                                         Path.find('/', Slash + 1) == std::string::npos)
+            {
+                K = Kind::Weapons;
+                Name = Path.substr(Slash + 1);
+                return true;
+            }
         // CoD2's materials/ holds material files, some named after CoD1's textures (x.dds, x.tga)
         const bool MaterialFolder = Path.compare(0, 10, "materials/") == 0 || Path.compare(0, 14, "materials_dx7/") == 0;
         if (IsImage(Ext) && !MaterialFolder)
@@ -434,6 +444,8 @@ namespace
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMaps(C, T); });
             Exports(Kind::Script, [this](const Context& C, Totals& T) { ExportScripts(C, T); });
             Exports(Kind::Localize, [this](const Context& C, Totals& T) { ExportLocalize(C, T); });
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { ExportWeapons(C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { ExportWeaponStats(C, T); });
         }
 
         const std::string& Name() const override { return ZoneName; }
@@ -473,8 +485,9 @@ namespace
         // (introscreen.str's DECOYTOWN_TITLE: INTROSCREEN_DECOYTOWN_TITLE), the text of the
         // language setting's LANG_ line, else LANG_ENGLISH's ("#same": the English text). Titles:
         // a text quoted whole (""Hold the Line"") without its quotes; else the text as the game
-        // shows it, its "\n" a line break.
-        void Entries(std::vector<std::pair<std::string, std::string>>& Out, bool Titles) const
+        // shows it, its "\n" a line break. Paths: those .str files instead (the whole install's).
+        void Entries(std::vector<std::pair<std::string, std::string>>& Out, bool Titles,
+                     const std::vector<std::string>* Paths = nullptr) const
         {
             if (!Files) return;
             const auto Upper = [](std::string S) {
@@ -482,7 +495,7 @@ namespace
                 return S;
             };
             const std::string Wanted = "LANG_" + Upper(Lang);
-            for (const auto& Path : Files->FilesOf(Archive))
+            for (const auto& Path : Paths != nullptr ? *Paths : Files->FilesOf(Archive))
             {
                 if (Path.compare(0, 17, "localizedstrings/") != 0 || Extension(Path) != ".str") continue;
                 std::vector<uint8_t> Bytes;
@@ -532,6 +545,60 @@ namespace
             const std::string Csv = (fs::path(C.KindDir(Kind::Localize)) / (WithoutExtension(ZoneName) + ".csv")).string();
             if (ExportWriters::WriteLocalize(Csv, Rows, CodePage)) Kt.Written += Rows.size();
             else T.Fail(ZoneName, Kind::Localize, ZoneName, "write failed");
+        }
+
+        // weapons/<mp|sp>/<name>: the weapon files (WEAPONFILE\<field>\<value>...), as the archive
+        // holds them, under weapons/<mp|sp>/
+        void ExportWeapons(const Context& C, Totals& T)
+        {
+            auto& Kt = T.Kinds[Kind::Weapons];
+            const auto List = Assets(Kind::Weapons, C);
+            const fs::path Dir = C.KindDir(Kind::Weapons);
+            for (size_t N = 0; N < List.size(); N++)
+            {
+                const auto& A = List[N];
+                if (!C.Advance(N, List.size(), A.Name)) return;
+                Kt.Seen++;
+                std::vector<uint8_t> Bytes;
+                if (!Files->Read(A.Path, Bytes)) T.Fail(ZoneName, Kind::Weapons, A.Name, "does not inflate");
+                else if (ExportWriters::WriteBytes(Dir / A.Path.substr(8), Bytes.data(), Bytes.size())) Kt.Written++;
+                else T.Fail(ZoneName, Kind::Weapons, A.Name, "write failed");
+            }
+            C.Advance(List.size(), List.size());
+        }
+
+        // The weapon files read into the table (Games/Common/WeaponFiles.h), their mode their folder;
+        // the display names from the whole install's .str files (the weapon files are in one archive,
+        // weapon.str in a localized one), in the language setting
+        void ExportWeaponStats(const Context& C, Totals& T)
+        {
+            std::vector<WeaponFiles::Weapon> Weapons;
+            std::set<std::string> Keys;
+            for (const auto& A : Assets())
+            {
+                std::vector<uint8_t> Bytes;
+                if (A.K != Kind::Weapons || !Files->Read(A.Path, Bytes)) continue;
+                WeaponFiles::Weapon W{ A.Name, std::string(Bytes.begin(), Bytes.end()), A.Path.substr(8, A.Path.find('/', 8) - 8) };
+                if (const auto F = WeaponFiles::Parse(W.Text); F.count("displayName")) Keys.insert(ExportNaming::Lower(F.at("displayName")));
+                Weapons.push_back(std::move(W));
+            }
+            if (Weapons.empty()) return;
+            std::vector<std::string> Strs;
+            for (const auto& [Path, A] : Files->Files())
+                if (Path.compare(0, 17, "localizedstrings/") == 0 && Extension(Path) == ".str") Strs.push_back(Path);
+            std::vector<std::pair<std::string, std::string>> All, Strings;
+            Entries(All, false, &Strs);
+            const unsigned CodePage = ExportWriters::LanguageCodePage(Lang);
+            for (auto& [K, V] : All)
+                if (Keys.count(ExportNaming::Lower(K))) Strings.emplace_back(K, ExportWriters::Utf8(V, CodePage));
+            WeaponFiles::ExportStats(Weapons, Strings, ZoneName, C, T,
+                { Row.Title,
+                  "The display names are the localized strings of the install's .str files (localizedstrings/weapon.str's\n"
+                  "THOMPSON: WEAPON_THOMPSON), in the language setting (--language, default English).\n",
+                  "Each weapon is the game's own weapon file, weapons/mp/<name> or weapons/sp/<name> in its archives (the\n"
+                  "copy the game reads: the last archive by name holding it), WEAPONFILE\\<field>\\<value>...; the\n"
+                  "game parses it by its weapon field table, so each column below is one named field: times are\n"
+                  "seconds in the file (milliseconds here), distances inches.\n" });
         }
 
         struct Asset
@@ -1431,7 +1498,7 @@ namespace
     const DiskGame::Setting Language{ "language", "Language",
         { { "english", "English" }, { "french", "French" }, { "german", "German" }, { "italian", "Italian" },
           { "spanish", "Spanish" }, { "russian", "Russian" }, { "polish", "Polish" } },
-        "english", { Kind::Model, Kind::Anim, Kind::Image, Kind::Sound, Kind::Map, Kind::Localize } };
+        "english", { Kind::Model, Kind::Anim, Kind::Image, Kind::Sound, Kind::Map, Kind::Localize, Kind::WeaponStats } };
 
     // The install of a zone: the one the run names, else the folder the archive is in.
     std::shared_ptr<Install> InstallOf(const GameRow& Row, const std::string& Zone, const DiskGame::ExportOptions& O, std::string& Error)

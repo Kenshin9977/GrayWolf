@@ -323,14 +323,13 @@ namespace
         return SeAnimVec3{ RawF32(R, 0), RawF32(R, 4), RawF32(R, 8) };
     }
 
-    // Reverses case 7's quantization (value*32767+0.5 if >=0, else (uint16)(0.5 - value*32767) ^ 0x8000
-    // if <0, input clamped [-1,1]). The +0.5 rounding offset
-    // is unrecoverable (and immaterial - at most 1/32767 of error), so this is an approximate
-    // inverse, not exact - fine for a rotation component.
+    // Reverses case 7's quantization: int16(value*32767 rounded half away from zero), input clamped
+    // [-1,1], stored as plain two's complement (the writer's 0x80000000 XOR only gives the 0.5
+    // rounding offset the value's sign). Checked on 164 Mod Tools and exported bins (1.17M matrices):
+    // decoded this way every X/Y/Z triple is orthonormal to 1e-4; read as sign+magnitude, up to 2.0 off.
     float DequantInt16N(uint16_t Raw)
     {
-        if (Raw & 0x8000) return -(float)(Raw ^ 0x8000) / 32767.0f;
-        return (float)Raw / 32767.0f;
+        return (float)(int16_t)Raw / 32767.0f;
     }
 
     // X/Y/Z (case 7, Int16Nx3) are read as 3 quantized rows of the bone's local rotation matrix (an

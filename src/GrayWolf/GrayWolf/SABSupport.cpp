@@ -13,6 +13,7 @@
 #include "CoDAssets.h"
 #include "ICoDGame.h"
 #include "DBGameFiles.h"
+#include "ExportNaming.h"
 
 #include <opus/opus.h>
 
@@ -243,7 +244,7 @@ std::unique_ptr<XSound> SABSupport::LoadSound(const CoDSound_t* SoundAsset)
     return SoundResult;
 }
 
-std::unique_ptr<XSound> SABSupport::LoadOpusSound(const CoDSound_t* SoundAsset)
+std::unique_ptr<XSound> SABSupport::LoadOpusSound(const CoDSound_t* SoundAsset, int32_t PreSkip)
 {
     // GetPackagesPath() returns by value: bind a copy, not a reference to the temporary.
     // The entry's own bank wins (several banks parsed in one run, LoadSound's rule)
@@ -264,11 +265,12 @@ std::unique_ptr<XSound> SABSupport::LoadOpusSound(const CoDSound_t* SoundAsset)
     if (ReadResult != (size_t)SoundAsset->AssetSize)
         return nullptr;
 
-    return OpusPackets(SoundBuffer.get(), SoundAsset->AssetSize, 0, SoundAsset->AssetSize, SoundAsset->FrameRate, SoundAsset->ChannelsCount, SoundAsset->FrameCount);
+    return OpusPackets(SoundBuffer.get(), SoundAsset->AssetSize, 0, SoundAsset->AssetSize, SoundAsset->FrameRate, SoundAsset->ChannelsCount, SoundAsset->FrameCount,
+                       PreSkip);
 }
 
 std::unique_ptr<XSound> SABSupport::OpusPackets(const uint8_t* Buffer, size_t Available, size_t Offset, size_t Size, uint32_t FrameRate,
-                                                uint32_t Channels, uint32_t FrameCount)
+                                                uint32_t Channels, uint32_t FrameCount, int32_t PreSkip)
 {
     if (Buffer == nullptr || Offset > Available || Size > UINT32_MAX) return nullptr;
     // what the buffer holds from Offset, and zeros after it: a last packet whose size runs past the
@@ -283,71 +285,55 @@ std::unique_ptr<XSound> SABSupport::OpusPackets(const uint8_t* Buffer, size_t Av
     Result->FrameRate = FrameRate;
     Result->Channels = Channels;
     Result->FrameCount = FrameCount;
+    Result->OpusPreSkip = PreSkip;
     return Result;
 }
 
-std::unique_ptr<XSound> SABSupport::DecodeOpusInterleaved(uint8_t* OpusBuffer, size_t OpusBufferSize, size_t OpusDataOffset, uint32_t FrameRate, uint32_t Channels, uint32_t FrameCount)
+std::unique_ptr<XSound> SABSupport::DecodeOpusInterleaved(const uint8_t* OpusBuffer, size_t OpusBufferSize, size_t OpusDataOffset, uint32_t FrameRate,
+                                                          uint32_t Channels, uint32_t FrameCount, int32_t PreSkip)
 {
-    int ErrorCode;
-    auto Decoder = opus_decoder_create(FrameRate, Channels, &ErrorCode);
-
-    if (ErrorCode != OPUS_OK)
+    int ErrorCode = OPUS_OK;
+    const std::unique_ptr<OpusDecoder, void (*)(OpusDecoder*)> Decoder(opus_decoder_create((opus_int32)FrameRate, (int)Channels, &ErrorCode),
+                                                                       opus_decoder_destroy);
+    if (ErrorCode != OPUS_OK || Decoder == nullptr)
         return nullptr;
 
-    // Create new buffer for each 960 frame block
-    auto PCMBuffer = std::make_unique<opus_int16[]>(960 * 2 * (size_t)Channels);
+    // a packet holds at most 120 ms; an empty one (the package's padding) is concealed as 20 ms
+    const int MaxFrames = (int)(FrameRate / 1000 * 120), EmptyFrames = (int)(FrameRate / 50);
+    std::vector<opus_int16> Block((size_t)MaxFrames * Channels);
+    std::vector<opus_int16> Pcm;
+    Pcm.reserve(((size_t)FrameCount + 2 * (size_t)EmptyFrames) * Channels);
 
-    auto SoundResult = std::make_unique<XSound>();
-
-    // Output Writer (Note: Frame Count in Asset isn't 100% accurate, so we add on some padding
-    //                      to account for 960 frame split so that we can avoid realloc)
-    std::vector<uint8_t> Pcm;
-    Pcm.reserve((FrameRate + 4096) * 2 * Channels);
-
-    // Offset to the data, depending on the buffer
-    size_t OpusDataSize = OpusBufferSize;
-    size_t OpusConsumed = 0;
-    size_t PCMDataSize = 0;
-
-    while (OpusConsumed < OpusDataSize)
+    for (size_t At = 0; At < OpusBufferSize;)
     {
-        uint16_t BlockSize = *(uint16_t*)(OpusBuffer + OpusConsumed + OpusDataOffset);
-        OpusConsumed += 2;
-
-        auto DecoderResult = opus_decode(
-            Decoder,
-            (OpusBuffer + OpusConsumed + OpusDataOffset),
-            BlockSize,
-            PCMBuffer.get(),
-            960,
-            0);
-
+        uint16_t BlockSize = 0;
+        std::memcpy(&BlockSize, OpusBuffer + OpusDataOffset + At, 2);
+        At += 2;
+        const int Decoded = opus_decode(Decoder.get(), OpusBuffer + OpusDataOffset + At, BlockSize, Block.data(), BlockSize == 0 ? EmptyFrames : MaxFrames, 0);
         // Any negative is a failure in Opus
-        if (DecoderResult < 0)
+        if (Decoded < 0)
             return nullptr;
-
-        const auto* Decoded = reinterpret_cast<const uint8_t*>(PCMBuffer.get());
-        Pcm.insert(Pcm.end(), Decoded, Decoded + 960 * 2 * Channels);
-
-        OpusConsumed += BlockSize;
-        PCMDataSize += 960 * 2 * (size_t)Channels;
+        Pcm.insert(Pcm.end(), Block.begin(), Block.begin() + (size_t)Decoded * Channels);
+        At += BlockSize;
     }
 
+    // the sound: FrameCount samples after the pre-skip (the game's, at 48 kHz), what the decode holds
+    // of them; an unmeasured pre-skip keeps every packet's samples
+    size_t First = 0, Frames = Pcm.size() / Channels;
+    if (PreSkip >= 0 && FrameCount > 0)
+    {
+        First = std::min<size_t>((size_t)PreSkip * FrameRate / 48000, Frames);
+        Frames = std::min<size_t>(FrameCount, Frames - First);
+    }
+    const size_t PCMDataSize = Frames * Channels * sizeof(opus_int16);
+
     auto Result = std::make_unique<XSound>();
-
-    uint32_t DataOffset = 0;
-
-    // We'll convert all BOCW sounds to 16bit PCM WAV
     Result->DataBuffer = new int8_t[PCMDataSize + (size_t)Sound::GetMaximumWAVHeaderSize()];
     Result->DataType = SoundDataTypes::WAV_WithHeader;
     Result->DataSize = (uint32_t)(PCMDataSize + Sound::GetMaximumWAVHeaderSize());
-
-    DataOffset += Sound::GetMaximumWAVHeaderSize();
-
-    Sound::WriteWAVHeaderToStream(Result->DataBuffer, (uint32_t)FrameRate, (uint32_t)Channels, (uint32_t)PCMDataSize);
-
-    std::memcpy(Result->DataBuffer + DataOffset, Pcm.data(), PCMDataSize);
-
+    Sound::WriteWAVHeaderToStream(Result->DataBuffer, FrameRate, Channels, (uint32_t)PCMDataSize);
+    if (PCMDataSize != 0)
+        std::memcpy(Result->DataBuffer + Sound::GetMaximumWAVHeaderSize(), Pcm.data() + First * Channels, PCMDataSize);
     return Result;
 }
 
@@ -450,6 +436,7 @@ void SABSupport::HandleSABv10(BinaryReader& Reader, const SABFileHeader& Header,
     {
         auto Entry = Reader.Read<SABv4Entry>();
         auto LoadedSound = NamedSound(HashedEntryName(Entry.Key, SoundNames));
+        LoadedSound->BankKey = Entry.Key;
         LoadedSound->FrameRate = Entry.FrameRate;
         SetSamples(LoadedSound, Entry.FrameCount, Entry.ChannelCount, Entry.Offset + Entry.SeekTableLength, Entry.Size, SoundDataTypes::FLAC_NeedsHeader);
         AddSound(LoadedSound, SkipBlank);
@@ -560,9 +547,21 @@ void SABSupport::HandleSABEncryption(BinaryReader& Reader, const std::string& Fi
 
     if (FileSystems::GetFileName(FilePath).find("zm_genesis") != std::string::npos)
     {
+        namespace fs = std::filesystem;
         std::error_code Ec;
+        // The decrypted copy, kept in %TEMP%\greyhound_sab (never beside the bank, in the game's
+        // folder): named after the bank, its path, size and time, so a changed bank is decrypted anew
+        const fs::path Dir = fs::temp_directory_path(Ec) / "greyhound_sab";
+        fs::create_directories(Dir, Ec);
+        const auto Size = fs::file_size(FilePath, Ec);
+        const auto Time = fs::last_write_time(FilePath, Ec).time_since_epoch().count();
+        const std::string Decrypted =
+            (Dir / std::format("{}_{}.wraithdec", fs::path(FilePath).filename().string(),
+                               ExportNaming::Hex16(ExportNaming::Fnv1a(ExportNaming::Lower(fs::absolute(FilePath, Ec).string()) + "\n" +
+                                                                       std::to_string(Size) + "\n" + std::to_string(Time)))))
+                .string();
         // We must swap out for a decrypted reader
-        if (!std::filesystem::is_regular_file(FilePath + ".wraithdec", Ec))
+        if (!fs::is_regular_file(Decrypted, Ec))
         {
             // Key 1: 32-byte key, 8-byte IV
             uint8_t KeyData[32] = { 0x91, 0x92, 0xD4, 0xDE, 0xF2, 0xEA, 0x37, 0x58, 0xE7, 0x4A, 0x0, 0xC1, 0x16, 0x21, 0x26, 0x46, 0xB, 0x93, 0xD0, 0xED, 0x6E, 0xED, 0xDC, 0x64, 0xD8, 0x21, 0xAB, 0xA9, 0x14, 0x5E, 0x2F, 0xC9 };
@@ -578,15 +577,19 @@ void SABSupport::HandleSABEncryption(BinaryReader& Reader, const std::string& Fi
             Key.KeyLength = 256;
             Encryption::Salsa20Block(FileBuffer, (uint32_t)ResultSize, Key);
 
+            // written aside then renamed: a reader never meets a half-written copy
+            const std::string Temp = Decrypted + std::format(".{}.tmp", GetCurrentProcessId());
             auto Writer = BinaryWriter();
 
-            Writer.Create(FilePath + ".wraithdec");
+            Writer.Create(Temp);
             Writer.Write(FileBuffer, (uint32_t)ResultSize);
             Writer.Close();
 
             delete[] FileBuffer;
+            fs::rename(Temp, Decrypted, Ec);
+            if (Ec) fs::remove(Temp, Ec);
         }
 
-        Reader.Open(FilePath + ".wraithdec");
+        Reader.Open(Decrypted);
     }
 }

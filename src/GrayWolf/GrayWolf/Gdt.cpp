@@ -26,6 +26,7 @@ namespace
     {
         int64_t Offset = 0;
         std::string Name, Kind, Form;   // Kind: what it holds (float, xmodel, soundAlias, xanim[]...)
+        std::string Source;             // where the name comes from: engine, observed
         int Count = 0;                  // the elements of an array form
         double Maximum = 0;             // float[]@: a larger value says the pointer is not to these
         bool Indirect = false;          // address: a pointer to the pointer
@@ -304,6 +305,7 @@ std::shared_ptr<const Type> Type::Load(const std::string& Dir, const std::string
                 Fd.Name = F.at("name").get<std::string>();
                 Fd.Kind = F.value("kind", std::string());
                 Fd.Form = F.value("form", std::string());
+                Fd.Source = F.value("source", std::string());
                 Fd.Count = F.value("count", 0);
                 Fd.Maximum = F.value("maximum", 0.0);
                 Fd.Indirect = F.value("indirect", false);
@@ -418,6 +420,19 @@ const nlohmann::ordered_json& Type::Settings() const { return D->Settings; }
 const std::string& Type::Folder() const { return D->Folder; }
 bool Type::Nested() const { return D->Nested; }
 const std::vector<Type::Source>& Type::FoundIn() const { return D->FoundIn; }
+
+std::vector<std::pair<std::string, std::vector<Type::NamedField>>> Type::NamedFields() const
+{
+    std::vector<std::pair<std::string, std::vector<NamedField>>> Out;
+    for (const auto& L : D->Layouts)
+    {
+        if (L.Type.empty() || !L.Sections.empty()) continue;   // (a stitched layout's offsets are not the zone's)
+        std::vector<NamedField> Fields;
+        for (const auto& F : L.Fields) Fields.push_back({ F.Offset, F.Name, F.Form, F.Source, F.Count });
+        Out.emplace_back(L.Type, std::move(Fields));
+    }
+    return Out;
+}
 
 void Type::Data::Read(const Memory& M, const Layout& L, int64_t Pos, std::map<std::string, Value>& Out,
                       std::set<const Layout*>& Seen, Stats& S) const
@@ -610,6 +625,17 @@ std::string Type::Name(const Memory& M, int64_t Pos) const
             return N;
         }
     return std::string();
+}
+
+std::map<std::string, Type::FieldValue> Type::Values(const Memory& M, int64_t Pos, Stats& S) const
+{
+    std::map<std::string, FieldValue> Out;
+    if (D->Layouts.empty()) return Out;
+    std::map<std::string, Value> Read;
+    std::set<const Layout*> Seen;
+    D->Read(M, D->Layouts[D->Root], Pos, Read, Seen, S);
+    for (auto& [Name, V] : Read) Out[Name] = { std::move(V.Numbers), std::move(V.Texts) };
+    return Out;
 }
 
 std::vector<std::pair<std::string, std::string>> Type::Fields(const Memory& M, int64_t Pos, Stats& S) const

@@ -22,7 +22,8 @@
 #include <filesystem>
 #include <format>
 
-std::map<std::string, std::string> Localizations
+// The language folders and the prefix of their files (french/fra_soundfile<N>.pak)
+static const std::map<std::string, std::string> Localizations
 {
     { "english",               "eng_" },
     { "french",                "fra_" },
@@ -404,34 +405,47 @@ std::vector<uint8_t> GameWorldWar2::ReadSoundHead(const CoDSound_t* Sound, size_
 // "" when it is not there
 std::string GameWorldWar2::SoundPackagePath(const CoDSound_t* Sound)
 {
+    std::error_code Ec;
+    const std::filesystem::path Root = CoDAssets::GamePackageCache->GetPackagesPath();
+    std::filesystem::path PackagePath;
+    if (!Sound->IsLocalized)
+        PackagePath = Root / std::format("soundfile{}.pak", Sound->PackageIndex);
+    else
     {
-        std::error_code Ec;
-        auto PackagePath = CoDAssets::GamePackageCache->GetPackagesPath();
-
-        if (!Sound->IsLocalized)
-        {
-            PackagePath = (std::filesystem::path(PackagePath) / std::format("soundfile{}.pak", Sound->PackageIndex)).string();
-        }
+        // the zone's language, else the first language folder the install has
+        const auto Own = Localizations.find(SoundLanguage);
+        if (Own != Localizations.end())
+            PackagePath = Root / Own->first / std::format("{}soundfile{}.pak", Own->second, Sound->PackageIndex);
         else
-        {
-            for (const auto &Localization : Localizations)
-            {
-                auto DirectoryCheck = (std::filesystem::path(PackagePath) / Localization.first).string();
-
-                if (std::filesystem::is_directory(DirectoryCheck, Ec))
+            for (const auto& [Folder, Prefix] : Localizations)
+                if (std::filesystem::is_directory(Root / Folder, Ec))
                 {
-                    PackagePath = DirectoryCheck;
-                    PackagePath = (std::filesystem::path(PackagePath) / std::format("{}soundfile{}.pak", Localization.second.c_str(), Sound->PackageIndex)).string();
-
+                    PackagePath = Root / Folder / std::format("{}soundfile{}.pak", Prefix, Sound->PackageIndex);
                     break;
                 }
-            }
-        }
-
-        if (!std::filesystem::is_regular_file(PackagePath, Ec))
-            return std::string();
-        return PackagePath;
     }
+    if (PackagePath.empty() || !std::filesystem::is_regular_file(PackagePath, Ec))
+        return std::string();
+    return PackagePath.string();
+}
+
+thread_local std::string GameWorldWar2::SoundLanguage;
+
+std::string GameWorldWar2::LanguageOfZone(const std::string& FastFilePath)
+{
+    const std::filesystem::path Ff(FastFilePath);
+    const std::string Folder = Strings::ToLower(Ff.parent_path().filename().string());
+    if (Localizations.contains(Folder)) return Folder;
+    const std::string Name = Strings::ToLower(Ff.filename().string());
+    for (const auto& [Language, Prefix] : Localizations)
+        if (Name.starts_with(Prefix)) return Language;
+    return std::string();
+}
+
+std::string GameWorldWar2::InstallOfZone(const std::string& FastFilePath)
+{
+    const std::filesystem::path Dir = std::filesystem::path(FastFilePath).parent_path();
+    return Localizations.contains(Strings::ToLower(Dir.filename().string())) ? Dir.parent_path().string() : Dir.string();
 }
 
 std::unique_ptr<XAnim_t> GameWorldWar2::ReadXAnim(const CoDAnim_t* Animation)

@@ -116,6 +116,9 @@ namespace ZoneTables
         std::vector<int> GrowingBlocks{4, 5};
         int ResidentBlock = 4, ResidentSize = 8, ResidentAlign = 8;
         int StartBlock = 4;                         // current when the first asset loads
+        // where in the start block the zone's own reads begin: what the game loaded there first
+        // (Infinite Warfare: a zone's shared stream, IW7Zone::LayoutOffset)
+        int64_t StartOffset = 0;
         // zone_load.list_refs: a back reference into the asset list names an asset through its
         // header slot (resolve_deref), which the loader points at the loaded asset (WWII)
         bool ListRefs = false;

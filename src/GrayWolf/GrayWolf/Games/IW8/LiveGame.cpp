@@ -37,7 +37,7 @@ namespace
         {
             // On purpose: the non-file-entry branch calls GameVanguard::ReadXSound, not MW4's own
             if (Sound->IsFileEntry)
-                return SABSupport::LoadOpusSound(Sound);
+                return SABSupport::LoadOpusSound(Sound, SABSupport::OpusPreSkipPacket);
             return GameVanguard::ReadXSound(Sound);
         }
         void LoadStreamedXModel(const std::unique_ptr<XModel_t>& Model, const XModelLod_t& ModelLOD, const std::unique_ptr<WraithModel>& ResultModel) const override

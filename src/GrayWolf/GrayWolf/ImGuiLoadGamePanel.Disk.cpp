@@ -386,18 +386,50 @@ void LoadGamePanel::DrawDiskSection()
     ImGui::SameLine();
     ImGui::TextDisabled("written to %s", Target.c_str());
 
-    // a kind the game's readers do not export is shown, disabled, with why
+    // the kinds the game's readers export, wrapped to the panel's width: the assets, then the data
+    // dumps folded under one node; the others named in a tooltip
     const std::set<DiskGame::Kind> Exported = Disk->Kinds();
+    const auto KindBoxes = [&](bool Research) {
+        const float Right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        bool First = true;
+        for (size_t i = 0; i < std::size(DiskGame::Kinds); i++)
+        {
+            if (DiskGame::Kinds[i].Research != Research || !Exported.count(DiskGame::Kinds[i].Id)) continue;
+            const float Width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(DiskGame::Kinds[i].Label).x;
+            if (!First)
+            {
+                ImGui::SameLine();
+                if (ImGui::GetCursorScreenPos().x + Width > Right) ImGui::NewLine();
+            }
+            First = false;
+            bool On = DiskKindFlags[i] != 0;
+            if (ImGui::Checkbox(DiskGame::Kinds[i].Label, &On)) { DiskKindFlags[i] = On; Persist(); }
+        }
+    };
+    KindBoxes(false);
+    size_t Dumps = 0, DumpsOn = 0;
+    std::string Missing;
     for (size_t i = 0; i < std::size(DiskGame::Kinds); i++)
     {
-        if (i > 0) ImGui::SameLine();
-        const bool Can = Exported.count(DiskGame::Kinds[i].Id) != 0;
-        bool On = Can && DiskKindFlags[i] != 0;
-        ImGui::BeginDisabled(!Can);
-        if (ImGui::Checkbox(DiskGame::Kinds[i].Label, &On)) { DiskKindFlags[i] = On; Persist(); }
-        ImGui::EndDisabled();
-        if (!Can && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s: not exported yet (its reader has no %s exporter)", Disk->Title(), DiskGame::Kinds[i].Name);
+        if (!Exported.count(DiskGame::Kinds[i].Id)) Missing += std::string(Missing.empty() ? "" : "\n") + DiskGame::Kinds[i].Label;
+        else if (DiskGame::Kinds[i].Research) { Dumps++; DumpsOn += DiskKindFlags[i] != 0; }
+    }
+    bool Folded = false;
+    if (Dumps)
+    {
+        const std::string Node = "Data dumps (" + std::to_string(DumpsOn) + " of " + std::to_string(Dumps) + " ticked)###diskdumps";
+        if (ImGui::TreeNode(Node.c_str()))
+        {
+            KindBoxes(true);
+            ImGui::TreePop();
+        }
+        else Folded = true;
+    }
+    if (!Missing.empty())
+    {
+        if (Folded) ImGui::SameLine();
+        ImGui::TextDisabled("(%zu kinds not exported for %s)", std::count(Missing.begin(), Missing.end(), '\n') + 1, Disk->Title());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Not exported yet (its readers have no exporter for them):\n%s", Missing.c_str());
     }
     // the game's settings, each while one of the kinds it concerns is ticked; the size estimate
     // at their right

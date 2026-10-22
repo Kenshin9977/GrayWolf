@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <format>
 #include <set>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -40,10 +41,19 @@ namespace IWPakSounds
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Sound];
         const PackagesInUse Using(Packages);
+        struct LanguageInUse
+        {
+            std::string Saved;
+            explicit LanguageInUse(const std::string& L) : Saved(std::exchange(GameWorldWar2::SoundLanguage, L)) {}
+            ~LanguageInUse() { GameWorldWar2::SoundLanguage = Saved; }
+            LanguageInUse(const LanguageInUse&) = delete;
+            LanguageInUse& operator=(const LanguageInUse&) = delete;
+        } const Language(Options.Language);
         const std::string Extension = IWPakSounds::Extension();
         const std::string Dir = C.KindDir(DiskGame::Kind::Sound);
         const auto Success = static_cast<int>(ExportGameResult::Success);
         std::set<std::string> Names;
+        ExportWriters::SoundFiles Files;
         if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
         bool Going = true;   // until cancelled; the rest is only freed
         for (size_t N = 0; N < Found.size(); N++)
@@ -92,9 +102,8 @@ namespace IWPakSounds
                 }
                 Counter(Sound->IsFileEntry ? "sounds_streamed" : "sounds_loaded")++;
                 std::string Crash;
-                const int Code = ExportWriters::ExportSound(*Sound, Dir, Extension, Crash);
-                std::error_code Ec;
-                const fs::path File = fs::path(Dir) / (Sound->AssetName + Extension);
+                fs::path File;
+                const int Code = Files.Write(*Sound, Dir, Extension, Crash, &File);                std::error_code Ec;
                 if (Code == Success && Options.EmptyFileFails && fs::exists(File, Ec) && fs::file_size(File, Ec) == 0)
                     T.Fail(Zone, DiskGame::Kind::Sound, Sound->AssetName, std::format("empty file ({}, package {}, offset {:x}, size {})",
                         Sound->IsFileEntry ? "pak" : "zone", (unsigned)Sound->PackageIndex, (unsigned long long)Sound->AssetPointer, (unsigned long long)Sound->AssetSize));
@@ -106,5 +115,7 @@ namespace IWPakSounds
             delete Sound;
         }
         Found.clear();
+        if (Files.Renamed) Counter("sounds_renamed") += Files.Renamed;
+        if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
     }
 }

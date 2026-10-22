@@ -39,6 +39,7 @@ namespace IwctxReaders
         SoundSource (*Where)(uint8_t Flags);
         uint32_t Header;              // the .xsub object's header (BO6 multiplayer 32, its campaign and BO7 0)
         bool ZoneCappedByLoaded;      // frames in the zone: at most the frames' size (BO7) or all ZoneSize (BO6)
+        int32_t PreSkip;              // the decoded samples before the sound's first (SABSupport::OpusPreSkip...)
     };
     std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound, const SoundLayout& L);
     constexpr int64_t SoundSeek = 0x20, SoundLoaded = 0x24, SoundFrames = 0x28;
@@ -107,6 +108,10 @@ namespace IwctxReaders
     // An asset's name from its 63-bit hash: the name indexes' (LoadNameIndexes), else
     // "<type>_<hex>"
     std::string HashedName(const char* Type, uint64_t Hash);
+    // An asset name's 63-bit hash: FNV-1a 64 from 0x47f5817a5ef961ba of the lower-case name, '\' as
+    // '/' (Black Ops 7's HashIWAsset; a Black Ops 6 weapon's and a Modern Warfare III mapinfo's hash
+    // at 0 are their names' too)
+    uint64_t AssetHash(const std::string& Name);
     // package_index's name indexes for these games (assets, strings, bones by their FNV-1a 64),
     // loaded once
     void LoadNameIndexes();

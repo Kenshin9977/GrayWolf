@@ -18,7 +18,8 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <set>
+#include <map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -50,6 +51,12 @@ namespace
         uint32_t Key = 0;
     };
 
+    // how the entries of a scan were named
+    struct Naming
+    {
+        size_t Bank = 0, Aliases = 0, Index = 0, Unnamed = 0;
+    };
+
     uint32_t FrameRateForIndex(uint8_t Index)
     {
         // Same table SABSupport::HandleSABv15 uses.
@@ -70,7 +77,8 @@ namespace
 
     // Local reproduction of SABSupport::HandleSABv15's header/name-table/entry scan, not
     // SABSupport::ParseSAB itself (see Bo3ZoneSounds.h).
-    bool ScanSabV15(const std::string& BankPath, std::vector<SabEntry>& Out, std::string& Reason)
+    bool ScanSabV15(const std::string& BankPath, std::vector<SabEntry>& Out, std::string& Reason,
+                    const std::function<const std::string*(uint32_t, bool)>& NameOf, Naming& Named)
     {
         BinaryReader Reader;
         if (!Reader.Open(BankPath))
@@ -135,18 +143,34 @@ namespace
                 continue; // nothing to export
             }
 
+            // the bank's own name, the alias file spec of that key (NameOf's first tables), the name
+            // index (package_index\bo3_sab.wni: English and Russian only), NameOf's last table, else the key
             std::string EntryName;
+            const std::string* Spec = nullptr;
             if (HasNames && i < Names.size())
             {
                 EntryName = Names[i];
+                Named.Bank++;
+            }
+            else if (NameOf && (Spec = NameOf(Entry.Key, false)) != nullptr)
+            {
+                EntryName = *Spec;
+                Named.Aliases++;
             }
             else if (NameIndex.NameDatabase.find(Entry.Key) != NameIndex.NameDatabase.end())
             {
                 EntryName = NameIndex.NameDatabase.at(Entry.Key);
+                Named.Index++;
+            }
+            else if (NameOf && (Spec = NameOf(Entry.Key, true)) != nullptr)
+            {
+                EntryName = *Spec;
+                Named.Aliases++;
             }
             else
             {
                 EntryName = std::format("_{:x}", Entry.Key);
+                Named.Unnamed++;
             }
 
             SabEntry E;
@@ -174,7 +198,8 @@ std::string Bo3SoundFormat(const std::string& AudioFormat)
 size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& OutDir,
                             const std::string& NameFilter, const std::string& AudioFormat,
                             std::string& Report, std::unordered_map<uint32_t, std::string>* WrittenKeys,
-                            const std::function<void(const DiskGame::SoundHeader&)>& Headers)
+                            const std::function<void(const DiskGame::SoundHeader&)>& Headers,
+                            const std::function<const std::string*(uint32_t, bool)>& NameOf)
 {
     const fs::path ZoneFile(FastFilePath);
     const std::string ZoneStem = ZoneFile.stem().string();
@@ -229,15 +254,20 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
 
     if (!Headers) fs::create_directories(OutDir, Ec);
 
-    size_t Candidates = 0, Matched = 0, Written = 0, WriteFailed = 0, DecodeFailed = 0, DedupSkipped = 0;
-    std::set<std::string> WrittenPaths; // de-dup across banks for this zone (plain + .p variant, etc.)
+    size_t Candidates = 0, Matched = 0, Written = 0, WriteFailed = 0, DecodeFailed = 0, DedupSkipped = 0, Collisions = 0;
+    // de-dup across banks for this zone (plain + .p variant, etc.): each path (without case) to the
+    // key and size written there. Another key of the same size is the same sound under a second
+    // spec (fire_fall_00 twice in zm_common.all.sabl); of another size, another sound, kept under
+    // its key
+    std::map<std::string, std::pair<uint32_t, uint32_t>> WrittenPaths;
     std::string BankFailures;
+    Naming Named;
 
     for (const auto& Bank : Banks)
     {
         std::vector<SabEntry> Entries;
         std::string ScanReason;
-        if (!ScanSabV15(Bank.string(), Entries, ScanReason))
+        if (!ScanSabV15(Bank.string(), Entries, ScanReason, NameOf, Named))
         {
             BankFailures += "bank_failed=" + Bank.filename().string() + " reason=" + ScanReason + "\n";
             continue;
@@ -255,19 +285,24 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
 
             fs::path OutPath = fs::path(OutDir);
             if (!LocaleDirName.empty()) OutPath /= SanitizeComponent(LocaleDirName);
-            if (!E.SubDir.empty())
+            bool First = true;
+            for (const auto& Part : Strings::SplitString(E.SubDir, '\\', true))
             {
-                for (const auto& Part : Strings::SplitString(E.SubDir, '\\', true))
+                for (const auto& Part2 : Strings::SplitString(Part, '/', true))
                 {
-                    for (const auto& Part2 : Strings::SplitString(Part, '/', true))
-                    {
-                        OutPath /= SanitizeComponent(Part2);
-                    }
+                    // a language's name starts with its folder ("fr\vox\..." in snd\fr): once
+                    if (std::exchange(First, false) && !LocaleDirName.empty() && Lower(Part2) == Lower(LocaleDirName)) continue;
+                    OutPath /= SanitizeComponent(Part2);
                 }
             }
-            OutPath /= (SanitizeComponent(E.Name) + OutExt);
-
-            const std::string OutPathStr = OutPath.string();
+            std::string OutPathStr = (OutPath / (SanitizeComponent(E.Name) + OutExt)).string();
+            if (const auto Taken = WrittenPaths.find(Lower(OutPathStr));
+                Taken != WrittenPaths.end() && Taken->second.first != E.Key && Taken->second.second != E.Size)
+            {
+                OutPathStr = (OutPath / std::format("{}_{:x}{}", SanitizeComponent(E.Name), E.Key, OutExt)).string();
+                Collisions++;
+            }
+            OutPath = OutPathStr;
             const auto Remember = [&] {
                 if (WrittenKeys && E.Key != 0)
                 {
@@ -276,7 +311,7 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
                     WrittenKeys->emplace(E.Key, std::move(Rel));
                 }
             };
-            if (!WrittenPaths.insert(OutPathStr).second)
+            if (!WrittenPaths.emplace(Lower(OutPathStr), std::make_pair(E.Key, E.Size)).second)
             {
                 Remember();
                 DedupSkipped++;
@@ -330,8 +365,10 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
 
     Report = std::format(
         "result=ok\nbanks={}\ncandidates={}\nmatched={}\nsounds_exported={}\n"
-        "decode_failed={}\nwrite_failed={}\ndedup_skipped={}\n",
-        Banks.size(), Candidates, Matched, Written, DecodeFailed, WriteFailed, DedupSkipped);
+        "decode_failed={}\nwrite_failed={}\ndedup_skipped={}\nnamed_by_bank={}\nnamed_by_aliases={}\n"
+        "named_by_index={}\nunnamed={}\nname_collisions={}\n",
+        Banks.size(), Candidates, Matched, Written, DecodeFailed, WriteFailed, DedupSkipped, Named.Bank, Named.Aliases,
+        Named.Index, Named.Unnamed, Collisions);
     Report += BankFailures;
 
     return Written;

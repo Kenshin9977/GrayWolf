@@ -300,12 +300,25 @@ namespace GameReaders
     std::unique_ptr<XImageDDS> TranslatePakImage(std::unique_ptr<uint8_t[]> Data, uint32_t Size, uint8_t Format, uint8_t MapType, uint32_t Width,
                                                  uint32_t Height, ImageUsageType Usage, uint8_t Levels = 1);
 
+    // A loaded sound's file name without its folder or an audio extension: a variant's number
+    // stays (MWR's khouse_gaz_2_1.4 is one of eight takes of khouse_gaz_2_1 in a zone)
+    inline std::string LoadedSoundStem(const std::string& Name)
+    {
+        std::string S = FileSystems::GetFileName(Name);
+        const size_t Dot = S.rfind('.');
+        if (Dot == std::string::npos) return S;
+        const std::string Ext = ExportNaming::Lower(S.substr(Dot));
+        for (const char* Audio : { ".wav", ".flac", ".mp3", ".ogg", ".opus", ".xma", ".xwma", ".snd" })
+            if (Ext == Audio) return S.substr(0, Dot);
+        return S;
+    }
+
     // A sound whose samples the zone holds, named after its file
     template <typename TLoaded>
     CoDSound_t* LoadedSound(const TLoaded& Info, const std::string& Name, SoundDataTypes DataType)
     {
         auto Sound = new CoDSound_t();
-        Sound->AssetName = FileSystems::GetFileNameWithoutExtension(Name);
+        Sound->AssetName = LoadedSoundStem(Name);
         Sound->FullPath = FileSystems::GetDirectoryName(Name);
         Sound->AssetPointer = Info.SoundDataPtr;
         Sound->AssetSize = Info.SoundDataSize;

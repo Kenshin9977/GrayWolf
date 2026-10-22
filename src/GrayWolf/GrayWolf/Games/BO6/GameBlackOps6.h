@@ -45,6 +45,14 @@ public:
     // u32 0x18, the .xsub key at 8; else the key at 0x10); seek table size u32 0x20, frames' size u32
     // 0x24, frame count u32 0x28, rate u16 0x32
     static constexpr int64_t SoundFlags = 0x30, SoundSeek = 0x20, SoundLoaded = 0x24, SoundFrames = 0x28, SoundRate = 0x32;
+    // The game's languages, the last part of a localized sound's hashed name (IwLanguageNames): its
+    // language table, 23 rows {name, zone prefix, id, locale} of 32 bytes at RVA 0xb328ac0 of
+    // bo6_flat.exe (0xafafac0 of bo6sp_flat.exe, the same rows); english_safe is the ens_ zones'
+    static constexpr const char* Languages[] = { "english", "english_safe", "french", "german", "italian", "spanish",
+                                                 "russian_full", "russian_partial", "polish_full", "polish_partial", "korean_full",
+                                                 "korean_partial", "japanese_full", "japanese_partial", "simplified_chinese",
+                                                 "traditional_chinese", "safe_chinese", "arabic", "czech", "spanishna", "portuguese",
+                                                 "thai", "turkish" };
     // The campaign (sp24, profile bo6sp) moves a few fields: the model's skeleton, materials and
     // LODs 8 bytes on (0x70, 0x98, 0xa0), 12-byte rigid runs, 28-byte face tables (no flag byte: the
     // corners plain fixed-width), the sound's flags u8 at 0x3c and its rate u16 at 0x2c, its .xsub object
@@ -54,6 +62,7 @@ public:
     {
         int64_t ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate;
         uint32_t RigidRunSize, FaceTableSize, SoundHeader;
+        int32_t SoundPreSkip;          // the Opus pre-skip (multiplayer 312, campaign 960: SABSupport::OpusPreSkip...)
         const uint8_t* ImageFormats;   // GfxImage format -> DXGI, ImageFormatCount entries
         uint32_t ImageFormatCount;
     };

@@ -10,10 +10,12 @@
 #include "ExportWriters.h"
 #include "GameAdvancedWarfare.h"
 #include "GameReaders.h"
+#include "GameWorldWar2.h"
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwWeaponDefs.h"
 #include "Games/S1/EntityKeys.h"
 #include "MapLive.h"
 #include "PAKCache.h"
@@ -58,6 +60,43 @@ namespace
     }
     constexpr const char* CommonZones = "(patch_)?(common|code_pre_gfx|code_post_gfx)(_[a-z0-9_]+)?[.]ff";
 
+    // The weapon fields (IwWeaponDefs.h): the weapon asset is the WeaponDef itself (0xde8), at x64-zt's
+    // S1 structs.hpp offsets (zonetool rebuilds these zones), checked on common_mp's weapons (README).
+    // weapType, weapClass, fireType and the hit locations are named by the exe's tables (s1_mp64:
+    // 0x1409b0930, 0x1409b0960, 0x1409b0a50, 0x1409b5400).
+    const IwWeaponDefs::Layout& WeaponLayout()
+    {
+        static const IwWeaponDefs::Layout L = [] {
+            IwWeaponDefs::Layout L;
+            L.Name = 0, L.Display = 8;
+            L.Types = { "none", "bullet", "grenade", "projectile", "riotshield", "energy" };
+            L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher",
+                          "turret", "throwingknife", "non-player", "item", "cone", "beam", "shield", "hover",
+                          "cloak", "ping", "repulsor", "adrenaline", "health", "mute", "underwater", "ball" };
+            L.FireTypes = { "Full Auto", "Single Shot", "2-Round Burst", "3-Round Burst", "4-Round Burst", "5-Round Burst", "Double Barrel" };
+            constexpr int64_t Timers = 0x658;   // stateTimers (StateTimers, 0x12c)
+            L.Fields = { { "weaponType", 0x52c }, { "weaponClass", 0x530 }, { "fireType", 0x544 }, { "startAmmo", 0x61c }, { "maxAmmo", 0x630 },
+                         { "clipSize", 0x638 }, { "shotCount", 0x63c }, { "damage", 0x648 }, { "meleeDamage", 0x650 },
+                         { "fireTime", Timers + 0x10 }, { "reloadTime", Timers + 0x34 }, { "reloadEmptyTime", Timers + 0x3c },
+                         { "reloadAddTime", Timers + 0x40 }, { "reloadEmptyAddTime", Timers + 0x44 }, { "reloadStartTime", Timers + 0x48 },
+                         { "reloadEndTime", Timers + 0x50 }, { "dropTime", Timers + 0x6c }, { "raiseTime", Timers + 0x70 },
+                         { "quickRaiseTime", Timers + 0x80 }, { "firstRaiseTime", Timers + 0x84 }, { "sprintOutTime", Timers + 0x9c },
+                         { "adsTransInTime", 0x988 }, { "adsTransOutTime", 0x990 },
+                         { "explosionRadius", 0xa60 }, { "explosionRadiusMin", 0xa64 }, { "explosionInnerDamage", 0xa68 },
+                         { "explosionOuterDamage", 0xa6c }, { "projectileSpeed", 0xa7c },
+                         { "maxDamageRange", 0xc90 }, { "damage2", 0xc80 }, { "damageRange2", 0xc94 }, { "minDamage", 0xc84 }, { "locationDamageMultipliers", 0x460 } };
+            L.Notes = IwWeaponDefs::GameNotes("Advanced Warfare", "french/fra_code_post_gfx_mp", "common_mp",
+                                              "the WeaponDef (the weapon asset itself) at the offsets of x64-zt's S1 structs.hpp",
+                                              "Bal-27 706 rpm, 32 rounds; AK-12 750 rpm, 30 rounds; KF5 870 rpm, 40 rounds; MORS bolt action");
+            L.Notes.Source += "The damage is three steps, no fall-off (s1_mp64_flat 0x169ab0, through the getter 0x1649d0 and\n"
+                              "0x164760 that take a field's offset): damage (0x648) up to maxDamageRange (0xc90), then damage_2\n"
+                              "(0xc80, x64-zt's minDamage) up to range_2_m (0xc94, its minDamageRange), then the last one (0xc84,\n"
+                              "x64-zt's midDamage) beyond: its range is empty.\n";
+            return L;
+        }();
+        return L;
+    }
+
     class AwZone final : public IWZone
     {
     public:
@@ -73,6 +112,7 @@ namespace
             ExportsScriptFiles(Scripts::GscToolBin("s1"));
             ExportsIwRawfiles();
             ExportsIwStringTables();
+            ExportsIwWeapons(WeaponLayout());
         }
         ~AwZone() override
         {
@@ -245,8 +285,10 @@ namespace
             Lists.emplace_back(I.Pos, AliasName);
         }
         PAKCache Packages;
-        Packages.LoadPackageCache(fs::path(FastFilePath()).parent_path().string());
-        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); });
+        Packages.LoadPackageCache(GameWorldWar2::InstallOfZone(FastFilePath()));
+        IWPakSounds::WriteOptions Options;
+        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
+        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
 
         if (!SoundAliasCsv::Wanted(C)) return;
         SoundAliasCsv::Rows Rows;

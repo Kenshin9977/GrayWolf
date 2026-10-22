@@ -27,6 +27,11 @@ namespace Techsets
 {
     class Format;
 }
+namespace Gdt
+{
+    class Type;
+    struct Memory;
+}
 
 // Every pointer of a layout walk, resolved: inline links, asset-list references, data back
 // references through the stream layout, and (DerefAssetPointers) asset pointers followed the way
@@ -95,6 +100,10 @@ public:
     // Parked: the session ended (its lock freed), the relocated zone kept; Resume serves it again.
     bool Park() override;
     void Resume() override;
+    // Visit each zone-level asset of the profile's gdt type Id (<profile>/gdt/<Id>/) with the type
+    // and how it reads the zone (Gdt::Type::Values); false and Error when the profile has no such type
+    bool ForEachGdtAsset(const std::string& Id, const std::function<void(const Gdt::Type&, const Gdt::Memory&, int64_t Pos)>& Visit,
+                         std::string& Error) const;
 
 protected:
     // What the game must say
@@ -106,9 +115,9 @@ protected:
     virtual bool LoadBytes(std::vector<uint8_t>& Zone, std::string& Error);   // FastFile::Decompress
     // IW6: an ASSET pointer's back reference names the pointer field to follow (resolve_deref)
     virtual bool DerefAssetPointers() const { return false; }
-    // after the walk, before its back references resolve: where the zone's reads sit in a block
-    // the game filled before it (Infinite Warfare's level: the shared stream comes first in block 8)
-    virtual void Rebase(ZoneTables::ZoneResult& Walked) {}
+    // before the walk (the profile loaded): where in its start block the zone's reads begin, the
+    // game having loaded something there first (Infinite Warfare: the shared stream, in block 8)
+    virtual int64_t LayoutOffset() { return 0; }
     // after relocation: what the game's load-time fixups write (Ghosts: LOD surfaces)
     virtual void Fixups() {}
     // the zone becomes the one the game's plain handler functions reach (On: opened or resumed),
@@ -291,6 +300,11 @@ protected:
     {
         int64_t SlotCount = 0, ImageCount = 0, Slots = 0, Images = 0;
         int64_t Techset = -1, Flags = 0, Layers = 0, Constants = 0, ConstantCount = 0, ModelMaterials = -1;
+        // the records of Slots -1, and the image's fields: Black Ops 4's records are 0x20 {image 0,
+        // semantic hash u32 8}, its image {hash 0x20, width u16 0x68, height 0x6a, format u32 0x64}
+        int64_t RecordSize = 16, RecordSemantic = 0, RecordImage = 8;
+        int64_t ImageHash = 0, ImageWidth = 0x20, ImageHeight = 0x22, ImageFormat = 0x2a;
+        bool WideFormat = false;   // the format a u32, else a u8
     };
     void ExportsMaterialLinks(const MaterialLinkLayout& L);
     // The sound links kind (Exports(Kind::SoundLinks, ...)), for Modern Warfare III, Black Ops 6
@@ -302,6 +316,10 @@ protected:
     struct SoundLinkLayout
     {
         int64_t Aliases = 0, AliasCount = 0, AliasSize = 0, AliasHash = 0, Entries = 0, EntryCount = 0, EntrySize = 0, EntrySound = 0;
+        // Black Ops 4: the bank is the "sound" asset (SndBank) and an entry holds its file's hash
+        // itself (SndAlias assetId), not a pointer
+        const char* Bank = nullptr;   // nullptr: soundbank and soundbanktransient
+        bool SoundIsHash = false;
     };
     void ExportsSoundLinks(const SoundLinkLayout& L);
     // The asset references kind (Exports(Kind::AssetRefs, ...)): what each zone-level asset (but
@@ -369,11 +387,15 @@ protected:
     // pointing to it (#n: the n-th of its type there). <kind>/<zone>/<type>/<name>.json
     // A field named once proven: shown as "<offset> <name>" (the offset kept, so a dump still diffs
     // by offset), its value read as Kind says ("i32", "f32", "u16x2" two u16 as [low, high]; "" the
-    // dump's own guess)
+    // dump's own guess; "hash" an 8-byte hash, {"id", "name" when known}, or 0); public: a game
+    // family's helpers name them
+public:
     struct DumpField
     {
         std::string Name, Kind;
     };
+
+protected:
     struct DumpType
     {
         std::string Type;
@@ -382,7 +404,20 @@ protected:
         std::map<std::string, DumpField> Fields;
         int64_t IdAt = 0;   // the field holding its 63-bit name hash
     };
-    void ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Types, std::function<std::string(const std::string&)> Decrypt = nullptr);
+    // NamesFrom: a gdt type of the profile (<profile>/gdt/<type>/, Gdt::Type::NamedFields) whose layouts
+    // name more fields of these types: the names the game's own field list gives ("source": "engine"),
+    // a 4-byte number as its form says (an array's elements name[i]), a pointer or hash as the dump
+    // guesses; bytes and the "observed" names are left out, a field the game names itself kept
+    void ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Types, std::function<std::string(const std::string&)> Decrypt = nullptr,
+                            std::string NamesFrom = std::string());
+    // A kind written as one JSON per zone-level asset of Type (Black Ops 4 and Cold War's script
+    // bundles): Read gives its text and the folder it goes in under its zone ("" none; false: not
+    // read, a failure; true with no text: nothing to write, a name-only header). Reads: the asset's
+    // reads (position, size) in walk order, where a block the zone keeps inline is. Named by the hash
+    // at its offset 0 (HashName, else <Type>_<hex>): <kind>/<zone>/[<folder>/]<name>.json, indexed
+    using JsonAssetReader =
+        std::function<bool(int64_t Pos, const std::vector<std::pair<int64_t, int64_t>>& Reads, std::string& Folder, std::string& Json)>;
+    void ExportJsonAssets(DiskGame::Kind K, const DiskGame::Context& C, DiskGame::Totals& T, const char* Type, const JsonAssetReader& Read);
     // A Lua file's name ending as its bytes are: .luac for compiled bytecode (ESC "Lua", LuaJIT's
     // ESC "LJ"), else .lua (in place of the name's own .lua or .luac)
     static void NameLua(std::string& Name, const std::vector<uint8_t>& Bytes);
@@ -462,6 +497,10 @@ private:
     void ExportLive(DiskGame::Kind K, const char* Type, const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportLocalize(const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T);
+    // the profile's gdt types (<profile>/gdt/<type>/), read once per profile; empty and Error when they do not read
+    std::vector<std::shared_ptr<const Gdt::Type>> GdtTypes(std::string& Error) const;
+    // how the gdt layouts read this zone (its image, names, strings)
+    Gdt::Memory GdtMemory() const;
 
     std::string Path, ZoneName, ProfileName;
     std::vector<uint8_t> Bytes;

@@ -45,6 +45,13 @@ namespace FastFileInternal
     {
         return Uncompressed <= Compressed * MaxInflateRatio + 64;
     }
+    // Oodle has no such ratio: a 256 KiB chunk of one repeated byte takes a few bytes (Black Ops 4's
+    // zones hold 261856-byte blocks stored in 6). Each chunk still needs its 2-byte header.
+    constexpr uint64_t OodleChunkSize = 0x40000;
+    inline bool OodleInflatesWithin(uint64_t Uncompressed, uint64_t Compressed)
+    {
+        return Uncompressed <= (Compressed / 2) * OodleChunkSize;
+    }
     // A declared zone size as a reserve hint, at most what FileBytes could inflate to
     inline void ReserveZone(std::vector<uint8_t>& Zone, uint64_t Declared, uint64_t FileBytes)
     {

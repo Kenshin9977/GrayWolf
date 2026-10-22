@@ -15,6 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace IwWeaponDefs
+{
+    struct Layout;
+}
+
 class IWZone : public ZonekitZone
 {
 public:
@@ -127,8 +132,15 @@ protected:
     // An image's pak entries mixed into its content key
     void MixStreams(int64_t Pos, ExportWriters::ContentKey& Key) const;
     // The sounds of the sound banks (.sabl, .sabs) at these paths, through SABSupport, each written
-    // flat under the sound kind's folder in the saved sound format
-    void ExportSoundBanks(const std::vector<std::string>& Banks, const DiskGame::Context& C, DiskGame::Totals& T);
+    // under its folder in the bank (sounds/cp/dlc4/p6/i/) in the saved sound format; a sound both
+    // banks hold once, from the one holding more of it. Patches: the zone's patch_ banks (Modern
+    // Warfare 2019), loaded with its own: an entry of theirs replaces the bank entry of the same key
+    // and adds the keys the banks lack
+    void ExportSoundBanks(const std::vector<std::string>& Banks, const DiskGame::Context& C, DiskGame::Totals& T,
+                          const std::vector<std::string>& Patches = {});
+    // The file ExportSoundBanks writes a bank's sound Name (cp\dlc4\x.pn.75.36000.french) to,
+    // under the sound kind's folder: cp/dlc4/x<Extension>, each part made safe
+    static std::string SoundBankFile(const std::string& Name, const std::string& Extension);
     // Defines' images: Streams' and Also's, those named in place (at their position + NameAt)
     void DefineStreamed(std::vector<DiskGame::AssetId>& Out, int64_t NameAt, const std::vector<int64_t>& Also = {}) const;
     // The rawfile kind as Ghosts to MW2019 keep it (IwRawData.cpp): rawfile {name, u32 compressed
@@ -138,4 +150,8 @@ protected:
     // The data kind's string tables as Ghosts to WWII keep them: stringtable {name, columns 8, rows
     // 0xc, 16-byte cells {string, hash} at 0x10}
     void ExportsIwStringTables();
+    // The weapons kind (the weapon and attachment assets as struct dumps, named by the string at
+    // their 0, the layout's fields named) and the weaponstats kind (IwWeaponDefs) of the games
+    // keeping the classic WeaponDef, Ghosts to WWII
+    void ExportsIwWeapons(const IwWeaponDefs::Layout& L);
 };

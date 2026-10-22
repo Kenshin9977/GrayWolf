@@ -12,6 +12,7 @@
 #include "DiskGame.h"
 #include "GameWorldAtWar.h"
 #include "Games/IW3/IwdZone.h"
+#include "Games/OAT/OatWeapons.h"
 
 #include <cstring>
 #include <filesystem>
@@ -32,7 +33,12 @@ namespace
     class WawZone final : public Iw3Family::IwdZone
     {
     public:
-        WawZone(const std::string& Path, std::string InstallDir) : IwdZone(Path, std::move(InstallDir)) {}
+        WawZone(const std::string& Path, std::string InstallDir) : IwdZone(Path, std::move(InstallDir)), Weapons(Path)
+        {
+            // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty: World at War"); });
+        }
 
     protected:
         const char* Profile() const override { return "t4"; }
@@ -134,6 +140,9 @@ namespace
                     T.Fail(Name(), Kind::Sound, Full, Why);
             }
         }
+
+    private:
+        OatWeapons::Source Weapons;
     };
 
     class WawGame final : public DiskGame::IDiskGame

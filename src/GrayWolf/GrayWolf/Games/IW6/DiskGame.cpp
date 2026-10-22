@@ -9,9 +9,11 @@
 #include "ExportWriters.h"
 #include "GameGhosts.h"
 #include "GameReaders.h"
+#include "GameWorldWar2.h"
 #include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwWeaponDefs.h"
 #include "Games/IW6/EntityKeys.h"
 #include "MapLive.h"
 #include "PAKCache.h"
@@ -53,12 +55,49 @@ namespace
         return L;
     }
 
+    // The weapon fields (IwWeaponDefs.h): WeaponCompleteDef (0x128, the weapon asset) and its WeaponDef
+    // (0xa98, behind 8), at x64-zt's IW6 structs.hpp offsets (zonetool rebuilds these zones), checked
+    // on common_core_mp's weapons (README). weapType, weapClass, fireType and the hit locations are
+    // named by the exe's tables (iw6sp64: 0x140a0f5e0, 0x140a0f610, 0x1407e01e0).
+    const IwWeaponDefs::Layout& WeaponLayout()
+    {
+        static const IwWeaponDefs::Layout L = [] {
+            IwWeaponDefs::Layout L;
+            L.Name = 0, L.Def = 8, L.Display = 0x10;
+            L.Types = { "none", "bullet", "grenade", "projectile", "riotshield" };
+            L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher", "turret", "throwingknife", "non-player", "item" };
+            L.FireTypes = { "Full Auto", "Single Shot", "2-Round Burst", "3-Round Burst", "4-Round Burst", "Double Barrel" };
+            constexpr int64_t Timers = 0x3f0;   // WeaponDef stateTimers (StateTimers, 0xcc)
+            L.Fields = { { "adsTransInTime", 0x94, false }, { "adsTransOutTime", 0x98, false }, { "clipSize", 0x9c, false },
+                         { "fireTime", 0xa4, false }, { "firstRaiseTime", 0xf0, false },
+                         { "weaponType", 0x94 }, { "weaponClass", 0x98 }, { "fireType", 0xa4 }, { "startAmmo", 0x3a0 }, { "maxAmmo", 0x3c4 },
+                         { "shotCount", 0x3c8 }, { "damage", 0x3e0 }, { "meleeDamage", 0x3e8 },
+                         { "reloadTime", Timers + 0x30 }, { "reloadEmptyTime", Timers + 0x38 }, { "reloadAddTime", Timers + 0x3c },
+                         { "reloadEmptyAddTime", Timers + 0x40 }, { "reloadStartTime", Timers + 0x44 }, { "reloadEndTime", Timers + 0x4c },
+                         { "dropTime", Timers + 0x50 }, { "raiseTime", Timers + 0x54 }, { "quickRaiseTime", Timers + 0x60 },
+                         { "sprintOutTime", Timers + 0x78 },
+                         { "explosionRadius", 0x6d4 }, { "explosionRadiusMin", 0x6d8 }, { "explosionInnerDamage", 0x6dc },
+                         { "explosionOuterDamage", 0x6e0 }, { "projectileSpeed", 0x6f0 },
+                         { "minDamage", 0x908 }, { "maxDamageRange", 0x910 }, { "minDamageRange", 0x914 }, { "locationDamageMultipliers", 0x928 } };
+            L.Notes = IwWeaponDefs::GameNotes("Ghosts", "french/fra_code_post_gfx_mp", "common_core_mp",
+                                              "the WeaponCompleteDef (the weapon asset: ADS times, clipSize, fireTime,\n"
+                                              "firstRaiseTime) and its WeaponDef (behind 8), at the offsets of x64-zt's IW6 structs.hpp",
+                                              "Honey Badger 800 rpm, 30 rounds, 42-20 damage; AK-12 690 rpm, 48-25; MTS-255 8 pellets");
+            L.Notes.Source += "The damage fields are read off the exe too (iw6sp64_dumped, the definitions' table 0x5a5fb20):\n"
+                              "damage 0x3e0 (0x4c7daa) and minDamage 0x908 (0x4c9c8a), each overridden by an attachment's block\n"
+                              "0x70, maxDamageRange 0x910 and minDamageRange 0x914 (0x4c7e82, scaled by the attachments' 0xe4, 0xe8).\n";
+            return L;
+        }();
+        return L;
+    }
+
     class GhostsZone final : public IWZone
     {
     public:
         explicit GhostsZone(const std::string& Path) : IWZone(Path)
         {
             using namespace DiskGame;
+            ExportsIwWeapons(WeaponLayout());
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
@@ -157,8 +196,10 @@ namespace
             Lists.emplace_back(I.Pos, AliasName);
         }
         PAKCache Packages;
-        Packages.LoadPackageCache(fs::path(FastFilePath()).parent_path().string());
-        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); });
+        Packages.LoadPackageCache(GameWorldWar2::InstallOfZone(FastFilePath()));
+        IWPakSounds::WriteOptions Options;
+        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
+        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
 
         if (!SoundAliasCsv::Wanted(C)) return;
         SoundAliasCsv::Rows Rows;

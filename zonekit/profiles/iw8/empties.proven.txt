@@ -18,3 +18,10 @@ f2da05f0|131
 # 0x2e32760: 0x2e327cf (align 4) allocates before a count of 0
 f2e32760|3
 f2e32760|5
+# global_stream_mp emulated by the game's loaders (zonekit emulator: 991553 reads, 744306 in block 5): block and the largest alignment its occurrences with no empty or slot before them agree with; the four entries recordings gave a larger alignment this zone contradicts (attachment|65, |72, |94|f2e17b40, f2da05f0|164, f2e43400|3); empties: count-0 allocations that align, the zone's layout then exact (744306/744306)
+attachment|11
+attachment|18
+weapon|37
+weapon|44
+weapon|47
+weapon|48

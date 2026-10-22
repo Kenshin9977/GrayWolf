@@ -4,6 +4,7 @@
 
 #include "ExportNaming.h"
 #include "Games/Common/MeshDecode.h"
+#include "Games/IW/IwctxReaders.h"
 
 #include <cstdio>
 #include <cstring>
@@ -125,4 +126,18 @@ std::string EntityText(const std::vector<uint8_t>& Img, int64_t Array, uint64_t 
     }
     return S;
 }
+}
+
+void Treyarch::ExportMapEnts(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Zone, const std::string& Text)
+{
+    std::vector<Maps::Entity> Parsed;
+    if (Text.empty()) return;
+    if (!Maps::ParseEntities(Text, Parsed))
+    {
+        T.Fail(Zone, DiskGame::Kind::MapEnts, Zone, "entity text not parsed");
+        return;
+    }
+    std::vector<IwctxReaders::MapEntity> Entities;
+    for (const auto& E : Parsed) Entities.emplace_back(E.begin(), E.end());
+    IwctxReaders::ExportMapEnts(C, T, Zone, Entities);
 }

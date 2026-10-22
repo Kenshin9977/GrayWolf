@@ -359,7 +359,7 @@ std::unique_ptr<XSound> GameModernWarfare6::ReadXSound(const CoDSound_t* Sound)
         if (SoundBuffer == nullptr)
             return nullptr;
 
-        return SABSupport::OpusPackets(SoundBuffer.get(), SoundMemoryResult, SoundData.SeekTableSize, (size_t)SoundMemoryResult - SoundData.SeekTableSize, SoundData.FrameRate, SoundData.ChannelCount, SoundData.FrameCount);
+        return SABSupport::OpusPackets(SoundBuffer.get(), SoundMemoryResult, SoundData.SeekTableSize, (size_t)SoundMemoryResult - SoundData.SeekTableSize, SoundData.FrameRate, SoundData.ChannelCount, SoundData.FrameCount, SABSupport::OpusPreSkipPacket);
     }
     else
     {
@@ -374,7 +374,7 @@ std::unique_ptr<XSound> GameModernWarfare6::ReadXSound(const CoDSound_t* Sound)
         if (SoundBuffer == nullptr)
             return nullptr;
 
-        return SABSupport::OpusPackets(SoundBuffer.get(), SoundMemoryResult, 32 + (size_t)SoundData.SeekTableSize, (size_t)SoundMemoryResult - 32 - SoundData.SeekTableSize, SoundData.FrameRate, SoundData.ChannelCount, SoundData.FrameCount);
+        return SABSupport::OpusPackets(SoundBuffer.get(), SoundMemoryResult, 32 + (size_t)SoundData.SeekTableSize, (size_t)SoundMemoryResult - 32 - SoundData.SeekTableSize, SoundData.FrameRate, SoundData.ChannelCount, SoundData.FrameCount, SABSupport::OpusPreSkipPacket);
     }
 
 }

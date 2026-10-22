@@ -21,6 +21,16 @@ public:
     // before any header it adds: a stored FLAC file's STREAMINFO, read without its samples
     static std::vector<uint8_t> ReadSoundHead(const CoDSound_t* Sound, size_t N);
     static std::string SoundPackagePath(const CoDSound_t* Sound);
+    // The language folder (french) a localized sound's package is read from while a zone's
+    // sounds are written: <folder>/<prefix>soundfile<N>.pak under the package cache's path. ""
+    // takes the first language folder the install has.
+    static thread_local std::string SoundLanguage;
+    // A zone's language folder: the one its .ff is in (french/fra_x.ff), else the one its name's
+    // prefix names (fra_x.ff); "" for a zone of no language
+    static std::string LanguageOfZone(const std::string& FastFilePath);
+    // The install a zone belongs to: the folder of its .ff, or the one above when that is a
+    // language folder
+    static std::string InstallOfZone(const std::string& FastFilePath);
     static const XMaterial_t ReadXMaterial(uint64_t MaterialPointer);
 
     static std::unique_ptr<XImageDDS> LoadResidentXImage(const XImage_t& Image);

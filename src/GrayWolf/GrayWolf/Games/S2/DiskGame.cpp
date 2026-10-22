@@ -14,6 +14,7 @@
 #include "Games/IW/IWSoundAliases.h"
 #include "FileSystems.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwWeaponDefs.h"
 #include "PAKCache.h"
 #include "Strings.h"
 #include "XPTOCCache.h"
@@ -139,7 +140,9 @@ namespace
     {
         std::string Root;
         std::unordered_multimap<uint64_t, ImageLevels> Images;
-        std::unordered_map<uint64_t, SoundEntry> SoundFiles, LocalizedSoundFiles;
+        std::unordered_map<uint64_t, SoundEntry> SoundFiles;
+        // each language folder's (french), by its name in lower case
+        std::map<std::string, std::unordered_map<uint64_t, SoundEntry>> LocalizedSoundFiles;
         std::unique_ptr<XPTOCCache> Meshes;
         std::unique_ptr<PAKCache> Sounds;
     };
@@ -206,7 +209,7 @@ namespace
                     for (const auto& L : fs::directory_iterator(E.path(), Ec))
                     {
                         const std::string Ln = Strings::ToLower(L.path().filename().string());
-                        if (Ln.find("soundfile") != std::string::npos && L.path().extension() == ".toc") ReadSoundToc(L.path(), P->LocalizedSoundFiles);
+                        if (Ln.find("soundfile") != std::string::npos && L.path().extension() == ".toc") ReadSoundToc(L.path(), P->LocalizedSoundFiles[N]);
                     }
             }
             P->Meshes = std::make_unique<XPTOCCache>();
@@ -232,6 +235,80 @@ namespace
     }
     constexpr const char* CommonZones = "(patch_)?(common|code_pre_gfx|code_post_gfx)(_[a-z0-9_]+)?[.]ff";
 
+    // The weapon fields (IwWeaponDefs.h): the weapon asset is the WeaponDef itself (0x1090). No community
+    // layout exists for WWII: each field is read off the exe (s2_mp64_flat RVAs; the getters 0x3b66b0
+    // (i32) and 0x3b6500 (f32) take the field's offset, as Advanced Warfare's 0x1649d0 and 0x164760 do)
+    // or found by its values on common_mp's weapons; the README says which.
+    const IwWeaponDefs::Layout& WeaponLayout()
+    {
+        static const IwWeaponDefs::Layout L = [] {
+            IwWeaponDefs::Layout L;
+            L.Name = 0, L.Display = 8;
+            // the exe's name tables (0x7ff63c9a02e0: weapType from entry 0, weapClass from 8, fireType from 34)
+            L.Types = { "none", "bullet", "grenade", "projectile", "gas", "riotshield", "energy", "melee" };
+            L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher", "turret",
+                          "throwingknife", "non-player", "gas", "item", "beam", "shield", "hover", "cloak", "ping",
+                          "repulsor", "adrenaline", "health", "mute", "underwater", "ball", "grapplinghook", "knife" };
+            L.FireTypes = { "Full Auto", "Single Shot", "2-Round Burst", "3-Round Burst", "4-Round Burst", "5-Round Burst", "Double Barrel" };
+            L.Fields = { { "weaponType", 0x4d8 }, { "weaponClass", 0x4dc }, { "fireType", 0x4f4 }, { "clipSize", 0x608 },
+                         { "shotCount", 0x60c }, { "fireTime", 0x63c }, { "reloadTime", 0x66c }, { "reloadEmptyTime", 0x688 },
+                         { "reloadAddTime", 0x68c }, { "reloadEmptyAddTime", 0x690 },
+                         { "damage", 0xdf4 }, { "maxDamageRange", 0xe1c }, { "damage2", 0xe20 }, { "damageRange2", 0xe28 },
+                         { "damage3", 0xe2c }, { "damageRange3", 0xe3c }, { "minDamage", 0xe34 }, { "locationDamageMultipliers", 0x400 },
+                         { "startAmmo", 0x5f4, true, 0x5f8 }, { "maxAmmo", 0x600, true, 0x604 },
+                         { "linearFalloff1", 0xdf0, true, -1, true }, { "linearFalloff2", 0xdf1, true, -1, true },
+                         { "adsTransInTime", 0x9d8 }, { "adsTransOutTime", 0x9e0 },
+                         // the akimbo state's timer set (0x3bbf40, 0x3c1510, 0x3c0ce0, 0x3c0ad0), for the attachment table
+                         { "fireTimeAkimbo", 0x77c }, { "reloadTimeAkimbo", 0x7ac }, { "reloadEmptyTimeAkimbo", 0x7c8 },
+                         { "reloadAddTimeAkimbo", 0x7cc } };
+            L.ZeroRangeExtends = true;
+            // the attachments (WeaponFiles' s2 rules; the README says the RVAs): the list at 0x48 (u8 count
+            // 0x4d0), the defaults 0x50-0x54, the animation overrides at 0x60 (u8 count 0x4d1; reload 0x16,
+            // reload empty 0x17), the class editor's pair table (code_post_gfx_mp)
+            L.Attachments.List = 0x48, L.Attachments.Count = 0x4d0, L.Attachments.Defaults = 0x50, L.Attachments.DefaultCount = 5;
+            L.Attachments.Anims = 0x60, L.Attachments.AnimCount = 0x4d1, L.Attachments.AnimStates = { 0x16, 0x17 };
+            L.Attachments.ComboTable = "mp/attachmentcombos_mtx12.csv";
+            L.Notes = IwWeaponDefs::GameNotes("WWII", "french/fra_code_post_gfx_mp", "common_mp", "the WeaponDef (the weapon asset itself)", "");
+            L.Notes.Extra = { { "linear_falloff_1", "linearFalloff1", WeaponFiles::Unit::Count },
+                              { "linear_falloff_2", "linearFalloff2", WeaponFiles::Unit::Count } };
+            L.Notes.ExtraNotes =
+                "- linear_falloff_1, linear_falloff_2 (WWII): the damage code's two flags (bytes 0xdf0, 0xdf1; GrayWolf's\n"
+                "  names). 1 in linear_falloff_1: from range_1_m to range_2_m the damage goes linearly from damage_1 to\n"
+                "  damage_2 instead of being damage_2 (when the weapon has a middle range: else, either flag makes the\n"
+                "  whole fall-off linear, damage_1 at range_1_m down to the last damage at range_2_m). 1 in\n"
+                "  linear_falloff_2: from range_2_m to range_3_m, linearly from damage_2 to the last damage instead of\n"
+                "  damage_3. 0, 0: steps. In common_mp only shotguns set one (Winchester 1897, Blunderbuss, Walther).\n";
+            L.Notes.Source =
+                "WWII keeps no weapon field table in its exe and no community layout exists: each field is read off\n"
+                "the exe's code (s2_mp64_flat.exe RVAs) or found by its values on common_mp's weapons, under the\n"
+                "weapon file's name for it. By the values (each the only offset matching every weapon checked):\n"
+                "weaponType 0x4d8, weaponClass 0x4dc, fireType 0x4f4 (STG-44 rifle full auto, Kar98k sniper single\n"
+                "shot, MG 42 mg, MP-40 smg, M30 spread, M1911 pistol, Bazooka rocketlauncher), clipSize 0x608\n"
+                "(STG-44 30, M1 Garand 8, Kar98k 5, BAR 20, M1911 7), shotCount 0x60c (M30 8), the hit location\n"
+                "multipliers (the 22 floats behind 0x400). By the code: fireTime 0x63c (its akimbo twin 0x77c,\n"
+                "0x1569c9), reloadTime 0x66c (0x3c154c), reloadEmptyTime 0x688 (0x3c0d19), reloadAddTime 0x68c and\n"
+                "reloadEmptyAddTime 0x690 (0x3c0b7a, 0x3c0c8a): the same functions as Advanced Warfare's, whose\n"
+                "fields x64-zt names. The damage (0x3bb710, the damage at a distance): damage (0xdf4) up to\n"
+                "maxDamageRange (0xe1c), then midDamage (0xe20) up to midDamageRange (0xe28), mid2Damage (0xe2c) up\n"
+                "to minDamageRange (0xe3c), minDamage (0xe34) beyond (the names are the exe's own: its menu function\n"
+                "GetWeaponDamage, 0x11c620, returns them under these names). When midDamageRange is 0, midDamage\n"
+                "holds up to minDamageRange and mid2Damage is not used (written so: damage_2 at range_2_m, then the\n"
+                "last damage). Two flags (bytes 0xdf0, 0xdf1) turn a step into a linear fall-off (linear_falloff_1,\n"
+                "_2 below). start_ammo: the menu function GetWeaponStartAmmo (0x3bf9a0) reads 0x5f4, rounds, or\n"
+                "when it is 0 the magazines at 0x5f8 times clipSize (STG-44 6 x 30 = 180). max_ammo: the same pair\n"
+                "at 0x600 / 0x604 (0x3c3290), the cap the ammo pickup code (0x55a920) subtracts the held stock from\n"
+                "(STG-44 4 x 30 = 120). ads_time_ms, ads_out_time_ms: 0x9d8, 0x9e0, the in and out times the ADS\n"
+                "function (0x3badf0) turns into its rates (1 / time; STG-44 220, MP-40 190, M1919 550 / 350; the Fast\n"
+                "ADS attachments scale both; 0x9dc replaces the in time under a player state flag, 0x5f4 & 0x80000, not\n"
+                "identified). weaponType, weaponClass and fireType are named by the exe's own name\n"
+                "tables. Times are milliseconds in the asset, distances inches. The other columns (raise, drop, sprint\n"
+                "times, explosions...) stay empty: no code reading them as weapon fields was found (the field getter's\n"
+                "call sites never take those offsets; the times of Advanced Warfare's slots read as nothing here).\n";
+            return L;
+        }();
+        return L;
+    }
+
     class WW2Zone final : public IWZone
     {
     public:
@@ -254,6 +331,7 @@ namespace
             ExportsScriptFiles(Scripts::GscToolBin("s2"));
             ExportsIwRawfiles();
             ExportsIwStringTables();
+            ExportsIwWeapons(WeaponLayout());
         }
         ~WW2Zone() override
         {
@@ -694,11 +772,18 @@ namespace
         // where each sound's bytes are: the soundfile pak the header table names, else the zone
         const auto Files = SoundFiles();
         const auto& P = Packages();
+        // a localized sound is in the zone's language folder (french/fra_paris.ff), else in the
+        // install's first one
+        const std::string Language = GameWorldWar2::LanguageOfZone(FastFilePath());
+        static const std::unordered_map<uint64_t, SoundEntry> NoToc;
+        const auto Localized = P.LocalizedSoundFiles.find(Language);
+        const auto& LocalizedToc = Localized != P.LocalizedSoundFiles.end() ? Localized->second
+            : P.LocalizedSoundFiles.empty() ? NoToc : P.LocalizedSoundFiles.begin()->second;
         for (size_t N = 0; N < Found.size(); N++)
         {
             const auto It = Files.find(Off(Sources[N]));
             if (It == Files.end() || It->second.Key == 0) continue;
-            const auto& Toc = (It->second.Flags & 1) ? P.LocalizedSoundFiles : P.SoundFiles;
+            const auto& Toc = (It->second.Flags & 1) ? LocalizedToc : P.SoundFiles;
             const auto Entry = Toc.find(It->second.Key);
             if (Entry == Toc.end())
             {
@@ -714,6 +799,7 @@ namespace
         }
         IWPakSounds::WriteOptions Options;
         Options.OnePerName = true;
+        Options.Language = Localized != P.LocalizedSoundFiles.end() || P.LocalizedSoundFiles.empty() ? Language : P.LocalizedSoundFiles.begin()->first;
         IWPakSounds::Write(Found, Packages().Sounds.get(), C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
         if (!SoundAliasCsv::Wanted(C)) return;
         const SoundAliasCsv::ZoneView Z = AliasView();

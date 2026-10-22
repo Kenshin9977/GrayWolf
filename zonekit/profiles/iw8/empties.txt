@@ -1,5 +1,7 @@
 # Generated from the recording - do not hand edit.
 # actions whose count-0 allocation still aligns the block cursor
+attachment|11
+attachment|18
 attachment|24
 attachment|26
 attachment|31
@@ -20,3 +22,7 @@ f2e32760|5
 stringtable|13
 stringtable|20
 stringtable|6
+weapon|37
+weapon|44
+weapon|47
+weapon|48

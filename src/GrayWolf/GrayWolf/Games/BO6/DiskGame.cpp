@@ -12,6 +12,8 @@
 #include "Games/BO6/TechsetFormat.h"
 #include "GameBlackOps6.h"
 #include "Games/IW/IwctxReaders.h"
+#include "Games/IW/IwLanguageNames.h"
+#include "Games/IW/IwWeaponStats.h"
 #include "HalfFloats.h"
 #include "MapLive.h"
 #include "SettingsManager.h"
@@ -80,14 +82,68 @@ namespace
             Bundles.ArrayType = -1, Bundles.ArrayElements = 0, Bundles.ArrayCount = 0x10, Bundles.ArrayStride = 0x10;
             Bundles.Types[9] = Bundles.Types[18] = BundleValue::Raw;
             // (the campaign's value loader 0x25b74c0 differs: not read)
-            if (!Campaign) ExportsScriptBundles(Bundles);
+            if (!Campaign)
+            {
+                ExportsScriptBundles(Bundles);
+                // mapinfo (0xd0, its loader 0x2845bc0): Black Ops 7's but its scriptbundle table at 0xb0 (the
+                // table loader 0x285ce50); string fields 8 to 0x30, 0x40, 0x48, an image at 0x38
+                ExportsBundleTrees(Kind::MapInfo,
+                                   { { "mapinfo", 0xb0, -1,
+                                       { { "map", 0x08 }, { "gametypes", 0x10 }, { "script_folder", 0x18 }, { "0x20", 0x20 }, { "0x28", 0x28 },
+                                         { "loading_image_name", 0x30 }, { "omnvars_table", 0x40 }, { "0x48", 0x48 } },
+                                       { { "loading_image", 0x38 } },
+                                       [](const std::string& Name) { return IwctxReaders::AssetHash(Name); } } },
+                                   Bundles);
+                // aitype (0x158, 0x28197c0): a scriptbundle's table at 0xa8 (0x285ce50), a string at 0x70
+                ExportsBundleTrees(Kind::AiTypes,
+                                   { { "aitype", 0xa8, -1, { { "0x70", 0x70 } }, {},
+                                       [](const std::string& Name) { return IwctxReaders::AssetHash("aitype:" + Name); } } },
+                                   Bundles);
+            }
+            // scriptable (0xd0) and scriptablevariant (0x58), the campaign's too: no key/value table,
+            // dumped by offset
+            ExportsStructDumps(Kind::Scriptables, { { "scriptable" }, { "scriptablevariant" } });
             // the zone's entity strings, one TSV (IwctxReaders::ExportMapEnts)
             Exports(Kind::MapEnts, [this](const Context& C, Totals& T) {
                 std::vector<IwctxReaders::MapEntity> Ents;
                 EntityStrings(Ents);
                 IwctxReaders::ExportMapEnts(C, T, Name(), Ents);
             });
+            // the weapon assets as struct dumps (Black Ops 7's types), a weapon's name at 8, an
+            // attachment's at 0x238 (the campaign's 0x128, its fields by offset only), the fields the
+            // weapon stats prove named (StatsLayout)
+            if (Campaign)
+                ExportsStructDumps(Kind::Weapons, { { "weapon", 8 }, { "attachment", 0x128 }, { "weapontunables" }, { "weaponaccuracy" },
+                                                    { "weapontrigger" }, { "weaponblueprint" }, { "attachmentblueprint" },
+                                                    { "deployableweaponconfig" }, { "animpkg" }, { "suit" } });
+            else
+            {
+                const auto& L = StatsLayout();
+                ExportsStructDumps(Kind::Weapons,
+                                   { { "weapon", L.WeaponName, IwWeaponStats::DumpFields(L, "weapon") },
+                                     { "attachment", L.AttachmentName, IwWeaponStats::DumpFields(L, "attachment") },
+                                     { "weapontunables", -1, IwWeaponStats::DumpFields(L, "weapontunables") }, { "weaponaccuracy" },
+                                     { "weapontrigger" }, { "weaponblueprint" }, { "attachmentblueprint" }, { "grappleweapontunables" },
+                                     { "deployableweaponconfig" }, { "animpkg", -1, IwWeaponStats::DumpFields(L, "animpkg") },
+                                     { "suit", -1, IwWeaponStats::DumpFields(L, "suit") } });
+                // the weapon stats table: this zone's facts, then the table rebuilt from every zone's
+                Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) {
+                    IwWeaponStats::ZoneView V;
+                    V.Image = &Image();
+                    V.Walk = &Walk();
+                    V.Off = [this](uint64_t A) { return Off(A); };
+                    V.Text = [this](int64_t Field) { return TextAt(Field); };
+                    V.LocalizeText = [this](int64_t Pos) { return TextAt(Pos + 8); };
+                    IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
+                });
+            }
         }
+
+        // ---- the weapon stats' layout (Games/IW/IwWeaponStats.h): offsets read off the code of
+        // bo6_flat.exe (RVAs of cod24-cod_dump.exe, PE timestamp 1783954360), each function matched to
+        // Black Ops 7's by the GSC builtin that calls it (the same name hash in both exes) or by its
+        // code, the field read at the same place
+        static const IwWeaponStats::Layout& StatsLayout();
 
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the zone's entity strings: map_game_objects' pairs, then each script brush model's
@@ -279,16 +335,23 @@ namespace
                    (PointerAt(Pos + GameBlackOps6::ImageMips) != 0 && (At<uint8_t>(Image(), Pos + GameBlackOps6::ImageMipCount) & 0xF) != 0);
         }
 
-        // each sndasset, named by its hash (path folders kept when the index knows it), decoded by
+        // each sndasset, named by its hash (path folders kept when the index knows it; an index name
+        // in another of the game's languages when it lacks it: IwLanguageNames), decoded by
         // GameBlackOps6::ReadXSound (Games/IW/IwctxReaders' export, shared with Black Ops 7)
         void ExportSounds(const Context& C, Totals& T)
         {
+            static IwLanguageNames ByLanguage({ std::begin(GameBlackOps6::Languages), std::end(GameBlackOps6::Languages) });
             std::vector<IwctxReaders::SoundEntry> Found;
+            std::vector<uint64_t> Hashes;
             const int64_t Rate = (Campaign ? GameBlackOps6::Campaign : GameBlackOps6::Multiplayer).SoundRate;
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "sndasset"))
-                    Found.push_back({ GameBlackOps6::HashedName("xsound", At<uint64_t>(Image(), I.Pos)), Live().Addr((uint64_t)I.Pos),
+                {
+                    Hashes.push_back(At<uint64_t>(Image(), I.Pos));
+                    Found.push_back({ GameBlackOps6::HashedName("xsound", Hashes.back()), Live().Addr((uint64_t)I.Pos),
                                       At<uint16_t>(Image(), I.Pos + Rate), At<uint32_t>(Image(), I.Pos + GameBlackOps6::SoundFrames) });
+                }
+            if (const size_t N = ByLanguage.Rename(Hashes, Found)) Counter("sounds_named_by_language") += N;
             IwctxReaders::ExportSounds(C, T, Name(), Found);
         }
 
@@ -312,6 +375,109 @@ namespace
             ExportImageList(C, T, L);
         }
     };
+
+    const IwWeaponStats::Layout& BlackOps6Zone::StatsLayout()
+    {
+        static const IwWeaponStats::Layout L = [] {
+            IwWeaponStats::Layout L;
+            // weapon (0x488): name 8, definition 0x20 (0x33024d0 reads 0xc7d0a40[index] + 0x20 + 0x5538),
+            // the display name's localize hash 0x40 (t10_weapon/<name>); 16 attachment slots at 0x58 +
+            // slot * 0x10, count at +8 (0x329d750: slot < 0x10)
+            L.WeaponName = 8, L.WeaponDef = 0x20, L.WeaponDisplay = 0x40, L.Slots = 0x58, L.SlotCount = 16;
+            // definition (0x5540, the table 0xc7d2980): class u8 0x5511 (weaponclass 0x59f2130 ->
+            // 0x329e7e0), base animation package 0x318 (0x329f4a0), the tunables sets 0x5520 / 0x5528 /
+            // 0x5530 (0x3266270 picks one into 0x5538), overrides 0x60 / count 0x528c (0x3296240, their
+            // conditions 0x32706f0)
+            L.DefClass = 0x5511, L.DefAnimPkg = 0x318, L.DefSets = 0x5520, L.DefSetCount = 0x5528, L.DefSetTags = 0x5530, L.DefTunables = 0x5538,
+            L.DefOverrides = 0x60, L.DefOverrideCount = 0x528c;
+            L.FireTime = 0x64c, L.BurstCount = 0x688, L.StartAmmo = 0x6e8, L.StartAmmoOverride = 0x6ec, L.ClipSize = 0x718, L.MaxAmmo = 0x714,
+            L.MaxAmmoByClips = 0x740, L.FireType = 0x648, L.AdsTime = 0x888, L.AdsOutTime = 0x88c, L.ReloadType = 0x9e9, L.ExplosionRadius = 0x548,
+            L.ExplosionRadiusAlt = 0x570, L.ExplosionAlt = 0x598, L.Damage = 0x3c, L.Hit = 0x394, L.SprintOutScale = 0x638,
+            L.SprintSpeedScale = 0x99c, L.SuperSprintSpeedScale = 0x9b0, L.ProneSpeedScale = 0x990;
+            // attachment (0xc50): name 0x238, clip 0xa50 / 0x3b8, modifiers 0x240, ADS override 0x410
+            // (0x329c960), explosion 0x530
+            L.AttachmentName = 0x238, L.AttClipScale = 0xa50, L.AttClipOverride = 0x3b8, L.AttModifiers = 0x240, L.AttAdsOverride = 0x410,
+            L.AttExplosion = 0x530, L.AttExplosionAlt = 0x28;
+            // animation package: block 0x18 (0x329f4a0 reads it at a byte offset)
+            L.PkgBlock = 0x18, L.PkgFirstRaise = 0x2, L.PkgReloadEmpty = 0x74, L.PkgReload = 0x76, L.PkgSprintOut = 0x2e0, L.PkgSuperSprintOut = 0x2e2,
+            L.PkgRaise = 0xda, L.PkgDrop = 0xd8, L.PkgRaiseQuick = 0xf4, L.PkgReloadStart = 0x8c, L.PkgReloadEnd = 0xb4;
+            // 0xffff is the package's "no time", as in Black Ops 7: left out (empty), not written as 65535
+            L.PkgFfffIsNone = true;
+            // suit (0x18d8, 0x3177b00 finds it): its hash at 0, sprint 0xc28 (0x30d2430; 0xbfc under a
+            // perk), super sprint 0xc84 (0x30ae060)
+            L.SuitId = 0, L.SuitSprint = 0xc28, L.SuitSuperSprint = 0xc84;
+            // the gametype settings' tunables tag (0x3267ca0) and suit (0x37ec000) keys: Black Ops 7's
+            L.TagKey = 0x65811ecb02190e17ull, L.SuitKey = 0x9465580f7953cea8ull;
+            L.TagNames = { "default", "t10_br", "t10_zm", "t10_mp", "t10_ob", "t10_cp" };
+            // the weapon stats UI (0x37ece60) starts from 190.0 (0x95b49a8)
+            L.BaseSpeed = 190.0f;
+            // the suit global_shared_mp's settings bundles name for multiplayer (the others: _wz, _zm)
+            L.MpSuit = "t10_defaultsuit_mp";
+            L.NameHash = [](const std::string& Name) { return IwctxReaders::AssetHash(Name); };
+            L.Title = "Black Ops 6 weapon stats";
+            L.Columns =
+                "\nA value its zone was not read for stays empty: the guns are in global_stream_mp, their animation\n"
+                "packages (reload, raise, sprint-to-fire) in ingame_shared_mp, the suits and game-mode settings in\n"
+                "global_shared_mp, the display names in ens_global. Export those zones into the same --out (a .txt\n"
+                "list of zone paths works) and the table is rebuilt from every facts file.\n\n"
+                "Columns and units (RVAs of bo6_flat.exe; each function matched to Black Ops 7's through the GSC\n"
+                "builtin calling it, the same name hash in both, or by its code)\n"
+                "- set: the tunables set (weapon_def 0x5520[set-1]); 0x3266270 picks the set whose tags (0x5530) hold\n"
+                "  the gametype settings' tag (0x3267ca0) into 0x5538. tags: FNV-1a 64 names.\n"
+                "- fire_time_ms: tunables 0x64c (weaponfiretime 0x59f23b0 -> 0x328a150). rpm = 60000 / fire_time_ms.\n"
+                "- burst_count: 0x688 (weaponburstcount 0x59f2040 -> 0x329e6c0). fire_type: u8 0x648 (0x329f7b0; an\n"
+                "  attachment's +0x2f8 overrides it): 0 auto (weaponisauto), 2 burst, 5 beam (weaponisbeam), 1, 3, 4\n"
+                "  semi-auto (weaponissemiauto).\n"
+                "- clip_size: 0x718 (weaponclipsize 0x59f22f0 -> 0x33024d0). start_ammo: 0x6ec when not 0, else 0x6e8\n"
+                "  (weaponstartammo -> 0x32ba410). max_ammo: 0x714 (weaponmaxammo -> 0x32af480); empty when u8 0x740 is\n"
+                "  set (then it counts magazines, not reproduced).\n"
+                "- reload_ms, reload_empty_ms, first_raise_ms: the base animation package (weapon_def 0x318), u16 0x76,\n"
+                "  0x74 and 0x2 of its time block (getweaponreloadtime 0x58bebc0: 0x32b7170 with ammo left, 0x32b5630\n"
+                "  empty; weaponfirstraisetime 0x59f2460 -> 0x327e460), before attachments and perks.\n"
+                "  A package time of 0xffff is none, as in Black Ops 7 (its override search skips it): its cell, and the\n"
+                "  sprint-to-fire times computed from it, stay empty (the base getter returns it unchanged).\n"
+                "- reload_type: u8 0x9e9 (0x3296ca0; an attachment's block 0x370 +4 overrides it): 0 magazine, 1 per round;\n"
+                "  getweaponreloadtime also handles 2 and 3. For 1 it adds reload_start_ms (u16 0x8c, 0x32b7070) and\n"
+                "  reload_end_ms (u16 0xb4, 0x32b5a60; 0xc0 under a weapon-state flag).\n"
+                "- raise_ms (u16 0xda, 0x32b43c0), raise_quick_ms (u16 0xf4 when player flag 0x864 is set, else 0x106,\n"
+                "  0x32ae320), drop_ms (u16 0xd8, 0x327d5b0): the raise and drop states' times (0x31d4fa0, 0x31d54f0).\n"
+                "- sprint_to_fire_ms = max(1, (int)(u16 0x2e0 x tunables 0x638)) (0x32b9c60, 0x3273a90; 0x2d0 under a\n"
+                "  flag), super_sprint_to_fire_ms the same with u16 0x2e2 (0x32bb130).\n"
+                "- ads_time_ms: 0x888 (aiming in). ads_out_time_ms: 0x88c (aiming out); 0x3280340 reads 4 times there.\n"
+                "- muzzle_velocity_mps: not proven for this game (empty).\n"
+                "- explosion_radius_m: getweaponexplosionradius (0x5b66900 -> 0x327dce0): i32 0x548, or 0x570 when u8\n"
+                "  0x598 is set; an attachment's block at 0x530 overrides it. Inches / 39.37. Empty when 0.\n"
+                "- damage_*: the first record of the table at 0x3c (0x3288900: 2 profiles of 3 records, 0x12c, 0x21c and\n"
+                "  0x30c for the other modes): damage_max up to range_max_m, then the first mid whose range is set and\n"
+                "  beyond the distance, else damage_min (0x3297920, 0x3295a80). Ranges are inches / 39.37.\n"
+                "- hit_*: the multipliers of the table at 0x394 (0x3290910; 0x404 and 0x474 for the other modes), by the\n"
+                "  game's hit location order (its table 0x9a71520).\n"
+                "- sprint_speed_scale (0x99c), super_sprint_speed_scale (0x9b0), prone_speed_scale (0x990): scales\n"
+                "  (0x30aa9c0, the speed-scale builder).\n"
+                "- sprint_mps = 190 x suit 0xc28 x sprint_speed_scale / 39.37, super_sprint_mps also x suit 0xc84: the\n"
+                "  weapon stats UI's formula (0x37ece60). suit: the suit of the gametype settings whose tag the set\n"
+                "  holds (the settings bundles of global_shared_mp name no tag: empty). *_mp_suit: the same with\n"
+                "  t10_defaultsuit_mp, the multiplayer one of the suits those bundles name (key 0x37ec000 reads).\n"
+                "- reload_add_ms, reload_empty_add_ms: not proven for this game (empty).\n";
+            L.AttachmentNotes =
+                "\nweapon_attachments.csv: each weapon's default set with one attachment (every slot's list, weapon\n"
+                "+0x58 + slot * 0x10, slot and index as 0x329d750 and 0x32706f0 read them). weapon_loadouts.csv: the\n"
+                "lines of loadouts.txt in this folder ('<weapon asset>: <attachment>, <attachment>...'), each loadout of\n"
+                "the default set. How the attachments combine (the code):\n"
+                "- clip_size: the i32 at 8 of an attachment's block 0x3b8 when >= 0, else (int)(clip x (1 + sum(attachment\n"
+                "  0xa50 - 1))) (0x33024d0).\n"
+                "- reload_ms, reload_empty_ms, the sprint-out times: the animation package of the override entry (weapon_def\n"
+                "  0x60) with the most condition groups whose groups all match, else the base package (0x3296240).\n"
+                "- sprint_to_fire_ms = max(1, (int)(time x 0x638 x (1 + sum(attachment 0x240->0x08 +0x18 - 1)) +\n"
+                "  sum((int)(1000 x attachment 0x240->0x68 +4)))) (0x3273a90).\n"
+                "- ads_time_ms = max(1, ads_time / (1 + sum(0x240->0x18 +4 - 1)) + (int)(1000 x sum(0x240->0x90 +4)))\n"
+                "  (0x3280340, 0x3282680); ads_time is replaced by (int)(1000 x t) of the first attachment with ADS times\n"
+                "  at 0x410 (0x329c960). ads_out_time_ms: the same with ads_out_time.\n"
+                "- Attachment display names are not read for this game.\n";
+            return L;
+        }();
+        return L;
+    }
 
     // ---- the level (C2M's BlackOps6.cs, checked against the gfx_map loader's tables 0x2839910)
     // gfx_map (0x10): the world at 8. GfxWorld (0xae48): name 8, surfaces inline 0xd8, static models inline 0x260.

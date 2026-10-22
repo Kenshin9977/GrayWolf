@@ -34,6 +34,7 @@ namespace DiskGame
         const char* Folder;   // <out>/<game>/<folder>/ and the report's prefix: "models"
         const char* Label;    // the GUI checkbox
         bool ByDefault = true; // part of a run that names no kind
+        bool Research = false; // a data dump for naming or reading the game, not an asset: the GUI folds it away
     };
     inline constexpr KindInfo Kinds[] = {
         { Kind::Model, "model", "models", "Models" },
@@ -51,44 +52,44 @@ namespace DiskGame
         { Kind::Gdt, "gdt", "gdt", "BO3 GDT entries", false },
         // effects as data: each effect's elements, their timings and what they draw, as JSON
         // (Games/Treyarch/TreyarchEffects.h); asked for by name only
-        { Kind::Fx, "fx", "fx", "Effects (JSON)", false },
+        { Kind::Fx, "fx", "fx", "Effects (JSON)", false, true },
         // which images each material names, one CSV per zone (ZonekitZone::ExportsMaterialLinks):
         // for naming work on hashed images; asked for by name only
-        { Kind::MaterialLinks, "matlinks", "matlinks", "Material image links (CSV)", false },
+        { Kind::MaterialLinks, "matlinks", "matlinks", "Material image links (CSV)", false, true },
         // which sound files each sound alias plays, one TSV per zone (ZonekitZone::ExportsSoundLinks):
         // for naming work on hashed sounds; asked for by name only
-        { Kind::SoundLinks, "sndlinks", "sndlinks", "Sound alias links (TSV)", false },
+        { Kind::SoundLinks, "sndlinks", "sndlinks", "Sound alias links (TSV)", false, true },
         // what each asset of a zone references, one CSV per zone (ZonekitZone::ExportsAssetRefs):
         // for naming work; asked for by name only
-        { Kind::AssetRefs, "refs", "refs", "Asset references (CSV)", false },
+        { Kind::AssetRefs, "refs", "refs", "Asset references (CSV)", false, true },
         // each techset of a zone: its techniques, their shaders (bytecode and reflection), the
         // arguments binding code and material data to registers, the materials' bindings, one folder
         // per zone (Techsets.h): for porting materials into the game; asked for by name only
-        { Kind::Techsets, "techsets", "techsets", "Techsets, shaders and material bindings", false },
+        { Kind::Techsets, "techsets", "techsets", "Techsets, shaders and material bindings", false, true },
         // the settings assets scripts read with getscriptbundle, one JSON per bundle under its zone
         // (ZonekitZone::ExportsScriptBundles): the numbers behind perks, upgrades, ammo mods...;
         // asked for by name only
-        { Kind::ScriptBundles, "bundles", "bundles", "Script bundles (JSON)", false },
+        { Kind::ScriptBundles, "bundles", "bundles", "Script bundles (JSON)", false, true },
         // the weapon assets (weapon, its tunables, accuracy, trigger, archetype, blueprint, attachments)
         // as raw struct dumps, one JSON per asset under its zone and type (ZonekitZone::ExportsStructDumps):
         // every field by offset, the blocks it points to followed; for naming the fields; by name only
-        { Kind::Weapons, "weapons", "weapons", "Weapon data (struct dumps, JSON)", false },
+        { Kind::Weapons, "weapons", "weapons", "Weapon data (struct dumps, JSON)", false, true },
         // the weapons' stats in user units, one row per weapon and tunables set (CSV + JSON, README with
         // the units and formulas), only the proven fields; each zone adds its facts, the table is
-        // rebuilt from all of them (Games/BO7/WeaponStats.h); by name only
-        { Kind::WeaponStats, "weaponstats", "weaponstats", "Weapon stats (CSV + JSON)", false },
+        // rebuilt from all of them (Games/IW/IwWeaponStats.h); by name only
+        { Kind::WeaponStats, "weaponstats", "weaponstats", "Weapon stats (CSV + JSON)", false, true },
         // each map's settings asset as JSON, its key/value tree as the bundles kind writes it (Black
         // Ops 7's mapinfo: what getactivemapinfobundle() returns: destructibles, their loot...); by name only
-        { Kind::MapInfo, "mapinfo", "mapinfo", "Map info (JSON)", false },
+        { Kind::MapInfo, "mapinfo", "mapinfo", "Map info (JSON)", false, true },
         // the scriptable assets (and their variants) as struct dumps, one JSON per asset under its zone
         // and type (ZonekitZone::ExportsStructDumps); by name only
-        { Kind::Scriptables, "scriptables", "scriptables", "Scriptables (struct dumps, JSON)", false },
+        { Kind::Scriptables, "scriptables", "scriptables", "Scriptables (struct dumps, JSON)", false, true },
         // a map zone's entities, one line per key/value pair "entity_index<TAB>key<TAB>value", one TSV per
         // zone (Black Ops 6 and 7: the entity strings, spawn points, scriptable instances); by name only
-        { Kind::MapEnts, "mapents", "mapents", "Map entities (TSV)", false },
+        { Kind::MapEnts, "mapents", "mapents", "Map entities (TSV)", false, true },
         // each AI type's settings as JSON, its key/value tree as the bundles kind writes it (Black Ops
         // 7's aitype: the AI's settings bundle, its shared functions' settings...); by name only
-        { Kind::AiTypes, "aitypes", "aitypes", "AI types (JSON)", false },
+        { Kind::AiTypes, "aitypes", "aitypes", "AI types (JSON)", false, true },
     };
     constexpr bool KindsInOrder()
     {

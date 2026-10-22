@@ -27,10 +27,10 @@ Building it yourself: see [BUILDING.md](BUILDING.md).
 
 ✓ exported, ~ partly (see the notes), – not exported. Choose kinds with `--type` (`model`,
 `anim`, `image`, `sound`, `rawfile`, `data`, `localize`, `map`, `script`, `gdt`, `fx`; the last three
-only when named).
+only when named; the data dumps [below](#data-dumps) too).
 
 | Game | `--game` | Models | Anims | Images | Sounds | Rawfiles | Data | Localize | Maps | Scripts | GDT | FX |
-|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | Call of Duty | `cod1` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
 | Call of Duty 2 | `cod2` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
 | Call of Duty 4: Modern Warfare | `cod4` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
@@ -48,7 +48,7 @@ only when named).
 | WWII | `ww2` | ~ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | – |
 | Black Ops 4 | `bo4` | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | ✓ | ~ | ~ | – |
 | Modern Warfare (2019) | `mw2019` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | – | – |
-| Black Ops Cold War | `coldwar` | ✓ | ✓ | ✓ | – | ~ | ~ | ~ | ✓ | ✓ | ~ | ~ |
+| Black Ops Cold War | `coldwar` | ✓ | ✓ | ✓ | ~ | ~ | ~ | ~ | ✓ | ✓ | ~ | ~ |
 | Modern Warfare III (2023) | `mwiii`, `mwiii_sp` | ~ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | – |
 | Black Ops 6 | `bo6`, `bo6sp` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
 | Black Ops 7 | `bo7` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
@@ -56,8 +56,9 @@ only when named).
 `_sp` / `sp` ids are the campaigns. Notes:
 - **Models**: Call of Duty and Call of Duty 2 give LOD 0 only; Infinite Warfare and MWIII miss some
   models whose parts live in other zones (`_tr`); WWII misses some composite models.
-- **Sounds**: Black Ops keeps a few ADPCM/WMA sounds unread; Black Ops 4 sound names are partly
-  still hashes. In FLAC or Opus, a sound no decoder here reads (World at War's xWMA) is kept as it
+- **Sounds**: Black Ops keeps a few ADPCM/WMA sounds unread; Black Ops 4 and Cold War sound names
+  are partly still hashes (`xsound_<hash>`), and Cold War leaves out its few `rev/` vehicle engine
+  models (not audio). In FLAC or Opus, a sound no decoder here reads (World at War's xWMA) is kept as it
   is.
 - **Rawfiles**: the game's raw files (configs, scripts' sources, visions, animtrees, ...), inflated
   where the game compresses them, and its Lua files, as `.lua` (source) or `.luac` (bytecode, not
@@ -92,6 +93,70 @@ Black Ops, Black Ops II, CoD4, World at War, MW2 and MW3 can also go through
 `waw-oat`, `mw2-oat`, `mw3-oat` (models, anims, images, sounds, rawfiles, data, localize; maps for
 Black Ops and Black Ops II).
 
+### Data dumps
+
+Kinds for naming hashed assets or reading the game's numbers rather than for its assets, each
+exported only when named in `--type` (in the GUI, under **Data dumps**). One file per zone, or
+per asset under its zone.
+
+| `--type` | What | CoD | CoD 2 | CoD4 | WaW | MW2 | Black Ops | MW3 | Black Ops II | Ghosts | AW | CoD Online | Black Ops III | MWR | IW | WWII | MW2019 | MWIII | Black Ops 4 | Cold War | Black Ops 6 | Black Ops 7 |
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| `matlinks` | the images each material names, the materials of each model (CSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | – | ✓ | ✓ |
+| `sndlinks` | the sound files each sound alias plays (TSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | – | ✓ | ✓ |
+| `refs` | what each asset of a zone references: hashes, pointers, strings (CSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | ✓ | – | ✓ |
+| `techsets` | techsets, their shaders (bytecode and reflection), the materials' bindings | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ~ | – | – | ~ | ✓ |
+| `bundles` | script bundles, the settings scripts read with `getscriptbundle` (JSON) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ~ | ✓ | ✓ | ~ | ✓ |
+| `mapents` | a map's entities, one key/value pair a line (TSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mapinfo` | each map's settings asset (JSON) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ~ | ~ | ~ | ~ | ✓ |
+| `aitypes` | each AI type and the name of its settings bundle (JSON) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ~ | ~ | ~ | ~ | ✓ |
+| `scriptables` | scriptable assets as struct dumps (JSON) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | – | – | ✓ | ✓ |
+| `weapons` | the weapon assets (tunables, accuracy, attachments...) as struct dumps (JSON) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `weaponstats` | each weapon's stats in game units, with their units and formulas (CSV, JSON) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ~ | ~ | ~ | ~ | ✓ |
+
+CoD and CoD 2: `weapons` is the game's own weapon files (`weapons/mp/<name>`, `weapons/sp/<name>` from
+the archives), `weaponstats` read from their named fields, display names from the `.str` files.
+CoD4, World at War, MW2, Black Ops, MW3 and Black Ops II (their own readers and the `-oat` ones): `weapons` is
+the weapon files as OpenAssetTools writes them (the mod tools' `weapons/<name>`, attachments and camos beside
+them), `weaponstats` read from their named fields (the game's weapon field table), the README beside the table.
+Their display names are in another zone exported into the same `--out`: World at War `localized_common_mp`
+(multiplayer) or the language folder's `common` (campaign, zombies); Black Ops and Black Ops II
+`<lang>_code_post_gfx_mp`, for zombies Black Ops II's `<lang>_code_post_gfx_zm`, Black Ops' `<lang>_code_post_gfx`;
+CoD4, MW2 and MW3 `localized_code_post_gfx_mp` (multiplayer) or the language folder's `common` (campaign).
+Black Ops II's attachments are also merged: `weapon_attachments.csv`, each weapon with each attachment its file
+lists, the attachment's scales applied (clip sizes match the published ones: MP7 54, PDW-57 67 with Extended Mags).
+MW3's too, by the rules read in its exe (an ammunition, ADS or damage block replacing the weapon's value, then the
+attachment's scales; the weapon's animation overrides for fire and reload times): Extended Mags M4A1 45, MP7 60;
+the Suppressor's 0.75 shortens the ranges; the grenade launcher and shotgun belong to the alternate mode.
+Black Ops III: `weaponstats` from each weapon's GDT entry as the `gdt` kind reads it (keys named as the older weapon
+files' fields), equal to `--type gdt` on every compared value; names from `<lang>_core_patch`, `<lang>_zm_patch`.
+Its `weapons` are the `gdt` kind's entries (`--type gdt`).
+Ghosts, Advanced Warfare, MW Remastered and WWII: `weapons` is the weapon and attachment assets as struct dumps,
+`weaponstats` the older games' weapon file columns, read from each game's WeaponDef (x64-zt's layouts for the
+first three, their damage checked against the code; WWII's read off its exe, fewer columns: its damage stops
+named by the exe's own GetWeaponDamage, start and max ammo, the linear fall-off flags), the README beside
+the table. Infinite Warfare likewise (x64-zt's layout, the damage stops read off the exe); its reload, raise,
+drop and sprint-out times come from the weapon's animation package at the offsets the exe's time getter is
+called with, joined by the package's name when another zone holds it (`global_core_mp`'s guns,
+`common_core_mp`'s packages: export both into the same `--out`).
+Call of Duty Online: `weapons` is the weapon (one 0x101c WeaponDef) and weaponattach assets as struct dumps,
+`weaponstats` read from that WeaponDef at the offsets its decrypted exe reads (MW2's field names; six damage
+stops; no start or max ammo, which the game mode's table sets), the README beside the table. Its guns are in
+`common_mp`, names in `localized_code_post_gfx_mp`, and `weapon_attachments.csv` needs `code_post_gfx_mp`
+(`mp/coWeaponAttachmentTable.csv`, each weapon's attachments), the overrides applied by the exe's rules
+(Extended Mags AK-47 45, Fast Mags its reload x 0.7): export the three into the same `--out`.
+~: multiplayer and zombies only, not the campaign. MW2019's install is multiplayer only, and its
+`weaponstats` leaves out what its exe does not prove yet (ADS, raise and sprint times); its hit multipliers
+are read since the zone layout of `global_stream_mp` matches the game's (checked against its loaders,
+emulated). MWIII's damage table and hit multipliers are read too. Black Ops 7: a package time of 0xffff (none)
+is an empty cell, not 65535. Zombies (for Rifling's scaling): Black Ops 6's `t10_zm_<gun>` and `_pack`
+attachments keep the Pack-a-Punch tiers behind 0x8d8 (f32 each) and the rarity multipliers behind 0x8e0 (6 f32), read
+by the exe's object fields the game's scripts use (Black Ops 7: 0xa00, 0xa08); MWIII has no such fields.
+Black Ops 4 and Cold War: `mapinfo` is their map tables and `aitypes` their AI types as struct dumps (no
+settings bundle in either); `weaponstats` comes from the weapon layouts the `gdt` kind ports, their
+names matched against Black Ops III's (its units), not read in the game's code (the README beside the table).
+Black Ops 4's guns are in `core_ui` (names in `<lang>_core_ui`); Cold War's in `core_common` (its zombies' and
+multiplayer variants in `zm_common`, `mp_common`; names in `<lang>_core_common`).
+
 ### What each game reads
 
 | Game | Input |
@@ -119,7 +184,7 @@ zone defines, material books) for the next runs.
 - **Anims**: Cast, SEAnim or xanim_export (`--anim-format`), with their notetracks.
 - **Images**: PNG, TGA or DDS (`--image-format`).
 - **Sounds**: WAV (the default), FLAC or Opus (`--audio-format`, or **Settings > Sounds**). Opus
-  keeps the Opus of MWIII, Black Ops 6/7 and MW2019 as it is (repackaged in Ogg, not re-encoded);
+  keeps the Opus of Cold War, MWIII, Black Ops 6/7 and MW2019 as it is (repackaged in Ogg, not re-encoded);
   the other games' sounds are encoded (64 kb/s a channel, 48 kHz).
 - **Maps**: a `.glb` with a Blender import script (instanced props, materials), or a Cast scene
   (`--map-cast`); `--map-radiant` writes a Radiant `.map` with its models, `--map-textures

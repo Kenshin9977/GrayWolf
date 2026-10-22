@@ -5,6 +5,7 @@
 // open with a quaternion, an origin, the model and the destroyed model, and primary lights typed
 // 1 sun, 2 spot, 4 omni with their origin at 72. The rest of each record differs per game.
 
+#include "DiskGame.h"
 #include "MapLive.h"
 
 #include <cstdint>
@@ -47,4 +48,7 @@ namespace Treyarch
     std::string EntityText(const std::vector<uint8_t>& Image, int64_t Array, uint64_t Count, const std::function<int64_t(uint64_t)>& Off,
                            const std::function<std::string(uint64_t)>& String, const std::function<std::string(uint64_t)>& HashName,
                            EntityCounts& N, const std::function<std::string(uint64_t Entity, int32_t ModelIndex)>& Model = {});
+    // The mapents kind for a zone's entity text (EntityText's): its entities' pairs, a key's order
+    // within its entity alphabetical (IwctxReaders::ExportMapEnts writes the TSV)
+    void ExportMapEnts(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Zone, const std::string& Text);
 }

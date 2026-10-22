@@ -69,9 +69,19 @@ public:
     void WriteZoneSource(const std::string& OutputDir, bool Gdt) const;
     bool Dump(const std::string& OutputDir, const std::vector<std::string>& Categories,
               const OatDumpOptions& Options, OatDumpCounts& Counts);
+    // The weapon assets (weapon, attachment, attachmentunique, camo) as OAT's dumpers write them,
+    // kept in memory: (path in OAT's tree, contents), "weapons/<name>" the mod tools' weapon file
+    // (an InfoString: WEAPONFILE\<field>\<value>..., OAT's field names, which are the game's own
+    // weapon field table), "accuracy/..." its graphs, "attachment/<name>"... Assets: those the
+    // zone defines.
+    bool WeaponFiles(std::vector<std::pair<std::string, std::string>>& Out, size_t& Assets);
+    // The string tables the zone defines as OAT writes them: (path, CSV text), "mp/statstable.csv"...
+    bool StringTables(std::vector<std::pair<std::string, std::string>>& Out);
 
 private:
     OatZoneSession();
+    // the assets of these OAT type names the zone defines, dumped by OAT's dumpers into memory
+    bool DumpTypes(const std::vector<std::string>& Wanted, std::vector<std::pair<std::string, std::string>>& Out, size_t& Assets);
     struct Impl;
     std::unique_ptr<Impl> P;
 };

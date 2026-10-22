@@ -20,7 +20,9 @@
 
 #include "Games/Common/StringCipher.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwEntityKeys.h"
+#include "Games/IW/IwWeaponStats.h"
 #include "Games/IW/IwTerrain.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "WraithNameIndex.h"
@@ -101,8 +103,81 @@ namespace
             ExportsSoundLinks({ 0x28, 0x20, 0x30, 0x8, 0x0, 0x18, 0x40, 0x30 });
             // the campaign build's layouts (material 0x70...) are not read
             if (!Campaign) ExportsTechsets(MWIII::TechsetFormat());
-            ExportsColumnTables(ColumnTypes::Mwiii, [this](const std::string& Raw) { return Decrypted(Raw); });
+            const auto Decrypt = [this](const std::string& Raw) { return Decrypted(Raw); };
+            ExportsColumnTables(ColumnTypes::Mwiii, Decrypt);
+            ExportsAssetRefs(Decrypt);
+            // the zone's entities, one TSV (IwctxReaders::ExportMapEnts): map_ents' pairs at 8 (AddEntities)
+            Exports(Kind::MapEnts, [this](const Context& C, Totals& T) {
+                std::vector<IwctxReaders::MapEntity> Ents;
+                if (const int64_t Ents0 = Root("map_ents"); Ents0 >= 0)
+                    IwctxReaders::EntityPairs(Image(), Ents0 + 8, [this](uint64_t A) { return Off(A); }, [this](int64_t P) { return PointerAt(P); },
+                                              Ents, IwEntityKeys::Scheme::Fields);
+                IwctxReaders::ExportMapEnts(C, T, Name(), Ents);
+            });
+            // scriptable (0xb8) and scriptablevariant (0x60): no key/value table, dumped by offset
+            ExportsStructDumps(Kind::Scriptables, { { "scriptable" }, { "scriptablevariant" } }, Decrypt);
+            // the weapon assets as struct dumps: a weapon's name at 8, its definition inline behind 0x20
+            // (no weapontunables asset), an attachment's name at 8; the fields the weapon stats prove
+            // named (StatsLayout; the campaign's build by offset only)
+            {
+                const auto& L = StatsLayout();
+                const auto Named = [&](const char* Type) { return Campaign ? std::map<std::string, DumpField>{} : IwWeaponStats::DumpFields(L, Type); };
+                ExportsStructDumps(Kind::Weapons,
+                                   { { "weapon", 8, Named("weapon") }, { "attachment", 8, Named("attachment") }, { "weaponaccuracy" },
+                                     { "weapontrigger" }, { "weaponblueprint" }, { "attachmentblueprint" }, { "animpkg", -1, Named("animpkg") },
+                                     { "suit" } },
+                                   Decrypt);
+            }
+            if (Campaign) return;
+            // the weapon stats table: this zone's facts, then the table rebuilt from every zone's
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) {
+                IwWeaponStats::ZoneView V;
+                V.Image = &Image();
+                V.Walk = &Walk();
+                V.Off = [this](uint64_t A) { return Off(A); };
+                V.Text = [this](int64_t Field) {
+                    const std::string S = TextAt(Field);
+                    return S.empty() ? S : Decrypted(S);
+                };
+                V.LocalizeText = [this](int64_t Pos) {
+                    std::string Key, Text;
+                    LocalizeEntry(Pos, Key, Text);
+                    return Text;
+                };
+                IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
+            });
+            // scriptbundle (0x30): its table at 0x10 {u32 count 0, keys' FNV-1a 64 8, script identifier
+            // hashes 0x10, entries {u8 type, value at 8} 0x18}. The types as getscriptbundle's converter
+            // 0x315a600 hands them to script: 1 and 2 an int (two adders with the same code), 3 a float,
+            // 4 and 5 a string record (a localized string's, a string's), 6 a table, 7 a keyed table, 8 an
+            // array {u32 count 0, 16-byte typed entries at 8}, 9 and 10 a record whose first field is its
+            // name's string record, 11, 13 and 15 a 64-bit hash, 12 a 32-bit one (raw), 0 and 14 nothing
+            ScriptBundleLayout Bundles;
+            Bundles.Count = 0, Bundles.Keys = 8, Bundles.ScriptHashes = 0x10, Bundles.Entries = 0x18;
+            Bundles.ArrayType = -1, Bundles.ArrayElements = 8, Bundles.ArrayCount = 0, Bundles.ArrayStride = 0x10;
+            Bundles.Types = { BundleValue::Raw,    BundleValue::Int,  BundleValue::Int,         BundleValue::Float, BundleValue::String,
+                              BundleValue::String, BundleValue::Struct, BundleValue::KeyedStruct, BundleValue::Array, BundleValue::Anim,
+                              BundleValue::Anim,   BundleValue::Hash, BundleValue::Raw,         BundleValue::Hash,  BundleValue::Raw,
+                              BundleValue::Hash };
+            ExportsScriptBundles(Bundles, Decrypt);
+            // mapinfo (0xa0, 0x3af4520): the scriptbundle table at 0x80; string fields 8 to 0x28 and
+            // 0x38, an image at 0x30 (8 the map, 0x10 its name's localize key, 0x18 its description's,
+            // 0x20 its game types, 0x28 its loading image's name: their values on the 106 mapinfos of
+            // code_post_gfx). Named by the IW asset hash of the map (Black Ops 7's HashIWAsset), the
+            // hash at 0 of each
+            ExportsBundleTrees(Kind::MapInfo,
+                               { { "mapinfo", 0x80, -1,
+                                   { { "map", 0x08 }, { "display_name", 0x10 }, { "description", 0x18 }, { "gametypes", 0x20 },
+                                     { "loading_image_name", 0x28 }, { "0x38", 0x38 } },
+                                   { { "loading_image", 0x30 } },
+                                   [](const std::string& Name) { return IwctxReaders::AssetHash(Name); } } },
+                               Bundles, Decrypt);
+            // aitype (0xf8, 0x3ad9cc0): the scriptbundle table at 0xa0, a string at 0x30
+            ExportsBundleTrees(Kind::AiTypes, { { "aitype", 0xa0, -1, { { "0x30", 0x30 } }, {}, nullptr } }, Bundles, Decrypt);
         }
+
+        // the weapon stats' layout (Games/IW/IwWeaponStats.h)
+        static const IwWeaponStats::Layout& StatsLayout();
 
         // a zone string's text, decrypted with the profile's cipher table when it is encrypted
         std::string Decrypted(const std::string& Raw) const
@@ -288,6 +363,103 @@ namespace
             }
         }
     };
+
+    // The weapon stats' layout: offsets read off mwiii_flat.exe's code (RVAs of cod23-cod_dump.exe),
+    // its GSC builtins (jup hashes) and the weapon stats UI 0x6eecfc0 calling each getter, the
+    // getters matched to Black Ops 6's by their code. No weapontunables asset: the weapon (0x578, the
+    // table 0x14de7e50) and its definition (behind 0x20, the table 0x14de9370) hold the fields.
+    const IwWeaponStats::Layout& MWIIIZone::StatsLayout()
+    {
+        static const IwWeaponStats::Layout L = [] {
+            using F = IwWeaponStats::Field;
+            constexpr auto Def = F::In::Def, Weapon = F::In::Weapon;
+            IwWeaponStats::Layout L;
+            // weapon: name 8, definition 0x20, display name key 0x40 (a string; hashed as the localize
+            // keys are); 16 slots at 0x58 + slot * 0x10 {u32 count 0, attachment ** 8} (0x640d390)
+            L.WeaponName = 8, L.WeaponDef = 0x20, L.WeaponDisplay = 0x40, L.Slots = 0x58, L.SlotList = 8, L.SlotCountAt = 0, L.SlotCount = 16;
+            L.DisplayIsKey = true, L.StringIdMask = HashMask;
+            L.LocalizeHash = [](const std::string& Key) {
+                uint64_t H = 0xCBF29CE484222325ull;
+                for (const char C : Key) H = (H ^ (uint8_t)std::tolower((unsigned char)C)) * 0x100000001B3ull;
+                return H & HashMask;
+            };
+            // definition: class i32 0x39c (weaponclass, 0x640d890), base animation package 0xb8 (0x640e260)
+            L.DefClass = 0x39c, L.DefAnimPkg = 0xb8;
+            // weaponfiretime (0x6aa5cc0 -> 0x63fbbe0): definition 0x31c (0x334 under u8 0x3f3a and a player
+            // state); weaponburstcount (0x640d6f0) 0x3d0, fire type i32 0x3c8 (0x640e5a0, an attachment's
+            // +0x2c0 overrides it); weaponclipsize (0x63f9fe0) the weapon's 0x4d8; weaponstartammo
+            // (0x64275a0) 0x5dc; weaponmaxammo (0x641d5c0 <- the table 0x64e0940 filled by 0x64e0320 from
+            // 0x5fc; game-mode overrides by class, 0x64de2d0, not applied); ADS times the weapon's 0x4b8
+            // (in) and 0x4bc (out) (0x63f2e70: 4 times, 0x4c8.. under u8 0x3f35); reload type 0x3f8
+            // (0x6407230); getweaponexplosionradius (0x81f77b0 -> 0x63f09e0) 0x1adc, 0x1b74 when u8 0x27e1;
+            // sprint-out scale 0x330 (0x63e8ba0, 0x344 under u8 0x3f3a)
+            L.FireTime = F(0x31c, Def), L.BurstCount = F(0x3d0, Def), L.FireType = F(0x3c8, Def), L.ClipSize = F(0x4d8, Weapon),
+            L.StartAmmo = F(0x5dc, Def), L.MaxAmmo = F(0x5fc, Def), L.AdsTime = F(0x4b8, Weapon), L.AdsOutTime = F(0x4bc, Weapon),
+            L.ReloadType = F(0x3f8, Def), L.ExplosionRadius = F(0x1adc, Def), L.ExplosionRadiusAlt = F(0x1b74, Def), L.ExplosionAlt = F(0x27e1, Def),
+            L.SprintOutScale = F(0x330, Def);
+            // the damage table: records of 10 dwords at D 0x108 by profile (0x63fa700: i32 damages 0-0x10,
+            // f32 ranges 0x14-0x20, as it reads the attachments' records; 0x180 for mode 1, 0x1f8 under u8
+            // 0x27c); the hit location multipliers inline at D 0x2808, 22 f32 (0x6402500 returns it by
+            // default, 0x2860 and the 0x2878.. sets under its flags; its caller 0x880f650 indexes it by
+            // the hit location, x 4)
+            L.Damage = F(0x108, Def), L.Hit = F(0x2808, Def);
+            // attachment: name 8, clip scale 0x7f0 and override block 0x3a8 (i32 at 8; start ammo's at 4,
+            // max ammo's at 0), explosion block 0x4b8 (i32 0, alternate 0x2c)
+            L.AttachmentName = 8, L.AttClipScale = 0x7f0, L.AttClipOverride = 0x3a8, L.AttExplosion = 0x4b8, L.AttExplosionAlt = 0x2c;
+            // animation package: block 0x10 (0x640e260); reload_empty 0x6c (0x6422650, 0x70 under trait
+            // 0x2df), reload 0x6e (0x6424e80, 0x72 under trait 0x2dc), per-round start 0x84 (0x6424d80)
+            // and end 0xac (0x6422a30, 0xb8 under a flag), sprint-out 0x2a2 (0x6427330, 0x292 under a
+            // flag), super sprint-out 0x2a4 (0x6427c00)
+            L.PkgBlock = 0x10, L.PkgReloadEmpty = 0x6c, L.PkgReload = 0x6e, L.PkgReloadStart = 0x84, L.PkgReloadEnd = 0xac, L.PkgSprintOut = 0x2a2,
+            L.PkgSuperSprintOut = 0x2a4;
+            // 0xffff is the package's "no time", as in Black Ops 7: left out (empty), not written as 65535
+            L.PkgFfffIsNone = true;
+            L.Title = "Modern Warfare III weapon stats";
+            L.Columns =
+                "\nA value its zone was not read for stays empty: the guns are in global_stream_mp, their animation\n"
+                "packages in ingame_shared_mp, the display names in the language's global zones. Export those zones into\n"
+                "the same --out (a .txt list of zone paths works) and the table is rebuilt from every facts file.\n\n"
+                "Columns and units (RVAs of mwiii_flat.exe). This game keeps no weapontunables asset: one set per\n"
+                "weapon, its fields in the weapon (W) and its definition (D, behind weapon 0x20).\n"
+                "- fire_time_ms: D 0x31c (weaponfiretime 0x6aa5cc0 -> 0x63fbbe0; 0x334 in some states). rpm = 60000 /\n"
+                "  fire_time_ms.\n"
+                "- burst_count: D 0x3d0 (0x640d6f0). fire_type: D i32 0x3c8 (0x640e5a0; an attachment's +0x2c0\n"
+                "  overrides it): 0 auto (weaponisauto), 2 burst, 5 beam (weaponisbeam), 1, 3, 4 semi-auto.\n"
+                "- clip_size: W 0x4d8 (weaponclipsize 0x6a9fce0 -> 0x63f9fe0). start_ammo: D 0x5dc (weaponstartammo ->\n"
+                "  0x64275a0). max_ammo: D 0x5fc (weaponmaxammo -> 0x641d5c0 reads the table 0x64e0320 fills; game-mode\n"
+                "  overrides by class, 0x64de2d0, not applied).\n"
+                "- reload_ms, reload_empty_ms: the base animation package (D 0xb8), u16 0x6e and 0x6c of its time block\n"
+                "  (0x10; 0x6424e80, 0x6422650), before attachments and perks. A package time of 0xffff is none, as in\n"
+                "  Black Ops 7 (its override search skips it): its cell, and the sprint-to-fire times computed from it,\n"
+                "  stay empty (the base getter returns it unchanged).\n"
+                "- reload_type: D 0x3f8 (0x6407230). For 1 (per round) the stats UI (0x6eecfc0) adds reload_start_ms\n"
+                "  (u16 0x84, 0x6424d80) and reload_end_ms (u16 0xac, 0x6422a30).\n"
+                "- sprint_to_fire_ms = max(1, (int)(u16 0x2a2 x D 0x330)) (0x6427330, 0x63e8ba0), super_sprint_to_fire_ms\n"
+                "  the same with u16 0x2a4 (0x6427c00).\n"
+                "- ads_time_ms: W 0x4b8 (aiming in), ads_out_time_ms: W 0x4bc (aiming out) (0x63f2e70 reads 4 times there).\n"
+                "- explosion_radius_m: getweaponexplosionradius (0x81f77b0 -> 0x63f09e0): D 0x1adc, or 0x1b74 when u8\n"
+                "  D 0x27e1 is set; an attachment's block 0x4b8 overrides it. Inches / 39.37. Empty when 0.\n"
+                "- damage_max .. damage_min at range_*: D 0x108, the record of profile 0 (0x28: i32 damages 0-0x10, f32\n"
+                "  ranges 0x14-0x20; 0x63fa700 returns the five damages, the ranges and the f32 0x24 the same way for an\n"
+                "  attachment's record); i32 0 is the min, 0x10 the max (the record Modern Warfare 2019's min and max\n"
+                "  damage builtins read). Ranges in inches / 39.37, a range of 0 unused. The mode 1 record (D 0x180),\n"
+                "  the one under u8 D 0x27c (0x1f8), the other profiles and the attachments' records are not applied.\n"
+                "- hit_*: 22 f32 inline at D 0x2808 (0x6402500 returns it when its flags are clear: 0x2860, 0x2878,\n"
+                "  0x28d0, 0x28e8, 0x2940, 0x2958, 0x29b0 are the other sets; an attachment's 0x7c0 / 0x7c8 first: not\n"
+                "  applied), indexed by the hit location (0x880f650: table + location x 4), in the family's order.\n"
+                "- Not proven for this game (empty): muzzle velocity, movement scales and speeds, first raise, raise,\n"
+                "  drop and reload add times, the tunables sets and tags.\n";
+            L.AttachmentNotes =
+                "\nweapon_attachments.csv: each weapon with one attachment (every slot's list, weapon 0x58 + slot *\n"
+                "0x10 {u32 count, list at 8}, slot and index as 0x640d390 reads them). weapon_loadouts.csv: the lines of\n"
+                "loadouts.txt in this folder, each loadout. How the attachments combine (the code):\n"
+                "- clip_size: the i32 at 8 of an attachment's block 0x3a8 when >= 0, else (int)(clip x (1 + sum(attachment\n"
+                "  0x7f0 - 1))) (0x63f9fe0).\n"
+                "- The animation package overrides, the modifier table and the ADS overrides are not read for this game.\n";
+            return L;
+        }();
+        return L;
+    }
 
     // ---- the level (C2M's ModernWarfare6.cs, its offsets checked against the loaders' tables)
     // GfxWorld (gfx_map, 0x4fd8): name 8; GfxWorldSurfaces inline at 0xc0 (count u32 0, brush

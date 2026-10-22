@@ -11,9 +11,7 @@
 #include "Games/Common/MeshDecode.h"
 #include "SettingsManager.h"
 #include "HalfFloats.h"
-#include "Sound.h"
-
-#include <opus/opus.h>
+#include "SABSupport.h"
 
 #include <d3d12.h>
 #include <d3d12shader.h>
@@ -125,93 +123,58 @@ std::unique_ptr<XModel_t> GameBlackOpsCW::ReadXModel(const CoDModel_t* Model)
     return ModelAsset;
 }
 
+// A sound_asset (0x58): FrameCount 8, rate index 0xc, channels 0xd; its Opus packets {u32 size,
+// packet} in the packages by the key at 0x38 (the object's stored bytes, the packets from 0), or
+// through the streamkey asset at 0x40 (its data in the zone, else the package object by its key at
+// 8: 0x118 bytes, the packets' byte count u32 at 0x118, the packets from 0x120). Returned as the game's packets, {u16 size, packet}
+// (SABSupport::OpusPackets): decoded for WAV/FLAC, remuxed into Ogg for Opus.
 std::unique_ptr<XSound> GameBlackOpsCW::ReadXSound(const CoDSound_t * Sound)
 {
-    auto SoundData = CoDAssets::GameInstance->Read<BOCWSoundAsset>(Sound->AssetPointer);
-    std::unique_ptr<uint8_t[]> SoundBuffer = nullptr;
+    const auto SoundData = CoDAssets::GameInstance->Read<BOCWSoundAsset>(Sound->AssetPointer);
+    if (CoDAssets::GamePackageCache == nullptr || SoundData.ChannelCount == 0) return nullptr;
 
-    uint32_t OpusDataSize       = 0;
-    uint32_t OpusDataOffset     = 0;
-    uint32_t OpusConsumed       = 0;
-    uint32_t PCMDataSize        = 0;
-
+    std::unique_ptr<uint8_t[]> SoundBuffer;
+    uint32_t Got = 0;
+    size_t Offset = 0, Size = 0;
     if (SoundData.StreamKey != 0)
     {
-        uint32_t SoundMemoryResult = 0;
-        SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObjectRaw(SoundData.StreamKey, SoundMemoryResult);
-
-        if (SoundMemoryResult == 0)
-            return nullptr;
-
-        OpusDataSize = SoundMemoryResult;
+        SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObjectRaw(SoundData.StreamKey, Got);
+        Size = Got;
     }
-    else
+    else if (SoundData.StreamInfoPtr != 0)
     {
-        uint32_t SoundMemoryResult = 0;
-        SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObject(CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x8), SoundMemoryResult);
-
-        if (SoundMemoryResult == 0)
-            return nullptr;
-
-        OpusDataSize = *(uint32_t*)(SoundBuffer.get() + 280);
-        OpusDataOffset = 288;
+        // the streamkey (0x38): flags u8 0x37, 2 set when its data is in the zone (at 0x20, u32 size
+        // 0x30), else in the packages by the key at 8
+        if (CoDAssets::GameInstance->Read<uint8_t>(SoundData.StreamInfoPtr + 0x37) & 2)
+        {
+            Got = CoDAssets::GameInstance->Read<uint32_t>(SoundData.StreamInfoPtr + 0x30);
+            if (Got == 0 || Got > (1u << 30)) return nullptr;
+            SoundBuffer = std::make_unique<uint8_t[]>(Got);
+            if (CoDAssets::GameInstance->Read(SoundBuffer.get(), CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x20), Got) != Got)
+                return nullptr;
+        }
+        else
+            SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObject(CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x8), Got);
+        if (SoundBuffer != nullptr && Got >= 0x120)
+            Size = std::min<size_t>(*(uint32_t*)(SoundBuffer.get() + 0x118), Got - 0x120), Offset = 0x120;
     }
+    if (SoundBuffer == nullptr || Size == 0) return nullptr;
 
-    if(SoundBuffer == nullptr)
-        return nullptr;
-
-    int ErrorCode;
-    auto Decoder = opus_decoder_create(GetFrameRate(SoundData.FrameRateIndex), SoundData.ChannelCount, &ErrorCode);
-
-    if (ErrorCode != OPUS_OK)
-        return nullptr;
-
-    auto PCMBuffer = std::make_unique<opus_int16[]>(960 * 2 * (size_t)SoundData.ChannelCount);
-
-    // Frame Count in the asset isn't exact: padded for the 960-frame split, to avoid realloc
-    std::vector<uint8_t> Pcm;
-    Pcm.reserve((SoundData.FrameCount + 4096) * 2 * SoundData.ChannelCount);
-
-    while (OpusConsumed < OpusDataSize)
+    std::vector<uint8_t> Packets;
+    Packets.reserve(Size);
+    for (size_t At = Offset; At + 4 <= Offset + Size;)
     {
-        uint32_t BlockSize = *(uint32_t*)(SoundBuffer.get() + OpusConsumed + OpusDataOffset);
-        OpusConsumed += 4;
-
-        auto DecoderResult = opus_decode(
-            Decoder,
-            (SoundBuffer.get() + OpusConsumed + OpusDataOffset),
-            BlockSize,
-            PCMBuffer.get(),
-            960,
-            0);
-
-        if (DecoderResult < 0)
-            return nullptr;
-
-        const auto* Decoded = reinterpret_cast<const uint8_t*>(PCMBuffer.get());
-        Pcm.insert(Pcm.end(), Decoded, Decoded + 960 * 2 * SoundData.ChannelCount);
-
-        OpusConsumed       += BlockSize;
-        PCMDataSize        += 960 * 2 * SoundData.ChannelCount;
+        const uint32_t Block = *(uint32_t*)(SoundBuffer.get() + At);
+        At += 4;
+        if (Block == 0) break;   // the object's padding
+        if (Block > 0xFFFF || At + Block > Offset + Size) return nullptr;
+        Packets.push_back((uint8_t)Block);
+        Packets.push_back((uint8_t)(Block >> 8));
+        Packets.insert(Packets.end(), SoundBuffer.get() + At, SoundBuffer.get() + At + Block);
+        At += Block;
     }
-
-    // WAV data needs a WAV header
-    auto Result = std::make_unique<XSound>();
-
-    uint32_t DataOffset = 0;
-
-    // We'll convert all BOCW sounds to 16bit PCM WAV
-    Result->DataBuffer = new int8_t[PCMDataSize + (size_t)Sound::GetMaximumWAVHeaderSize()];
-    Result->DataType = SoundDataTypes::WAV_WithHeader;
-    Result->DataSize = (uint32_t)(PCMDataSize + Sound::GetMaximumWAVHeaderSize());
-
-    DataOffset += Sound::GetMaximumWAVHeaderSize();
-
-    Sound::WriteWAVHeaderToStream(Result->DataBuffer, (uint32_t)Sound->FrameRate, (uint32_t)Sound->ChannelsCount, PCMDataSize);
-
-    std::memcpy(Result->DataBuffer + DataOffset, Pcm.data(), PCMDataSize);
-
-    return Result;
+    return SABSupport::OpusPackets(Packets.data(), Packets.size(), 0, Packets.size(), GetFrameRate(SoundData.FrameRateIndex),
+                                   SoundData.ChannelCount, SoundData.FrameCount, SABSupport::OpusPreSkipPacket);
 }
 
 #pragma pack(push, 1)

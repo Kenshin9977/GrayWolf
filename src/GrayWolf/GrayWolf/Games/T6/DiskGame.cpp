@@ -20,6 +20,7 @@
 #include "Image.h"
 #include <miniz/miniz.h>
 #include "ZonekitZone.h"
+#include "Games/OAT/OatWeapons.h"
 
 #include <algorithm>
 #include <cstring>
@@ -242,8 +243,11 @@ namespace
     class Bo2Zone final : public TreyarchLevelZone
     {
     public:
-        Bo2Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir))
+        Bo2Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir)), Weapons(Path)
         {
+            // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty: Black Ops II"); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
@@ -305,6 +309,7 @@ namespace
 
     private:
         std::string Install;
+        OatWeapons::Source Weapons;
         std::shared_ptr<IPAKCache> Ipak;
 
         // the live image handler reads the .ipak through CoDAssets::GamePackageCache while the

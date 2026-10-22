@@ -10,7 +10,7 @@
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/BO7/TechsetFormat.h"
-#include "Games/BO7/WeaponStats.h"
+#include "Games/IW/IwWeaponStats.h"
 #include "ExportWriters.h"
 #include "FastFile.h"
 #include "FileSystems.h"
@@ -22,6 +22,7 @@
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxReaders.h"
+#include "Games/IW/IwLanguageNames.h"
 #include "Games/IW/IwTerrain.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "SettingsManager.h"
@@ -112,7 +113,8 @@ namespace
             // tunables, accuracy, blueprints named after it; the fields proven so far named (WeaponFields)
             ExportsStructDumps(Kind::Weapons,
                                { { "weapon", 8, WeaponFields() }, { "attachment", 0x248, AttachmentFields() }, { "weapontunables", -1, TunablesFields() },
-                                 { "weaponaccuracy" }, { "weapontrigger" }, { "weaponarchetype" }, { "weaponblueprint" }, { "attachmentblueprint" },
+                                 { "weaponaccuracy" }, { "weapontrigger" }, { "weaponarchetype" }, { "weaponblueprint", -1, WeaponBlueprintFields() },
+                                 { "attachmentblueprint", -1, AttachmentBlueprintFields(), 0x40 },
                                  { "grappleweapontunables" }, { "deployableweaponconfig" }, { "animpkg", -1, AnimPkgFields() },
                                  // the suit a player state's 0x1a48 indexes (0x4528a40: DB find, type 0x51); 0x43cde50
                                  // returns 0xe18 as the sprint multiplier (0xdec under a perk; a dvar >= 0
@@ -120,10 +122,10 @@ namespace
                                  // sprinting. Its name hash is at 0x20 (+0 is a key table the zone's suits share)
                                  { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } }, 0x20 } },
                                Decrypted);
-            // the weapon stats table: this zone's facts, then the table rebuilt from every zone's (WeaponStats.h)
+            // the weapon stats table: this zone's facts, then the table rebuilt from every zone's (Games/IW/IwWeaponStats.h)
             Exports(Kind::WeaponStats, [this, Decrypted](const Context& C, Totals& T) {
-                auto& Kt = T.Kinds[Kind::WeaponStats];
-                BO7Stats::ZoneView V;
+                LearnIndexedModels();
+                IwWeaponStats::ZoneView V;
                 V.Image = &Image();
                 V.Walk = &Walk();
                 V.Off = [this](uint64_t A) { return Off(A); };
@@ -136,32 +138,57 @@ namespace
                     LocalizeEntry(Pos, Key, Text);
                     return Text;
                 };
-                BO7Stats::FactsCount N;
-                const std::string Zone = fs::path(FastFilePath()).stem().string();
-                const std::string Facts = BO7Stats::Facts(V, Zone, [&C](const std::string& Name) { return C.Wants(Kind::WeaponStats, Name); }, N);
-                Kt.Seen += N.Weapons;
-                if (N.Weapons + N.Tunables + N.AnimPkgs + N.Suits + N.Settings + N.Strings + N.Attachments == 0) return;
-                const fs::path Dir = C.KindDir(Kind::WeaponStats);
-                if (!ExportWriters::WriteBytes(Dir / "facts" / (ExportNaming::SafeFileName(Zone) + ".json"), (const uint8_t*)Facts.data(), Facts.size()))
-                    T.Fail(Zone, Kind::WeaponStats, Zone, "write failed");
-                C.After([Dir, &T] {
-                    size_t Rows = 0;
-                    std::string Error;
-                    if (!BO7Stats::Merge(Dir.string(), Rows, Error)) T.Fail("", Kind::WeaponStats, "weapon_stats", Error);
-                    T.Kinds[Kind::WeaponStats].Written = Rows;
-                });
+                IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
             });
         }
 
-        // each sndasset, named by its hash, decoded by GameBlackOps7::ReadXSound (Games/IW/IwctxReaders'
+        // ---- the default parts' model names: a part's models are named by hash, most of them in the
+        // transient zones (mp_av_* view, mp_aw_* world) the hash packages do not name; the install index
+        // lists each model by the name it is exported under, so its hash names it. The index kept for the
+        // install is read once (whatever tables built it: the names do not depend on them); none, no names.
+        static std::unordered_map<uint64_t, std::string>& IndexedModels()
+        {
+            static std::unordered_map<uint64_t, std::string> Models;
+            return Models;
+        }
+        void LearnIndexedModels() const
+        {
+            static std::once_flag Once;
+            std::call_once(Once, [this] {
+                if (Game == nullptr || Install.empty()) return;
+                const auto Index = DiskGame::ZoneIndex::Kept(*Game, Options, Install);
+                if (!Index) return;
+                auto& Models = IndexedModels();
+                for (size_t Z = 0; Z < Index->Zones().size(); Z++)
+                    for (const auto& A : Index->Defined(Z))
+                        if (A.K == DiskGame::Kind::Model) Models.emplace(GameBlackOps7::HashIWAsset(A.Name), A.Name);
+            });
+        }
+        static std::string PartModelName(uint64_t Hash)
+        {
+            if (const auto It = IndexedModels().find(Hash & 0x7FFFFFFFFFFFFFFFull); It != IndexedModels().end()) return It->second;
+            return GameBlackOps7::HashName("xmodel", Hash);
+        }
+        // ---- the weapon stats' layout (IwWeaponStats.h): every offset proven from the exe (RVAs of
+        // bo7_flat.exe, PE timestamp 0x6aadce0e; graywolf-tools fields.md)
+        static const IwWeaponStats::Layout& StatsLayout();
+
+        // each sndasset, named by its hash (an index name in another of the game's languages when
+        // the index lacks it: IwLanguageNames), decoded by GameBlackOps7::ReadXSound (Games/IW/IwctxReaders'
         // export, shared with Black Ops 6)
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
         {
+            static IwLanguageNames ByLanguage({ std::begin(GameBlackOps7::Languages), std::end(GameBlackOps7::Languages) });
             std::vector<IwctxReaders::SoundEntry> Found;
+            std::vector<uint64_t> Hashes;
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "sndasset"))
-                    Found.push_back({ GameBlackOps7::HashName("xsound", At<uint64_t>(Image(), I.Pos)), Live().Addr((uint64_t)I.Pos),
+                {
+                    Hashes.push_back(At<uint64_t>(Image(), I.Pos));
+                    Found.push_back({ GameBlackOps7::HashName("xsound", Hashes.back()), Live().Addr((uint64_t)I.Pos),
                                       At<uint16_t>(Image(), I.Pos + GameBlackOps7::SoundRate), At<uint32_t>(Image(), I.Pos + GameBlackOps7::SoundFrames) });
+                }
+            if (const size_t N = ByLanguage.Rename(Hashes, Found)) Counter("sounds_named_by_language") += N;
             IwctxReaders::ExportSounds(C, T, Name(), Found);
         }
 
@@ -178,7 +205,7 @@ namespace
         // inches (39.37 a metre), times in ms. Candidates not proven stay unnamed.
         static std::map<std::string, DumpField> WeaponFields()
         {
-            return {
+            std::map<std::string, DumpField> F = {
                 // its name as GSC names it: equal to the asset's on all 241 weapons of global_stream_mp
                 { "0x0008", { "name", "" } },
                 // the weapon definition: weaponclipsize/weaponfiretime reach the tunables through
@@ -188,6 +215,10 @@ namespace
                 // the localize key of its display name: sat_weapon/<name>, AK-27 for sat_ar_kite (ens_global)
                 { "0x0040", { "display_name", "" } },
             };
+            // slot s's default attachment, +0x3a0 + 8 s (0x4697c87, when the weapon blueprint gives none)
+            for (int S = 1; S < StatsLayout().SlotCount; S++)
+                F[std::format("0x{:04x}", StatsLayout().DefaultAttachments + 8 * S)] = { std::format("default_attachment_slot{}", S), "" };
+            return F;
         }
         static std::map<std::string, DumpField> TunablesFields()
         {
@@ -314,7 +345,30 @@ namespace
                 // attachments' scale - 1), or the u32 at +8 of the block at 0x400 when one sets it
                 { "0x0400", { "clip_size_override", "" } },
                 { "0x0b90", { "clip_size_scale", "f32" } },
+                // its blueprints (0x4635510: index k > 0 is the k-th of the list +0x30, count +0x38) and own
+                // models: 0x46356d0 returns +0x270 (view) or +0x268 (world) for no blueprint
+                { "0x0030", { "blueprints", "" } },
+                { "0x0268", { "world_model", "hash" } },
+                { "0x0270", { "view_model", "hash" } },
             };
+        }
+        // an attachmentblueprint (a cosmetic variant of an attachment): its name hash +0x40 (0x4635510
+        // compares it), its models +0x70 (view) and +0x78 (world) (0x46356d0)
+        static std::map<std::string, DumpField> AttachmentBlueprintFields()
+        {
+            return { { "0x0040", { "name", "hash" } }, { "0x0070", { "view_model", "hash" } }, { "0x0078", { "world_model", "hash" } } };
+        }
+        // a weaponblueprint (a weapon's variant): 0x4697c87 takes slot s's attachment at +0x40 + 8 s and
+        // its attachmentblueprint at +0xc8 + 8 s (that blueprint's name hash looked up in the attachment's list)
+        static std::map<std::string, DumpField> WeaponBlueprintFields()
+        {
+            std::map<std::string, DumpField> F;
+            for (int S = 1; S < StatsLayout().SlotCount; S++)
+            {
+                F[std::format("0x{:04x}", 0x40 + 8 * S)] = { std::format("attachment_slot{}", S), "" };
+                F[std::format("0x{:04x}", 0xc8 + 8 * S)] = { std::format("attachmentblueprint_slot{}", S), "" };
+            }
+            return F;
         }
 
     protected:
@@ -678,6 +732,147 @@ namespace
             ExportImageList(C, T, L);
         }
     };
+
+    const IwWeaponStats::Layout& BO7Zone::StatsLayout()
+    {
+        static const IwWeaponStats::Layout L = [] {
+            IwWeaponStats::Layout L;
+            // weapon: name 8, definition 0x20, display name 0x40; the attachment slots weapon +0x80 +
+            // slot * 0x10 (0x46843b0 reads the list through 0xec8a200)
+            L.WeaponName = 8, L.WeaponDef = 0x20, L.WeaponDisplay = 0x40, L.Slots = 0x80, L.SlotCount = 17;
+            // definition: class u8 0x1afb (weaponclass 0x74e41b0 -> 0x46542a0, names 0xec874d0), base
+            // animation package 0x350, the tunables sets 0x1b18 / 0x1b20 / 0x1b28 (0x460f300 picks one into
+            // 0x1b30), the animation package overrides 0x60 / count 0x1838 (0x464aab0)
+            L.DefClass = 0x1afb, L.DefAnimPkg = 0x350, L.DefSets = 0x1b18, L.DefSetCount = 0x1b20, L.DefSetTags = 0x1b28, L.DefTunables = 0x1b30,
+            L.DefOverrides = 0x60, L.DefOverrideCount = 0x1838;
+            // tunables: see Columns below
+            L.FireTime = 0x5cd4, L.BurstCount = 0x5d1c, L.StartAmmo = 0x5d34, L.StartAmmoOverride = 0x5d38, L.ClipSize = 0x5d48, L.MaxAmmo = 0x5d44,
+            L.MaxAmmoByClips = 0x5e13, L.FireType = 0x5dfc, L.AdsTime = 0x5dac, L.AdsOutTime = 0x5db0, L.ReloadType = 0x5e46,
+            L.ExplosionRadius = 0x794, L.ExplosionRadiusAlt = 0x7bc, L.ExplosionAlt = 0x7f4, L.MuzzleVelocity = 0x30, L.Damage = 0x70, L.Hit = 0x530,
+            L.SprintOutScale = 0x5a9c, L.SprintSpeedScale = 0x5c14, L.SuperSprintSpeedScale = 0x5c28, L.ProneSpeedScale = 0x5c08;
+            // attachment: name 0x248, clip 0xb90 / 0x400, modifiers 0x250, ADS override 0x458, explosion 0x578
+            L.AttachmentName = 0x248, L.AttClipScale = 0xb90, L.AttClipOverride = 0x400, L.AttModifiers = 0x250, L.AttAdsOverride = 0x458,
+            L.AttExplosion = 0x578, L.AttExplosionAlt = 0x28;
+            // the default parts: 0x4697c87 takes slot s's attachment from the weapon blueprint (+0x40 + 8 s)
+            // and, with none, from the weapon (+0x3a0 + 8 s); 0x46356d0 gives an attachment's model with
+            // no blueprint: +0x270 the view model, +0x268 the world model (xmodel name hashes)
+            L.DefaultAttachments = 0x3a0, L.AttWorldModel = 0x268, L.AttViewModel = 0x270;
+            L.ModelName = [](uint64_t Hash) { return PartModelName(Hash); };
+            // animation package (0x46556b0 reads its block 0x18 at a byte offset)
+            L.PkgBlock = 0x18, L.PkgFirstRaise = 0x2, L.PkgReloadEmpty = 0xac, L.PkgReload = 0xae, L.PkgSprintOut = 0x522, L.PkgSuperSprintOut = 0x524,
+            L.PkgRaise = 0x30a, L.PkgDrop = 0x308, L.PkgRaiseQuick = 0x328, L.PkgReloadAdd = 0xb4, L.PkgReloadEmptyAdd = 0xb6, L.PkgReloadStart = 0xc8,
+            L.PkgReloadEnd = 0xf8;
+            // 0xffff is the package's "no time": the override search skips an entry holding it
+            // (0x46557c5); a base package's 0xffff is left out (empty), not written as 65535
+            L.PkgFfffIsNone = true;
+            // suit (type 0x51, 0x4528a40): name hash 0x20, sprint 0xe18 (0x43cde50), super sprint 0xe78 (0x43a28f0)
+            L.SuitId = 0x20, L.SuitSprint = 0xe18, L.SuitSuperSprint = 0xe78;
+            // gametype settings keys: the tunables tag 0x4611a20 hands 0x460f300, the suit 0x4528930 maps
+            // to the player's suit; an attachment's info bundle (type 76db25c2b8532150): its attachment
+            // asset and display name (a localize hash)
+            L.TagKey = 0x65811ecb02190e17ull, L.SuitKey = 0x9465580f7953cea8ull, L.AttachmentKey = 0x3be72d7e1d0b16e5ull,
+            L.NameKey = 0xc4bcadba8e631b86ull;
+            L.TagNames = { "default", "t10_br", "t10_zm", "t10_mp", "t10_ob", "t10_cp" };
+            // 0xb3dfed8, the speed the weapon stats UI (0x4ced840) starts from
+            L.BaseSpeed = 190.0f;
+            L.MpSuit = "sat_defaultsuit_mp";
+            L.NameHash = [](const std::string& Name) { return GameBlackOps7::HashIWAsset(Name); };
+            L.Title = "Black Ops 7 weapon stats";
+            L.Columns =
+                "\nA value its zone was not read for stays empty: the guns are in global_stream_mp and\n"
+                "global_stream_cfwd_mp, their animation packages (reload, raise, sprint-to-fire) in ingame_shared_mp, the\n"
+                "suits and game-mode settings in global_shared_mp, the display names in ens_global. Export those zones\n"
+                "into the same --out (a .txt list of zone paths works) and the table is rebuilt from every facts file.\n\n"
+                "Columns and units\n"
+                "- set: the tunables set (weapon_def 0x1b18[set-1]). tags: the set's mode tags (FNV-1a 64 names). The\n"
+                "  game picks the set whose tags hold the gametype settings' tag (0x460f300); the set tagged 'default'\n"
+                "  is the fallback. t10_br is the tag of the Warzone settings (suit sat_newsuit_wz), t10_zm of Zombies.\n"
+                "- fire_time_ms: tunables 0x5cd4 (weaponfiretime). rpm = 60000 / fire_time_ms.\n"
+                "- burst_count: 0x5d1c (weaponburstcount). fire_type: u8 0x5dfc (an attachment's +0x318 overrides it):\n"
+                "  0 auto (weaponisauto), 2 burst (weaponburstcount returns the count only for 2), 5 beam (weaponisbeam),\n"
+                "  1, 3, 4 semi-auto (weaponissemiauto). 3 fires two rounds a trigger pull when tunables 0x5d18 <= 0\n"
+                "  (0x45f84ec); 4 is grouped with 3 in 0x45da0ba and 0x45f9e93, not told apart further. The builtins also\n"
+                "  check the weapon's ammo kind, not reproduced.\n"
+                "- clip_size: 0x5d48. start_ammo: 0x5d38 when not 0, else 0x5d34. max_ammo: 0x5d44 (weaponmaxammo with\n"
+                "  no attachment, no perk); empty when u8 0x5e13 is set (then it counts magazines, not reproduced).\n"
+                "- reload_ms, reload_empty_ms, first_raise_ms: the base animation package (weapon_def 0x350), u16 0xae,\n"
+                "  0xac and 0x2 of its time block (getweaponreloadtime, weaponfirstraisetime), before attachments and perks.\n"
+                "  A package time of 0xffff is none (the override search skips it, 0x46557c5): its cell, and the\n"
+                "  sprint-to-fire times computed from it, stay empty (the base getter returns it unchanged).\n"
+                "- reload_add_ms (u16 0xb4, 0x4671060) and reload_empty_add_ms (u16 0xb6, 0x46715c0): the reload state\n"
+                "  (0x45a66d0) takes the reload time (weapon anim 0x14, ammo left) or the empty one (0x15), and the matching\n"
+                "  add time, and stores min(add, reload) as the reload's second timer (ps+0x5a4, 0x4676db0): when the rounds\n"
+                "  enter the magazine (the consumer of that timer is not traced).\n"
+                "- reload_type: u8 0x5e46 (0x464ba30; an attachment with u8 0xd91 turns 1 into 0): 0 magazine, 1 per round.\n"
+                "  For 1, getweaponreloadtime (0x735cdf0) returns reload_start_ms (u16 0xc8, 0x4675260) + reload_ms (one\n"
+                "  round) + reload_end_ms (u16 0xf8, 0x46738e0; 0x104 under a weapon-state bit); empty start for the per-round\n"
+                "  reload: 0xac + u16 0xc4 or 0xc6 (not in the table).\n"
+                "- raise_ms (u16 0x30a), raise_quick_ms (u16 0x328, 0x33a under player flag 0x1c10): the raise state's time\n"
+                "  for weapon anims 0x11 and 0x3c (0x4593d40; first raise is 0x12). drop_ms (u16 0x308): the time of weapon\n"
+                "  anim 0x10 (0x4594250), which the weapon stats UI (0x4cec52c) adds to the raise as the swap time. Each is\n"
+                "  scaled by the player's perks in game (0x4649d40 raise, 0x4649ab0 drop), not here.\n"
+                "- sprint_to_fire_ms = max(1, (int)(u16 0x522 x tunables 0x5a9c)), super_sprint_to_fire_ms the same\n"
+                "  with u16 0x524 (0x45891e0, 0x461f8d0: a single-precision product truncated like the game: 250 x 0.76f is 190.0f).\n"
+                "- ads_time_ms: 0x5dac (aiming in). ads_out_time_ms: 0x5db0 (aiming out). 0x462ee30 reads 4 times,\n"
+                "  0x462ea90 turns the first two into rates, and 0x45876f0 uses the first while the aim is wanted (the ADS\n"
+                "  fraction ps+0x560, playerads, rising), the second when released.\n"
+                "- muzzle_velocity_mps: 0x30 (metres per second).\n"
+                "- explosion_radius_m: getweaponexplosionradius (0x462c250): i32 0x794, or 0x7bc when u8 0x7f4 is set\n"
+                "  (0x462c460); an attachment's block at 0x578 overrides it. Inches / 39.37 (the engine's distance unit,\n"
+                "  as for the ranges). Empty when 0. Most weapons, bullet guns and fists included, hold 300 (7.62 m):\n"
+                "  what the builtin returns, whether or not the weapon ever explodes (not decoded yet).\n"
+                "- damage_*: the first record of the table at 0x70 (0x46386d0): damage_max up to range_max_m, then the\n"
+                "  first mid whose range is set and beyond the distance, else damage_min (0x464c9e0). Ranges are\n"
+                "  inches / 39.37. Other tables (modes, profiles) are in the raw dump only.\n"
+                "- hit_*: the multipliers of the table at 0x530 (0x4642180), by the game's hit location order.\n"
+                "- sprint_speed_scale (0x5c14), super_sprint_speed_scale (0x5c28), prone_speed_scale (0x5c08): scales.\n"
+                "- sprint_mps = 190 x suit 0xe18 x sprint_speed_scale / 39.37, super_sprint_mps also x suit 0xe78 and\n"
+                "  with super_sprint_speed_scale: the weapon stats UI's formula (0x4ced840). suit: the suit of the\n"
+                "  gametype settings whose tag the set holds (empty when no settings name the set's tags, as for\n"
+                "  'default'). *_mp_suit: the same with sat_defaultsuit_mp, the suit of the multiplayer settings (they\n"
+                "  hold no tag, so the 'default' set is used unless a fallback settings bundle gives one).\n";
+            L.AttachmentNotes =
+                "\nweapon_attachments.csv: each weapon's default set with one attachment (every slot's list of\n"
+                "weapon +0x80 + slot * 0x10, slot and index as 0x46843b0 reads them). weapon_loadouts.csv: the\n"
+                "lines of loadouts.txt in this folder ('<weapon asset>: <attachment>, <attachment>...', an attachment by\n"
+                "asset or display name), each loadout of the default set. How the attachments combine (the code):\n"
+                "- clip_size: the i32 at 8 of an attachment's block 0x400 when >= 0 (0x4637e2c), else\n"
+                "  (int)(clip x (1 + sum(attachment 0xb90 - 1))) (0x4637d88).\n"
+                "- reload_ms, reload_empty_ms, the sprint-out times: the animation package of the override entry\n"
+                "  (weapon_def 0x60) with the most condition groups whose groups all match (a group: any of its\n"
+                "  conditions {slot, mask of slot indexes}; a group tied to a blueprint variant never matches here) and\n"
+                "  whose time is not 0xffff, else the base package (0x46556b0, 0x464aab0, 0x46843b0). Reload modifiers\n"
+                "  of perks and of 0x4757c60 are not applied.\n"
+                "- sprint_to_fire_ms = max(1, (int)(time x 0x5a9c x (1 + sum(attachment 0x250->0x08 +0x18 - 1)) +\n"
+                "  sum((int)(1000 x attachment 0x250->0x68 +4)))) (0x461f8d0); the same with the super sprint time.\n"
+                "- ads_time_ms = max(1, ads_time / (1 + sum(0x250->0x18 +4 - 1)) + (int)(1000 x sum(0x250->0x90 +4)))\n"
+                "  (0x462ee30, 0x46318c0); ads_time is replaced by (int)(1000 x t) of the first attachment with ADS\n"
+                "  times at 0x458 (0x4652650; an optic's own at 0x550 and the 0x478 variant are not read).\n"
+                "  ads_out_time_ms: the same with ads_out_time, 0x90 +8 and the override's second time.\n"
+                "- reload_add_ms, reload_empty_add_ms: from the same animation package as the reload times.\n"
+                "- Zombies Pack-a-Punch is an attachment of slot 0 (sat_zm_<gun>_pack, _pack4; sat_ob_<gun>_tier1..4 for\n"
+                "  the other mode): its row in weapon_attachments.csv is the upgraded weapon (names only: no code link).\n"
+                "- muzzle_velocity_mps = velocity x product(attachment 0x250->0xd0 +4) (0x46362d4).\n";
+            L.DefaultPartsNotes =
+                "\nweapon_default_parts.csv: the parts a weapon is built with when no blueprint (variant) is chosen: one\n"
+                "row per slot holding a default attachment, with that attachment's own models (the models to assemble).\n"
+                "- slot, attachment: 0x4697c87 takes slot s's attachment from the weapon blueprint (+0x40 + 8 s) and,\n"
+                "  with none, from the weapon itself (+0x3a0 + 8 s, s from 1): the default attachment. slot is s (the\n"
+                "  slot of weapon_attachments.csv; the default is one of that slot's list).\n"
+                "- world_model, view_model: 0x46356d0 (attachment, blueprint index, view) returns, for blueprint index 0\n"
+                "  (none), the attachment's +0x270 (view) or +0x268 (world), xmodel name hashes; an index k > 0 takes the\n"
+                "  k-th attachmentblueprint of the attachment's list (+0x30, count +0x38, used when byte +0x3c is set),\n"
+                "  its +0x70 (view) or +0x78 (world). A blueprint is a cosmetic variant, never the default part. Empty: no\n"
+                "  model (sights built in, fire modes, ammo). A model is named as it is exported: the name the install\n"
+                "  index lists for its hash (most parts live in the transient zones mp_av_* (view) and mp_aw_* (world)),\n"
+                "  else the hash packages', else the other model's name with _vm_ / _wm_ swapped when that hashes to it,\n"
+                "  else xmodel_<hash> (no index built yet: GrayWolf disk-index <install> --game bo7). Not applied:\n"
+                "  the +0x278 model 0x46356d0 returns under a condition of its own (0xa007ba0 and not 0xa010d50) when set.\n"
+                "- attachment_id: the attachment's name hash; its other cells stay empty when no zone read holds it.\n";
+            return L;
+        }();
+        return L;
+    }
 
     // ---- the level (C2M's BlackOps7.cs and BlackOps6 structs, offsets from the gfx_map loader's
     // tables, 0x385b900 and its readers). gfx_map (0x10): the GfxWorld (0xb370) at 8, its name at 8.

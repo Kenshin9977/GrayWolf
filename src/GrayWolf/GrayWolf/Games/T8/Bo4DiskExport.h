@@ -15,6 +15,7 @@
 #include "ZoneTableWalker.h"
 
 class CoDPackageCache;
+namespace DiskGame { struct SoundHeader; }
 
 namespace Bo4DiskExport
 {
@@ -84,20 +85,24 @@ namespace Bo4DiskExport
         size_t Images = 0, Written = 0, FromPackages = 0, References = 0, Missing = 0, Failed = 0;
         // Linked: written as a hard link to an identical image (same content key) already exported
         size_t Linked = 0;
+        // Sounds: entries without samples in any bank of their language (a line that language does not
+        // record, its key a placeholder), not counted in Images
+        size_t Empty = 0;
         // References: name-only headers (no size, no mips) of an image another zone defines
         std::vector<std::string> MissingSamples;   // why, for the first few without pixels
     };
 
-    // BO4 sounds are not in the zones: the .sabl banks in the install's packages hold them, named
-    // after their zone (zm_red.all.sabl, zm_red.fr.sabl...). Pulls a zone's banks into CacheDir (as
-    // GameBlackOps4 does live), parses them (SABSupport) and writes each sound matching the filter
-    // under OutDir, in the export settings' format.
+    // BO4 sounds are not in the zones: the install's banks named after the zone hold them
+    // (zm_red.all.sabl, zm_red.fr.sabs...: Bo4SoundBanks, read in place). Writes each sound matching
+    // the filter under OutDir in the export settings' format, a language's under OutDir\<language>.
     // Step(done, count, asset) as it goes (DiskGame::Context::Advance), when given; false stops there.
     // Wants(name): whether to write that asset (DiskGame::Context::Wants), all when not given.
+    // Headers, when given: a dry run (DiskGame::Context::OnSoundHeader), each sound's header, no sample.
     using StepFn = std::function<bool(size_t Done, size_t Count, const std::string& Asset)>;
     using NameTest = std::function<bool(const std::string&)>;
-    ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, const std::string& CacheDir,
-                             const std::string& OutDir, const NameTest& Wants, const StepFn& Step = nullptr);
+    using HeaderFn = std::function<void(const DiskGame::SoundHeader&)>;
+    ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, const std::string& OutDir,
+                             const NameTest& Wants, const StepFn& Step = nullptr, const HeaderFn& Headers = nullptr);
 
     // Every material's texture slots: (material hash, slot, semantic hash, image hash), the
     // image found through the resolved pointer (inline or back reference); 0 when unresolved.

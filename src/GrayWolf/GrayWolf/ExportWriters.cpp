@@ -669,6 +669,54 @@ int ExportSound(const CoDSound_t& Sound, const std::string& Dir, const std::stri
     return Guarded([&]() { return SoundSeh(&Sound, &Dir, &Extension); }, Crash);
 }
 
+namespace
+{
+    bool SameBytes(const std::filesystem::path& A, const std::filesystem::path& B)
+    {
+        std::error_code Ec;
+        const auto Size = std::filesystem::file_size(A, Ec);
+        if (Ec || Size != std::filesystem::file_size(B, Ec) || Ec) return false;
+        std::ifstream Fa(A, std::ios::binary), Fb(B, std::ios::binary);
+        std::vector<char> Ba(1 << 16), Bb(1 << 16);
+        while (Fa && Fb)
+        {
+            Fa.read(Ba.data(), (std::streamsize)Ba.size());
+            Fb.read(Bb.data(), (std::streamsize)Bb.size());
+            if (Fa.gcount() != Fb.gcount() || std::memcmp(Ba.data(), Bb.data(), (size_t)Fa.gcount()) != 0) return false;
+        }
+        return Fa.eof() && Fb.eof();
+    }
+}
+
+int SoundFiles::Write(const CoDSound_t& Sound, const std::filesystem::path& Dir, const std::string& Extension, std::string& Crash,
+                      std::filesystem::path* File)
+{
+    const auto Key = [&](const std::string& Stem) { return ExportNaming::Lower((Dir / (Stem + Extension)).string()); };
+    std::string Stem = Sound.AssetName;
+    for (size_t N = 2; Taken.contains(Key(Stem)); N++) Stem = std::format("{}_{}", Sound.AssetName, N);
+    Taken.insert(Key(Stem));
+    CoDSound_t Named = Sound;
+    Named.AssetName = Stem;
+    std::error_code Ec;
+    std::filesystem::create_directories(Dir, Ec);
+    const int Code = ExportSound(Named, Dir.string(), Extension, Crash);
+    std::filesystem::path Written = Dir / (Stem + Extension);
+    if (Code == static_cast<int>(ExportGameResult::Success) && Stem != Sound.AssetName)
+    {
+        const std::filesystem::path First = Dir / (Sound.AssetName + Extension);
+        if (SameBytes(First, Written))
+        {
+            std::filesystem::remove(Written, Ec);
+            Taken.erase(Key(Stem));
+            Written = First;
+            Copies++;
+        }
+        else Renamed++;
+    }
+    if (File) *File = Written;
+    return Code;
+}
+
 const LoadedProfile* ZoneProfile(const std::string& Name, std::string& Error)
 {
     static std::mutex Lock;

@@ -147,6 +147,9 @@ public:
     // The bank this entry lives in, so multiple open banks (e.g. Infinite Warfare's dozens)
     // don't collide on GamePackageCache's single cached path. Empty = fall back to the cache.
     std::string BankFile;
+    // The entry's key in its bank (the name's hash; set by the v10 banks' reader, 0 elsewhere): what
+    // a patch_ bank's entry replaces (IWZone::ExportSoundBanks)
+    uint64_t BankKey = 0;
     uint32_t FrameRate;
     uint32_t FrameCount;
     uint8_t ChannelsCount;
@@ -411,6 +414,10 @@ struct XSound
     // one may end past it, SABSupport::OpusPackets keeps those bytes), with the three below
     SoundDataTypes DataType;
     uint32_t FrameRate = 0, Channels = 0, FrameCount = 0;
+    // Opus_Interleaved: the decoded samples (at 48 kHz) before the sound's first, which the game
+    // skips (SABSupport::OpusPreSkip...); the sound is then FrameCount samples from there. -1: not
+    // measured for the game, every packet's samples kept
+    int32_t OpusPreSkip = -1;
 };
 
 class CoDMaterial_t : public CoDAsset_t

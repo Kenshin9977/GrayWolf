@@ -14,6 +14,9 @@
 #include "Games/Treyarch/TreyarchMaps.h"
 #include "MapLive.h"
 #include "Games/Treyarch/TreyarchPackages.h"
+#include "Games/Treyarch/TreyarchScriptBundles.h"
+#include "Games/Treyarch/TreyarchWeaponStats.h"
+#include "Games/IW/IwctxReaders.h"
 #include "ClipMap.h"
 #include "StringCipher.h"
 #include "Terrain.h"
@@ -54,9 +57,44 @@ namespace
                               } } });
             });
             ExportsGdt();
+            const auto Decrypted = [this](const std::string& Raw) {
+                std::string Error, Text;
+                return CipherTable(Error) && ColdWar::DecryptString(Raw, Text) ? Text : Raw;
+            };
+            ExportsAssetRefs(Decrypted);
+            // the weapon assets as struct dumps: weapon (WeaponDef 0x1918, its name hash at 0), its tunables
+            // (0x1418, a hash at 0x30 distinct on each of mp_common's 100, 0 its bounce pointers), style
+            // settings, blueprints, attachments; their fields named by the gdt weapon layouts
+            ExportsStructDumps(Kind::Weapons,
+                               { { "weapon" }, { "weapontunables", -1, {}, 0x30 }, { "weaponstylesettings" }, { "weaponfull" }, { "weaponblueprint" },
+                                 { "weaponsecondarymovement" }, { "attachment" }, { "attachmentunique" }, { "attachmenttable" } },
+                               Decrypted, "weapon");
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops Cold War"); });
+            Exports(Kind::MapEnts, [this](const Context& C, Totals& T) { Treyarch::ExportMapEnts(C, T, Name(), EntityString()); });
+            // the map tables (each map's settings: maptable, its maptableentry assets) and the AI types
+            // (a flat struct, its settings bundle among its pointers) as struct dumps
+            ExportsStructDumps(Kind::MapInfo, { { "maptable" }, { "maptableentry" }, { "maptablelist" } }, Decrypted);
+            ExportsStructDumps(Kind::AiTypes, { { "aitype" } }, Decrypted);
+            // scriptbundle (0x30, acts' cw unlinker): bundles/<zone>/<settings type>/<name>.json, its
+            // script strings the zone's decrypted ones
+            Exports(Kind::ScriptBundles, [this](const Context& C, Totals& T) {
+                if (!SlotsRead)
+                {
+                    Slots = ZoneStrings(Zone());
+                    SlotsRead = true;
+                }
+                const Treyarch::BundleZone Z{ &Image(), [this](uint64_t A) { return Off(A); },
+                                              [this](uint32_t I) { return I < Slots.size() ? Slots[I] : std::string(); },
+                                              [this](uint64_t H) { return HashName(H); }, HashMask };
+                ExportJsonAssets(Kind::ScriptBundles, C, T, "scriptbundle", [&](int64_t Pos, const std::vector<std::pair<int64_t, int64_t>>& Reads, std::string& Folder, std::string& Json) {
+                    return Treyarch::ReadScriptBundle(Z, Treyarch::BundleLayout::ColdWar, Pos, Reads, Folder, Json);
+                });
+            });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
             // the images, pixels from the .xsub packages (the live LoadXImage): a map's textures
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
+            // the sound_assets, Opus from the .xsub packages (the live ReadXSound)
+            Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             // fx (0x90, elements 0x340) as far as the tables say: types, visuals, effects started
             Exports(Kind::Fx, [this](const Context& C, Totals& T) {
                 const Treyarch::EffectZone Z{ &Image(), [this](uint64_t A) { return Off(A); }, [this](uint64_t A) { return StringAt(A); },
@@ -178,7 +216,7 @@ namespace
             if (Found != GameBlackOpsCW::AssetNameCache.NameDatabase.end()) return Found->second;
             const char* Prefix = K == Kind::Model ? "xmodel" : K == Kind::Anim ? "xanim" : K == Kind::Image ? "ximage"
                                : K == Kind::Script ? "script" : K == Kind::Fx ? "fx" : K == Kind::Rawfile ? "rawfile"
-                               : K == Kind::Data ? "stringtable" : "asset";
+                               : K == Kind::Data ? "stringtable" : K == Kind::Sound ? "xsound" : "asset";
             return std::format("{}_{:x}", Prefix, (unsigned long long)Hash);
         }
         // a name-only header (a model with no skeleton and no LOD): another zone defines it
@@ -196,6 +234,8 @@ namespace
         }
 
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the entitylist as the map_ents text ("" without one), a brush entity naming its brush model ("*N")
+        std::string EntityString();
         // Each image of the zone with mip levels (a name-only header has none), named as the
         // materials name it, decoded by the live reader; identical names written once
         void ExportImages(const Context& C, Totals& T)
@@ -212,6 +252,34 @@ namespace
             };
             L.OnePerName = true;
             ExportImageList(C, T, L);
+        }
+
+        // Each sound_asset (0x58: frame count u32 8, rate index u8 0xc, channels u8 0xd, format u8 0xf)
+        // with data: a package key at 0x38 or a streamkey at 0x40 (none: a name-only header, another
+        // zone defines it), named by its 60-bit hash. Format 13 is Opus (the live ReadXSound); 11 is
+        // an "ADM3" object (rev/ vehicle engine models, frame count 1), not audio: not written.
+        void ExportSounds(const Context& C, Totals& T)
+        {
+            constexpr int64_t Frames = 8, Format = 0xf, PackageKey = 0x38, StreamKey = 0x40;
+            constexpr uint8_t Opus = 13;
+            std::vector<IwctxReaders::SoundEntry> Found;
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "sound_asset")) continue;
+                if (At<uint64_t>(Image(), I.Pos + PackageKey) == 0 && Off(PointerAt(I.Pos + StreamKey)) < 0)
+                {
+                    Counter("sounds_references")++;
+                    continue;
+                }
+                if (At<uint8_t>(Image(), I.Pos + Format) != Opus)
+                {
+                    Counter(std::format("sounds_format_{}_unread", At<uint8_t>(Image(), I.Pos + Format)))++;
+                    continue;
+                }
+                Found.push_back({ AssetName(Kind::Sound, I.Pos), Live().Addr((uint64_t)I.Pos), 0, At<uint32_t>(Image(), I.Pos + Frames) });
+                if (Found.back().Full.rfind("xsound_", 0) != 0) Counter("sounds_named")++;
+            }
+            IwctxReaders::ExportSounds(C, T, Name(), Found);
         }
 
         // with the images it holds (the install index then finds a map's textures in the zone
@@ -381,6 +449,28 @@ namespace
         }
     }
 
+    std::string ColdWarZone::EntityString()
+    {
+        const int64_t List = Root("entitylist");
+        if (List < 0) return std::string();
+        const auto& Img = Image();
+        const uint32_t Count = At<uint32_t>(Img, List + EntityCount);
+        Treyarch::EntityCounts N;
+        size_t BrushModels = 0;
+        std::string Text = Treyarch::EntityText(Img, InlineArray(List, Count, EntitySize), Count, [this](uint64_t A) { return Off(A); },
+                                                [this](uint64_t A) { return StringAt(A); }, [this](uint64_t H) { return HashName(H); }, N,
+                                                [&BrushModels](uint64_t, int32_t Model) {
+                                                    if (Model < 0) return std::string();
+                                                    BrushModels++;
+                                                    return "*" + std::to_string(Model);
+                                                });
+        Counter("map_ents") += Count;
+        Counter("map_ents_hashes") += N.Hashes;
+        Counter("map_ents_hashes_named") += N.HashesNamed;
+        Counter("map_ents_brush_models") += BrushModels;
+        return Text;
+    }
+
     bool ColdWarZone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
     {
         const int64_t World = Root("gfx_map");
@@ -474,23 +564,7 @@ namespace
             Treyarch::Lights(Img, Off(PointerAt(Com + ComLights)), At<uint32_t>(Img, Com + ComLightCount), { LightSize, 200, 116, 220, 228, 104 }, Scene);
 
         // ---- the entities as the map_ents text, a brush entity naming its brush model ("*N")
-        if (const int64_t List = Root("entitylist"); List >= 0)
-        {
-            const uint32_t Count = At<uint32_t>(Img, List + EntityCount);
-            Treyarch::EntityCounts N;
-            size_t BrushModels = 0;
-            Scene.MapEnts = Treyarch::EntityText(Img, InlineArray(List, Count, EntitySize), Count, [this](uint64_t A) { return Off(A); },
-                                                 [this](uint64_t A) { return StringAt(A); }, [this](uint64_t H) { return HashName(H); }, N,
-                                                 [&BrushModels](uint64_t, int32_t Model) {
-                                                     if (Model < 0) return std::string();
-                                                     BrushModels++;
-                                                     return "*" + std::to_string(Model);
-                                                 });
-            Counter("map_ents") += Count;
-            Counter("map_ents_hashes") += N.Hashes;
-            Counter("map_ents_hashes_named") += N.HashesNamed;
-            Counter("map_ents_brush_models") += BrushModels;
-        }
+        Scene.MapEnts = EntityString();
 
         // ---- the collision (ClipMap.h): the world's brushes and triangles, the brush models'
         if (const int64_t Clip = Root("clip_map"); Clip >= 0)

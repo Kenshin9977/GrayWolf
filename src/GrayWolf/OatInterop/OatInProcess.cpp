@@ -41,6 +41,7 @@
 #include "GltfSceneWriter.h" // vertex decode for the map export
 #include "MapGlbWriter.h"    // the map scene and its one .glb writer
 
+#include <algorithm>
 #include <set>
 
 #include <cmath>
@@ -1712,6 +1713,70 @@ bool OatZoneSession::Dump(const std::string& OutputDir, const std::vector<std::s
         Counts.MenuDefs = ExportMenuDefPool<T6::AssetMenu>(Z, Context);
     }
     return Ok;
+}
+
+namespace
+{
+    // OAT's output kept in memory: each file's contents by its path, stored when its stream closes
+    class CaptureOutputPath final : public IOutputPath
+    {
+    public:
+        explicit CaptureOutputPath(std::map<std::string, std::string>& Files) : Files(Files) {}
+        std::unique_ptr<std::ostream> Open(const std::string& FileName) override
+        {
+            return std::make_unique<Capture>(Files, FileName);
+        }
+
+    private:
+        class Capture final : public std::ostringstream
+        {
+        public:
+            Capture(std::map<std::string, std::string>& Files, std::string Name)
+                : std::ostringstream(std::ios::out | std::ios::binary), Files(Files), Name(std::move(Name)) {}
+            ~Capture() override { Files[Name] = str(); }
+
+        private:
+            std::map<std::string, std::string>& Files;
+            std::string Name;
+        };
+        std::map<std::string, std::string>& Files;
+    };
+}
+
+bool OatZoneSession::DumpTypes(const std::vector<std::string>& Wanted, std::vector<std::pair<std::string, std::string>>& Out, size_t& Assets)
+{
+    Impl& I = *P;
+    std::vector<bool> Types(I.GameInfo->GetAssetTypeCount(), false);
+    for (size_t T = 0; T < Types.size(); T++)
+    {
+        const auto Name = I.GameInfo->GetAssetTypeName(static_cast<asset_type_t>(T));
+        Types[T] = Name && std::find(Wanted.begin(), Wanted.end(), std::string(*Name)) != Wanted.end();
+    }
+    Assets = 0;
+    for (auto It = I.Z->m_pools.begin(); It != I.Z->m_pools.end(); ++It)
+        if (*It && !(*It)->IsReference() && (*It)->m_type < Types.size() && Types[(*It)->m_type]) Assets++;
+    ObjWriting::Configuration.AssetTypesToHandleBitfield = Types;
+    std::map<std::string, std::string> Files;
+    CaptureOutputPath Output(Files);
+    const std::string BasePath = (std::filesystem::temp_directory_path() / "graywolf_oat_weapons").string();
+    bool Ok = false;
+    {
+        AssetDumpingContext Context(*I.Z, BasePath, Output, I.Paths.GetSearchPath(), std::nullopt);
+        Ok = IObjWriter::GetObjWriterForGame(I.Game)->DumpZone(Context);
+    }
+    Out.assign(Files.begin(), Files.end());
+    return Ok;
+}
+
+bool OatZoneSession::WeaponFiles(std::vector<std::pair<std::string, std::string>>& Out, size_t& Assets)
+{
+    return DumpTypes({ "weapon", "attachment", "attachmentunique", "camo" }, Out, Assets);
+}
+
+bool OatZoneSession::StringTables(std::vector<std::pair<std::string, std::string>>& Out)
+{
+    size_t Assets = 0;
+    return DumpTypes({ "stringtable" }, Out, Assets);
 }
 
 bool OatDumpZoneInProcess(const std::string& FastFilePath, const std::string& OutputDir,

@@ -25,6 +25,14 @@ public:
     // count u32 0x28, rate u16 0x32 (Games/IW/IwctxReaders, shared with Black Ops 6)
     static std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound);
     static constexpr int64_t SoundKey = 8, SoundSeek = 0x20, SoundLoaded = 0x24, SoundFrames = 0x28, SoundFlags = 0x30, SoundRate = 0x32;
+    // The game's languages, the last part of a localized sound's hashed name (IwLanguageNames): its
+    // language table, 24 rows {name, zone prefix, id, locale, fallback} of 40 bytes at RVA 0xdc542c0
+    // of bo7_flat.exe (PE timestamp 0x6aadce0e); english_safe is the ens_ zones'
+    static constexpr const char* Languages[] = { "english", "english_safe", "french", "german", "italian", "spanish",
+                                                 "russian_full", "russian_partial", "polish_full", "polish_partial", "korean_full",
+                                                 "korean_partial", "japanese_full", "japanese_partial", "simplified_chinese",
+                                                 "traditional_chinese", "safe_chinese", "arabic", "czech", "spanishna", "portuguese",
+                                                 "thai", "turkish", "simplified_chinese_partial" };
 
     // xanim (0x80, loader 0x38c21b0): Black Ops 6's packed keys in 1 to 4 .xsub parts
     // (Games/IW/IwctxReaders, XAnimLayout), read by the rules of the game's own sampler

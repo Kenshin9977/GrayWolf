@@ -7,6 +7,7 @@
 
 #include "Games/IW/IWZone.h"
 #include "Games/IW4/Iw64Readers.h"
+#include "Games/OAT/OatWeapons.h"
 
 #include <map>
 #include <memory>
@@ -67,6 +68,7 @@ namespace Iw64
         IWDCache* Packages();
 
         const GameInfo& Game;
+        OatWeapons::Source Weapons;   // the weapon kinds, through OpenAssetTools
     };
 
     // The IDiskGame of one title: its zones are the unsigned fast files (IWffu100) of the input

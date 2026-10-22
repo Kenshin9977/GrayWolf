@@ -144,6 +144,27 @@ namespace
     }
 }
 
+void Bo3ReadSoundFileSpecs(const SoundAliasCsv::ZoneView& Z, int64_t Bank, std::unordered_map<uint32_t, std::string>& Out)
+{
+    const uint32_t AliasCount = Z.At<uint32_t>(Bank + AliasCountAt);
+    const int64_t Aliases = Z.Follow(Bank + AliasesAt);
+    for (uint32_t I = 0; Aliases >= 0 && I < AliasCount; I++)
+    {
+        const int64_t A = Aliases + I * AliasSize;
+        const uint32_t Count = Z.At<uint32_t>(A + 0x18);
+        const int64_t Entries = Z.Follow(A + 0x10);
+        for (uint32_t J = 0; Entries >= 0 && J < Count; J++)
+            for (int K = 0; K < 3; K++)
+            {
+                const int64_t F = Entries + J * EntrySize + 0x38 + K * 0x10;
+                const uint32_t Hash = Z.At<uint32_t>(F);
+                if (Hash == 0) continue;
+                std::string Path = Z.Text(F + 8);
+                if (!Path.empty()) Out.emplace(Hash, std::move(Path));
+            }
+    }
+}
+
 void Bo3ReadSoundAliases(const SoundAliasCsv::ZoneView& Z, int64_t Bank, const std::unordered_map<uint32_t, std::string>& Exported,
                          const std::string& Extension, SoundAliasCsv::Rows& Out)
 {

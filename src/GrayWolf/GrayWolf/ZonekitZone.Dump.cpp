@@ -7,6 +7,7 @@
 
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Gdt.h"
 
 #include <nlohmann/json.hpp>
 
@@ -43,14 +44,47 @@ namespace
     }
 }
 
-void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Types, std::function<std::string(const std::string&)> Decrypt)
+void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Given, std::function<std::string(const std::string&)> Decrypt,
+                                     std::string NamesFrom)
 {
-    Exports(K, [this, K, Types, Decrypt](const DiskGame::Context& C, DiskGame::Totals& T) {
+    Exports(K, [this, K, Given, Decrypt, NamesFrom](const DiskGame::Context& C, DiskGame::Totals& T) {
         auto& Kt = T.Kinds[K];
+        std::vector<DumpType> Types = Given;
+        if (!NamesFrom.empty())
+        {
+            std::string Error;
+            const auto Gdts = GdtTypes(Error);
+            const auto It = std::find_if(Gdts.begin(), Gdts.end(), [&](const auto& G) { return G->Id() == NamesFrom; });
+            if (It == Gdts.end()) T.Fail(ZoneName, K, "", "no gdt type " + NamesFrom + (Error.empty() ? "" : ": " + Error));
+            else
+                for (const auto& [ZoneType, Fields] : (*It)->NamedFields())
+                    for (auto& D : Types)
+                    {
+                        if (D.Type != ZoneType) continue;
+                        const auto Name = [&](int64_t Offset, const std::string& N, const char* Kind) {
+                            if (Offset >= 0 && Offset % 4 == 0) D.Fields.try_emplace(std::format("0x{:04x}", Offset), DumpField{ N, Kind });
+                        };
+                        for (const auto& F : Fields)
+                        {
+                            if (F.Source != "engine") continue;
+                            const bool Whole = F.Form == "int" || F.Form == "uint" || F.Form == "int[]" || F.Form == "msec";
+                            const bool Real = F.Form == "float" || F.Form == "float[]" || F.Form == "vec3";
+                            const int Count = F.Form == "vec3" ? 3 : F.Form == "int[]" || F.Form == "float[]" ? std::max(F.Count, 1) : 1;
+                            if (Whole || Real)
+                                for (int E = 0; E < Count; E++)
+                                    Name(F.Offset + 4 * E, Count > 1 ? std::format("{}[{}]", F.Name, E) : F.Name, Whole ? "i32" : "f32");
+                            else if (F.Form != "byte" && F.Offset % 8 == 0)
+                                Name(F.Offset, F.Name, F.Form == "hash" ? "hash" : "");
+                        }
+                    }
+        }
         constexpr uint64_t IdBits = 0x7FFFFFFFFFFFFFFFull;
         constexpr size_t WordBudget = 4u << 20;   // words per asset, its blocks included
         constexpr int MaxDepth = 24;
+        constexpr int64_t InReadCap = 0x1000;   // bytes dumped behind a pointer that lands inside a read
         const auto& Img = Image();
+        // the zone's pointer width (a 32-bit game's: 4, its pointers on any 4-byte boundary)
+        const int64_t Ptr = Rules().PointerSize == 4 ? 4 : 8;
         const auto Hex = [](uint64_t H) { return std::format("{:016x}", H); };
         const auto TypeOf = [this](const ZoneTables::ZoneResult::Instance& I) -> std::string {
             return I.Owner < R.OwnerNames.size() ? R.OwnerNames[I.Owner] : std::string("?");
@@ -58,9 +92,11 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
         std::map<std::string, int64_t> Wanted;   // type -> NameAt
         std::map<std::string, int64_t> IdAtOf;   // type -> where its name hash is
         for (const auto& D : Types) Wanted[D.Type] = D.NameAt, IdAtOf[D.Type] = D.IdAt;
-        const auto IdOf = [&](const ZoneTables::ZoneResult::Instance& I) {
+        // (IdAt -1: a type named by a string, no hash; its id 0)
+        const auto IdOf = [&](const ZoneTables::ZoneResult::Instance& I) -> uint64_t {
             const auto It = IdAtOf.find(TypeOf(I));
-            return At<uint64_t>(Img, I.Pos + (It != IdAtOf.end() ? It->second : 0)) & IdBits;
+            const int64_t IdAt = It != IdAtOf.end() ? It->second : 0;
+            return IdAt < 0 ? 0 : At<uint64_t>(Img, I.Pos + IdAt) & IdBits;
         };
         std::vector<size_t> Targets;
         for (size_t I = 0; I < R.Instances.size(); I++)
@@ -118,7 +154,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
             auto& [Name, From] = NameOf[Index];
             Name = KnownHash(IdOf(R.Instances[Index])), From = "hash";
             const int64_t NameAt = Wanted[TypeOf(R.Instances[Index])];
-            const uint64_t V = NameAt >= 0 ? At<uint64_t>(Img, Pos + NameAt) : 0;
+            const uint64_t V = NameAt >= 0 ? PointerAt(Pos + NameAt) : 0;
             int64_t In = -1, Size = 0;
             if (const int64_t To = V != 0 ? Off(V) : -1; Name.empty() && To >= 0 && (Size = ReadAt(To, In)) < 0 && In < 0)
                 Name = Text(To, -Size), From = std::format("string at 0x{:x}", NameAt);
@@ -130,9 +166,9 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
         {
             const auto& I = R.Instances[Index];
             for (uint32_t Rd = I.FirstRead; Rd < I.EndRead && Rd < R.Reads.size() && Rd < R.ReadPos.size(); Rd++)
-                for (int64_t B = 0; R.ReadPos[Rd] >= 0 && B + 8 <= R.Reads[Rd]; B += 8)
+                for (int64_t B = 0; R.ReadPos[Rd] >= 0 && B + Ptr <= R.Reads[Rd]; B += Ptr)
                 {
-                    const uint64_t V = At<uint64_t>(Img, R.ReadPos[Rd] + B);
+                    const uint64_t V = PointerAt(R.ReadPos[Rd] + B);
                     const auto It = V != 0 ? InstanceAt.find(Off(V)) : InstanceAt.end();
                     if (It == InstanceAt.end() || It->second == Index || !NameOf.count(It->second)) continue;
                     auto& By = ReferencedBy[It->second];
@@ -177,11 +213,17 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                 return J;
             }
             int64_t In = -1;
-            const int64_t Size = ReadAt(To, In);
+            int64_t Size = ReadAt(To, In);
             if (Size < 0) return Json{ { "string", Text(To, -Size) } };
             if (Size == 0) return Json{ { "zone_offset", std::format("0x{:x}", To) } };
             J["block"] = std::format("0x{:x}", Size);
-            if (In >= 0) J["read_starts_before"] = std::format("0x{:x}", To - In);
+            if (In >= 0)
+            {
+                J["read_starts_before"] = std::format("0x{:x}", To - In);
+                // a pointer into a read (an array's element, or a layout gone wrong): its struct's size
+                // is not known, the rest of that read may be megabytes; dumped up to InReadCap bytes
+                if (Size > InReadCap) Size = InReadCap, J["dumped"] = std::format("0x{:x}", Size);
+            }
             if (const auto S = Seen.find(To); S != Seen.end())
             {
                 J["same_as"] = S->second;
@@ -222,6 +264,16 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                 const bool HasName = FieldNames != nullptr && Named_ != FieldNames->end();
                 const std::string Shown = HasName ? Key + " " + Named_->second.Name : Key;
                 Words++;
+                if (HasName && Named_->second.Kind == "hash" && O % 8 == 0 && O + 8 <= Size)
+                {
+                    // a hash field: its 64 bits whether or not a name index knows them (0: none)
+                    const uint64_t V = At<uint64_t>(Img, P + O);
+                    Json J = 0;
+                    if (V != 0) J = Json::object(), Named(V & IdBits, J);
+                    F(Shown) = std::move(J);
+                    O += 8;
+                    continue;
+                }
                 if (HasName && (Named_->second.Kind == "i32" || Named_->second.Kind == "f32" || Named_->second.Kind == "u16x2"))
                 {
                     if (Named_->second.Kind == "i32") F(Shown) = At<int32_t>(Img, P + O);
@@ -231,11 +283,11 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                     O += 4;
                     continue;
                 }
-                if (O % 8 == 0 && O + 8 <= Size)
+                if (O % Ptr == 0 && O + Ptr <= Size)
                 {
                     const int64_t Field = P + O;
-                    const uint64_t V = At<uint64_t>(Img, Field);
-                    if (Field == R.Instances[Root].Pos)
+                    const uint64_t V = PointerAt(Field);
+                    if (Ptr == 8 && Field == R.Instances[Root].Pos && IdAtOf[TypeOf(R.Instances[Root])] >= 0)
                     {
                         // the asset's own hash
                         Json J;
@@ -248,7 +300,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                     if (To >= 0)
                     {
                         F(Shown) = Pointer(To, Here, Depth);
-                        O += 8;
+                        O += Ptr;
                         continue;
                     }
                     if (const auto U = Unlinked.find(Field); V != 0 && U != Unlinked.end())
@@ -260,7 +312,7 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
                         J["ref"] = Type != R.RefTypes.end() && Type->second < R.OwnerNames.size() ? R.OwnerNames[Type->second] : std::string("?");
                         Named(V & IdBits, J);
                         F(Shown) = std::move(J);
-                        O += 8;
+                        O += Ptr;
                         continue;
                     }
                     // a hash a name index knows (both halves set: not two small numbers)
@@ -349,10 +401,55 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Typ
             {
                 Kt.Written++;
                 // (no settings type: the asset type stands as its type's name)
-                T.Index(K, Hex(Id), "", Type, ZoneName, Name, Path.string());
+                T.Index(K, Id != 0 ? Hex(Id) : Name, "", Type, ZoneName, Name, Path.string());
             }
             else
                 T.Fail(ZoneName, K, File, "write failed");
         }
     });
+}
+
+void ZonekitZone::ExportJsonAssets(DiskGame::Kind K, const DiskGame::Context& C, DiskGame::Totals& T, const char* Type, const JsonAssetReader& Read)
+{
+    auto& Kt = T.Kinds[K];
+    std::vector<int64_t> Found;
+    std::vector<const ZoneTables::ZoneResult::Instance*> Of;
+    for (const auto& I : R.Instances)
+        if (I.Parent < 0 && OwnerIs(I, Type)) Found.push_back(I.Pos), Of.push_back(&I);
+    const fs::path Dir = fs::path(C.KindDir(K)) / ExportNaming::SafeFileName(ZoneName);
+    std::set<std::string> Written;
+    for (size_t N = 0; N < Found.size(); N++)
+    {
+        const uint64_t Id = At<uint64_t>(Image(), Found[N]) & HashBits();
+        std::string Name = HashName(Id);
+        if (Name.empty()) Name = std::format("{}_{:x}", Type, Id);
+        if (!C.Advance(N, Found.size(), Name)) break;
+        if (!C.Wants(K, Name)) continue;
+        std::string Folder, Json;
+        std::vector<std::pair<int64_t, int64_t>> Reads;
+        for (uint32_t Rd = Of[N]->FirstRead; Rd < Of[N]->EndRead && Rd < R.Reads.size() && Rd < R.ReadPos.size(); Rd++)
+            if (R.ReadPos[Rd] >= 0) Reads.emplace_back(R.ReadPos[Rd], R.Reads[Rd]);
+        if (!Read(Found[N], Reads, Folder, Json))
+        {
+            T.Fail(ZoneName, K, Name, "not read");
+            continue;
+        }
+        if (Json.empty())
+        {
+            Kt.References++;
+            continue;
+        }
+        const fs::path Sub = Folder.empty() ? Dir : Dir / ExportNaming::SafeFileName(Folder);
+        std::string Stem = ExportNaming::SafeFileName(Name);
+        if (!Written.insert(ExportNaming::Lower((Sub / Stem).string())).second) Stem += std::format("_at_{:x}", Found[N]);
+        Kt.Seen++;
+        const fs::path File = Sub / (Stem + ".json");
+        if (ExportWriters::WriteBytes(File, reinterpret_cast<const uint8_t*>(Json.data()), Json.size()))
+        {
+            Kt.Written++;
+            T.Index(K, std::format("{:016x}", Id), "", Folder.empty() ? Type : Folder, ZoneName, Name, File.string());
+        }
+        else T.Fail(ZoneName, K, Name, "write failed");
+    }
+    C.Advance(Found.size(), Found.size());
 }

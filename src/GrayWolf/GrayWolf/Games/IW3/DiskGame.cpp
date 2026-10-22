@@ -10,6 +10,7 @@
 #include "ExportWriters.h"
 #include "GameModernWarfare.h"
 #include "Games/IW3/IwdZone.h"
+#include "Games/OAT/OatWeapons.h"
 #include "SettingsManager.h"
 #include "Strings.h"
 
@@ -34,7 +35,12 @@ namespace
     class Cod4Zone final : public Iw3Family::IwdZone
     {
     public:
-        Cod4Zone(const std::string& Path, std::string InstallDir) : IwdZone(Path, std::move(InstallDir)) {}
+        Cod4Zone(const std::string& Path, std::string InstallDir) : IwdZone(Path, std::move(InstallDir)), Weapons(Path)
+        {
+            // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty 4: Modern Warfare"); });
+        }
 
     protected:
         const char* Profile() const override { return "iw3"; }
@@ -133,6 +139,9 @@ namespace
                 else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
             }
         }
+
+    private:
+        OatWeapons::Source Weapons;
     };
 
     class Cod4Game final : public DiskGame::IDiskGame

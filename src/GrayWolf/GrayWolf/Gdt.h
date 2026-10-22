@@ -117,6 +117,25 @@ namespace Gdt
         bool Nested() const;
         const std::vector<Source>& FoundIn() const;
 
+        // Its layouts' fields as the tables name them, by the zone type each layout's pool names (a
+        // struct dump names its fields with them: ZonekitZone::ExportsStructDumps). Source: "engine"
+        // (a name the game's own field list or the earlier title's matching weapons give), "observed"
+        struct NamedField
+        {
+            int64_t Offset = 0;
+            std::string Name, Form, Source;
+            int Count = 0;
+        };
+        std::vector<std::pair<std::string, std::vector<NamedField>>> NamedFields() const;
+        // Every field of the layouts read at Pos (the structs its address fields lead to included),
+        // by name, as read: numbers (an array's every element) or names (a hash's, an enum's)
+        struct FieldValue
+        {
+            std::vector<double> Numbers;
+            std::vector<std::string> Texts;
+        };
+        std::map<std::string, FieldValue> Values(const Memory& M, int64_t Pos, Stats& S) const;
+
         struct Data;
 
     private:

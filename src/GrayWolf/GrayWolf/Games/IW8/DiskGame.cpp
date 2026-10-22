@@ -19,6 +19,7 @@
 #include "Games/Common/StringCipher.h"
 #include "Games/IW8/EntityKeys.h"
 #include "Games/IW/IWMaterialBooks.h"
+#include "Games/IW/IwWeaponStats.h"
 #include "Games/IW/IWZone.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "XPAKCache.h"
@@ -123,6 +124,100 @@ namespace
         return Out;
     }
 
+    // ---- the weapon stats' layout (Games/IW/IwWeaponStats.h): offsets read off the code of the
+    // dump (iw8_flat.exe, RVAs). The weapon table 0x131aa260 holds the weapon assets (0x290), the
+    // table 0x131acb00 their definitions (weapon + 8, 0x1740), both indexed by the weapon index
+    // (0x35c3cc0 fills entry 0). The getters walk the weapon's attachments (0x35f1d30: the slot
+    // lists at weapon 0x30 + slot * 0x10) before the definition. Several MWIII proof functions
+    // were found here by their code (mnemonic shape, MWIII's are the same functions one engine later).
+    const IwWeaponStats::Layout& StatsLayout()
+    {
+        static const IwWeaponStats::Layout L = [] {
+            using F = IwWeaponStats::Field;
+            constexpr auto Def = F::In::Def, Weapon = F::In::Weapon;
+            IwWeaponStats::Layout L;
+            // weapon (0x290): name 0, definition 8, display name key 0x18 (a string, WEAPON/AR_MIKE4);
+            // 15 slots at 0x30 + slot * 0x10 {u32 count 0, attachment ** 8} (0x35f1d30: list[index - 1])
+            L.WeaponName = 0, L.WeaponDef = 8, L.WeaponDisplay = 0x18, L.Slots = 0x30, L.SlotList = 8, L.SlotCountAt = 0, L.SlotCount = 15;
+            L.DisplayIsKey = true, L.AssetNameAt = 0;
+            L.LocalizeHash = [](const std::string& Key) {
+                uint64_t H = 0xCBF29CE484222325ull;
+                for (const char C : Key) H = (H ^ (uint8_t)std::tolower((unsigned char)C)) * 0x100000001B3ull;
+                return H & 0x7FFFFFFFFFFFFFFFull;
+            };
+            // class i32 0x208 (0x35f2d00; the builtin 0x375e750 names it from the table 0xa1303e0)
+            L.DefClass = 0x208, L.ClassNames = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher",
+                                                   "turret", "throwingknife", "non-player", "item", "beam", "ball", "none" };
+            // base animation package 0x98 (0x35f3540: its time block at 0x10, a u16 per time)
+            L.DefAnimPkg = 0x98;
+            L.FireTime = F(0x190, Def), L.BurstCount = F(0x21c, Def), L.FireType = F(0x214, Def), L.ClipSize = F(0x1e8, Weapon),
+            L.StartAmmo = F(0x41c, Def), L.MaxAmmo = F(0x430, Def), L.ReloadType = F(0x240, Def), L.ExplosionRadius = F(0x74c, Def),
+            L.ExplosionRadiusAlt = F(0x7d4, Def), L.ExplosionAlt = F(0xf01, Def), L.SprintOutScale = F(0x1a0, Def);
+            // the damage table: records of 0x28 at 0xe8 (profile 0, the player's), i32 damages 0-0x10,
+            // f32 ranges 0x14-0x20. The hit location multipliers: 22 floats behind the pointer 0xf28
+            // (0x35e3530 returns it, 0xf30 under u8 0x172f; its callers 0x3726f40 and 0x62d8900 index it
+            // by the hit location, x 4)
+            L.Damage = F(0xe8, Def), L.Hit = F(0xf28, Def), L.HitIsPointer = true;
+            // attachment (0x458): name 0, clip scale 0x2b8 (0: none, the code skips it), ammo override
+            // block 0x148 (clip i32 at 8, start 4, max 0), explosion override block 0x208 (i32 0,
+            // alternate 0x1c)
+            L.AttachmentName = 0, L.AttClipScale = 0x2b8, L.AttClipOverride = 0x148, L.AttExplosion = 0x208, L.AttExplosionAlt = 0x1c;
+            L.AttZeroScaleIsNone = true;
+            // animation package (0x40): time block 0x10, 0xffff a time it has not (0x35f3540); reload 0x46
+            // (0x36027d0; 0x48 under a trait), empty 0x4c (0x3601240; 0x4e)
+            L.PkgBlock = 0x10, L.PkgReload = 0x46, L.PkgReloadEmpty = 0x4c, L.PkgFfffIsNone = true;
+            L.Title = "Modern Warfare (2019) weapon stats";
+            L.Columns =
+                "\nA value its zone was not read for stays empty: the guns, their attachments and animation packages are\n"
+                "in global_stream_mp, the display names in the language's code_post_gfx (fra_code_post_gfx). Export them\n"
+                "into the same --out (a .txt list of zone paths works) and the table is rebuilt from every facts file.\n\n"
+                "Columns and units (RVAs of iw8_flat.exe, the dump of ModernWarfare.exe). This game keeps no\n"
+                "weapontunables asset: one set per weapon, its fields in the weapon (W, 0x290) and its definition (D,\n"
+                "behind weapon 8, 0x1740). Each getter takes an attachment's override first (0x35f1d30 lists them).\n"
+                "- class: D i32 0x208 (0x35f2d00), named by the table 0xa1303e0 (builtin 0x375e750): rifle, sniper, mg,\n"
+                "  smg, spread, pistol, grenade, rocketlauncher, turret, throwingknife, non-player, item, beam, ball, none.\n"
+                "- fire_time_ms: D 0x190 (0x35de310, its builtin 0x375ef00 returns it x 0.001; 0x1a4 under u8 D 0x172d\n"
+                "  and a player state, 0x198 for another mode, a wind-up ramp from D 0x1334/0x133c, attachments' 0x31c\n"
+                "  override and 0x324 scale not applied). rpm = 60000 / fire_time_ms.\n"
+                "- fire_type: D i32 0x214 (0x35f38a0; an attachment's block 0xa8 overrides it); the names of the table\n"
+                "  0xa130510: 0 Full Auto, 1 Single Shot, 2 Burst, 3 Double Barrel, 4 Double Barrel (Dual Trigger), 5\n"
+                "  Beam. burst_count: D 0x21c (0x35f2c70), which the builtin 0x375e5b0 returns only for fire type 2.\n"
+                "- clip_size: W 0x1e8 (0x35d8e60). start_ammo: D 0x41c (0x3605420; 0x420 for some weapon types).\n"
+                "  max_ammo: D 0x430 (0x35c3cc0 copies it to the table 0x131af3a0 that 0x35fe050 reads).\n"
+                "- reload_ms, reload_empty_ms: the base animation package (D 0x98), u16 0x46 and 0x4c of its time block\n"
+                "  (0x10; 0x36027d0, 0x3601240; 0x48 and 0x4e under a trait), before attachments and perks; empty\n"
+                "  when 0xffff, a time the package has not (0x35f3540).\n"
+                "- reload_type: D i32 0x240 (0x35e8cb0; an attachment's block 0x108 overrides it). Its values are\n"
+                "  not named for this game (0 for the 870's round-by-round reload too): per-round times not given.\n"
+                "- damage_max .. damage_min at range_*: D 0xe8, the player's record (0x28: i32 damages 0-0x10, f32\n"
+                "  ranges 0x14-0x20, profile 0; other profiles follow); 0x35e4f70 returns the i32 0 (min) and 0x10\n"
+                "  (max) (the min and max damage builtins' common function), 0x35ea6d0 the four ranges (inches / 39.37,\n"
+                "  a range of 0 unused); a record whose f32 0x24 is set uses two ranges (0x35e3160), not read here.\n"
+                "  The alternate record D 0x168 (u8 D 0x172c) and attachments' records (block 0x150) not applied.\n"
+                "- explosion_radius_m: 0x35cf210: D 0x74c, or 0x7d4 when u8 D 0xf01 is set; an attachment's block\n"
+                "  0x208 overrides it. Inches / 39.37. Empty when 0.\n"
+                "- hit_*: 22 f32 behind the pointer D 0xf28 (0x35e3530 returns it; D 0xf30 under u8 D 0x172f and a\n"
+                "  player state, an attachment's 0x2a8 first: not applied), indexed by the hit location (0x3726f40,\n"
+                "  0x62d8900: table + location x 4), in the order of the table 0x9beee80. Most weapons share another's\n"
+                "  table by a back reference (878 of global_stream_mp's 998 definitions).\n"
+                "- Not given for this game (empty): ADS times, muzzle velocity, first raise, raise, drop and reload\n"
+                "  add times, the sprint-out times\n"
+                "  (0x3604c40 takes u16 0x1ec, or 0x1f8 under a flag it decrypts at run time, then a value of another\n"
+                "  table when it has one; 0x1ec is 0 for the MP5 and the M19: not the whole story), movement scales\n"
+                "  and speeds, the tunables sets and tags.\n";
+            L.AttachmentNotes =
+                "\nweapon_attachments.csv: each weapon with one attachment (every slot's list, weapon 0x30 + slot *\n"
+                "0x10 {u32 count, list at 8}, as 0x35f1d30 reads them). weapon_loadouts.csv: the lines of loadouts.txt\n"
+                "in this folder, each loadout. How the attachments combine (the code):\n"
+                "- clip_size: the i32 at 8 of an attachment's block 0x148 when >= 0, else (int)(clip x (1 + sum(attachment\n"
+                "  0x2b8 - 1))) (0x35d8e60; a scale of 0 is skipped).\n"
+                "- The animation package overrides (D 0x1470), the attachments' ADS and modifier blocks are not read\n"
+                "  for this game.\n";
+            return L;
+        }();
+        return L;
+    }
+
     class IW8Zone final : public IWZone
     {
     public:
@@ -142,6 +237,31 @@ namespace
                 ExportStringTables(C, T, "stringtable", [this](int64_t Pos, uint32_t& Columns, uint32_t& Rows, std::vector<std::string>& Cells) {
                     return PooledCells(Pos, Columns, Rows, Cells);
                 });
+            });
+            // the weapon assets as struct dumps: each named by the string at its 0 (no name hash, IdAt
+            // -1); weapon (0x290) its definition behind 8 (0x1740), attachment 0x458, animpkg 0x40,
+            // suit 0x720; the fields the weapon stats prove named (StatsLayout)
+            {
+                const auto& L = StatsLayout();
+                ExportsStructDumps(Kind::Weapons, { { "weapon", 0, IwWeaponStats::DumpFields(L, "weapon"), -1 },
+                                                    { "attachment", 0, IwWeaponStats::DumpFields(L, "attachment"), -1 },
+                                                    { "animpkg", 0, IwWeaponStats::DumpFields(L, "animpkg"), -1 },
+                                                    { "suit", 0, {}, -1 },
+                                                    { "weapontrigger", 0, {}, -1 } });
+            }
+            // the weapon stats table: this zone's facts, then the table rebuilt from every zone's
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) {
+                IwWeaponStats::ZoneView V;
+                V.Image = &Image();
+                V.Walk = &Walk();
+                V.Off = [this](uint64_t A) { return Off(A); };
+                V.Text = [this](int64_t Field) { return TextAt(Field); };
+                V.LocalizeText = [this](int64_t Pos) {
+                    std::string Key, Text;
+                    LocalizeEntry(Pos, Key, Text);
+                    return Text;
+                };
+                IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
             });
         }
 
@@ -224,19 +344,52 @@ namespace
         }
 
         // the zone's sound banks: <zone>.sabl / <zone>.sabs beside the .ff, pulled from the install's
-        // CASC storage (the packages' file system) when they are not there yet
+        // CASC storage (the packages' file system) when they are not there yet. A <zone>.sabs is whole
+        // there: the .sabs_1 / .sabs_2 the storage also lists (fra_common_base_mp, mp_br_quarry) are
+        // its two spans (the first under the bank's own content key, the second byte for byte its
+        // end), not banks of their own.
+        // Its patch bank, patch_<zone>.sabs, goes with it: the exe builds both paths from the zone's
+        // name (iw8_flat.exe 0x6b63dd0: "%s%s%s" or "%s\%s_%s%s%s", folder, language, "patch_" or "",
+        // zone, extension) and the patch bank names the zone in its header; it holds the entries the
+        // patch changed (same key, new data) and added (new keys): ExportSoundBanks' Patches.
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
         {
-            std::vector<std::string> Banks;
+            std::vector<std::string> Banks, Patches;
             CoDFileSystem* FS = CoDAssets::GamePackageCache != nullptr ? CoDAssets::GamePackageCache->GetFileSystem() : nullptr;
-            for (const char* Ext : { ".sabl", ".sabs" })
-            {
-                const fs::path Bank = fs::path(FastFilePath()).replace_extension(Ext);
+            const fs::path Zone(FastFilePath());
+            const auto Local = [&](const fs::path& Bank, std::vector<std::string>& To) {
                 std::error_code Ec;
                 if (!fs::exists(Bank, Ec) && FS != nullptr) Pull(*FS, Bank);
-                if (fs::exists(Bank, Ec)) Banks.push_back(Bank.string());
+                if (fs::exists(Bank, Ec)) To.push_back(Bank.string());
+            };
+            for (const char* Ext : { ".sabl", ".sabs" })
+                Local(fs::path(Zone).replace_extension(Ext), Banks);
+            // a language's zone (french\fra_<zone>) has its patch as french\fra_patch_<zone>
+            const std::string Stem = Zone.stem().string();
+            std::string Patch = "patch_" + Stem;
+            const size_t Under = Stem.find('_');
+            if (Under != std::string::npos)
+            {
+                // a zone in a language's folder in the storage; without a storage, the one beside it
+                const std::string Language = Stem.substr(0, Under) + "_patch_" + Stem.substr(Under + 1);
+                std::error_code Ec;
+                if (FS != nullptr ? StorageName(*FS, Stem + ".ff").find_first_of("\\/") != std::string::npos
+                                  : fs::exists(Zone.parent_path() / (Language + ".sabs"), Ec))
+                    Patch = Language;
             }
-            ExportSoundBanks(Banks, C, T);
+            Local(Zone.parent_path() / (Patch + ".sabs"), Patches);
+            ExportSoundBanks(Banks, C, T, Patches);
+        }
+
+        // File's name in the storage (its folder with it), "" when it has none
+        static std::string StorageName(CoDFileSystem& FS, const std::string& File)
+        {
+            const std::string Want = ExportNaming::Lower(File);
+            std::string Name;
+            FS.EnumerateFiles("*" + File, [&](const std::string& N, const size_t) {
+                if (ExportNaming::Lower(fs::path(N).filename().string()) == Want) Name = N;
+            });
+            return Name;
         }
 
         // Local's file name, from anywhere in the storage (a localized zone's banks are one folder down)

@@ -52,6 +52,18 @@ namespace ExportNaming
         return S;
     }
 
+    // V with Digits decimals, its trailing zeros dropped (1.5000 -> 1.5, 2.0 -> 2), -0 as 0
+    inline std::string Num(double V, int Digits = 4)
+    {
+        std::string S = std::format("{:.{}f}", V, Digits);
+        if (S.find('.') != std::string::npos)
+        {
+            while (S.back() == '0') S.pop_back();
+            if (S.back() == '.') S.pop_back();
+        }
+        return S == "-0" ? "0" : S;
+    }
+
     // a float as its shortest text, read back as the double that prints the same (0.1f -> 0.1)
     inline double Shortest(float F)
     {

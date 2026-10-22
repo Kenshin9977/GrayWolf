@@ -61,9 +61,12 @@ namespace Iw64
         }
     }
 
-    IwDiskZone::IwDiskZone(const std::string& Path, const GameInfo& G) : IWZone(Path), Game(G)
+    IwDiskZone::IwDiskZone(const std::string& Path, const GameInfo& G) : IWZone(Path), Game(G), Weapons(Path)
     {
         using namespace DiskGame;
+        // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
+        Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+        Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, Game.Title); });
         Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
         Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
         Exports(Kind::Rawfile, [this](const Context& C, Totals& T) { ExportRawfiles(C, T); });

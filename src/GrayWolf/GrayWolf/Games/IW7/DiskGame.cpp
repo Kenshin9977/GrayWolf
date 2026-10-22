@@ -16,6 +16,7 @@
 #include "GameInfiniteWarfare.h"
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwWeaponDefs.h"
 #include "Games/IW7/EntityKeys.h"
 #include "Games/IW7/HavokShapes.h"
 #include "MapRadiantWriter.h"
@@ -157,6 +158,65 @@ namespace
     }
     constexpr const char* BookZones = "(patch_)?(techsets_[a-z0-9_]+|(common|global|code_pre_gfx|code_post_gfx)(_[a-z0-9_]+)?)[.]ff";
 
+    // The weapon fields (IwWeaponDefs.h): WeaponCompleteDef (0x138, the weapon asset) and its WeaponDef
+    // (0x1418, behind 8), at x64-zt's IW7 structs.hpp offsets (zonetool rebuilds these zones), the damage
+    // stops read off the exe (iw7_flat: 0x746af6 picks damage 0x4d0, mid 0x8f0, 0x8f4, 0x8f8, min 0x8e8,
+    // 0x742704 their ranges 0x908, 0x90c, 0x910, 0x914: damage up to the first range, each mid up to its
+    // own (0: none), min beyond). weapType, fireType and weapClass are named by the exe's tables
+    // (0x141ba8520, entries 0, 13, 26).
+    const IwWeaponDefs::Layout& WeaponLayout()
+    {
+        static const IwWeaponDefs::Layout L = [] {
+            IwWeaponDefs::Layout L;
+            L.Name = 0, L.Def = 8, L.Display = 0x10;
+            L.Types = { "none", "bullet", "grenade", "projectile", "riotshield", "script", "teleport",
+                        "shield", "chargeshield", "locationselect", "rewind", "overdrive", "equipdeploy" };
+            L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher",
+                          "turret", "throwingknife", "non-player", "item", "beam", "ball", "none" };
+            L.FireTypes = { "Full Auto", "Single Shot", "Burst", "Double Barrel", "Beam" };
+            L.Fields = { { "adsTransInTime", 0xb4, false }, { "adsTransOutTime", 0xb8, false }, { "clipSize", 0xbc, false },
+                         { "fireTime", 0x1dc }, { "weaponType", 0x22c }, { "weaponClass", 0x234 }, { "fireType", 0x244 },
+                         { "startAmmo", 0x48c }, { "maxAmmo", 0x4a4 }, { "shotCount", 0x4a8 },
+                         { "damage", 0x4d0 }, { "maxDamageRange", 0x908 }, { "damage2", 0x8f0 }, { "damageRange2", 0x90c },
+                         { "damage3", 0x8f4 }, { "damageRange3", 0x910 }, { "damage4", 0x8f8 }, { "damageRange4", 0x914 },
+                         { "minDamage", 0x8e8 },
+                         { "explosionRadius", 0x670 }, { "explosionRadiusMin", 0x674 }, { "explosionInnerDamage", 0x67c },
+                         { "explosionOuterDamage", 0x680 }, { "projectileSpeed", 0x690 }, { "locationDamageMultipliers", 0x940 } };
+            // the animation package (WeaponDef 0x1c0, an anim_package asset) and its u16 timers at 0x10:
+            // 0x744380 reads the time at the byte offset its callers pass (from 0x1d0 under a flag, the
+            // package overrides of 0xe20 not applied); the offsets are x64-zt's WeaponAnimPackageStateTimers
+            // fields, each read by its own caller: firstRaise 6 (0x73ad40), reload 0x26 (0x74d880, fast 0x28),
+            // reloadEmpty 0x2c (0x74cce0, 0x2e), reloadAdd 0x30 (0x74c790, 0x32), reloadEmptyAdd 0x34
+            // (0x74cb40, 0x36), reloadStart 0x38 (0x74d860), reloadEnd 0x42 (0x74ce30, 0x44), drop 0x46
+            // (0x73a6e0), raise 0x48 (0x74c620), quickDrop 0x50 (0x74c5e0), quickRaise 0x52 (0x74c600),
+            // sprintOut 0x5e (0x74ee80)
+            L.AnimPkg = 0x1c0, L.AnimTimers = 0x10, L.AnimPkgType = "anim_package";
+            L.AnimTimes = { { "firstRaiseTime", 0x6 }, { "reloadTime", 0x26 }, { "reloadEmptyTime", 0x2c }, { "reloadAddTime", 0x30 },
+                            { "reloadEmptyAddTime", 0x34 }, { "reloadStartTime", 0x38 }, { "reloadEndTime", 0x42 }, { "dropTime", 0x46 },
+                            { "raiseTime", 0x48 }, { "quickRaiseTime", 0x52 }, { "sprintOutTime", 0x5e } };
+            L.Notes = IwWeaponDefs::GameNotes("Infinite Warfare", "french/fra_code_post_gfx", "global_core_mp",
+                                              "the WeaponCompleteDef (the weapon asset: ADS times, clipSize) and its WeaponDef\n"
+                                              "(behind 8), at the offsets of x64-zt's IW7 structs.hpp",
+                                              "NV4 612 rpm, 30 rounds, 30 to 1600 inches then 23; KBAR-32 731 rpm;" "\n" "eRAD over 800 rpm, 30 rounds, 30-23-19");
+            L.Notes.Source += "The damage is a step table (iw7_flat 0x746af6): damage_1 up to range_1_m, each next stop up to\n"
+                              "its range (a range of 0: the stop is not used), the last one (minDamage) beyond: its range is\n"
+                              "empty. Reload, raise, drop and sprint-out times: the weapon's animation package (WeaponDef\n"
+                              "0x1c0), its u16 timers (package 0x10) at the offsets the exe's time getter (iw7_flat 0x744380)\n"
+                              "is called with, named as x64-zt's WeaponAnimPackageStateTimers: firstRaise 6, reload 0x26,\n"
+                              "reloadEmpty 0x2c, reloadAdd 0x30, reloadEmptyAdd 0x34, reloadStart 0x38, reloadEnd 0x42, drop\n"
+                              "0x46, raise 0x48, quickRaise 0x52, sprintOut 0x5e (fast-reload perk variants and the\n"
+                              "package overrides not applied; 0xffff, which the getter's override search skips (0x744524),\n"
+                              "is no time: empty). A weapon naming a package another zone defines (global_core_mp's\n"
+                              "guns: common_core_mp holds their packages) takes its times from that zone's facts, joined by the\n"
+                              "package's name: export both into the same --out.\n"
+                              "meleeDamage (0x4d8, 50 for every gun) is left out, not checked.\n";
+            L.Notes.AnimPackages = true;
+            return L;
+        }();
+        return L;
+    }
+
+
     class IW7Zone final : public IWZone
     {
     public:
@@ -166,6 +226,7 @@ namespace
               })
         {
             using namespace DiskGame;
+            ExportsIwWeapons(WeaponLayout());
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
@@ -201,7 +262,7 @@ namespace
         }
         bool DerefAssetPointers() const override { return true; }   // resolve 0x9e9a20 reads the pointer it names
         bool LoadBytes(std::vector<uint8_t>& Zone, std::string& Error) override;   // with the shared stream
-        void Rebase(ZoneTables::ZoneResult& Walked) override;
+        int64_t LayoutOffset() override;   // after the shared stream
         bool WalkedToEnd() const override;
         void Fixups() override;
         void Served(bool On) override
@@ -236,6 +297,7 @@ namespace
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         bool Holds(int64_t Pos) const;   // an image with pixels here (in the zone or streamed)
         void LinkShared(std::unordered_map<std::string, uint64_t>& SurfsByName);
+        std::vector<uint8_t> SharedAsset(int64_t From, int64_t Length) const;
         int64_t ZoneEnd = 0;                                    // the zone's own bytes, before the shared stream
         std::vector<std::pair<int64_t, int64_t>> SharedAssets;  // appended one-asset streams: where, how long
         std::unordered_map<int64_t, std::array<StreamRecord, StreamLevels>> Levels;   // image position -> levels
@@ -327,28 +389,63 @@ namespace
         return true;
     }
 
-    // A level's block 8 holds the shared stream's data before the zone's own (the .ff header: the
-    // shared stream's size at 0x20, block 8's whole size at 0x70), and the zone's back references
-    // name places in that whole block: the zone's reads end where block 8 ends. Measured on
-    // mp_flip: 12 281 of its 33 237 back references fall on a read's first byte with that base,
-    // none resolved without it.
-    void IW7Zone::Rebase(ZoneTables::ZoneResult& Walked)
+    // The shared stream's xmodelsurfs come into block 8 before the zone (0x9e78e0, from DB_LoadXFile
+    // 0x9e7490): under push(8), per record of the .ff header an XAsset entry allocated (16 bytes)
+    // and loaded by Load_XAsset, then every block's cursor aligned (0xa7c4c0: block 8 to 16). The
+    // zone's own reads begin where that leaves block 8. Each record is walked here as that load
+    // places it; the emulator agrees read for read on the 510 records of five zones, and the back
+    // references then land on their targets (weapon names: global_cp 152/152).
+    int64_t IW7Zone::LayoutOffset()
     {
+        if (SharedAssets.empty()) return 0;
+        std::string Error;
+        const auto* P = ExportWriters::ZoneProfile(Profile(), Error);
+        if (P == nullptr) return 0;
         constexpr int Block = 8;
-        constexpr uint64_t SharedSizeAt = 0x20, BlockSizesAt = 0x30;
-        std::ifstream F(FastFilePath(), std::ios::binary);
-        uint64_t Shared = 0, Size = 0;
-        F.seekg(SharedSizeAt);
-        F.read(reinterpret_cast<char*>(&Shared), 8);
-        F.seekg(BlockSizesAt + 8 * Block);
-        F.read(reinterpret_cast<char*>(&Size), 8);
-        const auto End = Walked.BlockEnds.find(Block);
-        if (!F || Shared == 0 || End == Walked.BlockEnds.end() || Size <= (uint64_t)End->second) return;
-        const int64_t Base = (int64_t)Size - End->second;
-        for (int64_t& M : Walked.ReadMem)
-            if (M >= 0 && (int)(M >> 40) == Block) M += Base;
-        if (Rules().StartBlock == Block) Walked.Start4 += Base;
-        Counter("block8_base") = (size_t)Base;
+        constexpr int64_t Align = 16;
+        ZoneTables::StreamRules Rs = P->Profile.Rules;
+        int64_t Cursor = 0;
+        // GRAYWOLF_IW7_SHARED_DUMP=<dir>: each record written there as its one-asset zone, for
+        // graywolf-tools' scripts/iw7_shared_records.py (the emulator's placement against this one)
+        std::string DumpDir;
+        {
+            char* Env = nullptr;
+            size_t Len = 0;
+            if (_dupenv_s(&Env, &Len, "GRAYWOLF_IW7_SHARED_DUMP") == 0 && Env != nullptr) DumpDir = Env;
+            free(Env);
+        }
+        size_t Record = 0;
+        for (const auto& [From, Length] : SharedAssets)
+        {
+            if (!DumpDir.empty())
+            {
+                const auto One = SharedAsset(From, Length);
+                (void)ExportWriters::WriteBytes(fs::path(DumpDir) / std::format("{}_{:04}.bin", fs::path(FastFilePath()).stem().string(), Record++),
+                                          One.data(), One.size());
+            }
+            Rs.StartOffset = Cursor;
+            const auto R = ZoneTables::WalkZone(SharedAsset(From, Length), P->Tables, P->Profile.TypeNames, Rs, true);
+            const auto End = R.BlockEnds.find(Block);
+            if (R.ParseFailed || R.Why != "walked to the end" || End == R.BlockEnds.end())
+            {
+                Counter("shared_layout_unread")++;
+                return 0;
+            }
+            Cursor = (End->second + Align - 1) / Align * Align;
+        }
+        Counter("block8_base") = (size_t)Cursor;
+        return Cursor;
+    }
+
+    // A shared record as a zone of one asset: an XAssetList naming one inline asset, then the record
+    std::vector<uint8_t> IW7Zone::SharedAsset(int64_t From, int64_t Length) const
+    {
+        constexpr int64_t ListSize = 0x28;
+        std::vector<uint8_t> One(ListSize, 0);
+        One[0x10] = 1;
+        std::memcpy(One.data() + 0x18, &Rules().Marker, 8);
+        One.insert(One.end(), Zone().begin() + From, Zone().begin() + From + Length);
+        return One;
     }
 
     bool IW7Zone::WalkedToEnd() const
@@ -357,8 +454,8 @@ namespace
         return Walk().Why == "stopped " + std::to_string((int64_t)Zone().size() - ZoneEnd) + " bytes short";
     }
 
-    // Each appended xmodelsurfs stream walked as a zone of one asset (an XAssetList naming one
-    // inline asset, then the record), its links moved to where the record sits in the served zone
+    // Each appended xmodelsurfs stream walked as a zone of one asset (SharedAsset), its links moved to
+    // where the record sits in the served zone
     void IW7Zone::LinkShared(std::unordered_map<std::string, uint64_t>& SurfsByName)
     {
         if (SharedAssets.empty()) return;
@@ -368,11 +465,7 @@ namespace
         constexpr int64_t ListSize = 0x28, Entry = 16;
         for (const auto& [From, Length] : SharedAssets)
         {
-            std::vector<uint8_t> One(ListSize, 0);
-            One[0x10] = 1;
-            std::memcpy(One.data() + 0x18, &Rules().Marker, 8);
-            One.insert(One.end(), Zone().begin() + From, Zone().begin() + From + Length);
-            const auto R = ZoneTables::WalkZone(One, P->Tables, P->Profile.TypeNames, P->Profile.Rules, true);
+            const auto R = ZoneTables::WalkZone(SharedAsset(From, Length), P->Tables, P->Profile.TypeNames, P->Profile.Rules, true);
             if (R.ParseFailed || R.Why != "walked to the end")
             {
                 Counter("shared_assets_unread")++;
@@ -617,7 +710,7 @@ namespace
         }
         ExportSoundBanks(Banks, C, T);
         if (!SoundAliasCsv::Wanted(C)) return;
-        // an alias's asset file as ExportSoundBanks names it: flat, without its folder or extensions
+        // an alias's asset file as ExportSoundBanks names it: under its folder, without its extensions
         const SoundAliasCsv::ZoneView Z = AliasView();
         const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
         const IWSoundAliases::Layout L = AliasLayout();
@@ -633,7 +726,7 @@ namespace
                 const int64_t Head = Off(PointerAt(List + 0x10));
                 const auto Asset = [&](const std::string&, uint32_t J, int64_t) -> std::string {
                     const std::string F = Head < 0 ? std::string() : StringAt(PointerAt(Head + (int64_t)J * 200 + 0x20));
-                    return F.empty() ? F : ExportNaming::SafeFileName(FileSystems::GetFileNamePurgeExtensions(F)) + Extension;
+                    return F.empty() ? F : IWZone::SoundBankFile(F, Extension);
                 };
                 IWSoundAliases::Read(Z, List, StringAt(PointerAt(List)), L, Asset, Rows);
             }

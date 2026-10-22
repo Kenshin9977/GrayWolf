@@ -33,6 +33,8 @@ struct BOCWXSubHeader
 #pragma pack(pop)
 
 #pragma pack(push, 1)
+// Cold War's: PackedInfo = offset >> 7 in the high 32 bits, stored size << 1 | 1 when the object is
+// framed in blocks (0: stored as is, 56 937 of the install's 2 264 185 objects, sounds among them)
 struct BOCWXSubHashEntry
 {
     uint64_t Key;
@@ -200,6 +202,7 @@ bool XSUBCache::LoadPackage(const std::string& FilePath)
             NewObject.CompressedSize = (Entry.PackedInfo >> 1) & 0x3FFFFFFF;
             NewObject.UncompressedSize = 0;
             NewObject.PackageFileIndex = PackageIndex;
+            NewObject.Flags = (uint32_t)(Entry.PackedInfo & 1);
 
             CacheObjects.insert(std::make_pair(Entry.Key, NewObject));
         }
@@ -286,6 +289,17 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
                 if (!Object.empty()) std::memcpy(Result.get(), Object.data(), Object.size());
             }
             ResultSize = (uint32_t)CacheInfo.UncompressedSize;
+            return Result;
+        }
+
+        // Cold War's object stored as is (no block framing): its bytes
+        if (CacheInfo.Flags == 0)
+        {
+            ResultSize = 0;
+            if (CacheInfo.CompressedSize == 0 || CacheInfo.CompressedSize > (1ull << 30)) return nullptr;
+            auto Result = std::make_unique<uint8_t[]>((size_t)CacheInfo.CompressedSize);
+            if (Reader.Read(Result.get(), 0, (size_t)CacheInfo.CompressedSize) != CacheInfo.CompressedSize) return nullptr;
+            ResultSize = (uint32_t)CacheInfo.CompressedSize;
             return Result;
         }
 

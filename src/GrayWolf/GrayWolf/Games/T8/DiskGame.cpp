@@ -13,6 +13,8 @@
 #include "Games/Treyarch/TreyarchLevelNames.h"
 #include "Games/Treyarch/TreyarchMaps.h"
 #include "Games/Treyarch/TreyarchPackages.h"
+#include "Games/Treyarch/TreyarchScriptBundles.h"
+#include "Games/Treyarch/TreyarchWeaponStats.h"
 #include "XPAKCache.h"
 #include "MapLive.h"
 #include "WraithX.h"
@@ -63,9 +65,8 @@ namespace
     class Bo4Zone final : public ZonekitZone
     {
     public:
-        Bo4Zone(const std::string& Path, CoDPackageCache* P, std::string SoundCache,
-                std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common)
-            : ZonekitZone(Path), Pkg(P), SoundCache(std::move(SoundCache)), Common(std::move(Common))
+        Bo4Zone(const std::string& Path, CoDPackageCache* P, std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common)
+            : ZonekitZone(Path), Pkg(P), Common(std::move(Common))
         {
             using namespace DiskGame;
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
@@ -80,6 +81,44 @@ namespace
             });
             ExportsGdt();
             ExportsAssetRefs();
+            // the weapon assets as struct dumps: weapon (WeaponDef 0x1550, its name hash at 0), its
+            // tunables (0x1218, the name hash at 0x40, acts' bo4_unlinker_weapon_tunables), attachments;
+            // their fields named by the gdt weapon layouts
+            ExportsStructDumps(Kind::Weapons, { { "weapon" }, { "weapon_tunables", -1, {}, 0x40 }, { "attachment" }, { "attachment_unique" } },
+                               nullptr, "weapon");
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops 4"); });
+            Exports(Kind::MapEnts, [this](const Context& C, Totals& T) { Treyarch::ExportMapEnts(C, T, Name(), EntityString()); });
+            // material (BO4XMaterial): its image records at 0x38 (0x20 each {image 0, semantic hash u32
+            // 8}, BO4XMaterialImage), their u8 count at 0x130; an image {hash 0x20, format u32 0x64, width
+            // u16 0x68, height 0x6a} (Bo4DiskExport::DescribeZone)
+            {
+                MaterialLinkLayout M;
+                M.SlotCount = 0x130, M.Slots = -1, M.Images = 0x38;
+                M.RecordSize = 0x20, M.RecordSemantic = 8, M.RecordImage = 0;
+                M.ImageHash = 0x20, M.ImageWidth = 0x68, M.ImageHeight = 0x6a, M.ImageFormat = 0x64, M.WideFormat = true;
+                ExportsMaterialLinks(M);
+            }
+            // sound (SndBank 0x130, acts' bo4 sound): aliases at 0x38 (u32 count 0x30) of 0x28 {name hash
+            // 0, entries 0x10, i32 count 0x18}, an entry (SndAlias) 0x1c0 holding its file's hash (assetId) at 0x48
+            ExportsSoundLinks({ 0x38, 0x30, 0x28, 0, 0x10, 0x18, 0x1c0, 0x48, "sound", true });
+            // no mapinfo asset: the map tables hold each map's settings (MapTable 0x30 {name, u32 count,
+            // MapTableEntry list: names, loading images, objectives, accolades... acts' bo4 map_table}),
+            // and aitype (0xf00, acts' bo4 aitype: weapons, characters, behaviour, its settings bundle)
+            // is a flat struct, not a bundle: both as struct dumps
+            ExportsStructDumps(Kind::MapInfo, { { "maptable" }, { "maptable_list" } });
+            ExportsStructDumps(Kind::AiTypes, { { "aitype" } });
+            // scriptbundle (0x40, acts' bo4 unlinker): bundles/<zone>/<settings type>/<name>.json
+            Exports(Kind::ScriptBundles, [this](const Context& C, Totals& T) {
+                const Treyarch::BundleZone Z{ &Image(), [this](uint64_t A) { return Off(A); },
+                                              [this](uint32_t I) {
+                                                  const auto& Strings = Bo4DiskExport::ZoneStringTable(Zone());
+                                                  return I < Strings.size() ? Strings[I] : std::string();
+                                              },
+                                              [this](uint64_t H) { return KnownName(H); }, HashMask };
+                ExportJsonAssets(Kind::ScriptBundles, C, T, "scriptbundle", [&](int64_t Pos, const std::vector<std::pair<int64_t, int64_t>>& Reads, std::string& Folder, std::string& Json) {
+                    return Treyarch::ReadScriptBundle(Z, Treyarch::BundleLayout::Bo4, Pos, Reads, Folder, Json);
+                });
+            });
             // rawfile and luafile (0x20) {XHash name, i32 len 0x10, buffer 0x18 (len + 1 read)}
             Exports(Kind::Rawfile, [this](const Context& C, Totals& T) {
                 const RawfileReader Plain = [this](int64_t Pos, std::string&, std::vector<uint8_t>& Bytes) { return RawBytes(Pos, { 0x10, 0x18 }, Bytes); };
@@ -136,7 +175,7 @@ namespace
                 T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(S.Missing) + " without pixels, " + std::to_string(S.Failed) + " not written");
         }
 
-        // not in the zone: the install's banks named after it (zm_red.all.sabl, zm_red.fr.sabl...)
+        // not in the zone: the install's banks named after it (zm_red.all.sabl, zm_red.fr.sabs...)
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
         {
             auto& Kt = T.Kinds[DiskGame::Kind::Sound];
@@ -146,11 +185,14 @@ namespace
                 return;
             }
             WraithX::InitializeAPI();
-            const auto S = Bo4DiskExport::ExportSounds(Pkg, Name(), SoundCache, C.KindDir(DiskGame::Kind::Sound),
+            const auto S = Bo4DiskExport::ExportSounds(Pkg, Name(), C.KindDir(DiskGame::Kind::Sound),
                 [&](const std::string& N) { return C.Wants(DiskGame::Kind::Sound, N); },
-                [&](size_t Done, size_t Count, const std::string& N) { return C.Advance(Done, Count, N); });
+                [&](size_t Done, size_t Count, const std::string& N) { return C.Advance(Done, Count, N); },
+                C.OnSoundHeader);
+            if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
             Kt.Seen += S.Images;
             Kt.Written += S.Written;
+            Counter("sounds_without_samples") += S.Empty;
             for (const auto& M : S.MissingSamples) T.Fail(Name(), DiskGame::Kind::Sound, M, "");
         }
 
@@ -281,10 +323,11 @@ namespace
         // Count entities (LinkerSpawnVar, 0x30) at Array as map_ents text, their hashes named where
         // the name dbs can, Model giving one its "model" (Treyarch::EntityText)
         std::string Entities(int64_t Count, uint64_t Array, const std::function<std::string(uint64_t, int32_t)>& Model);
+        // the entity_list's entities, then the trigger_list's, as the map_ents text ("" without them)
+        std::string EntityString();
 
     private:
         CoDPackageCache* Pkg = nullptr;
-        std::string SoundCache;
         Bo4DiskExport::ZoneAssets Assets;
         std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common;
         std::set<uint64_t> Booked, NotBooked;   // material headers met, filled or not
@@ -367,6 +410,22 @@ namespace
         return S;
     }
 
+    std::string Bo4Zone::EntityString()
+    {
+        const auto& Img = Image();
+        std::string Text;
+        if (const int64_t List = Root("entity_list"); List >= 0)
+            Text = Entities((int64_t)At<uint64_t>(Img, List + EntCount), At<uint64_t>(Img, List + Ents),
+                            [](uint64_t, int32_t Index) { return Index > 0 ? "*" + std::to_string(Index) : std::string(); });
+        if (const int64_t List = Root("trigger_list"); List >= 0)
+        {
+            const uint32_t Volumes = At<uint32_t>(Img, List + TriggerModelCount);
+            Text += Entities((int64_t)At<uint64_t>(Img, List + TriggerEntCount), At<uint64_t>(Img, List + TriggerEnts),
+                             [Volumes](uint64_t E, int32_t) { return E < Volumes ? "?" + std::to_string(E) : std::string(); });
+        }
+        return Text;
+    }
+
     bool Bo4Zone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
     {
         const int64_t World = Root("gfxworld");
@@ -438,16 +497,8 @@ namespace
         // the trigger volume of its number ("?N": mp_frenetic's 61 volumes are its 61 first
         // entities, trigger_hurt's two the sky-sized last; the radius and box triggers after them
         // have none)
-        if (const int64_t List = Root("entity_list"); List >= 0)
-            Scene.MapEnts = Entities((int64_t)At<uint64_t>(Img, List + EntCount), At<uint64_t>(Img, List + Ents),
-                                     [](uint64_t, int32_t Index) { return Index > 0 ? "*" + std::to_string(Index) : std::string(); });
-        if (const int64_t List = Root("trigger_list"); List >= 0)
-        {
-            const uint32_t Volumes = At<uint32_t>(Img, List + TriggerModelCount);
-            Scene.MapEnts += Entities((int64_t)At<uint64_t>(Img, List + TriggerEntCount), At<uint64_t>(Img, List + TriggerEnts),
-                                      [Volumes](uint64_t E, int32_t) { return E < Volumes ? "?" + std::to_string(E) : std::string(); });
-            AddTriggers(Scene, TriggerModelCount, "trigger_list");
-        }
+        Scene.MapEnts = EntityString();
+        if (Root("trigger_list") >= 0) AddTriggers(Scene, TriggerModelCount, "trigger_list");
 
         // ---- the clip map's brushes, brush models and collision triangles (Maps::ClipLayout)
         AddCollision(Scene, { "clipmap" }, ClipLayout());
@@ -488,7 +539,7 @@ namespace
         }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override
         {
-            return std::make_unique<Bo4Zone>(std::string(), nullptr, std::string(),
+            return std::make_unique<Bo4Zone>(std::string(), nullptr,
                                              std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>>());
         }
 
@@ -557,7 +608,7 @@ namespace
             // the common zones' materials first, each read alone (and once: kept in the cache)
             auto Common = Bo4DiskExport::CommonMaterials(Path, Packages(Options), CacheDir(Options, "greyhound_bo4ff"),
                                                          CacheDir(Options, "greyhound_bo4mat"));
-            auto Zone = std::make_unique<Bo4Zone>(Path, Packages(Options), CacheDir(Options, "greyhound_bo4sab"), std::move(Common));
+            auto Zone = std::make_unique<Bo4Zone>(Path, Packages(Options), std::move(Common));
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;

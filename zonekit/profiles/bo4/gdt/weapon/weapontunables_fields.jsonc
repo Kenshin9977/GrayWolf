@@ -1152,6 +1152,9 @@
     //
     // firstraisetime is a state timer, which the earlier note in this project called unplaceable
     // on the grounds that the engine does not report such things to script. It does.
+    // Rechecked in the dump (2026-10-22) with the script field table's accessor read right (the qword
+    // 24 bytes after the hash): firstRaiseTime -> 7ff7916d88c0 -> tunables 0xd20 (unless an
+    // attachment overrides), maxAmmo -> 0xd4c (x clip size when 0x10bf is set).
 
     {"offset": "0xd20", "name": "firstraisetime", "source": "engine", "kind": "int", "form": "int", "observed": 975, "agreed": 72, "examples": []},
     {"offset": "0xd4c", "name": "maxammo", "source": "engine", "kind": "int", "form": "int", "observed": 718, "agreed": 72, "examples": []},
@@ -1167,6 +1170,9 @@
     {"offset": "0xcf0", "name": "dropTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    // The offset is proven (2026-10-22): the dump's raise-starting function (7ff7916c14c8) reads 0xda0
+    // for every raise that is not the first (the firstRaiseTime getter, 0xd20), a quick one (0xfb0),
+    // an empty one (0xd04) or the special case (0x1004); Black Ops III's raiseTime lands here first.
     {"offset": "0xda0", "name": "raiseTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
@@ -1183,6 +1189,8 @@
     {"offset": "0xe40", "name": "startammo", "source": "engine", "kind": "int", "form": "int", "observed": 466, "agreed": 72, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    // The offset is proven (2026-10-22): the raise-starting function reads 0xfb0 for a quick raise
+    // (anim 0x43); Black Ops III's quickRaiseTime equals it on 34 of 35 shared weapons.
     {"offset": "0xfb0", "name": "quickRaiseTime", "source": "observed", "kind": "int", "form": "int", "observed": 0, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.

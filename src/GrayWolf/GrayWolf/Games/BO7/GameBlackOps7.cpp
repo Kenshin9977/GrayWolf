@@ -101,7 +101,9 @@ namespace
     // its vertex lists u8 0xc (rigid weights 16 bytes each at 0x90); weight counts u16 x 8 at 0x24;
     // a scale 0x3c (-1: none, use the bounds); 16 offsets into the mesh buffer 0x40 (positions 0,
     // uvs 1, tangent frames 2, indices 3, packed index tables 4, packed indices 5, colours 6, a
-    // second uv 8, weights 11); the bounds (midpoint, half size) 0xc0
+    // second uv 8, the skinned weights 14: Offsets[11] is 0 on every surface; on all 23 skinned
+    // surfaces of the M15 mag and viewhands_mp_base_iw8, Offsets[14] is set and u32 0x34 is the
+    // weights' byte size, sum of 4 * (g + 1) * WeightCounts[g]); the bounds (midpoint, half size) 0xc0
     struct BO7XSurface
     {
         uint16_t StatusFlag;
@@ -118,7 +120,8 @@ namespace
         uint32_t PackedIndexTableCount;
         uint32_t Unk20;
         uint16_t WeightCounts[8];
-        uint8_t Pad34[8];
+        uint32_t WeightsSize;
+        uint8_t Pad38[4];
         float NewScale;
         uint32_t Offsets[16];
         uint64_t MeshBufferPtr;
@@ -157,13 +160,15 @@ namespace
         26, 71, 72, 74, 75, 77, 78, 80, 83, 84, 95, 96, 98, 99, 31, 66, 0, 0, 0, 0,
         0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0 };
 
-    // A material image's semantic (C2M's table) -> how the exporter uses it
+    // A material image's semantic -> how the exporter uses it: the first layer's colour 0x47 and nog
+    // 0x48 (MaterialAdapter.cpp). C2M's table (82 + 14 per layer) is Black Ops 6's: in Black Ops 7, 97
+    // (0x61) is a greyscale mask on most weapon materials, not a normal map. 44/45 kept from it.
     ImageUsageType UsageOf(uint8_t Semantic)
     {
         switch (Semantic)
         {
-        case 44: case 82: case 96: case 110: case 124: return ImageUsageType::DiffuseMap;
-        case 45: case 83: case 97: case 111: case 125: return ImageUsageType::NormalMap;
+        case 44: case 0x47: return ImageUsageType::DiffuseMap;
+        case 45: case 0x48: return ImageUsageType::NormalMap;
         default: return ImageUsageType::Unknown;
         }
     }
@@ -182,14 +187,7 @@ namespace
 
 uint64_t GameBlackOps7::HashIWAsset(const std::string& Name)
 {
-    uint64_t H = 0x47F5817A5EF961BAull;
-    for (char C : Name)
-    {
-        char L = (char)std::tolower((unsigned char)C);
-        if (L == '\\') L = '/';
-        H = (H ^ (uint8_t)L) * 0x100000001B3ull;
-    }
-    return H & 0x7FFFFFFFFFFFFFFFull;
+    return IwctxReaders::AssetHash(Name);
 }
 
 std::string GameBlackOps7::HashName(const char* Prefix, uint64_t Hash)
@@ -252,7 +250,7 @@ std::unique_ptr<XModel_t> GameBlackOps7::ReadXModel(const CoDModel_t* Model)
             Sub.PackedIndexTablePtr = Info.Offsets[4];
             Sub.PackedIndexBufferPtr = Info.Offsets[5];
             Sub.VertexColorPtr = Info.Offsets[6];
-            Sub.WeightsPtr = Info.Offsets[11];
+            Sub.WeightsPtr = Info.Offsets[14];
             if (Info.NewScale != -1.0f)
             {
                 Sub.Scale = Info.NewScale;
@@ -315,7 +313,7 @@ std::unique_ptr<XSound> GameBlackOps7::ReadXSound(const CoDSound_t* Sound)
                                                        else S.ZoneFrames = SoundKey, S.ZoneSize = 0x10;
                                                        return S;
                                                    },
-                                                   0, true };
+                                                   0, true, SABSupport::OpusPreSkipLookAhead };
     return IwctxReaders::ReadXSound(Sound, Layout);
 }
 

@@ -11,6 +11,7 @@
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/CODOL/CodolReaders.h"
+#include "Games/CODOL/CodolWeapons.h"
 #include "Games/CODOL/FileCrypt.h"
 #include "Games/CODOL/IfsArchive.h"
 #include "Games/CODOL/SealedFastFile.h"
@@ -99,6 +100,10 @@ namespace
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+            // weapon (0x101c, the WeaponDef itself) and weaponattach (0xc), named by the string at 0
+            // (CodolWeapons.h)
+            ExportsStructDumps(Kind::Weapons, { { "weapon", 0, IwWeaponDefs::DumpFields(Codol::WeaponLayout()), -1 }, { "weaponattach", 0, {}, -1 } });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { ExportWeaponStats(C, T); });
             // rawfile (0x10) {name, u32 compressed size 4, size 8, buffer 0xc}: zlib when compressed,
             // else size + 1 bytes read; stringtable (0x10) {name, i32 columns 4, rows 8, cells 0xc of
             // 8 bytes {string, hash}}, its text GBK, written as UTF-8
@@ -223,6 +228,39 @@ namespace
     private:
         std::string Install;
         std::shared_ptr<Ifs::Install> Opened;
+
+        // The weaponstats kind: the weapons as weapon files, the weaponattach assets as attachment files,
+        // the zone's strings and its weapon attachment table (code_post_gfx_mp's) to WeaponFiles
+        void ExportWeaponStats(const Context& C, Totals& T)
+        {
+            IwWeaponStats::ZoneView V;
+            V.Image = &Image();
+            V.Walk = &Walk();
+            V.Off = [this](uint64_t A) { return Off(A); };
+            V.Text = [this](int64_t Field) { return TextAt(Field); };
+            const IwWeaponDefs::Layout L = Codol::WeaponLayout();
+            auto Weapons = IwWeaponDefs::Weapons(L, V);
+            for (auto& A : Codol::AttachmentFiles(V)) Weapons.push_back(std::move(A));
+            std::vector<std::pair<std::string, std::string>> S;
+            Strings(S);
+            for (auto& [Key, Text] : S) Text = ExportWriters::Utf8(Text, LocalizeCodePage());   // (GBK)
+            std::map<std::string, std::string> Tables;
+            for (const auto& I : Walk().Instances)
+            {
+                if (I.Parent >= 0 || !OwnerIs(I, "stringtable") || ExportNaming::Lower(AssetName(Kind::Data, I.Pos)) != Codol::AttachmentTable) continue;
+                uint32_t Columns = 0, Rows = 0;
+                std::vector<std::string> Cells;
+                if (!StringTableCells(I.Pos, { 4, 8, 0xc, 8 }, Columns, Rows, Cells) || Cells.size() < (size_t)Columns * Rows) continue;
+                std::string Csv;
+                for (uint32_t R_ = 0; R_ < Rows; R_++)
+                {
+                    for (uint32_t K = 0; K < Columns; K++) Csv += (K ? "," : "") + Cells[(size_t)R_ * Columns + K];
+                    Csv += "\n";
+                }
+                Tables[Codol::AttachmentTable] = Csv;
+            }
+            WeaponFiles::ExportStats(Weapons, S, Name(), C, T, L.Notes, Tables);
+        }
 
         std::shared_ptr<Ifs::Install> Archives_(std::string& Error)
         {

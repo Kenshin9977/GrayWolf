@@ -3,7 +3,8 @@
 // CoD1 (IW1) and CoD2 (IW2) on the disk template: a zone is one .pk3/.iwd archive, its assets the
 // files whose copy the game reads is in it (IwInstall.h); a model reads its parts, surfaces,
 // materials and textures wherever the install keeps them. Kinds: model (with its textures, written
-// by the image kind's writer), anim, image, sound. One implementation; each game gives its row.
+// by the image kind's writer), anim, image, sound, map, script, localize, weapons and weaponstats
+// (the weapon files, Games/Common/WeaponFiles.h). One implementation; each game gives its row.
 
 #include "DiskGame.h"
 

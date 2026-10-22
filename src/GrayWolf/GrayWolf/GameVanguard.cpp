@@ -572,7 +572,8 @@ std::unique_ptr<XSound> GameVanguard::ReadXSound(const CoDSound_t* Sound)
 
     if (SoundBuffer != nullptr)
     {
-        return SABSupport::OpusPackets(SoundBuffer.get(), Held, OpusOffset, (size_t)Sound->AssetSize, Sound->FrameRate, Sound->ChannelsCount, Sound->FrameCount);
+        return SABSupport::OpusPackets(SoundBuffer.get(), Held, OpusOffset, (size_t)Sound->AssetSize, Sound->FrameRate, Sound->ChannelsCount, Sound->FrameCount,
+                                       SABSupport::OpusPreSkipUnmeasured);
     }
     
     return nullptr;

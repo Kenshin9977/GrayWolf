@@ -288,14 +288,17 @@ bool ZonekitZone::Open(std::string& Error)
     Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error);
     if (Loaded == nullptr) return false;
     Lap("profile");
-    R = ZoneTables::WalkZone(Bytes, Loaded->Tables, Loaded->Profile.TypeNames, Loaded->Profile.Rules, true);
+    {
+        ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
+        Rs.StartOffset = LayoutOffset();
+        R = ZoneTables::WalkZone(Bytes, Loaded->Tables, Loaded->Profile.TypeNames, Rs, true);
+    }
     if (R.ParseFailed)
     {
         Error = R.Why;
         return false;
     }
     Walked = R.Why == "walked to the end";
-    Rebase(R);
     Lap("walk");
     // the links resolved before the session (the walk's alone); from here on, the process-wide
     // session lock is held (the game's handlers and fixups reach process-wide state)
@@ -1007,44 +1010,40 @@ void ZonekitZone::ExportsGdt()
     Exports(DiskGame::Kind::Gdt, [this](const DiskGame::Context& C, DiskGame::Totals& T) { ExportGdt(C, T); });
 }
 
-void ZonekitZone::ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T)
+std::vector<std::shared_ptr<const Gdt::Type>> ZonekitZone::GdtTypes(std::string& Error) const
 {
-    using DiskGame::Kind;
     // a profile's gdt types, read once: every <profile>/gdt/<type>/ holding a type.jsonc
     using Types = std::vector<std::shared_ptr<const Gdt::Type>>;
     static std::mutex Lock;
     static std::map<std::string, std::pair<Types, std::string>> Loads;
-    Types Own;
+    std::lock_guard<std::mutex> Guard(Lock);
+    const std::string& Dir = Loaded->Profile.Dir;
+    auto It = Loads.find(Dir);
+    if (It == Loads.end())
     {
-        std::lock_guard<std::mutex> Guard(Lock);
-        const std::string& Dir = Loaded->Profile.Dir;
-        auto It = Loads.find(Dir);
-        if (It == Loads.end())
+        std::string Failed;
+        Types Read;
+        std::vector<fs::path> Folders;
+        std::error_code Ec;
+        for (const auto& E : fs::directory_iterator(fs::path(Dir) / "gdt", Ec))
+            if (E.is_directory() && fs::exists(E.path() / "type.jsonc")) Folders.push_back(E.path());
+        std::sort(Folders.begin(), Folders.end());
+        for (const auto& F : Folders)
         {
-            std::string Error;
-            Types Read;
-            std::vector<fs::path> Folders;
-            std::error_code Ec;
-            for (const auto& E : fs::directory_iterator(fs::path(Dir) / "gdt", Ec))
-                if (E.is_directory() && fs::exists(E.path() / "type.jsonc")) Folders.push_back(E.path());
-            std::sort(Folders.begin(), Folders.end());
-            for (const auto& F : Folders)
-            {
-                auto One = Gdt::Type::Load(F.string(), fs::path(Dir).parent_path().string(), Loaded->Profile.TypeNames, Error);
-                if (!One) break;
-                Read.push_back(std::move(One));
-            }
-            if (Read.empty() && Error.empty()) Error = "no gdt/<type>/type.jsonc in " + Dir;
-            if (!Error.empty()) Read.clear();
-            It = Loads.emplace(Dir, std::make_pair(std::move(Read), Error)).first;
+            auto One = Gdt::Type::Load(F.string(), fs::path(Dir).parent_path().string(), Loaded->Profile.TypeNames, Failed);
+            if (!One) break;
+            Read.push_back(std::move(One));
         }
-        if (It->second.first.empty())
-        {
-            T.Fail(ZoneName, Kind::Gdt, "", It->second.second);
-            return;
-        }
-        Own = It->second.first;
+        if (Read.empty() && Failed.empty()) Failed = "no gdt/<type>/type.jsonc in " + Dir;
+        if (!Failed.empty()) Read.clear();
+        It = Loads.emplace(Dir, std::make_pair(std::move(Read), Failed)).first;
     }
+    Error = It->second.second;
+    return It->second.first;
+}
+
+Gdt::Memory ZonekitZone::GdtMemory() const
+{
     Gdt::Memory M;
     M.Image = &Image();
     M.Off = [this](uint64_t A) { return Off(A); };
@@ -1054,6 +1053,36 @@ void ZonekitZone::ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T)
     M.ScriptString = [this](uint32_t I) { return I < Slots.size() ? Slots[I] : std::string(); };
     M.AliasName = [this](uint32_t H) { return AliasName(H); };
     M.HashMask = HashBits();
+    return M;
+}
+
+bool ZonekitZone::ForEachGdtAsset(const std::string& Id, const std::function<void(const Gdt::Type&, const Gdt::Memory&, int64_t)>& Visit,
+                                  std::string& Error) const
+{
+    const auto Types = GdtTypes(Error);
+    const auto It = std::find_if(Types.begin(), Types.end(), [&](const auto& G) { return G->Id() == Id; });
+    if (It == Types.end())
+    {
+        if (Error.empty()) Error = "no gdt type " + Id;
+        return false;
+    }
+    const Gdt::Memory M = GdtMemory();
+    for (const auto& I : R.Instances)
+        if (I.Parent < 0 && OwnerIs(I, (*It)->ZoneType().c_str())) Visit(**It, M, I.Pos);
+    return true;
+}
+
+void ZonekitZone::ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T)
+{
+    using DiskGame::Kind;
+    std::string Error;
+    const auto Own = GdtTypes(Error);
+    if (Own.empty())
+    {
+        T.Fail(ZoneName, Kind::Gdt, "", Error);
+        return;
+    }
+    const Gdt::Memory M = GdtMemory();
 
     auto& Kt = T.Kinds[Kind::Gdt];
     Gdt::Stats S;

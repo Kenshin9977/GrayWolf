@@ -33,6 +33,7 @@ namespace IWPakSounds
     {
         bool OnePerName = false;        // a later sound of a name already written (case ignored) is skipped
         bool EmptyFileFails = false;    // a written file of no byte is a failure
+        std::string Language;           // the language folder localized sounds are read from (GameWorldWar2::LanguageOfZone)
     };
 
     // The extension Write gives a sound: the exportsnd setting's (".wav")

@@ -97,11 +97,11 @@ namespace
         return Channels > 0 && Rate > 0 && !Samples.empty();
     }
 
-    // The game's Opus packets as the WAV path decodes them (SABSupport::DecodeOpusInterleaved), as
-    // a WAV file's bytes
+    // The game's Opus packets as the WAV path decodes them (SABSupport::DecodeOpusInterleaved: the
+    // sound's frames after the game's pre-skip), as a WAV file's bytes
     std::unique_ptr<XSound> WavOfOpus(const SoundSource& S)
     {
-        return SABSupport::DecodeOpusInterleaved(const_cast<uint8_t*>(S.Data), S.Size, 0, S.Rate, S.Channels, S.Frames);
+        return SABSupport::DecodeOpusInterleaved(S.Data, S.Size, 0, S.Rate, S.Channels, S.Frames, S.PreSkip);
     }
 
     bool Pcm(const SoundSource& S, std::vector<int16_t>& Samples, uint32_t& Channels, uint32_t& Rate)
@@ -197,23 +197,28 @@ namespace
         return Rate == 8000 || Rate == 12000 || Rate == 16000 || Rate == 24000 || Rate == 48000;
     }
 
-    // The game's packets in an Ogg Opus file, as they are. Pre-skip 0 and every packet's samples
-    // kept: the sound assets name no encoder delay and it is not the same everywhere (about 312
-    // samples in Black Ops 6 multiplayer, 960 in its campaign, measured on their first sounds), so
-    // the file plays what the WAV path writes, sample for sample. The zero-size packets after the
-    // last one (the package's padding, which the WAV path decodes as silence) are left out.
+    // The game's packets in an Ogg Opus file, as they are, so that it plays what the WAV path
+    // writes, sample for sample: the game's pre-skip in the header (SABSupport::OpusPreSkip...) and
+    // the last page's granule at the sound's end (pre-skip + frames, at 48 kHz), the packets wholly
+    // past it left out; a game whose pre-skip is not measured keeps pre-skip 0 and every packet's
+    // samples. The zero-size packets after the last one (the package's padding) are left out.
     bool RemuxOpus(const SoundSource& S, const std::string& Path, std::string* Why)
     {
         const size_t Held = std::max(S.Available, S.Size);
+        const bool Trim = S.PreSkip >= 0 && S.Frames > 0 && S.Rate > 0;
+        const uint64_t End = Trim ? (uint64_t)S.PreSkip + (uint64_t)S.Frames * 48000 / S.Rate : 0;
         std::vector<std::pair<const uint8_t*, uint32_t>> Packets;
-        for (size_t At = 0; At < S.Size && At + 2 <= Held;)
+        uint64_t Samples = 0;
+        for (size_t At = 0; At < S.Size && At + 2 <= Held && (!Trim || Samples < End);)
         {
             uint16_t Len = 0;
             std::memcpy(&Len, S.Data + At, 2);
             if (Len == 0 || At + 2 + Len > Held) break;
             const uint8_t* P = S.Data + At + 2;
-            if (opus_packet_get_nb_samples(P, Len, 48000) <= 0) break;
+            const int N = opus_packet_get_nb_samples(P, Len, 48000);
+            if (N <= 0) break;
             Packets.emplace_back(P, Len);
+            Samples += (uint64_t)N;
             At += 2 + (size_t)Len;
         }
         if (Packets.empty())
@@ -223,7 +228,7 @@ namespace
         }
         // the decoder's channels: the asset's, else the first packet's (its TOC's stereo bit)
         const uint32_t Channels = (S.Channels == 1 || S.Channels == 2) ? S.Channels : ((Packets[0].first[0] & 4) ? 2 : 1);
-        if (!Sound::WriteOggOpus(Packets, Channels, S.Rate, 0, 0, Path))
+        if (!Sound::WriteOggOpus(Packets, Channels, S.Rate, Trim ? (uint16_t)S.PreSkip : 0, End, Path))
         {
             if (Why) *Why = "Ogg Opus not written";
             return false;
@@ -285,7 +290,7 @@ SoundSource SourceOf(const XSound& X)
     if (X.DataType == SoundDataTypes::Opus_Interleaved)
     {
         S.Is = SoundSource::Form::Opus;
-        S.Rate = X.FrameRate, S.Channels = X.Channels, S.Frames = X.FrameCount;
+        S.Rate = X.FrameRate, S.Channels = X.Channels, S.Frames = X.FrameCount, S.PreSkip = X.OpusPreSkip;
     }
     else
         S.Extension = X.DataType == SoundDataTypes::FLAC_WithHeader ? ".flac" : ".wav";

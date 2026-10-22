@@ -10,6 +10,7 @@
 
 #include "Bo3SlotStrings.h"
 #include "Bo3SoundAliases.h"
+#include "Bo3SoundNames.h"
 #include "Bo3ZoneDataTables.h"
 #include "Bo3ZoneImages.h"
 #include "Bo3ZoneMaterials.h"
@@ -17,6 +18,8 @@
 #include "Bo3ZoneSounds.h"
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "Gdt.h"
+#include "Games/Common/WeaponFiles.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "GameBlackOps3.h"
 #include "Games/Treyarch/TreyarchMaps.h"
@@ -26,6 +29,8 @@
 #include "ZonekitZone.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <set>
@@ -95,6 +100,8 @@ namespace
             });
             // BO3's own assets as Mod Tools GDT entries (zonekit/profiles/t7/gdt, HydraX's tables)
             ExportsGdt();
+            // the weapons' GDT entries read as the older games' weapon files (Games/Common/WeaponFiles)
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { ExportWeaponStats(C, T); });
         }
 
     protected:
@@ -168,8 +175,10 @@ namespace
                        const std::function<bool(const std::string&)>& Wants) const;
         void Defines(std::vector<DiskGame::AssetId>& Out) const override;
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
+        std::shared_ptr<const Bo3SoundNames::Table> SoundNames(const DiskGame::Context& C, bool Languages);
         void ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportData(const DiskGame::Context& C, DiskGame::Totals& T);
+        void ExportWeaponStats(const DiskGame::Context& C, DiskGame::Totals& T);
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
 
         // The raw pointer field at Pos, unrelocated: the exact "== FollowsInline" test that gates a
@@ -224,6 +233,9 @@ namespace
         }
 
         std::string AudioFormat, ActsExe;
+    public:
+        DiskGame::ExportOptions Options;   // what it was opened with (the kept sound names' place)
+    private:
         size_t DataDone = 0, DataCount = 0;   // ExportData's progress
     };
 
@@ -289,8 +301,37 @@ namespace
         std::string Report;
         std::unordered_map<uint32_t, std::string> Files;
         if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
+        // The names of the entries a bank does not name, each read when first asked: this zone's own
+        // aliases and the install's language zones; after the name index, the install's other zones
+        Bo3SoundNames::Table Own;
+        std::shared_ptr<const Bo3SoundNames::Table> Languages, Others;
+        const auto NameOf = [&](uint32_t Key, bool Last) -> const std::string* {
+            const auto In = [Key](const Bo3SoundNames::Table& T) {
+                const auto It = T.find(Key);
+                return It == T.end() ? nullptr : &It->second;
+            };
+            if (Last)
+            {
+                if (!Others) Others = SoundNames(C, false);
+                return In(*Others);
+            }
+            if (!Languages)
+            {
+                for (const auto& I : Walk().Instances)
+                    if (I.Parent < 0 && OwnerIs(I, "sound")) Bo3ReadSoundFileSpecs(AliasView(), I.Pos, Own);
+                Languages = SoundNames(C, true);
+            }
+            if (const std::string* S = In(Own)) return S;
+            return In(*Languages);
+        };
         const size_t Written = Bo3ExportZoneSounds(FastFilePath(), C.KindDir(DiskGame::Kind::Sound), C.NameFilter,
-                                                   AudioFormat, Report, &Files, C.OnSoundHeader);
+                                                   AudioFormat, Report, &Files, C.OnSoundHeader, NameOf);
+        // how the entries were named, as counters (sounds_named_by_bank, ..._aliases, ..._index, sounds_unnamed)
+        for (const char* Key : { "named_by_bank", "named_by_aliases", "named_by_index", "unnamed", "name_collisions" })
+        {
+            const size_t At = Report.find(std::string("\n") + Key + "=");
+            if (At != std::string::npos) Counter(std::string("sounds_") + Key) += std::strtoull(Report.c_str() + At + std::strlen(Key) + 2, nullptr, 10);
+        }
         if (C.OnSoundHeader) return;   // a dry run: no file to name in an alias CSV
         Kt.Written += Written;
         Kt.Seen += Written;
@@ -301,6 +342,39 @@ namespace
         for (const auto& I : Walk().Instances)
             if (I.Parent < 0 && OwnerIs(I, "sound")) Bo3ReadSoundAliases(AliasView(), I.Pos, Files, Extension, Rows);
         SoundAliasCsv::Write(C, T, Name(), Rows);
+    }
+
+    // The install's sound names (Bo3SoundNames) from its language zones or its other zones: kept, or
+    // read now, each zone opened alone while this zone's session is parked
+    std::shared_ptr<const Bo3SoundNames::Table> T7Zone::SoundNames(const DiskGame::Context& C, bool Languages)
+    {
+        const std::string Dir = fs::path(FastFilePath()).parent_path().string();
+        const auto* Game = DiskGame::Find("bo3");
+        const std::string File = DiskGame::KeptFile(*Game, Options, Dir, Languages ? ".sndnames" : ".sndnames-zones");
+        const auto Kept = Bo3SoundNames::For(
+            Bo3SoundNames::Zones(Dir, Languages), File, IndexKey(),
+            [this](const std::string& Zone, Bo3SoundNames::Table& Out) {
+                T7Zone Z(Zone, std::string(), std::string());
+                if (!Options.Profile.empty()) Z.SetProfile(Options.Profile);
+                std::string Error;
+                if (!Z.Open(Error)) return false;
+                for (const auto& I : Z.Walk().Instances)
+                    if (I.Parent < 0 && Z.OwnerIs(I, "sound")) Bo3ReadSoundFileSpecs(Z.AliasView(), I.Pos, Out);
+                return true;
+            },
+            [this] { Park(); }, [this] { Resume(); },
+            [&C](size_t Done, size_t Count, const std::string& Zone) { return C.Advance(Done, Count, "sound names: " + Zone); });
+        if (Kept.Built)
+        {
+            // the run log's step from here on: the banks again, not the last zone read
+            C.Advance(Kept.Zones, Kept.Zones, "sound banks");
+            Counter("sound_names_zones_read") += Kept.ZonesRead;
+            Counter("sound_names_zones_resumed") += Kept.Resumed;
+            Counter("sound_names_zones_failed") += Kept.ZonesFailed;
+            Counter("sound_names_build_ms") += (size_t)(Kept.Seconds * 1000);
+        }
+        Counter(Languages ? "sound_names_languages" : "sound_names_zones") = Kept.Names->size();
+        return Kept.Names;
     }
 
     // RawFile (47) and ScriptParseTree (54, compiled GSC/CSC bytecode): a name, a size and a
@@ -577,6 +651,66 @@ namespace
         Counter("ddl_enums_total") += EnumsTotal;
     }
 
+    // The weaponstats kind: each weapon (23) as the gdt kind reads it (its GDT keys and values, HydraX's
+    // layout), written as a weapon file, WEAPONFILE\<key>\<value>...: a BO3 GDT key is the field of the
+    // older games' weapon files of the same name, its value in the same unit (times in seconds,
+    // distances in inches; Rifling games/bo3.md proves them on the exe), so the shared weapon file table
+    // reads it.
+    void T7Zone::ExportWeaponStats(const DiskGame::Context& C, DiskGame::Totals& T)
+    {
+        using DiskGame::Kind;
+        std::vector<WeaponFiles::Weapon> Weapons;
+        std::string Error;
+        ForEachGdtAsset("weapon", [&](const Gdt::Type& Ty, const Gdt::Memory& M, int64_t Pos) {
+            const std::string Nm = Ty.Name(M, Pos);
+            if (Nm.empty() || Nm[0] == ',' || !C.Wants(Kind::WeaponStats, Nm)) return;
+            Gdt::Stats S;
+            std::string Text = "WEAPONFILE";
+            for (auto [K, V] : Ty.Fields(M, Pos, S))
+            {
+                std::replace(V.begin(), V.end(), '\\', '/');   // the weapon file's separator
+                Text += "\\" + K + "\\" + V;
+            }
+            Weapons.push_back({ Nm, std::move(Text), {} });
+        }, Error);
+        if (!Error.empty()) T.Fail(Name(), Kind::WeaponStats, "", Error);
+        std::vector<std::pair<std::string, std::string>> Texts;
+        Strings(Texts);
+        using WeaponFiles::Unit;
+        WeaponFiles::Notes N{
+            "Call of Duty: Black Ops III",
+            "The display names are the localized strings of the language zones (<lang>_core_common... hold none;\n"
+            "<lang>_core_patch, <lang>_zm_patch, <lang>_mp_patch... do): export them into the same --out.\n",
+            "Each weapon (23) is read as the gdt kind reads it (--type gdt: HydraX's layout of the WeaponDef, the\n"
+            "keys of the Mod Tools' bulletweapon.gdf), its keys taken as the fields of the older games' weapon files\n"
+            "they are named like: the GDT is the Mod Tools' source of the weapon file, its times in seconds\n"
+            "(milliseconds here), distances inches. Units and the damage interpolation (linear between the stops)\n"
+            "are proven on BO3's executable in Rifling's games/bo3.md (fireTime, clipSize, the damage table, the\n"
+            "hit locations); the other columns carry the GDT's unit by name.\n",
+            { { "burst_count", "burstCount", Unit::Count },
+              { "is_sniper", "isSniperWeapon", Unit::Count },
+              { "segmented_reload", "segmentedReload", Unit::Count },
+              { "multishot_damage_1", "multishotBaseDamage1", Unit::Count },
+              { "multishot_range_1_m", "multishotBaseDamageRange1", Unit::Inches },
+              { "multishot_damage_2", "multishotBaseDamage2", Unit::Count },
+              { "multishot_range_2_m", "multishotBaseDamageRange2", Unit::Inches },
+              { "multishot_damage_3", "multishotBaseDamage3", Unit::Count },
+              { "multishot_range_3_m", "multishotBaseDamageRange3", Unit::Inches },
+              { "multishot_damage_4", "multishotBaseDamage4", Unit::Count },
+              { "multishot_range_4_m", "multishotBaseDamageRange4", Unit::Inches },
+              { "multishot_damage_5", "multishotBaseDamage5", Unit::Count },
+              { "multishot_range_5_m", "multishotBaseDamageRange5", Unit::Inches },
+              { "multishot_damage_6", "multishotBaseDamage6", Unit::Count },
+              { "multishot_range_6_m", "multishotBaseDamageRange6", Unit::Inches } },
+            "- burst_count: burstCount, rounds a burst. is_sniper: isSniperWeapon (a sniper is weaponClass rifle with\n"
+            "  it set). segmented_reload: segmentedReload, 1 for a round by round reload.\n"
+            "- multishot_damage_<n> at multishot_range_<n>_m: multishotBaseDamage1-6, multishotBaseDamageRange1-6, a\n"
+            "  shotgun's damage table for its pellets (inches x 0.0254).\n"
+            "- ammo_count_clip_relative: in Black Ops III proven by the Mod Tools' own help (max_ammo and start_ammo\n"
+            "  in magazines when it is 1, Rifling games/bo3.md).\n" };
+        WeaponFiles::ExportStats(Weapons, Texts, Name(), C, T, N);
+    }
+
     void T7Zone::ExportData(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         // one progress count over the four
@@ -721,6 +855,7 @@ namespace
         {
             auto Zone = std::make_unique<T7Zone>(Path, Options.AudioFormat, Options.ActsExe);
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
+            Zone->Options = Options;
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

@@ -768,13 +768,7 @@ namespace
     bool WriteIndex(const std::string& Root, const std::vector<Totals::IndexRow>& Rows)
     {
         using Fields = std::vector<std::string>;
-        const auto Quoted = [](const std::string& S) {
-            if (S.find_first_of(",\"\r\n") == std::string::npos) return S;
-            std::string Q = "\"";
-            for (const char Ch : S) Q += Ch == '"' ? std::string("\"\"") : std::string(1, Ch);
-            return Q + "\"";
-        };
-        // a CSV line's fields (as Quoted writes them)
+        // a CSV line's fields (as ExportWriters::CsvField writes them)
         const auto Split = [](const std::string& Line) {
             Fields Out(1);
             bool InQuotes = false;
@@ -815,7 +809,7 @@ namespace
         std::string Out = "kind,id,type,type_name,zone,name,file\n";
         for (const auto& F : All)
         {
-            for (size_t K = 0; K < F.size(); K++) Out += (K ? "," : "") + Quoted(F[K]);
+            for (size_t K = 0; K < F.size(); K++) Out += (K ? "," : "") + ExportWriters::CsvField(F[K]);
             Out += "\n";
         }
         return ExportWriters::WriteBytes(File, (const uint8_t*)Out.data(), Out.size());
@@ -955,7 +949,18 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         for (size_t K = 0; K < Later.size(); K++)
         {
             auto Work = std::move(Later[K]);   // Work may queue more
+            // what it writes counts for its kind (the weapon stats table, built once every zone's
+            // facts are in): metered like a zone's exporter, logged when it changed a kind's count
+            std::vector<std::pair<Kind, KindMeter>> Meters;
+            for (const auto& [Which, V] : T.Kinds) Meters.emplace_back(Which, KindMeter(T, Which));
             Work();
+            for (const auto& [Which, Meter] : Meters)
+            {
+                const KindSample S = Meter.Stop(T);
+                if (S.Seen == 0 && S.Written == 0) continue;
+                Mon.AddKind(KindName(Which), S);
+                Mon.Log("  after " + std::string(KindName(Which)) + ": " + S.Describe());
+            }
         }
         Mon.AddTime("after", Seconds(Start));
     }
