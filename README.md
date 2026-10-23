@@ -61,7 +61,7 @@ Building it yourself: see [BUILDING.md](BUILDING.md).
 only when named; the data dumps [below](#data-dumps) too).
 
 | Game | `--game` | Models | Anims | Images | Sounds | Rawfiles | Data | Localize | Maps | Scripts | GDT | FX |
-|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+|---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | Call of Duty | `cod1` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
 | Call of Duty 2 | `cod2` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
 | Call of Duty 4: Modern Warfare | `cod4` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
