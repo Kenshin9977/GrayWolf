@@ -144,49 +144,40 @@ per asset under its zone.
 | `weapons` | the weapon assets (tunables, accuracy, attachments...) as struct dumps (JSON) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `weaponstats` | each weapon's stats in game units, with their units and formulas (CSV, JSON) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ~ | ~ | ~ | ~ | ✓ |
 
-CoD and CoD 2: `weapons` is the game's own weapon files (`weapons/mp/<name>`, `weapons/sp/<name>` from
-the archives), `weaponstats` read from their named fields, display names from the `.str` files.
-CoD4, World at War, MW2, Black Ops, MW3 and Black Ops II (their own readers and the `-oat` ones): `weapons` is
-the weapon files as OpenAssetTools writes them (the mod tools' `weapons/<name>`, attachments and camos beside
-them), `weaponstats` read from their named fields (the game's weapon field table), the README beside the table.
-Their display names are in another zone exported into the same `--out`: World at War `localized_common_mp`
-(multiplayer) or the language folder's `common` (campaign, zombies); Black Ops and Black Ops II
-`<lang>_code_post_gfx_mp`, for zombies Black Ops II's `<lang>_code_post_gfx_zm`, Black Ops' `<lang>_code_post_gfx`;
-CoD4, MW2 and MW3 `localized_code_post_gfx_mp` (multiplayer) or the language folder's `common` (campaign).
-Black Ops II's attachments are also merged: `weapon_attachments.csv`, each weapon with each attachment its file
-lists, the attachment's scales applied (clip sizes match the published ones: MP7 54, PDW-57 67 with Extended Mags).
-MW3's too, by the rules read in its exe (an ammunition, ADS or damage block replacing the weapon's value, then the
-attachment's scales; the weapon's animation overrides for fire and reload times): Extended Mags M4A1 45, MP7 60;
-the Suppressor's 0.75 shortens the ranges; the grenade launcher and shotgun belong to the alternate mode.
-Black Ops III: `weaponstats` from each weapon's GDT entry as the `gdt` kind reads it (keys named as the older weapon
-files' fields), equal to `--type gdt` on every compared value; names from `<lang>_core_patch`, `<lang>_zm_patch`.
-Its `weapons` are the `gdt` kind's entries (`--type gdt`).
-Ghosts, Advanced Warfare, MW Remastered and WWII: `weapons` is the weapon and attachment assets as struct dumps,
-`weaponstats` the older games' weapon file columns, read from each game's WeaponDef (x64-zt's layouts for the
-first three, their damage checked against the code; WWII's read off its exe, fewer columns: its damage stops
-named by the exe's own GetWeaponDamage, start and max ammo, the linear fall-off flags), the README beside
-the table. Infinite Warfare likewise (x64-zt's layout, the damage stops read off the exe); its reload, raise,
-drop and sprint-out times come from the weapon's animation package at the offsets the exe's time getter is
-called with, joined by the package's name when another zone holds it (`global_core_mp`'s guns,
-`common_core_mp`'s packages: export both into the same `--out`).
-Call of Duty Online: `weapons` is the weapon (one 0x101c WeaponDef) and weaponattach assets as struct dumps,
-`weaponstats` read from that WeaponDef at the offsets its decrypted exe reads (MW2's field names; six damage
-stops; no start or max ammo, which the game mode's table sets), the README beside the table. Its guns are in
-`common_mp`, names in `localized_code_post_gfx_mp`, and `weapon_attachments.csv` needs `code_post_gfx_mp`
-(`mp/coWeaponAttachmentTable.csv`, each weapon's attachments), the overrides applied by the exe's rules
-(Extended Mags AK-47 45, Fast Mags its reload x 0.7): export the three into the same `--out`.
-~: multiplayer and zombies only, not the campaign. MW2019's install is multiplayer only, and its
-`weaponstats` leaves out what its exe does not prove yet (ADS, raise and sprint times); its hit multipliers
-are read since the zone layout of `global_stream_mp` matches the game's (checked against its loaders,
-emulated). MWIII's damage table and hit multipliers are read too. Black Ops 7: a package time of 0xffff (none)
-is an empty cell, not 65535. Zombies (for Rifling's scaling): Black Ops 6's `t10_zm_<gun>` and `_pack`
-attachments keep the Pack-a-Punch tiers behind 0x8d8 (f32 each) and the rarity multipliers behind 0x8e0 (6 f32), read
-by the exe's object fields the game's scripts use (Black Ops 7: 0xa00, 0xa08); MWIII has no such fields.
-Black Ops 4 and Cold War: `mapinfo` is their map tables and `aitypes` their AI types as struct dumps (no
-settings bundle in either); `weaponstats` comes from the weapon layouts the `gdt` kind ports, their
-names matched against Black Ops III's (its units), not read in the game's code (the README beside the table).
-Black Ops 4's guns are in `core_ui` (names in `<lang>_core_ui`); Cold War's in `core_common` (its zombies' and
-multiplayer variants in `zm_common`, `mp_common`; names in `<lang>_core_common`).
+~: multiplayer and zombies only, not the campaign.
+
+#### Weapons, game by game
+
+`weapons` is the raw weapon data, `weaponstats` one table of each weapon's stats, with a README beside it
+(units, formulas). Display names live in a localize zone: export it into the same `--out`.
+
+| Game | `weapons` | `weaponstats` read from | Names in |
+|---|---|---|---|
+| CoD, CoD 2 | the game's weapon files (`weapons/mp/`, `weapons/sp/`) | their named fields | the `.str` files |
+| CoD4, MW2, MW3 | the weapon files as OpenAssetTools writes them | their named fields | `localized_code_post_gfx_mp`, or the language folder's `common` (campaign) |
+| World at War | same | same | `localized_common_mp`, or the language folder's `common` (campaign, zombies) |
+| Black Ops, Black Ops II | same | same | `<lang>_code_post_gfx_mp`; zombies: `<lang>_code_post_gfx` (BO), `<lang>_code_post_gfx_zm` (BO2) |
+| Black Ops III | the `gdt` kind's entries | each weapon's GDT entry | `<lang>_core_patch`, `<lang>_zm_patch` |
+| Ghosts, AW, MWR, WWII | struct dumps of weapons and attachments | the game's WeaponDef (WWII: fewer columns) | |
+| Infinite Warfare | same | same, plus animation times from `common_core_mp` (export it with `global_core_mp`) | |
+| CoD Online | struct dumps of weapons and attachments | its WeaponDef (no start or max ammo: the game mode sets them) | `localized_code_post_gfx_mp` (guns in `common_mp`) |
+| Black Ops 4 | struct dumps | the weapon layouts the `gdt` kind ports, in Black Ops III's units | `<lang>_core_ui` (guns in `core_ui`) |
+| Cold War | struct dumps | same | `<lang>_core_common` (guns in `core_common`, `zm_common`, `mp_common`) |
+
+Notes:
+- **Attachments applied** (`weapon_attachments.csv`, each weapon with each attachment it takes):
+  - Black Ops II: MP7 54 rounds, PDW-57 67 with Extended Mags, as published.
+  - MW3, by its exe's rules: Extended Mags M4A1 45, MP7 60.
+  - Call of Duty Online: also export `code_post_gfx_mp` (its attachment table) into the same `--out`.
+    Extended Mags AK-47 45; Fast Mags reload x 0.7.
+- **MW2019**: multiplayer only; ADS, raise and sprint times are left out until its exe confirms them.
+  MW2019 and MWIII include hit multipliers; MWIII also has its damage table.
+- **Black Ops 7**: an animation time the game marks as absent is an empty cell.
+- **Zombies**: Black Ops 6 and Black Ops 7 add the Pack-a-Punch tiers and rarity multipliers. MWIII
+  has no such data.
+- **Black Ops 4 and Cold War**: `mapinfo` is their map tables, `aitypes` their AI types (no settings
+  bundle in either). Their `weaponstats` are matched by name against Black Ops III's fields, not
+  read from the game's code.
 
 ### What each game reads
 
