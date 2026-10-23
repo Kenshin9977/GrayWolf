@@ -2,6 +2,7 @@
 
 #include "OatWeapons.h"
 
+#include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/Common/WeaponFiles.h"
 #include "OatInProcess.h"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <format>
+#include <set>
 
 namespace fs = std::filesystem;
 
@@ -131,12 +133,28 @@ namespace OatWeapons
         Kt.Seen += Assets;
         if (Files->empty()) return;
         const fs::path Root(C.OutRoot), Dir = C.KindDir(Kind::Weapons);
+        // the AI accuracy graphs a wanted weapon names (aiVsAiAccuracyGraph, aiVsPlayerAccuracyGraph:
+        // OAT writes each graph as its own file, accuracy/<kind>/<graph>.accu), written with it
+        std::set<std::string> Graphs;
+        for (const auto& [Path, Text] : *Files)
+        {
+            if (!C.Wants(Kind::Weapons, fs::path(AssetOf(Path)).filename().string())) continue;
+            std::vector<std::string> Parts;
+            for (size_t At = 0, Next; At <= Text.size(); At = Next + 1)
+            {
+                Next = Text.find('\\', At);
+                if (Next == std::string::npos) Next = Text.size();
+                Parts.push_back(Text.substr(At, Next - At));
+            }
+            for (size_t P = 1; P + 1 < Parts.size(); P += 2)
+                if (Parts[P].ends_with("AccuracyGraph") && !Parts[P + 1].empty()) Graphs.insert(ExportNaming::Lower(Parts[P + 1]));
+        }
         for (size_t N = 0; N < Files->size(); N++)
         {
             const auto& [Path, Text] = (*Files)[N];
             const std::string Name = fs::path(AssetOf(Path)).filename().string();
             if (!C.Advance(N, Files->size(), Name)) break;
-            if (!C.Wants(Kind::Weapons, Name)) continue;
+            if (!C.Wants(Kind::Weapons, Name) && !Graphs.count(ExportNaming::Lower(Name))) continue;
             // weapons/<name> as OAT's tree has it (the kind's folder), the rest beside it under weapons/
             const fs::path To = Path.rfind("weapons/", 0) == 0 ? Root / Path : Dir / Path;
             if (ExportWriters::WriteBytes(To, (const uint8_t*)Text.data(), Text.size())) Kt.Written++;

@@ -109,9 +109,11 @@ namespace
             Bone.TagName = BoneName(Read<uint64_t>(Model->BoneIDsPtr + i * 8));
             if (i >= Model->RootBoneCount)
             {
-                Bone.BoneParent = (int32_t)Read<uint16_t>(Model->BoneParentsPtr + (i - Model->RootBoneCount) * 2);
-                if (i < Model->BoneCount) Bone.BoneParent = (int32_t)i - Bone.BoneParent;   // relative
-                else Bone.IsCosmetic = true;                                                  // absolute
+                // relative, the cosmetic bones' too (each one's translation puts it at its base pose under
+                // i - parent, never under the parent read as an index: 18 of 18 cosmetic bones of BO6's
+                // weapon parts, att_t10_vm_p01_ar_coslo723_rec's 13 among them)
+                Bone.BoneParent = (int32_t)i - (int32_t)Read<uint16_t>(Model->BoneParentsPtr + (i - Model->RootBoneCount) * 2);
+                Bone.IsCosmetic = i >= Model->BoneCount;
             }
             else
                 Bone.BoneParent = -1;

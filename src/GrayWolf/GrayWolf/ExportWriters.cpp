@@ -137,9 +137,12 @@ bool WriteImage(const XImageDDS& Dds, const std::string& Path, const std::string
         F.write(reinterpret_cast<const char*>(Dds.DataBuffer), Dds.DataSize);
         return F.good();
     }
+    // an engine built-in ("$identitynormalmap", "$white"), 1x1 in the zone: written 4x4 of its pixel,
+    // the smallest a mod tool's linker takes (BO3's refuses a normal map under 4x4)
+    const bool BuiltIn = std::filesystem::path(Path).filename().string().rfind('$', 0) == 0;
     return Image::ConvertImageMemory(Dds.DataBuffer, Dds.DataSize, ImageFormat::DDS_WithHeader, Path,
                                      Format == "TGA" ? ImageFormat::Standard_TGA : ImageFormat::Standard_PNG,
-                                     Dds.ImagePatchType);
+                                     Dds.ImagePatchType, BuiltIn ? 4 : 0);
 }
 
 struct ImageSink::State
@@ -325,9 +328,9 @@ bool WriteStringTable(const std::string& DataDir, const std::string& Name, uint3
     return (bool)Out;
 }
 
-std::string Utf8(const std::string& S, unsigned CodePage)
+std::string Utf8(const std::string& S, unsigned CodePage, bool Always)
 {
-    bool Valid = true;
+    bool Valid = !(Always && CodePage != 0);
     for (size_t I = 0; I < S.size() && Valid;)
     {
         const unsigned char C = (unsigned char)S[I];

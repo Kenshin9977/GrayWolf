@@ -30,13 +30,15 @@ namespace
 
     constexpr double MetresPerInch = 0.0254;
 
-    // the number columns, in table order: (column, layout field, element, scale to the column's unit)
+    // the number columns, in table order: (column, layout field, element, scale to the column's unit,
+    // the field's name in the other game's layouts when it differs)
     struct Column
     {
         const char* Name;
         const char* Field;
         int Element;
         double Scale;
+        const char* Alt = nullptr;
     };
     const Column Numbers[] = {
         { "fire_time_ms", "firetime", 0, 1 },
@@ -44,7 +46,7 @@ namespace
         { "clip_size", "clipsize", 0, 1 },
         { "start_ammo", "startammo", 0, 1 },
         { "max_ammo", "maxammo", 0, 1 },
-        { "ammo_count_clip_relative", "ammocountcliprelative", 0, 1 },
+        { "ammo_count_clip_relative", "ammocountcliprelative", 0, 1, "ammocountedinclips" },
         { "reload_ms", "reloadtime", 0, 1 },
         { "first_raise_ms", "firstraisetime", 0, 1 },
         { "raise_ms", "raisetime", 0, 1 },
@@ -78,6 +80,35 @@ namespace
         { "explosion_radius_m", "explosionradius", 0, MetresPerInch },
         { "explosion_inner_damage", "explosioninnerdamage", 0, 1 },
         { "explosion_outer_damage", "explosionouterdamage", 0, 1 },
+        // the hit location multipliers: locationDamageMultipliers by the exe's hit location index
+        // (0, none, left out)
+        { "hit_helmet", "locationdamagemultipliers", 1, 1 },
+        { "hit_head", "locationdamagemultipliers", 2, 1 },
+        { "hit_neck", "locationdamagemultipliers", 3, 1 },
+        { "hit_torso_upper", "locationdamagemultipliers", 4, 1 },
+        { "hit_torso_mid", "locationdamagemultipliers", 5, 1 },
+        { "hit_torso_lower", "locationdamagemultipliers", 6, 1 },
+        { "hit_right_arm_upper", "locationdamagemultipliers", 7, 1 },
+        { "hit_left_arm_upper", "locationdamagemultipliers", 8, 1 },
+        { "hit_right_arm_lower", "locationdamagemultipliers", 9, 1 },
+        { "hit_left_arm_lower", "locationdamagemultipliers", 10, 1 },
+        { "hit_right_hand", "locationdamagemultipliers", 11, 1 },
+        { "hit_left_hand", "locationdamagemultipliers", 12, 1 },
+        { "hit_right_leg_upper", "locationdamagemultipliers", 13, 1 },
+        { "hit_left_leg_upper", "locationdamagemultipliers", 14, 1 },
+        { "hit_right_leg_lower", "locationdamagemultipliers", 15, 1 },
+        { "hit_left_leg_lower", "locationdamagemultipliers", 16, 1 },
+        { "hit_right_foot", "locationdamagemultipliers", 17, 1 },
+        { "hit_left_foot", "locationdamagemultipliers", 18, 1 },
+        { "hit_gun", "locationdamagemultipliers", 19, 1 },
+        { "hit_riotshield", "locationdamagemultipliers", 20, 1 },
+        // Cold War's zombies multipliers (its tunables 0xd2c-0xd40)
+        { "zm_rarity_green", "zmraritygreendamagescale", 0, 1 },
+        { "zm_rarity_blue", "zmraritybluedamagescale", 0, 1 },
+        { "zm_rarity_purple", "zmraritypurpledamagescale", 0, 1 },
+        { "zm_rarity_orange", "zmrarityorangedamagescale", 0, 1 },
+        { "zm_pap2", "zmpap2damagescale", 0, 1 },
+        { "zm_pap3", "zmpap3damagescale", 0, 1 },
     };
 
     // a zone's facts: its weapons' values by column (those Wants names: the run's name filter), its
@@ -102,7 +133,7 @@ namespace
             bool Holds = false;
             Json Cells = Json::object();
             for (const auto& Col : Numbers)
-                if (const auto* V = Find(Col.Field); V != nullptr && (size_t)Col.Element < V->Numbers.size() && std::isfinite(V->Numbers[(size_t)Col.Element]))
+                if (const auto* V = Find(Col.Field) != nullptr || Col.Alt == nullptr ? Find(Col.Field) : Find(Col.Alt); V != nullptr && (size_t)Col.Element < V->Numbers.size() && std::isfinite(V->Numbers[(size_t)Col.Element]))
                 {
                     const double X = V->Numbers[(size_t)Col.Element];
                     Holds = Holds || X != 0;
@@ -228,15 +259,18 @@ namespace
             "- Checked against published Black Ops 4 numbers: KN-57 damage 40 at about 550 rpm (108 ms here),\n"
             "  Maddox RFB damage 32, Titan magazine 75.\n\n"
             "Columns and units\n"
-            "- class, fire_type: the layouts' enum names (weapclass, firetype; Black Ops III's lists).\n"
+            "- class, fire_type: the layouts' enum names (weapclass: the exe's own table of fifteen, rifle, mg,\n"
+            "  smg, spread, pistol, grenade, rocketlauncher, turret, non-player, gas, item, melee, Killstreak Alt\n"
+            "  Stored Weapon, pistol spread, ball; firetype: Black Ops III's list).\n"
             "- fire_time_ms: firetime, milliseconds between two shots; rpm = 60000 / fire_time_ms.\n"
             "- burst_count: rounds a burst. clip_size: rounds a magazine. start_ammo, max_ammo: as stored, in\n"
             "  magazines when ammo_count_clip_relative is 1, else rounds (Black Ops III's rule, its Mod Tools' help).\n"
             "- ammo_count_clip_relative: ammoCountClipRelative, Black Ops 4 only (WeaponTunables 0x10bf, the byte\n"
             "  acts' struct declares under that name; 1 on 181 of the 185 guns whose max_ammo is a magazine count,\n"
             "  ar_accurate_t8_zm 9 x 35, and 0 on ar_standard_t8_zm's 490 rounds; the script field table's maxAmmo\n"
-            "  and startAmmo entries multiply 0xd4c / 0xe40 by the clip size when it is set). Cold War: no place\n"
-            "  known (empty).\n"
+            "  and startAmmo entries multiply 0xd4c / 0xe40 by the clip size when it is set). Cold War: the style\n"
+            "  settings' byte 0x18c (its maxAmmo and startAmmo accessors, 0x7ff63a7b09b0 / 0x7ff63a7b0940 in the\n"
+            "  decrypted exe, multiply by the clip getter when it is set; the XM4's 3 / 6 are magazines).\n"
             "- reload_ms: reloadtime, the reload with rounds left, milliseconds.\n"
             "- first_raise_ms, raise_ms, raise_quick_ms: the weapon's first raise (taken out the first time), its\n"
             "  plain raise and its quick raise, milliseconds, before attachments and perks. See Raise times.\n"
@@ -248,6 +282,20 @@ namespace
             "  multishotBaseDamage and multishotBaseDamageRange, a second damage table of the same form (inches\n"
             "  x 0.0254), added once per target a shot hits, see Shotguns.\n"
             "- melee_damage. explosion_radius_m (inches x 0.0254), explosion_inner/outer_damage (centre, edge).\n"
+            "- hit_<location>: the hit location multipliers, x damage: locationDamageMultipliers, a table of 21\n"
+            "  floats the weapon points at (Black Ops 4: the tunables' 0x0; Cold War: the style settings' 0xb0),\n"
+            "  indexed by hit location. Read in the decrypted exes: the hit location function (Black Ops 4\n"
+            "  0x7ff7916e16c0, Cold War 0x7ff638fe75c0) returns table[location], the damage code multiplies the\n"
+            "  damage by it and truncates (int); the location names are the exe's own table of 21 (none,\n"
+            "  helmet, head ... left_foot, gun, riotshield; entry 0, none, is not a column). An attachment\n"
+            "  unique's table (Black Ops 4) or each attachment's multipliers (Cold War, multiplied in) are not\n"
+            "  applied. Without a weapon the game uses the global lochit_dmgtable.\n"
+            "- zm_rarity_green, zm_rarity_blue, zm_rarity_purple, zm_rarity_orange, zm_pap2, zm_pap3 (Cold War):\n"
+            "  the zombies damage multipliers of the weapon's tunables 0xd2c, 0xd30, 0xd34, 0xd38, 0xd3c, 0xd40.\n"
+            "  The exe's script field table (rdata 0xd6e6ce0) gives these offsets to the fields zombies' scripts\n"
+            "  read: zm_weapons picks one of the four by the loot item's rarity (white or none: x1) and the\n"
+            "  Pack-a-Punch level 2 or 3 one (level 1 is the upgraded weapon itself), and zm.gsc multiplies a\n"
+            "  hit's damage by both (Rifling games/coldwar.md, Zombies). XM4 1.45 / 2.05 / 2.95 / 4.\n"
             "- upgrade_of: a Pack-a-Punch weapon (<base>_upgraded_<mode>) names its base when the table holds it.\n\n"
             "Shotguns: what the damage columns mean (read in the game's executable, the decrypted dumps of\n"
             "Black Ops 4 and Cold War; the two games' code is the same, offsets aside)\n"
@@ -286,8 +334,7 @@ namespace
             "  firstRaiseTime equals 0xd20 on 16 (8 distinct values, next offset 7), quickRaiseTime 0xfb0 on 34\n"
             "  (next 20), raiseTime 0xda0 on 22 (the empty and special raise offsets 21 each). The same test\n"
             "  puts fireTime, clipSize, reloadTime and meleeTime first on their proven offsets.\n\n"
-            "Not here (no proven place yet): ADS times, drop times, empty-reload times, hit location multipliers\n"
-            "(in the weapons kind as locationDamageMultipliers), attachments.\n"
+            "Not here (no proven place yet): ADS times, drop times, empty-reload times, attachments.\n"
             "- Drop: the function that starts a drop reads 0xcf0 in the plain case (0xfac quick, 0xd00 empty,\n"
             "  0x101c in a special case), but Black Ops III's dropTime lands on 0x101c (32 weapons) - its values\n"
             "  equal Black Ops III's swimDropTime on all 37 weapons - and 0xcf0 ties with other offsets: the\n"

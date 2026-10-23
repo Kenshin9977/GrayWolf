@@ -131,6 +131,7 @@ namespace
             if (Campaign) return;
             // the weapon stats table: this zone's facts, then the table rebuilt from every zone's
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) {
+                LearnPartModelNames();
                 IwWeaponStats::ZoneView V;
                 V.Image = &Image();
                 V.Walk = &Walk();
@@ -178,6 +179,8 @@ namespace
 
         // the weapon stats' layout (Games/IW/IwWeaponStats.h)
         static const IwWeaponStats::Layout& StatsLayout();
+        static std::unordered_map<uint64_t, std::string>& PartModelNames();
+        void LearnPartModelNames() const;
 
         // a zone string's text, decrypted with the profile's cipher table when it is encrypted
         std::string Decrypted(const std::string& Raw) const
@@ -368,6 +371,32 @@ namespace
     // its GSC builtins (jup hashes) and the weapon stats UI 0x6eecfc0 calling each getter, the
     // getters matched to Black Ops 6's by their code. No weapontunables asset: the weapon (0x578, the
     // table 0x14de7e50) and its definition (behind 0x20, the table 0x14de9370) hold the fields.
+    // The default parts' model names (weapon_default_parts.csv): a part's models are named by hash
+    // (IwctxReaders::AssetHash), the hash packages lack most of them, and each sits in a transient zone
+    // named after it (mp_av_<view model>_tr.ff, mp_aw_<world model>_tr.ff, Black Ops 7's convention):
+    // the zone file names beside this zone name them, by hash equality only.
+    std::unordered_map<uint64_t, std::string>& MWIIIZone::PartModelNames()
+    {
+        static std::unordered_map<uint64_t, std::string> Names;
+        return Names;
+    }
+    void MWIIIZone::LearnPartModelNames() const
+    {
+        static std::once_flag Once;
+        std::call_once(Once, [this] {
+            std::error_code Ec;
+            for (const auto& E : fs::directory_iterator(fs::path(FastFilePath()).parent_path(), Ec))
+            {
+                const std::string Stem = ExportNaming::Lower(E.path().stem().string());
+                if (E.path().extension() != ".ff" || Stem.size() < 10 || !Stem.ends_with("_tr") ||
+                    !(Stem.starts_with("mp_av_") || Stem.starts_with("mp_aw_")))
+                    continue;
+                const std::string Model = Stem.substr(6, Stem.size() - 9);
+                PartModelNames().emplace(IwctxReaders::AssetHash(Model), Model);
+            }
+        });
+    }
+
     const IwWeaponStats::Layout& MWIIIZone::StatsLayout()
     {
         static const IwWeaponStats::Layout L = [] {
@@ -406,6 +435,15 @@ namespace
             // attachment: name 8, clip scale 0x7f0 and override block 0x3a8 (i32 at 8; start ammo's at 4,
             // max ammo's at 0), explosion block 0x4b8 (i32 0, alternate 0x2c)
             L.AttachmentName = 8, L.AttClipScale = 0x7f0, L.AttClipOverride = 0x3a8, L.AttExplosion = 0x4b8, L.AttExplosionAlt = 0x2c;
+            // default parts: the weapon's default table 0x2c0, 17 entries of 0x10 {u32 count, attachment **}
+            // (0x640da80); an attachment's models, xmodel arrays of u32 0x174 entries: world 0x178, view 0x180
+            // (0x63f8540)
+            L.DefaultSlots = 0x2c0, L.DefaultSlotCount = 17, L.AttWorldModel = 0x178, L.AttViewModel = 0x180, L.AttModelCount = 0x174;
+            L.ModelName = [](uint64_t Hash) {
+                const auto It = PartModelNames().find(Hash & 0x7FFFFFFFFFFFFFFFull);
+                return It != PartModelNames().end() ? It->second : IwctxReaders::HashedName("xmodel", Hash);
+            };
+            L.NameHash = [](const std::string& Name) { return IwctxReaders::AssetHash(Name); };
             // animation package: block 0x10 (0x640e260); reload_empty 0x6c (0x6422650, 0x70 under trait
             // 0x2df), reload 0x6e (0x6424e80, 0x72 under trait 0x2dc), per-round start 0x84 (0x6424d80)
             // and end 0xac (0x6422a30, 0xb8 under a flag), sprint-out 0x2a2 (0x6427330, 0x292 under a
@@ -449,6 +487,19 @@ namespace
                 "  applied), indexed by the hit location (0x880f650: table + location x 4), in the family's order.\n"
                 "- Not proven for this game (empty): muzzle velocity, movement scales and speeds, first raise, raise,\n"
                 "  drop and reload add times, the tunables sets and tags.\n";
+            L.DefaultPartsNotes =
+                "\nweapon_default_parts.csv: the parts a weapon is built with when no blueprint (variant) is chosen: one\n"
+                "row per default attachment, with that attachment's own models (the models to assemble).\n"
+                "- slot, attachment: 0x640da80 returns the weapon's default table, W 0x2c0 (an equipped attachment's\n"
+                "  +0x798 replaces it), 17 entries of 0x10 {u32 count 0, attachment ** 8}, entry s for slot s (the\n"
+                "  slot table's shape, W 0x58); its caller 0x2a378ee takes every attachment of every entry's list.\n"
+                "- world_model, view_model: 0x63f8540 (attachment, blueprint index, view; 0x63f86b0 the view one)\n"
+                "  returns, for blueprint index 0, the first entry of the attachment's xmodel array +0x180 (view) or\n"
+                "  +0x178 (world) when its u32 count +0x174 is not 0; an index k > 0 takes the k-th attachmentblueprint\n"
+                "  of the attachment's list (+0x38, count +0x30, used when byte +0x34 is set), its +0x28 (view) or\n"
+                "  +0x10 (world), or entry k of the arrays. Empty: no model (sights built in, fire modes, ammo).\n"
+                "  A model is named by its hash: the transient zone named after it (mp_av_<model>_tr.ff,\n"
+                "  mp_aw_<model>_tr.ff) in the zone's folder, else the hash packages', else xmodel_<hash>.\n";
             L.AttachmentNotes =
                 "\nweapon_attachments.csv: each weapon with one attachment (every slot's list, weapon 0x58 + slot *\n"
                 "0x10 {u32 count, list at 8}, slot and index as 0x640d390 reads them). weapon_loadouts.csv: the lines of\n"

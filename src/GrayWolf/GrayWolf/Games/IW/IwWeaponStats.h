@@ -65,6 +65,15 @@ namespace IwWeaponStats
             SuperSprintSpeedScale, ProneSpeedScale;
         // the hit location multipliers behind a pointer at Hit (Modern Warfare 2019), not inline
         bool HitIsPointer = false;
+        // further tunables, each column written only when the layout gives its field: the wait after
+        // a burst (f32 ms, rounded half up), the base and aim-down-sight move scales (f32), the
+        // magazines of reserve of a by-magazine weapon (i32: max_ammo = clip x it), the explosion's
+        // centre and edge damages (i32 at +0 / +4) and its three-ring set (i32 radii +0 / +4 / +8,
+        // damages +0xc / +0x10 / +0x14, used when ExplosionAlt is set); the ballistic block (its flag
+        // u8 at +BallisticFlag, gravity factor f32 at +BallisticGravity, x GravityInches in/s2)
+        Field BurstDelay, MoveSpeedScale, AdsMoveSpeedScale, ReserveClips, ExplosionDamage, ExplosionRings, BallisticBlock;
+        int64_t BallisticFlag = -1, BallisticGravity = -1;
+        float GravityInches = 0.0f;
         // attachment: its name string, clip scale (f32), the clip override block (i32 at 8), the modifier
         // table (blocks at 0x08, 0x18, 0x68, 0x90, 0xd0), the ADS times override block, the explosion
         // radius override block (i32 at 0, the alternate radius at AttExplosionAlt)
@@ -72,10 +81,26 @@ namespace IwWeaponStats
                 AttExplosionAlt = -1;
         // a clip scale of 0 is no scale (the code skips it: Modern Warfare 2019), written as 1
         bool AttZeroScaleIsNone = false;
+        // attachment, further: the burst delay override (an i32 * at AttBurstDelay; not from an
+        // attachment whose u8 AttAltMode is 1, an alternate mode's) and the modifier table block whose
+        // f32 +4 scales it; in the explosion block, the centre / edge damages (i32 at +0 / +4 from
+        // AttExplosionDamage), the three-ring set (as ExplosionRings, from AttExplosionRings) and the
+        // u8 that picks it (AttExplosionFlag); the ballistic block pointer (the tunables' block replaced)
+        int64_t AttBurstDelay = -1, AttAltMode = -1, AttBurstDelayScale = -1, AttExplosionDamage = -1, AttExplosionRings = -1,
+                AttExplosionFlag = -1, AttBallistic = -1;
+        // animation package: the anim table's pointer, its i64 count, the sorted u16 anim ids and the
+        // xanim pointers of the same index (weapon_anims.csv); an xanim named by its hash (AnimName)
+        int64_t PkgAnims = -1, PkgAnimCount = -1, PkgAnimIds = -1, PkgAnimXanims = -1;
+        std::function<std::string(uint64_t)> AnimName;
         // the default parts (weapon_default_parts.csv): a weapon's default attachment of slot s (1 to
         // SlotCount - 1) at DefaultAttachments + 8 s (an attachment pointer); an attachment's own models
         // (the part with no blueprint), 8-byte xmodel name hashes (0: none), named by ModelName
         int64_t DefaultAttachments = -1, AttWorldModel = -1, AttViewModel = -1;
+        // or (Modern Warfare III) the defaults as a slot table: DefaultSlotCount entries at DefaultSlots +
+        // 0x10 s {u32 count 0, attachment ** 8}, every attachment of an entry's list a default of slot s;
+        // and the attachment's models as arrays (AttWorldModel, AttViewModel: a pointer to xmodel pointers,
+        // the first the part's own) of AttModelCount (u32) entries
+        int64_t DefaultSlots = -1, DefaultSlotCount = 0, AttModelCount = -1;
         std::function<std::string(uint64_t)> ModelName;
         // animation package: its time block's pointer, the u16 times in it
         int64_t PkgBlock = -1, PkgFirstRaise = -1, PkgReloadEmpty = -1, PkgReload = -1, PkgSprintOut = -1, PkgSuperSprintOut = -1,
@@ -97,7 +122,7 @@ namespace IwWeaponStats
         std::function<uint64_t(const std::string&)> NameHash;
         // README.txt: its title, the columns' documentation, the attachments', the default parts' (with
         // the exe's proofs)
-        std::string Title, Columns, AttachmentNotes, DefaultPartsNotes;
+        std::string Title, Columns, AttachmentNotes, DefaultPartsNotes, AnimNotes;
     };
 
     // What a zone gives the facts reader

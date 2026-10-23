@@ -181,7 +181,10 @@ namespace
                          { "damage3", 0x8f4 }, { "damageRange3", 0x910 }, { "damage4", 0x8f8 }, { "damageRange4", 0x914 },
                          { "minDamage", 0x8e8 },
                          { "explosionRadius", 0x670 }, { "explosionRadiusMin", 0x674 }, { "explosionInnerDamage", 0x67c },
-                         { "explosionOuterDamage", 0x680 }, { "projectileSpeed", 0x690 }, { "locationDamageMultipliers", 0x940 } };
+                         { "explosionOuterDamage", 0x680 }, { "projectileSpeed", 0x690 }, { "locationDamageMultipliers", 0x940 },
+                         { "burstCount", 0x248 }, { "moveSpeedScale", 0x508 }, { "adsMoveSpeedScale", 0x50c },
+                         { "playerDamage", 0x4d4 }, { "mid1PlayerDamage", 0x8fc }, { "mid2PlayerDamage", 0x900 },
+                         { "mid3PlayerDamage", 0x904 }, { "minPlayerDamage", 0x8ec } };
             // the animation package (WeaponDef 0x1c0, an anim_package asset) and its u16 timers at 0x10:
             // 0x744380 reads the time at the byte offset its callers pass (from 0x1d0 under a flag, the
             // package overrides of 0xe20 not applied); the offsets are x64-zt's WeaponAnimPackageStateTimers
@@ -211,6 +214,28 @@ namespace
                               "package's name: export both into the same --out.\n"
                               "meleeDamage (0x4d8, 50 for every gun) is left out, not checked.\n";
             L.Notes.AnimPackages = true;
+            // the second damage table (x64-zt's names): the same step function reads it when its 7th
+            // argument is 0 (iw7_flat 0x140742860, called at 0x140ae5e0e when the victim's +0x170 is set
+            // and a global's byte +8 is on; else 0x140742520, the first table), over the same ranges
+            L.Notes.Extra = { { "player_damage_1", "playerDamage", WeaponFiles::Unit::Count },
+                              { "player_damage_2", "mid1PlayerDamage", WeaponFiles::Unit::Count },
+                              { "player_damage_3", "mid2PlayerDamage", WeaponFiles::Unit::Count },
+                              { "player_damage_4", "mid3PlayerDamage", WeaponFiles::Unit::Count },
+                              { "player_damage_5", "minPlayerDamage", WeaponFiles::Unit::Count } };
+            L.Notes.ExtraNotes =
+                "- player_damage_1..5: a second damage table, x64-zt's playerDamage, mid1-3PlayerDamage, minPlayerDamage\n"
+                "  (WeaponDef 0x4d4, 0x8fc, 0x900, 0x904, 0x8ec), read by the same step function as damage_<n>\n"
+                "  (iw7_flat 0x746af6) over the same ranges when its 7th argument is 0: the wrapper 0x140742860, which\n"
+                "  0x140ae5e0e calls when the victim entity's +0x170 is set and a global's byte +8 is on (else\n"
+                "  0x140742520, the damage_<n> table). What +0x170 marks is not traced: the table is data, its\n"
+                "  condition open (NV4 100 / 30 against damage 30 / 23). Its stops follow damage_<n>'s (a stop whose\n"
+                "  range is 0 not used: its player damage is still written).\n"
+                "- burst_count (burstCount 0x248), move_speed_scale and ads_move_speed_scale (moveSpeedScale 0x508,\n"
+                "  adsMoveSpeedScale 0x50c): x64-zt's offsets (its WeaponDef compiled: the layout's other offsets are\n"
+                "  its own too), checked on global_core_mp's values, not read in the exe. burst_count is set on the 27\n"
+                "  Burst weapons only, their names' counts with it (iw7_gauss_mp_burst2 2, _burst3 3, iw7_rvn_mpl_burst6\n"
+                "  6). moveSpeedScale is 1 on all 169 weapons; adsMoveSpeedScale goes by class (smg 2.015, pistol\n"
+                "  2.115, rifle 1.066, mg 1.09, sniper 1.0535): what base speed it scales is not read (a scale, x 1).\n";
             return L;
         }();
         return L;

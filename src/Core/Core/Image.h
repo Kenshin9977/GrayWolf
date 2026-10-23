@@ -81,9 +81,10 @@ class Image
 {
 public:
 
-    static bool ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFormat InFormat, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch = ImagePatch::NoPatch);
+    // MinSide: an image narrower or lower than this is repeated (nearest pixel) up to it, 0: as it is
+    static bool ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFormat InFormat, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch = ImagePatch::NoPatch, uint32_t MinSide = 0);
 
-    static bool ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, DirectX::TexMetadata ImageMetadata, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch = ImagePatch::NoPatch);
+    static bool ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, DirectX::TexMetadata ImageMetadata, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch = ImagePatch::NoPatch, uint32_t MinSide = 0);
 
     static void PatchNormalFromBumpmap(std::unique_ptr<DirectX::ScratchImage>& Image);
     static void PatchNormalFromCompressed(std::unique_ptr<DirectX::ScratchImage>& Image);

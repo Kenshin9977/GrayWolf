@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches: [master]
-    # A v* tag (v1.47.0) also publishes a release: the app zip, the hash packages zip and the
+    # A v* tag (v1.47.0) also publishes a release: the installer, the app zip, the hash packages zip and the
     # manifest.json GrayWolf's updater reads (src/GrayWolf/GrayWolf/Updater.h).
     tags: ['v*']
   pull_request:
@@ -230,6 +230,30 @@ jobs:
           $sources = & ./.github/scripts/hash-packages.ps1 -Repo "${{ github.repository }}" -Exe app/GrayWolf.exe -Out pkg | Select-Object -Last 1
           "PKG_SOURCES=$sources" >> $env:GITHUB_ENV
 
+      # The per-user installer (tools/installer/GrayWolf.iss): the same files as the zip, built after
+      # GrayWolf.exe is signed, then signed itself. The runner image ships Inno Setup 6.
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup install failed ($LASTEXITCODE)" }
+          }
+          & $iscc /Qp "/DAppVersion=$ver" "/DSourceDir=$((Resolve-Path app).Path)" "/O$PWD\installer" tools/installer/GrayWolf.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          "SETUP_EXE=installer/GrayWolf-$ver-x64-setup.exe" >> $env:GITHUB_ENV
+
+      - name: Sign the installer
+        uses: Kenshin9977/Discord-Overlay/.github/actions/sign-windows@sign-windows-v1
+        with:
+          files: ${{ env.SETUP_EXE }}
+          ssh-host: ${{ secrets.SIGN_SSH_HOST }}
+          ssh-key: ${{ secrets.SIGN_SSH_KEY }}
+          known-hosts: ${{ secrets.SIGN_SSH_KNOWN_HOSTS }}
+          ssh-port: ${{ secrets.SIGN_SSH_PORT }}
+
       - name: Zip and write manifest.json
         shell: pwsh
         run: |
@@ -254,4 +278,4 @@ jobs:
         shell: pwsh
         run: |
           gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" --title "GrayWolf ${{ github.ref_name }}" `
-            --generate-notes $env:APP_ZIP $env:PKG_ZIP manifest.json
+            --generate-notes $env:SETUP_EXE $env:APP_ZIP $env:PKG_ZIP manifest.json

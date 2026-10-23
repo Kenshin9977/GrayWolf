@@ -58,6 +58,9 @@ namespace WeaponFiles
         // hold: the zones' package files (ANIMPACKAGE\<field>\<value>..., by the package's name) fill
         // the times a weapon file has not
         bool AnimPackages = false;
+        // the game's parser truncates a time's seconds x 1000 to its milliseconds (CoD1's, (int) of
+        // atof x 1000); else they are rounded
+        bool TruncateMs = false;
     };
     extern const char* const AnimPackageField;
     bool IsAnimPackageFile(const std::string& Text);

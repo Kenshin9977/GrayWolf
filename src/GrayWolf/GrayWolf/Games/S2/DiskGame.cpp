@@ -318,9 +318,10 @@ namespace
             using namespace DiskGame;
             // the live model and anim readers, with the install's packages
             for (Kind K : { Kind::Model, Kind::Anim })
-                Exports(K, [this, Base = *ExporterOf(K)](const Context& C, Totals& T) {
+                Exports(K, [this, K, Base = *ExporterOf(K)](const Context& C, Totals& T) {
                     const IWPakSounds::PackagesInUse Using(Packages().Meshes.get());
                     Base(C, T);
+                    if (K == Kind::Model) ExportComposites(C, T);
                 });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
@@ -386,6 +387,42 @@ namespace
 
     private:
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image);
+
+        // A composite model's parts (the live reader writes no composite): <name>/<name>.parts.json
+        // beside the models, each entry of its list (count u8 0x2a, 0x30 bytes at 8, the xmodel loader
+        // f4c6b20's: the part's xmodel at 0) as the part model's name and the entry's other fields. A
+        // weapon's view and world models are composites: their parts are the weapon's default parts.
+        void ExportComposites(const DiskGame::Context& C, DiskGame::Totals& T)
+        {
+            using DiskGame::Kind;
+            const auto& Img = Image();
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "xmodel") || (At<uint32_t>(Img, I.Pos + CompositeFlags) & CompositeFlag) == 0) continue;
+                const std::string Model = AssetName(Kind::Model, I.Pos);
+                if (ZonekitZone::IsReference(Kind::Model, Model, I.Pos) || !C.Wants(Kind::Model, Model)) continue;
+                const int64_t List = Off(At<uint64_t>(Img, I.Pos + 8));
+                const uint8_t Count = At<uint8_t>(Img, I.Pos + 0x2a);
+                std::string Json = "{\n\t\"model\": \"" + Model + "\",\n\t\"parts\": [";
+                for (uint8_t N = 0; List >= 0 && N < Count; N++)
+                {
+                    const int64_t E = List + 0x30 * (int64_t)N;
+                    const int64_t Part = Off(At<uint64_t>(Img, E));
+                    std::string PartName = Part >= 0 ? AssetName(Kind::Model, Part) : std::string();
+                    if (Part >= 0 && IsReference(Kind::Model, PartName, Part)) PartName = Referenced(Kind::Model, PartName);
+                    Json += std::string(N ? "," : "") + "\n\t\t{ \"model\": \"" + PartName + "\"";
+                    // (read by their values, not traced in the exe: a quaternion, x y z w, the identity on
+                    // every weapon's part read; then three floats, 0; a u32, 8; 8 zero bytes)
+                    const auto F = [&](int64_t W) { return std::format("{}", At<float>(Img, E + W)); };
+                    Json += ", \"rotation\": [" + F(8) + ", " + F(0xc) + ", " + F(0x10) + ", " + F(0x14) + "], \"offset\": [" + F(0x18) + ", " + F(0x1c) +
+                            ", " + F(0x20) + "]" + std::format(", \"0x24\": {}, \"0x28\": \"0x{:016x}\" }}", At<uint32_t>(Img, E + 0x24), At<uint64_t>(Img, E + 0x28));
+                }
+                Json += "\n\t]\n}\n";
+                const fs::path File = fs::path(C.KindDir(Kind::Model)) / ExportNaming::SafeFileName(Model) / (ExportNaming::SafeFileName(Model) + ".parts.json");
+                if (ExportWriters::WriteBytes(File, (const uint8_t*)Json.data(), Json.size())) Counter("models_composite_parts_written")++;
+                else T.Fail(Name(), Kind::Model, Model, "parts write failed");
+            }
+        }
 
         InstallPackages& Packages() const { return PackagesFor(FastFilePath()); }
         bool Resident(int64_t Pos) const;

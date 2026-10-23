@@ -34,3 +34,12 @@ ENDIF
 ENDIF
 BYTES+|0xc0|(((u16@0xe + 1) * u16@0x92) * 4)
 BYTES+|0xd0|8
+
+# The weapon's anim-handle arrays (WeaponDef +0x40, +0x48, +0x60: 190 handles each) inline the
+# xanim handle code, as AW's (s1 f25b880): a back reference goes through resolve_deref (0x39f2a0,
+# profile both_marker_assets), so the slot names an asset. Generated as SUB*|0x0|<body>; written
+# with the asset type so an anim the weapon holds inline is an xanim of the zone (exported, indexed).
+
+### f3824e0
+SELF|0x8
+SUB*|0x0|f381d10|xanim

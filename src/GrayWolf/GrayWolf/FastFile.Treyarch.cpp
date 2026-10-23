@@ -28,7 +28,12 @@ bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileI
         return false;
     }
 
-    if (File.size() <= T6HeaderSize)
+    // An unsigned zone ("TAffu100", OpenAssetTools' Linker's) has no auth header: the blocks follow
+    // the magic and version, and the IV table is built from the file's name (OAT's zone name, the
+    // file name without its extension)
+    const bool Unsigned = Info.Magic == "TAffu100";
+    const size_t HeaderSize = Unsigned ? 12 : T6HeaderSize;
+    if (File.size() <= HeaderSize)
     {
         Error = "file is shorter than its header";
         return false;
@@ -36,7 +41,7 @@ bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileI
 
     // The name the IV table is built from is the one in the header, not the one on disk
     const auto* NameBytes = (const char*)File.data() + T6NameOffset;
-    const std::string Name(NameBytes, strnlen(NameBytes, T6NameSize));
+    const std::string Name = Unsigned ? std::filesystem::path(FilePath).stem().string() : std::string(NameBytes, strnlen(NameBytes, T6NameSize));
 
     if (Name.empty())
     {
@@ -51,7 +56,7 @@ bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileI
     // in the hash table
     size_t HashIndex[T6Streams] = { 0, 0, 0, 0 };
     size_t BlockNumber = 0;
-    size_t Position = T6HeaderSize;
+    size_t Position = HeaderSize;
     std::vector<uint8_t> Block;
 
     // The table is indexed by hash block first, then by stream

@@ -28,7 +28,8 @@ enum class FastFileFormat
     // blocks, each introduced by its two sizes and starting on a four byte boundary.
     SledgehammerLZ4,
     // Black Ops 2, magic "TAff0100". A 0x138 byte header followed by Salsa20 encrypted
-    // blocks, each introduced by its size alone.
+    // blocks, each introduced by its size alone. Unsigned, "TAffu100" (OAT's Linker): the
+    // blocks right after the 12-byte header, keyed by the file's name.
     TreyarchEncrypted,
     // Infinite Warfare, magic "IWff0100"/1619. Not encrypted despite looking it: an
     // authentication header of hashes precedes LZ4 blocks, with a fresh hash block spliced in every 8 MB.

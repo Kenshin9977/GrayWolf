@@ -308,7 +308,7 @@ ZoneLayout FastFile::LayoutFor(const FastFileInfo& Info)
     }
 
     // Black Ops 2, the only one that lists its dependencies
-    if (Info.Magic == "TAff0100" && Info.Version == 147)
+    if ((Info.Magic == "TAff0100" || Info.Magic == "TAffu100") && Info.Version == 147)
     {
         Title32("Black Ops 2", 8, 3, ZoneAssetTypes::BlackOps2, std::size(ZoneAssetTypes::BlackOps2));
         Layout.HasDepends = true;

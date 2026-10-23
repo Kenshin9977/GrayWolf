@@ -20,7 +20,7 @@ k15safe_mp_seaside
 mp_common_script
 zm_common_script
 wz_common_script
-core_common
+core_bootstrap
 4k_wz_common
 mp_jungle2
 mp_jungle2_alt
@@ -29,5 +29,5 @@ mp_frenetic
 wz_common
 mp_common
 zm_red
-en_core_bootstrap
-core_ui
+core_frontend
+core_common

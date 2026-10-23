@@ -256,6 +256,23 @@ namespace
                 // u8 0x5dfc the fire type (weaponisauto, weaponissemiauto, weaponisbeam: 0x46559c0), u8
                 // 0x5dfd bolt action (weaponisboltaction: 0x4662f50)
                 { "0x5dfc", { "fire_type_u8.bolt_action_u8", "" } },
+                // the wait after a burst (0x4637000), the standing move scales (base, aiming: 0x43a05e0),
+                // the magazines of reserve of a by-magazine weapon (0x46690c0)
+                { "0x5a50", { "burst_delay", "f32" } },
+                { "0x5bf0", { "move_speed_scale", "f32" } },
+                { "0x5bfc", { "ads_move_speed_scale", "f32" } },
+                { "0x5d60", { "reserve_clips", "i32" } },
+                // the explosion (0x4639d80): centre / edge damages, three rings' radii and damages
+                { "0x07a0", { "explosion.centre_damage", "i32" } },
+                { "0x07a4", { "explosion.edge_damage", "i32" } },
+                { "0x07b4", { "explosion_rings.inner_radius", "i32" } },
+                { "0x07b8", { "explosion_rings.mid_radius", "i32" } },
+                { "0x07c0", { "explosion_rings.inner_damage", "i32" } },
+                { "0x07c4", { "explosion_rings.mid_damage", "i32" } },
+                { "0x07c8", { "explosion_rings.outer_damage", "i32" } },
+                // the ballistic block +0x20 (0x4636140): gravity factor +0x20, flag u8 +0x48 (0x4041e40, 0x48547d0)
+                { "0x0040", { "gravity_factor", "f32" } },
+                { "0x0068", { "ballistic_u8@0", "" } },
             };
             // Damage by range. A record (0x28): i32 damage min 0, mid1 4, mid2 8, mid3 0xc, max 0x10
             // (0x46386d0 copies them out, scaled by the attachments' damage scales), f32 ranges 0x14
@@ -750,9 +767,24 @@ namespace
             L.MaxAmmoByClips = 0x5e13, L.FireType = 0x5dfc, L.AdsTime = 0x5dac, L.AdsOutTime = 0x5db0, L.ReloadType = 0x5e46,
             L.ExplosionRadius = 0x794, L.ExplosionRadiusAlt = 0x7bc, L.ExplosionAlt = 0x7f4, L.MuzzleVelocity = 0x30, L.Damage = 0x70, L.Hit = 0x530,
             L.SprintOutScale = 0x5a9c, L.SprintSpeedScale = 0x5c14, L.SuperSprintSpeedScale = 0x5c28, L.ProneSpeedScale = 0x5c08;
+            // burst delay f32 0x5a50 (0x4637000), move scales 0x5bf0 / 0x5bfc (0x43a05e0, 0x43a28f0), the
+            // magazines of reserve i32 0x5d60 (0x46690c0), the explosion's damages 0x7a0 / 0x7a4 and three
+            // rings 0x7b4.. (0x4639d80), the ballistic block 0x20 (0x4636140): flag u8 +0x48 (0x48547d0),
+            // gravity factor f32 +0x20 x the 386 in/s2 dvar (0x4041e40, registered 0x42ac8a4)
+            L.BurstDelay = 0x5a50, L.MoveSpeedScale = 0x5bf0, L.AdsMoveSpeedScale = 0x5bfc, L.ReserveClips = 0x5d60, L.ExplosionDamage = 0x7a0,
+            L.ExplosionRings = 0x7b4, L.BallisticBlock = 0x20, L.BallisticFlag = 0x48, L.BallisticGravity = 0x20, L.GravityInches = 386.0f;
             // attachment: name 0x248, clip 0xb90 / 0x400, modifiers 0x250, ADS override 0x458, explosion 0x578
             L.AttachmentName = 0x248, L.AttClipScale = 0xb90, L.AttClipOverride = 0x400, L.AttModifiers = 0x250, L.AttAdsOverride = 0x458,
             L.AttExplosion = 0x578, L.AttExplosionAlt = 0x28;
+            // attachment: burst delay i32 * 0x5e0 (not when u8 0xd75 is 1 and it is not the weapon's
+            // active alternate: 0x4637124), its scale block 0x250->0xe8 (+4, 0x46199e0); explosion block
+            // damages +0xc / +0x10, rings +0x20.., ring flag +0x60 (0x462c460); ballistic block 0x620 (0x4636140)
+            L.AttBurstDelay = 0x5e0, L.AttAltMode = 0xd75, L.AttBurstDelayScale = 0xe8, L.AttExplosionDamage = 0xc, L.AttExplosionRings = 0x20,
+            L.AttExplosionFlag = 0x60, L.AttBallistic = 0x620;
+            // animation package: its anim table +0x10 (0x4689470: count i64 +0x250, sorted u16 ids
+            // +0x258, xanim pointers +0x268 of the same index)
+            L.PkgAnims = 0x10, L.PkgAnimCount = 0x250, L.PkgAnimIds = 0x258, L.PkgAnimXanims = 0x268;
+            L.AnimName = [](uint64_t Hash) { return GameBlackOps7::HashName("xanim", Hash); };
             // the default parts: 0x4697c87 takes slot s's attachment from the weapon blueprint (+0x40 + 8 s)
             // and, with none, from the weapon (+0x3a0 + 8 s); 0x46356d0 gives an attachment's model with
             // no blueprint: +0x270 the view model, +0x268 the world model (xmodel name hashes)
@@ -793,8 +825,12 @@ namespace
                 "  1, 3, 4 semi-auto (weaponissemiauto). 3 fires two rounds a trigger pull when tunables 0x5d18 <= 0\n"
                 "  (0x45f84ec); 4 is grouped with 3 in 0x45da0ba and 0x45f9e93, not told apart further. The builtins also\n"
                 "  check the weapon's ammo kind, not reproduced.\n"
+                "- burst_delay_ms: the wait after a burst, floor(f32 0x5a50 + 0.5) (0x4637000; 0x45f59b0 puts it in the\n"
+                "  weapon timer ps+0x5a0 when a burst weapon's firing state 0x1b ends). Held by every weapon (200 on\n"
+                "  most), used by burst weapons (fire type 2) only.\n"
                 "- clip_size: 0x5d48. start_ammo: 0x5d38 when not 0, else 0x5d34. max_ammo: 0x5d44 (weaponmaxammo with\n"
-                "  no attachment, no perk); empty when u8 0x5e13 is set (then it counts magazines, not reproduced).\n"
+                "  no attachment, no perk); when u8 0x5e13 is set the reserve counts magazines: clip_size x i32 0x5d60\n"
+                "  (0x46690c0 -> 0x4637c90 x 0x5d60).\n"
                 "- reload_ms, reload_empty_ms, first_raise_ms: the base animation package (weapon_def 0x350), u16 0xae,\n"
                 "  0xac and 0x2 of its time block (getweaponreloadtime, weaponfirstraisetime), before attachments and perks.\n"
                 "  A package time of 0xffff is none (the override search skips it, 0x46557c5): its cell, and the\n"
@@ -817,15 +853,29 @@ namespace
                 "  0x462ea90 turns the first two into rates, and 0x45876f0 uses the first while the aim is wanted (the ADS\n"
                 "  fraction ps+0x560, playerads, rising), the second when released.\n"
                 "- muzzle_velocity_mps: 0x30 (metres per second).\n"
+                "- ballistic: u8 0x68 of the ballistic block (tunables +0x20; 0x48547d0): 1 the bullet flies (0x4041e40\n"
+                "  moves it along the block's distance table and drops it), 0 for launchers and grenades. gravity_mps2 =\n"
+                "  386 (the dvar 0x42ac8a4 registers, in/s2) x f32 0x40 (block +0x20) x 0.0254: 0x4041e40 lowers the\n"
+                "  bullet by 0.5 x 386 x factor x t^2.\n"
                 "- explosion_radius_m: getweaponexplosionradius (0x462c250): i32 0x794, or 0x7bc when u8 0x7f4 is set\n"
                 "  (0x462c460); an attachment's block at 0x578 overrides it. Inches / 39.37 (the engine's distance unit,\n"
                 "  as for the ranges). Empty when 0. Most weapons, bullet guns and fists included, hold 300 (7.62 m):\n"
                 "  what the builtin returns, whether or not the weapon ever explodes (not decoded yet).\n"
+                "- explosion_inner_damage / explosion_outer_damage: 0x4639d80 fills radii[3] and damages[3]; one ring:\n"
+                "  radii 0 / 0x794 / 0x794, damages i32 0x7a0 (centre) / 0x7a4 / 0x7a4 (edge); with u8 0x7f4 three rings:\n"
+                "  radii i32 0x7b4 / 0x7b8 / 0x7bc, damages 0x7c0 / 0x7c4 / 0x7c8. inner = damages[0], outer = damages[2]\n"
+                "  (the stats UI 0x4cece30 shows them with radii[0] and radii[2]; 0x5040c10 hands radius[2] and both to\n"
+                "  the explosion). Three-ring weapons only: explosion_inner_radius_m (radii[0]), explosion_mid_radius_m\n"
+                "  (radii[1]) and explosion_mid_damage (damages[1]); explosion_radius_m is radii[2]. Written with the\n"
+                "  radius (empty when 0). The falloff between rings is not traced.\n"
                 "- damage_*: the first record of the table at 0x70 (0x46386d0): damage_max up to range_max_m, then the\n"
                 "  first mid whose range is set and beyond the distance, else damage_min (0x464c9e0). Ranges are\n"
                 "  inches / 39.37. Other tables (modes, profiles) are in the raw dump only.\n"
                 "- hit_*: the multipliers of the table at 0x530 (0x4642180), by the game's hit location order.\n"
                 "- sprint_speed_scale (0x5c14), super_sprint_speed_scale (0x5c28), prone_speed_scale (0x5c08): scales.\n"
+                "- move_speed_scale (f32 0x5bf0) and ads_move_speed_scale (f32 0x5bfc): the standing move scales of the\n"
+                "  speed functions (0x43a05e0, 0x43a28f0), the second while ps+0x1c bit 13 is set, which 0x43eaf50 sets\n"
+                "  with the aim request (the bit that drives playerads). Crouched: 0x5c00 / 0x5c04 (raw dump).\n"
                 "- sprint_mps = 190 x suit 0xe18 x sprint_speed_scale / 39.37, super_sprint_mps also x suit 0xe78 and\n"
                 "  with super_sprint_speed_scale: the weapon stats UI's formula (0x4ced840). suit: the suit of the\n"
                 "  gametype settings whose tag the set holds (empty when no settings name the set's tags, as for\n"
@@ -852,7 +902,22 @@ namespace
                 "- reload_add_ms, reload_empty_add_ms: from the same animation package as the reload times.\n"
                 "- Zombies Pack-a-Punch is an attachment of slot 0 (sat_zm_<gun>_pack, _pack4; sat_ob_<gun>_tier1..4 for\n"
                 "  the other mode): its row in weapon_attachments.csv is the upgraded weapon (names only: no code link).\n"
-                "- muzzle_velocity_mps = velocity x product(attachment 0x250->0xd0 +4) (0x46362d4).\n";
+                "- muzzle_velocity_mps = velocity x product(attachment 0x250->0xd0 +4) (0x46362d4).\n"
+                "- burst_delay_ms = floor(t x max(0, 1 + sum(attachment 0x250->0xe8 +4 - 1)) + 0.5) (0x4637000): t is the\n"
+                "  i32 the first attachment's pointer 0x5e0 leads to (that attachment's own scale then left out), else\n"
+                "  tunables 0x5a50. An attachment with u8 0xd75 = 1 overrides only while it is the weapon's active\n"
+                "  alternate (0x46501b0): not here.\n"
+                "- explosion_inner_damage / explosion_outer_damage: the first attachment with an explosion block (0x578)\n"
+                "  gives the radius, the damages (+0xc / +0x10; three rings +0x20 radii, +0x2c / +0x34 damages) and the\n"
+                "  ring flag (u8 +0x60, 0x462c460).\n"
+                "- gravity_mps2: the first attachment's ballistic block (0x620) replaces the tunables' (0x4636140).\n";
+            L.AnimNotes =
+                "\nweapon_anims.csv: the anim table of each weapon's base animation package (weapon_def 0x350): the\n"
+                "package's +0x10 block holds a bitset of anim ids, the count (i64 +0x250), the sorted u16 ids (+0x258) and\n"
+                "the xanims of the same index (+0x268). 0x4689470(block, id) tests the id's bit, binary-searches the ids and\n"
+                "returns the xanim: the id is the anim's role, one enum for every package (raise 0x518, drop 0x51e,\n"
+                "reload 0x43a, reload_empty 0x43d, idle 0x3a4, ads_up 0x801, inspect 0x883...). xanim: its name (the hash\n"
+                "packages'), else xanim_<hash>.\n";
             L.DefaultPartsNotes =
                 "\nweapon_default_parts.csv: the parts a weapon is built with when no blueprint (variant) is chosen: one\n"
                 "row per slot holding a default attachment, with that attachment's own models (the models to assemble).\n"

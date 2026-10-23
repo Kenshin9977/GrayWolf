@@ -494,7 +494,7 @@ BYTES|0x28|(u64@0x20) * 4
 # inner_2e237f0.c: a (pointer, i32 count) pair at 0x0, then three `do` loops of 2 over pairs of
 # 16 bytes - the first from param_2 + 2 (0x10), the second from +6 (0x30), the third after
 # `param_2 = param_2 + 10` (longlongs: 0x50). Each `if (*p != 0)` reads count * 8. Generated
-# refused the first loop and read the third at bytes 0xa/0x1a (core_ui, the only zone that has it).
+# refused the first loop and read the third at bytes 0xa/0x1a (core_common, the only zone that has it; the capture was then named core_ui.bin).
 SELF|0x80
 BYTES+|0x0|(i32@0x8) * 8
 BYTES+|0x10|(i32@0x18) * 8

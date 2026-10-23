@@ -91,6 +91,9 @@ namespace IwWeaponDefs
 
     // The zone's weapons as weapon files (ExportStats keeps those the run wants)
     std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::ZoneView& V);
+    // The game's notes for WeaponFiles::ExportStats: its own, and the columns its layout adds to the
+    // shared ones (the hit locations after the gun, burstCount)
+    WeaponFiles::Notes StatsNotes(const Layout& L);
     // The weaponstats kind: the weapon files and the zone's strings to WeaponFiles::ExportStats
     void Export(const Layout& L, const IwWeaponStats::ZoneView& V, const std::vector<std::pair<std::string, std::string>>& Strings,
                 const std::string& Zone, const DiskGame::Context& C, DiskGame::Totals& T, const std::map<std::string, std::string>& Tables = {});

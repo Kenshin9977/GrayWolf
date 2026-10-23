@@ -32,6 +32,7 @@ const std::vector<GameModule>& RegisteredGameModules()
             { "T5",  "Black Ops",            "BlackOps.exe",        "TAff0100", 0,    GameSupportStage::Assets },
             { "T5",  "Black Ops",            "BlackOps.exe",        "IWffu100", 473,  GameSupportStage::Assets },   // the PC zones
             { "T6",  "Black Ops 2",          "t6zm.exe",            "TAff0100", 147,  GameSupportStage::Assets },
+            { "T6",  "Black Ops 2",          "t6zm.exe",            "TAffu100", 147,  GameSupportStage::Assets },   // unsigned (OAT's Linker)
             { "IW4", "Modern Warfare 2",     "iw4sp.exe",           "IWffu100", 276,  GameSupportStage::Assets },
             { "IW4", "Modern Warfare 2",     "iw4sp.exe",           "IWff0100", 276,  GameSupportStage::Assets },   // signed zones
             { "IW5", "Modern Warfare 3",     "iw5sp.exe",           "IWffu100", 1,    GameSupportStage::Assets },

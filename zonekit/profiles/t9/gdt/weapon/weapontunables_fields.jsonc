@@ -161,8 +161,9 @@
     // The offset here is the column where every weapon whose name says what it is carries the
     // matching number - every ar_ is 0, every smg_ is 2, every melee_ is 11 - across 57
     // weapons with one exception. Snipers and tactical rifles carry the rifle number, which is
-    // what they are.
-    {"offset": "0x560", "name": "weapclass", "source": "engine", "kind": "int", "form": "int", "values": {"0": "rifle", "1": "mg", "2": "smg", "3": "spread", "4": "pistol", "5": "grenade", "6": "rocketlauncher", "9": "gas", "11": "melee"}, "observed": 457, "agreed": 57, "examples": []},
+    // what they are. The names are all fifteen of the exe's own table (rdata 0x7ff63d9885b0 in
+    // BlackOpsColdWar_dump.exe, Rifling games/coldwar.md), Black Ops 4's.
+    {"offset": "0x560", "name": "weapclass", "source": "engine", "kind": "int", "form": "int", "values": {"0": "rifle", "1": "mg", "2": "smg", "3": "spread", "4": "pistol", "5": "grenade", "6": "rocketlauncher", "7": "turret", "8": "non-player", "9": "gas", "10": "item", "11": "melee", "12": "Killstreak Alt Stored Weapon", "13": "pistol spread", "14": "ball"}, "observed": 457, "agreed": 57, "examples": []},
 
     // The only column where a weapon named burst fires in bursts, one named semi fires single
     // shots, the autos are full auto and the melee weapons are melee - four groups the name
@@ -449,16 +450,33 @@
 
     {"offset": "0xd24", "name": "waterSwellMaxDepth", "source": "engine", "kind": "float", "form": "float", "observed": 531, "agreed": 64, "examples": []},
 
-    // These two sit in a run that reads like a table of multipliers - 1, 1.5, 2, 3, 4, then 1, 1,
-    // 0.2, 0.2 from 0xd28 to 0xd48 - and the pair is named for where a head and a neck would fall
-    // in it. Read as they stand the neck multiplies higher than the head, which is backwards, so
-    // the run is probably named one element early. Where it starts is not settled: 0xd3c and 0xd40
-    // go from 1 to 2 and from 1 to 4 on every upgraded weapon, which is not what a body part does.
+    // The zombies damage multipliers - the run 1, 1.5, 2, 3, 4 then 1, 1 from 0xd28 (once read as
+    // a head and a neck multiplier, which made the neck higher than the head). The exe's script
+    // field table (rdata 0xd6e6ce0 in BlackOpsColdWar_dump.exe: {hash, kind 3, 1, offset} rows)
+    // gives these offsets to the weapon fields zombies' scripts read: zm_weapons function_d85e6c3a
+    // takes one of 0xd2c / 0xd30 / 0xd34 / 0xd38 by the loot item's rarity (green, blue, purple,
+    // orange; white or none x1), function_896671d5 0xd3c for Pack-a-Punch level 2 and 0xd40 for
+    // level 3 (1 to 2 and 1 to 4 on the upgraded weapons), and zm.gsc function_fa987cf8 multiplies a
+    // hit's damage by them (Rifling games/coldwar.md, Zombies). The XM4 (ar_standard_t9) 1.45, 2.05,
+    // 2.95, 4; its upgraded weapon's Pack-a-Punch 2.05, 3.87. The field table names them by hashes
+    // only, so the names below say what they do.
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
-    {"offset": "0xd34", "name": "locHead", "source": "observed", "kind": "float", "form": "float", "observed": 533, "agreed": 66, "examples": []},
+    {"offset": "0xd2c", "name": "zmRarityGreenDamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
 
     // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
-    {"offset": "0xd38", "name": "locNeck", "source": "observed", "kind": "float", "form": "float", "observed": 533, "agreed": 83, "examples": []},
+    {"offset": "0xd30", "name": "zmRarityBlueDamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
+
+    // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    {"offset": "0xd34", "name": "zmRarityPurpleDamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
+
+    // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    {"offset": "0xd38", "name": "zmRarityOrangeDamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
+
+    // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    {"offset": "0xd3c", "name": "zmPap2DamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
+
+    // NOT A REAL NAME. The game does not call this field anything - this label was made up here to describe what the field was seen to hold. It is a guess at the meaning, not the game's own word, and it may be wrong. Names without this comment are the game's own.
+    {"offset": "0xd40", "name": "zmPap3DamageScale", "source": "observed", "kind": "float", "form": "float", "observed": 533, "examples": []},
     {"offset": "0xdec", "name": "autohealdelay", "source": "engine", "kind": "int", "form": "int", "observed": 533, "examples": []},
 
     {"offset": "0xdf4", "name": "cookoffholdtime", "source": "engine", "kind": "int", "form": "int", "observed": 5, "examples": []},

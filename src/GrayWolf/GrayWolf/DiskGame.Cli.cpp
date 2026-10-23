@@ -285,5 +285,73 @@ namespace
         AddDiskEstimateOptions,
     };
     const GameCommandRegistration DiskEstimateRegistered(DiskEstimateCommand);
+
+    // disk-where <install> --game <id> --names a,b [--type kinds]: the zones the install index
+    // (ZoneIndex, the kept file, else built) says define each asset, the smallest zone first; with
+    // --name-filter instead, every indexed asset whose name holds one of its substrings
+    int RunDiskWhere(const CliOptions& Options, const std::string& Install)
+    {
+        const auto Fail = [&](const std::string& Why) {
+            CliReport(Options, "result=error\nreason=" + Why + "\n");
+            return 1;
+        };
+        const IDiskGame* Game = Options.DiskGameId.empty() ? Detect(Install) : Find(Options.DiskGameId);
+        if (Game == nullptr) return Fail("no disk reader for " + Install);
+        ExportOptions O;
+        std::set<Kind> Kinds;
+        std::string Error;
+        if (!ReadOptions(*Game, Options, O, Error)) return Fail(Error);
+        if (!Options.Type.empty() && !ParseKinds(Options.Type, Kinds, Error)) return Fail(Error);
+        if (O.Install.empty()) O.Install = Install;
+        const std::vector<std::string> Names = SplitNameFilter(Options.WhereNames), Parts = SplitNameFilter(Options.NameFilter);
+        if (Names.empty() && Parts.empty()) return Fail("no --names and no --name-filter");
+        // the kept index whatever its tables (as disk-estimate), else built
+        auto Ix = ZoneIndex::Kept(*Game, O, Install);
+        if (!Ix) Ix = ZoneIndex::Build(*Game, O, Install, nullptr, nullptr, Error);
+        if (!Ix) return Fail(Error);
+        // each asset asked for: its zones (an asset defined in several zones: each)
+        std::map<AssetId, std::vector<size_t>> Found;
+        for (size_t Z = 0; Z < Ix->Zones().size(); Z++)
+            for (const auto& A : Ix->Defined(Z))
+            {
+                if (!Kinds.empty() && !Kinds.count(A.K)) continue;
+                const std::string N = ExportNaming::Lower(A.Name);
+                bool Wanted = std::find(Names.begin(), Names.end(), N) != Names.end();
+                for (size_t P = 0; !Wanted && P < Parts.size(); P++) Wanted = N.find(Parts[P]) != std::string::npos;
+                if (Wanted) Found[A].push_back(Z);
+            }
+        std::string Lines;
+        std::set<std::string> Seen;
+        size_t Rows = 0;
+        for (auto& [A, Zones] : Found)
+        {
+            std::stable_sort(Zones.begin(), Zones.end(), [&](size_t L, size_t R) { return Ix->Footprint(L) < Ix->Footprint(R); });
+            Seen.insert(ExportNaming::Lower(A.Name));
+            for (const size_t Z : Zones)
+                Lines += std::string("asset=") + KindName(A.K) + "\t" + A.Name + "\t" + Ix->Zones()[Z] + "\t" + std::to_string(Ix->Footprint(Z)) + "\n", Rows++;
+        }
+        for (const auto& N : Names)
+            if (!Seen.count(N)) Lines += "missing=" + N + "\n";
+        CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nassets=" + std::to_string(Found.size()) + "\nrows=" +
+                               std::to_string(Rows) + "\nindex=" + Ix->File + "\nbuilt=" + (Ix->Built ? "1" : "0") +
+                               "\n# asset=<kind>\\t<name>\\t<zone>\\t<zone footprint, bytes>, the smallest zone first\n" + Lines);
+        return 0;
+    }
+
+    void AddDiskWhereOptions(CLI::App& Sub, CliOptions& Options)
+    {
+        Sub.add_option("--game", Options.DiskGameId, "The game; detected from the install when omitted");
+        Sub.add_option("--names", Options.WhereNames, "Asset names, comma-separated, matched whole without case (or --name-filter: substrings)");
+    }
+
+    const GameCommand DiskWhereCommand{
+        "disk-where",
+        "The zones defining each asset, from the install index (kept, else built as disk-index): "
+        "asset=<kind> <name> <zone> <footprint> lines, the smallest zone first; --type limits the kinds",
+        "The install folder",
+        RunDiskWhere,
+        AddDiskWhereOptions,
+    };
+    const GameCommandRegistration DiskWhereRegistered(DiskWhereCommand);
 }
 }

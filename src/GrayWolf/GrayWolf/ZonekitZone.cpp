@@ -642,8 +642,11 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             if (I.ImagePtr == 0 || I.ImageName.empty()) return false;
             if (I.ImagePtr != ExportWriters::ImageElsewhere && !Images.count((int64_t)(I.ImagePtr - Session->Origin())))
             {
-                NotImage++;
-                return false;
+                // an image of a zone served beside is taken, but an engine built-in there ($white,
+                // $identitynormalmap) is left out, as when no zone held it
+                const bool Beside = ImageBeside(I.ImagePtr);
+                if (!Beside) NotImage++;
+                if (!Beside || I.ImageName[0] == '$') return false;
             }
             I.ImageName = Referenced(DiskGame::Kind::Image, I.ImageName);   // ",name" is name
             TextureNames.insert(I.ImageName);

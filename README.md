@@ -1,8 +1,33 @@
-# GrayWolf
+<p align="center">
+  <img src=".github/assets/graywolf-icon.png" width="128" height="128" alt="GrayWolf icon: a grey wireframe wolf head with orange eyes on a dark tile">
+</p>
 
-A Call of Duty asset extractor for Windows. GrayWolf reads a game **offline, from its files**:
-no running game is needed. It exports models, animations, images, sounds, raw files, data tables,
-localized strings, scripts, effects and whole maps, from Call of Duty (2003) to Black Ops 7.
+<h1 align="center">GrayWolf</h1>
+
+<p align="center">
+  <b>A Call of Duty asset extractor that reads every game offline, from its files.</b>
+</p>
+
+<p align="center">
+  Models, animations, images, sounds, raw files, data tables, localized strings, scripts, effects
+  and whole maps, from Call of Duty (2003) to Black Ops 7. No running game needed: a Dear ImGui
+  asset browser and a command line run the same export.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Kenshin9977/GrayWolf/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Kenshin9977/GrayWolf?style=flat-square&color=f5a524"></a>
+  <a href="https://github.com/Kenshin9977/GrayWolf/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Kenshin9977/GrayWolf/total?style=flat-square&color=f5a524"></a>
+  <a href="https://github.com/Kenshin9977/GrayWolf/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/Kenshin9977/GrayWolf/build.yml?style=flat-square"></a>
+  <br>
+  <img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square">
+  <img alt="Written in C++" src="https://img.shields.io/badge/written%20in-C%2B%2B-00599c?style=flat-square">
+  <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011%20x64-555?style=flat-square">
+  <img alt="Games: CoD 2003 to Black Ops 7" src="https://img.shields.io/badge/games-CoD%20(2003)%20%E2%86%92%20Black%20Ops%207-2b2d31?style=flat-square">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Kenshin9977/GrayWolf/releases/latest"><img alt="Download GrayWolf" src="https://img.shields.io/badge/Download-GrayWolf-f5a524?style=for-the-badge&logo=github&logoColor=white" height="40"></a>
+</p>
 
 - **Zones read by tables**: each game's fast files are walked by *zonekit* reader tables
   (`zonekit/profiles/<game>`), generated from the game's own zone loaders and checked against
@@ -16,10 +41,16 @@ localized strings, scripts, effects and whole maps, from Call of Duty (2003) to 
 
 ## Download
 
-**[Download the latest GrayWolf](https://github.com/Kenshin9977/GrayWolf/releases/latest)**: take
-`GrayWolf-<version>-x64.zip` from the release's assets, unzip it anywhere and run `GrayWolf.exe`
-(Windows 10 or 11, x64; the exe is signed). It then updates itself from the releases (see
-[Updates](#updates)).
+From the [latest release](https://github.com/Kenshin9977/GrayWolf/releases/latest)'s assets
+(Windows 10 or 11, x64; signed), take either:
+
+- **The installer**, `GrayWolf-<version>-x64-setup.exe`: installs for your user only, no
+  administrator rights, in `%LocalAppData%\Programs\GrayWolf`, with a Start menu entry and an
+  uninstaller (your `graywolf.json` settings are kept when uninstalling).
+- **The portable zip**, `GrayWolf-<version>-x64.zip`: unzip it anywhere you can write to (not
+  `Program Files`) and run `GrayWolf.exe`.
+
+Either way, GrayWolf then updates itself from the releases (see [Updates](#updates)).
 
 Building it yourself: see [BUILDING.md](BUILDING.md).
 
@@ -233,7 +264,8 @@ in the background:
   `hash-packages.json`) is never overwritten: `GrayWolf.exe update --force` replaces it.
 - **A newer GrayWolf** is only announced, in a bar under the menu: *Download*, then
   *Restart now*, replaces the program files (not your settings or `package_index`) once
-  GrayWolf has closed. Or click *Later*.
+  GrayWolf has closed. Or click *Later*. An installed GrayWolf updates the same way, and Windows'
+  installed apps list shows the new version.
 - From the command line: `GrayWolf.exe update` updates the packages and reports a newer
   GrayWolf; `--check` only reports; `--app` also installs the newer GrayWolf.
   Exports and other commands never go online.

@@ -104,7 +104,7 @@ namespace
         return End != Text.c_str() && *End == '\0' && std::isfinite(V);
     }
 
-    std::string Cell(const Json& F, const char* Field, Unit How)
+    std::string Cell(const Json& F, const char* Field, Unit How, bool TruncateMs = false)
     {
         if (!F.contains(Field)) return std::string();
         double V = 0;
@@ -112,7 +112,9 @@ namespace
         switch (How)
         {
         case Unit::Count: return Num(V, 0);
-        case Unit::Ms: return Num(std::round(V * 1000), 0);   // the weapon file writes the ms field in seconds (ms / 1000)
+        // the weapon file writes the ms field in seconds (ms / 1000); a game parsing it as (int)(s x 1000)
+        // truncates
+        case Unit::Ms: return Num(TruncateMs ? std::trunc(V * 1000) : std::round(V * 1000), 0);
         case Unit::Inches: return Num(V * MetresPerInch, 2);
         case Unit::InchesPerSecond: return Num(V * MetresPerInch, 2);
         case Unit::Scale: return Num(V, 4);
@@ -867,7 +869,7 @@ namespace
             C["type"] = Text("weaponType");
             C["class"] = Text("weaponClass");
             C["fire_type"] = Text("fireType");
-            for (const auto& Col : Before) C[Col.Name] = Cell(F, Col.Field, Col.How);
+            for (const auto& Col : Before) C[Col.Name] = Cell(F, Col.Field, Col.How, N.TruncateMs);
             if (double Ms = 0; Number(C["fire_time_ms"], Ms) && Ms > 0) C["rpm"] = Num(std::round(60000.0 / Ms * 100) / 100, 2);
             size_t Stop = 0;
             for (const auto& [Damage, Range] : Stops)
@@ -877,9 +879,9 @@ namespace
                 C[std::format("damage_{}", Stop)] = Cell(F, Damage, Unit::Count);
                 C[std::format("range_{}_m", Stop)] = Cell(F, Range, Unit::Inches);
             }
-            for (const auto& Col : After) C[Col.Name] = Cell(F, Col.Field, Col.How);
+            for (const auto& Col : After) C[Col.Name] = Cell(F, Col.Field, Col.How, N.TruncateMs);
             for (const auto& [Field, Column] : HitLocations) C[Column] = Cell(F, Field, Unit::Scale);
-            for (const auto& Col : N.Extra) C[Col.Name] = Cell(F, Col.Field, Col.How);
+            for (const auto& Col : N.Extra) C[Col.Name] = Cell(F, Col.Field, Col.How, N.TruncateMs);
             C["zones"] = WeaponStatsTable::ZoneList(Entry.second);
             WeaponStatsTable::AddRow(Head, C, Csv, Out);
         }

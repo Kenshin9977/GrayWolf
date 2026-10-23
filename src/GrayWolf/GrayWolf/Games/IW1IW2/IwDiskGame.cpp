@@ -591,14 +591,27 @@ namespace
             const unsigned CodePage = ExportWriters::LanguageCodePage(Lang);
             for (auto& [K, V] : All)
                 if (Keys.count(ExportNaming::Lower(K))) Strings.emplace_back(K, ExportWriters::Utf8(V, CodePage));
-            WeaponFiles::ExportStats(Weapons, Strings, ZoneName, C, T,
-                { Row.Title,
-                  "The display names are the localized strings of the install's .str files (localizedstrings/weapon.str's\n"
-                  "THOMPSON: WEAPON_THOMPSON), in the language setting (--language, default English).\n",
-                  "Each weapon is the game's own weapon file, weapons/mp/<name> or weapons/sp/<name> in its archives (the\n"
-                  "copy the game reads: the last archive by name holding it), WEAPONFILE\\<field>\\<value>...; the\n"
-                  "game parses it by its weapon field table, so each column below is one named field: times are\n"
-                  "seconds in the file (milliseconds here), distances inches.\n" });
+            WeaponFiles::Notes N{ Row.Title,
+                                  "The display names are the localized strings of the install's .str files (localizedstrings/weapon.str's\n"
+                                  "THOMPSON: WEAPON_THOMPSON), in the language setting (--language, default English).\n",
+                                  "Each weapon is the game's own weapon file, weapons/mp/<name> or weapons/sp/<name> in its archives (the\n"
+                                  "copy the game reads: the last archive by name holding it), WEAPONFILE\\<field>\\<value>...; the\n"
+                                  "game parses it by its weapon field table, so each column below is one named field: times are\n"
+                                  "seconds in the file (milliseconds here), distances inches.\n" };
+            // CoD1 (game_mp_x86.dll, not packed): its field table's time type (7) is (int)(atof(s) x 1000),
+            // truncated (0x200423a7: fmul 1000.0, _ftol), and semiAuto (0x2c4) a qboolean (type 5: atoi != 0)
+            if (std::string(Row.Id) == "cod1")
+            {
+                N.TruncateMs = true;
+                N.Extra = { { "semi_auto", "semiAuto", WeaponFiles::Unit::Count } };
+                N.ExtraNotes =
+                    "- Times (CoD1): the game's parser (game_mp_x86.dll 0x200423a7, the field table's time type) takes\n"
+                    "  (int)(seconds x 1000), truncated: fireTime 0.0857 is 85 ms (the Thompson's 705.88 rpm). The\n"
+                    "  other weapon file games' times are rounded.\n"
+                    "- semi_auto: semiAuto (WeaponDef 0x2c4, a qboolean: atoi of the text, not 0 is 1), 1 for a weapon\n"
+                    "  that fires once a pull.\n";
+            }
+            WeaponFiles::ExportStats(Weapons, Strings, ZoneName, C, T, N);
         }
 
         struct Asset

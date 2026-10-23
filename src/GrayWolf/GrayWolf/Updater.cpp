@@ -426,6 +426,29 @@ namespace
         return MoveReplace(Tmp, Path, 4);
     }
 
+    // A per-user install (tools/installer/GrayWolf.iss, AppId GrayWolf) shows its version in Windows'
+    // installed apps: once the updater has replaced that install's files, that line follows.
+    bool UpdateUninstallEntry(const fs::path& Target, const std::string& Version)
+    {
+        HKEY Key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GrayWolf_is1", 0,
+                          KEY_QUERY_VALUE | KEY_SET_VALUE, &Key) != ERROR_SUCCESS)
+            return false;
+        wchar_t Location[MAX_PATH] = {};
+        DWORD Size = sizeof(Location) - sizeof(wchar_t), Type = 0;
+        std::error_code Ec;
+        bool Ok = RegQueryValueExW(Key, L"InstallLocation", nullptr, &Type, (BYTE*)Location, &Size) == ERROR_SUCCESS &&
+                  Type == REG_SZ && fs::equivalent(fs::path(Location), Target, Ec);
+        if (Ok)
+        {
+            const std::wstring W = Strings::ToUnicodeString(Version);
+            Ok = RegSetValueExW(Key, L"DisplayVersion", 0, REG_SZ, (const BYTE*)W.c_str(), DWORD((W.size() + 1) * sizeof(wchar_t))) ==
+                 ERROR_SUCCESS;
+        }
+        RegCloseKey(Key);
+        return Ok;
+    }
+
     std::string SafeVersion(const std::string& V)
     {
         std::string Out;
@@ -831,6 +854,9 @@ int ApplyStaged(const std::string& StageDir, const std::string& TargetDir, uint3
     RemoveOwnDir(Backup);
     RemoveOwnDir(Stage);
     Report += std::format("result=ok\nreplaced={}\n", Entries.size());
+    // the stage folder is stage-<version>
+    const std::string StageName = U8((Stage.has_filename() ? Stage : Stage.parent_path()).filename());
+    if (StageName.starts_with("stage-") && UpdateUninstallEntry(Target, StageName.substr(6))) Report += "uninstall_entry=updated\n";
     if (Relaunch)
     {
         const std::wstring Exe = (Target / "GrayWolf.exe").wstring();

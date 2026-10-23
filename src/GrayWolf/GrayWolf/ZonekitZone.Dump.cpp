@@ -210,6 +210,20 @@ void ZonekitZone::ExportsStructDumps(DiskGame::Kind K, std::vector<DumpType> Giv
                 Named(IdOf(I), J);
                 if (const auto N = NameOf.find(It->second); !J.contains("name") && N != NameOf.end() && !N->second.first.empty())
                     J["name"] = N->second.first;
+                // an asset named by a string (its first field, as the IW games' models, anims and
+                // materials): that string, a reference's leading ',' dropped
+                // (a string no read of its own holds, a name-only header's: read where it points when
+                // the game has no cipher)
+                int64_t In = -1, Size = 0;
+                if (const uint64_t V = J.contains("name") ? 0 : PointerAt(I.Pos); V != 0)
+                {
+                    std::string Name;
+                    if (const int64_t S = Off(V); S >= 0 && (Size = ReadAt(S, In)) < 0 && In < 0) Name = Text(S, -Size);
+                    else if (!Decrypt) Name = StringAt(V);
+                    if (!Name.empty() && Name.size() < 256 &&
+                        std::all_of(Name.begin(), Name.end(), [](char Ch) { return (unsigned char)Ch >= 0x20 && (unsigned char)Ch < 0x7f; }))
+                        J["name"] = Name[0] == ',' ? Name.substr(1) : Name;
+                }
                 return J;
             }
             int64_t In = -1;

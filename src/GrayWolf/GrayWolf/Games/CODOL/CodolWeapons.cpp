@@ -49,12 +49,15 @@ IwWeaponDefs::Layout WeaponLayout()
         { "explosionOuterDamage", 0xa28 }, { "projectileSpeed", 0xa38 },
         { "moveSpeedScale", 0x908 },      { "adsMoveSpeedScale", 0x90c },
         { "locationDamageMultipliers", 0xd4c },
+        { "burstCount", 0xfc0 },
     };
     // the exe's name tables: weapon types (0xe5f8f0), classes (0xe5f908, read at 0x432130), fire types
     // (0xe5ebb4), hit locations (0xe4fb30, 20 read at 0x7b81b0)
     L.Types = { "bullet", "grenade", "projectile", "riotshield", "bomb", "melee" };
+    // (13: past the exe's table, which stops at melee; the class of the seven bows, bow_mp... sparrow_mp,
+    // named so here)
     L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher", "turret", "throwingknife", "non-player", "item",
-                  "melee" };
+                  "melee", "bow" };
     L.FireTypes = { "Full Auto", "Single Shot", "Burst", "Auto-Burst", "Charge Shot", "Charge Shot Burst", "Charge Shot Auto Burst",
                     "Option Shot", "Double Barrel" };
     L.HitLocations = { "none",           "helmet",          "head",           "neck",           "torso_upper",
@@ -76,6 +79,9 @@ IwWeaponDefs::Layout WeaponLayout()
         "- weaponType 0x588 (the stats UI 0x7da5a0: 3 a riot shield, 5 a melee weapon), weaponClass 0x58c (named\n"
         "  by the exe's table 0xe5f908, read at 0x432130), fireType 0x598 (0x4322e0: 1 single shot, 2 a burst of\n"
         "  0xfc0 rounds); named by the exe's own tables (bullet...; rifle...; Full Auto, Single Shot, Burst...).\n"
+        "  weaponClass 13 is past the class table (which stops at melee, 12): the seven bows' (bow_mp...\n"
+        "  sparrow_mp), written bow, a name of this table's, not the exe's.\n"
+        "- burstCount 0xfc0: the rounds of a burst (the stats UI 0x4322e0 reads it for fire type 2, Burst).\n"
         "- clipSize 0xe68 and fireTime 0xe70: the rounds a second of the stats UI (0x4322e0: clipSize x fireTime /\n"
         "  1000 to empty a clip); clipSize is the max ammo's magazine too (0x432e90, 0x42bf80).\n"
         "- shotCount 0x7fc: the pellets the bullet code fires (0x5923c0, 0x595df0), out to the last range 0xd3c.\n"

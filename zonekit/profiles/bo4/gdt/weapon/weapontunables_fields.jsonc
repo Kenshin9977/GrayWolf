@@ -69,9 +69,16 @@
     // two agree is what says the length is right, and the twentieth word reads zero on 1,026 of
     // the 1,045 that can be read.
     //
+    // The game's code reads 21 of them, though: its hit location function (0x7ff7916e16c0 in
+    // BlackOps4_dump.exe) indexes this table by hit location, and the exe's hit location names
+    // (rdata 0x7ff7923d6170) are 21 - none, helmet, head, neck, torso_upper, torso_mid,
+    // torso_lower, right/left_arm_upper, right/left_arm_lower, right/left_hand, right/left_leg_upper,
+    // right/left_leg_lower, right/left_foot, gun, riotshield (Rifling games/bo4.md). The twentieth,
+    // the gun, is the zero above; the twenty-first the riot shield.
+    //
     // The two pointers after this one lead to tables every weapon shares rather than its own, so
     // they are not this and are left unnamed.
-    {"offset": "0x0", "name": "locationDamageMultipliers", "source": "engine", "kind": "float", "form": "float[]@", "count": 19, "maximum": 100, "observed": 1093, "agreed": 1045, "examples": []},
+    {"offset": "0x0", "name": "locationDamageMultipliers", "source": "engine", "kind": "float", "form": "float[]@", "count": 21, "maximum": 100, "observed": 1093, "agreed": 1045, "examples": []},
 
     // What a shot keeps of its speed when it hits a surface, along it and into it, one value per
     // surface. The two are declared side by side in a debug build of this lineage and sit side by
@@ -183,7 +190,9 @@
     // These eight hold a named constant rather than a quantity. The game reports the name and the
     // struct stores the number, so pairing them across every weapon read gives both the offset and
     // what each number means. A number never seen is written as itself rather than guessed at.
-    {"offset": "0x580", "name": "weapclass", "source": "engine", "kind": "int", "form": "int", "values": {"0": "rifle", "1": "mg", "2": "smg", "3": "spread", "4": "pistol", "5": "grenade", "6": "rocketlauncher", "9": "gas", "11": "melee", "12": "Killstreak Alt Stored Weapon"}, "observed": 807, "agreed": 109, "examples": []},
+    // weapclass's names are all fifteen of the exe's own table (rdata 0x7ff792325610 in
+    // BlackOps4_dump.exe, Rifling games/bo4.md): 7, 8, 10, 13 and 14 from it.
+    {"offset": "0x580", "name": "weapclass", "source": "engine", "kind": "int", "form": "int", "values": {"0": "rifle", "1": "mg", "2": "smg", "3": "spread", "4": "pistol", "5": "grenade", "6": "rocketlauncher", "7": "turret", "8": "non-player", "9": "gas", "10": "item", "11": "melee", "12": "Killstreak Alt Stored Weapon", "13": "pistol spread", "14": "ball"}, "observed": 807, "agreed": 109, "examples": []},
 
     {"offset": "0x588", "name": "firetype", "source": "engine", "kind": "int", "form": "int", "values": {"0": "Full Auto", "1": "Single Shot", "2": "Burst", "3": "Auto Burst", "6": "Minigun", "7": "Charge Shot", "11": "Melee"}, "observed": 472, "agreed": 109, "examples": []},
 

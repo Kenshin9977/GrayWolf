@@ -201,8 +201,6 @@
     "enemyTracerType":             "enemyTracerType",
     "laserType":                   "laserType",
     "damage":                      "damage",
-    "locHead":                     "locHead",
-    "locNeck":                     "locNeck",
     "sprintOutTime":               "sprintOutTime",
     "sprintCombatTime":            "sprintCombatTime",
     "lowReadyOfsR":                "lowReadyOfsR",
@@ -739,6 +737,30 @@
       "multishotBaseDamage4",
       "multishotBaseDamage5",
       "multishotBaseDamage6"
+    ],
+    // The hit location multipliers, by the exe's hit location index (0 none ... 18 left_foot, 19 gun;
+    // the twenty-first, the riot shield, has no entry in the earlier title)
+    "locationDamageMultipliers": [
+      "locNone",
+      "locHelmet",
+      "locHead",
+      "locNeck",
+      "locTorsoUpper",
+      "locTorsoMid",
+      "locTorsoLower",
+      "locRightArmUpper",
+      "locLeftArmUpper",
+      "locRightArmLower",
+      "locLeftArmLower",
+      "locRightHand",
+      "locLeftHand",
+      "locRightLegUpper",
+      "locLeftLegUpper",
+      "locRightLegLower",
+      "locLeftLegLower",
+      "locRightFoot",
+      "locLeftFoot",
+      "locGun"
     ],
     "multishotBaseDamageRange": [
       "multishotBaseDamageRange1",

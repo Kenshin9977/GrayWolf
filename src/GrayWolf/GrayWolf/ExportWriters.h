@@ -265,8 +265,9 @@ namespace ExportWriters
     bool WriteStringTable(const std::string& DataDir, const std::string& Name, uint32_t Columns, uint32_t Rows,
                           const std::vector<std::string>& Cells);
     // A game's text as UTF-8: kept when it already is, else read in CodePage (CODOL's GBK, 936), or
-    // as Windows-1252 (the older games') when it is 0
-    std::string Utf8(const std::string& S, unsigned CodePage = 0);
+    // as Windows-1252 (the older games') when it is 0. Always: read in CodePage even when it reads as
+    // UTF-8 (a game whose every text is in CodePage: two GBK characters can make valid UTF-8)
+    std::string Utf8(const std::string& S, unsigned CodePage = 0, bool Always = false);
     // The code page the older games (CoD1 to Black Ops) keep a language's text in, by its name in a
     // path or a language setting ("zone/russian/", "localized_polish_"): 1251 Cyrillic, 1250
     // Central European, 0 (Windows-1252) for the others

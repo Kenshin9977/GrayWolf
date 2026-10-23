@@ -388,8 +388,9 @@ namespace FastFileInternal
             return FastFileFormat::TreyarchChunked;
         }
 
-        // Black Ops 2: "TAff0100", not Black Ops 3's "TAff0000".
-        if (Magic == "TAff0100")
+        // Black Ops 2: "TAff0100", not Black Ops 3's "TAff0000"; or unsigned, "TAffu100" (the zones
+        // OpenAssetTools' Linker builds, version 147: no auth header, the same encrypted blocks)
+        if (Magic == "TAff0100" || (Magic == "TAffu100" && Version == 147))
         {
             return FastFileFormat::TreyarchEncrypted;
         }

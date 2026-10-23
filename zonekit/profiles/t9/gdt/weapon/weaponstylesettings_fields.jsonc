@@ -45,7 +45,13 @@
     // A pointer whose allocation was never brought in still reads as an address, and the words
     // behind it still read as floats, so the run is written only where every entry is a
     // multiplier rather than a leftover. Two assets of the pool fail that and are left empty.
-    {"offset": "0xb0", "name": "locationDamageMultipliers", "source": "engine", "kind": "float", "form": "float[]@", "count": 19, "maximum": 100, "observed": 631, "agreed": 629, "examples": []},
+    //
+    // 21 of them: the game's hit location function (0x7ff638fe75c0 in BlackOpsColdWar_dump.exe)
+    // indexes the table by hit location, and the exe's names (rdata 0x7ff63db373d0) are 21 - none,
+    // helmet, head, neck, torso_upper, torso_mid, torso_lower, right/left_arm_upper,
+    // right/left_arm_lower, right/left_hand, right/left_leg_upper, right/left_leg_lower,
+    // right/left_foot, gun, riotshield (Rifling games/coldwar.md).
+    {"offset": "0xb0", "name": "locationDamageMultipliers", "source": "engine", "kind": "float", "form": "float[]@", "count": 21, "maximum": 100, "observed": 631, "agreed": 629, "examples": []},
 
 
 

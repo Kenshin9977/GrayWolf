@@ -74,7 +74,7 @@ namespace
     };
 
     // the stats of a weapon with attachments (slot, index) chosen
-    std::vector<std::string> LoadoutStats(const Weapon& Wp, const Map& Pkgs, const Map& Attachments, const std::vector<std::pair<int, int>>& Picks,
+    std::vector<std::string> LoadoutStats(const IwWeaponStats::Layout& L, const Weapon& Wp, const Map& Pkgs, const Map& Attachments, const std::vector<std::pair<int, int>>& Picks,
                                           std::string& Unknown)
     {
         const Map& W = *Wp.W;
@@ -162,15 +162,87 @@ namespace
             Vel = std::format("{:.2f}", V);
         }
         const auto Int = [](int V) { return V < 0 ? std::string() : std::to_string(V); };
-        return { Int(Clip), Int(Time("reload")), Int(Time("reload_empty")), Int(Time("reload_add")), Int(Time("reload_empty_add")),
-                 Stf("sprint_out"), Stf("super_sprint_out"), AdsTime(0, "ads_time"), AdsTime(1, "ads_out_time"), Vel };
+        std::vector<std::string> Out = { Int(Clip), Int(Time("reload")), Int(Time("reload_empty")), Int(Time("reload_add")), Int(Time("reload_empty_add")),
+                                         Stf("sprint_out"), Stf("super_sprint_out"), AdsTime(0, "ads_time"), AdsTime(1, "ads_out_time"), Vel };
+        // the burst delay: the first attachment's override replaces the tunables' (its own scale then
+        // left out), the others' scales add their deviation; floor(t x scale + 0.5)
+        if (L.BurstDelay.At >= 0)
+        {
+            std::string Cell;
+            if (T.contains("burst_delay"))
+            {
+                float Base = (float)T["burst_delay"].get<double>(), S = 1.0f;
+                bool Overridden = false;
+                for (const Map* A : Atts)
+                {
+                    if (!Overridden && A->contains("burst_delay_override"))
+                    {
+                        Base = (float)(*A)["burst_delay_override"].get<int>();
+                        Overridden = true;
+                        continue;
+                    }
+                    S += (float)FloatOr(*A, "burst_delay_scale", 1.0) - 1.0f;
+                }
+                Cell = std::to_string((int)std::floor(Snap(std::max(S, 0.0f)) * Base + 0.5f));
+            }
+            Out.push_back(Cell);
+        }
+        // the explosion: the first attachment with an explosion block gives the radius, the damages
+        // and the three-ring flag
+        if (L.ExplosionDamage.At >= 0)
+        {
+            const Map* Block = nullptr;
+            for (const Map* A : Atts)
+                if (A->contains("explosion_radius_override"))
+                {
+                    Block = A;
+                    break;
+                }
+            const auto Value = [&](const char* Own, const char* Override) -> const Map* {
+                if (Block != nullptr) return Block->contains(Override) ? &(*Block)[Override] : nullptr;
+                return T.contains(Own) ? &T[Own] : nullptr;
+            };
+            const bool Alt = Block != nullptr ? IntOr(*Block, "explosion_alt_override", 0) != 0 : IntOr(T, "explosion_alt", 0) != 0;
+            int Radius = 0;
+            if (Block != nullptr)
+            {
+                const auto& R = (*Block)["explosion_radius_override"];
+                Radius = Alt && R.size() > 1 ? R[1].get<int>() : R[0].get<int>();
+            }
+            else
+                Radius = Alt ? IntOr(T, "explosion_radius_alt", 0) : IntOr(T, "explosion_radius", 0);
+            std::string Inner, Outer;
+            const Map* Rings = Value("explosion_rings", "explosion_rings_override");
+            const Map* Damage = Value("explosion_damage", "explosion_damage_override");
+            if (Radius > 0 && Alt && Rings != nullptr) Inner = std::to_string((*Rings)[3].get<int>()), Outer = std::to_string((*Rings)[5].get<int>());
+            else if (Radius > 0 && !Alt && Damage != nullptr) Inner = std::to_string((*Damage)[0].get<int>()), Outer = std::to_string((*Damage)[1].get<int>());
+            Out.push_back(Inner);
+            Out.push_back(Outer);
+        }
+        // the gravity: the first attachment's ballistic block replaces the tunables'
+        if (L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f)
+        {
+            const Map* G = T.contains("gravity") ? &T["gravity"] : nullptr;
+            for (const Map* A : Atts)
+                if (A->contains("gravity_override"))
+                {
+                    G = &(*A)["gravity_override"];
+                    break;
+                }
+            Out.push_back(G != nullptr ? Num(L.GravityInches * G->get<double>() * 0.0254, 2) : std::string());
+        }
+        return Out;
     }
 
-    size_t AttachmentTables(const Map& Weapons, const Map& Tunables, const Map& Pkgs, const Map& Attachments, const Map& Names,
+    size_t AttachmentTables(const IwWeaponStats::Layout& L, const Map& Weapons, const Map& Tunables, const Map& Pkgs, const Map& Attachments, const Map& Names,
                             const Map& Strings, const std::string& Dir, std::string& AttCsv, std::string& LoadCsv)
     {
-        const char* const Stats = "clip_size,reload_ms,reload_empty_ms,reload_add_ms,reload_empty_add_ms,sprint_to_fire_ms,"
-                                  "super_sprint_to_fire_ms,ads_time_ms,ads_out_time_ms,muzzle_velocity_mps";
+        // (the columns LoadoutStats appends for the fields the layout gives, in its order)
+        const std::string Stats = std::string("clip_size,reload_ms,reload_empty_ms,reload_add_ms,reload_empty_add_ms,sprint_to_fire_ms,"
+                                              "super_sprint_to_fire_ms,ads_time_ms,ads_out_time_ms,muzzle_velocity_mps") +
+                                  (L.BurstDelay.At >= 0 ? ",burst_delay_ms" : "") +
+                                  (L.ExplosionDamage.At >= 0 ? ",explosion_inner_damage,explosion_outer_damage" : "") +
+                                  (L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f ? ",gravity_mps2" : "");
         const auto Display = [&](const std::string& Asset) -> std::string {
             if (!Names.contains(Asset)) return "";
             const std::string H = Names[Asset].get<std::string>();
@@ -191,7 +263,7 @@ namespace
         for (const auto& [Name, Wp] : ByName)
         {
             std::string Unknown;
-            const auto Base = LoadoutStats(Wp, Pkgs, Attachments, {}, Unknown);
+            const auto Base = LoadoutStats(L, Wp, Pkgs, Attachments, {}, Unknown);
             AttCsv += CsvField(Name) + ",,,(none),";
             for (const auto& V : Base) AttCsv += "," + V;
             AttCsv += "\n";
@@ -203,7 +275,7 @@ namespace
                     if (!Attachments.contains(Id)) continue;
                     const std::string Asset = Attachments[Id]["name"].get<std::string>();
                     std::string U;
-                    const auto St = LoadoutStats(Wp, Pkgs, Attachments, { { (int)S, (int)K } }, U);
+                    const auto St = LoadoutStats(L, Wp, Pkgs, Attachments, { { (int)S, (int)K } }, U);
                     AttCsv += CsvField(Name) + "," + std::to_string(S) + "," + std::to_string(K) + "," + CsvField(Asset) + "," + CsvField(Display(Asset));
                     for (const auto& V : St) AttCsv += "," + V;
                     AttCsv += "\n";
@@ -254,10 +326,31 @@ namespace
                     if (!Found) Missing += (Missing.empty() ? "" : "; ") + Want;
                 }
                 std::string U;
-                const auto St = LoadoutStats(It->second, Pkgs, Attachments, Picks, U);
+                const auto St = LoadoutStats(L, It->second, Pkgs, Attachments, Picks, U);
                 LoadCsv += CsvField(Name) + "," + CsvField(Trim(Rest)) + "," + CsvField(Missing);
                 for (const auto& V : St) LoadCsv += "," + V;
                 LoadCsv += "\n";
+            }
+        }
+        return Rows;
+    }
+
+    // weapon_anims.csv: the anim table of each weapon's base animation package, one row per anim id
+    size_t AnimTable(const Map& Weapons, const Map& Pkgs, std::string& Csv)
+    {
+        std::map<std::string, std::string> ByName;   // weapon -> its package
+        std::set<std::string> Seen;
+        for (const auto& W : Weapons)
+            if (W.contains("animpkg") && Seen.insert(W["id"].get<std::string>()).second) ByName.emplace(W["name"].get<std::string>(), W["animpkg"].get<std::string>());
+        Csv = "weapon,animpkg,anim_id,xanim\n";
+        size_t Rows = 0;
+        for (const auto& [Name, Pkg] : ByName)
+        {
+            if (!Pkgs.contains(Pkg) || !Pkgs[Pkg].contains("anims")) continue;
+            for (const auto& A : Pkgs[Pkg]["anims"])
+            {
+                Csv += CsvField(Name) + "," + Pkg + "," + std::format("0x{:x}", A[0].get<int>()) + "," + CsvField(A[1].get<std::string>()) + "\n";
+                Rows++;
             }
         }
         return Rows;
@@ -397,6 +490,22 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
         F32("sprint_speed_scale", L.SprintSpeedScale);
         F32("super_sprint_speed_scale", L.SuperSprintSpeedScale);
         F32("prone_speed_scale", L.ProneSpeedScale);
+        F32("burst_delay", L.BurstDelay);
+        F32("move_speed_scale", L.MoveSpeedScale);
+        F32("ads_move_speed_scale", L.AdsMoveSpeedScale);
+        I32("reserve_clips", L.ReserveClips);
+        if (const int64_t P = Base(L.ExplosionDamage); P >= 0) T["explosion_damage"] = Json::array({ At<int32_t>(Img, P), At<int32_t>(Img, P + 4) });
+        if (const int64_t P = Base(L.ExplosionRings); P >= 0)
+        {
+            Json Rings = Json::array();
+            for (int K = 0; K < 6; K++) Rings.push_back(At<int32_t>(Img, P + 4 * K));
+            T["explosion_rings"] = std::move(Rings);
+        }
+        if (const int64_t P = Base(L.BallisticBlock); P >= 0)
+        {
+            if (L.BallisticFlag >= 0) T["ballistic"] = At<uint8_t>(Img, P + L.BallisticFlag);
+            if (L.BallisticGravity >= 0) T["gravity"] = (double)At<float>(Img, P + L.BallisticGravity);
+        }
         return T;
     };
     const bool TunablesAssets = L.DefSets >= 0 || L.DefTunables >= 0;
@@ -484,6 +593,18 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
                     if (const uint64_t A = RefId(P + L.DefaultAttachments + 8 * S, 0)) Defaults.push_back(Json{ { "slot", S }, { "attachment", Hex(A) } });
                 W["defaults"] = std::move(Defaults);
             }
+            else if (L.DefaultSlots >= 0)
+            {
+                Json Defaults = Json::array();
+                for (int64_t S = 0; S < L.DefaultSlotCount; S++)
+                {
+                    const int64_t A = Target(P + L.DefaultSlots + S * 0x10 + 8);
+                    const uint32_t N2 = std::min<uint32_t>(At<uint32_t>(Img, P + L.DefaultSlots + S * 0x10), 128);
+                    for (uint32_t K = 0; A >= 0 && K < N2; K++)
+                        if (const uint64_t Id = RefId(A + 8 * (int64_t)K, 0)) Defaults.push_back(Json{ { "slot", S }, { "attachment", Hex(Id) } });
+                }
+                W["defaults"] = std::move(Defaults);
+            }
             // the animation package overrides (0x30 each): u32 group count (the rank: more groups wins)
             // at 0, the groups at 8 (0x18 each: u32 count, conditions at 8 (0x14 each: u8 slot, u32
             // mask[4] of slot indexes), i32 variant at 0x10, -1 any), the package at 0x10
@@ -539,7 +660,10 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
             // its own models (the part with no blueprint): xmodel name hashes, 0 none
             const auto Model = [&](const char* Key, int64_t Off) {
                 if (Off < 0) return;
-                if (const uint64_t H = At<uint64_t>(Img, P + Off) & IdBits; H != 0)
+                // (an array of AttModelCount xmodel pointers: its first)
+                const int64_t Array = L.AttModelCount >= 0 && At<uint32_t>(Img, P + L.AttModelCount) != 0 ? Target(P + Off) : -1;
+                if (L.AttModelCount >= 0 && Array < 0) return;
+                if (const uint64_t H = Array >= 0 ? RefId(Array, 0) : At<uint64_t>(Img, P + Off) & IdBits; H != 0)
                 {
                     A[Key] = L.ModelName ? L.ModelName(H) : std::format("xmodel_{:x}", H);
                     A[std::string(Key) + "_id"] = Hex(H);
@@ -588,6 +712,33 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
                     Json R = Json::array({ At<int32_t>(Img, B) });
                     if (L.AttExplosionAlt >= 0) R.push_back(At<int32_t>(Img, B + L.AttExplosionAlt));
                     A["explosion_radius_override"] = std::move(R);
+                    if (L.AttExplosionDamage >= 0)
+                        A["explosion_damage_override"] = Json::array({ At<int32_t>(Img, B + L.AttExplosionDamage), At<int32_t>(Img, B + L.AttExplosionDamage + 4) });
+                    if (L.AttExplosionRings >= 0)
+                    {
+                        Json Rings = Json::array();
+                        for (int K = 0; K < 6; K++) Rings.push_back(At<int32_t>(Img, B + L.AttExplosionRings + 4 * K));
+                        A["explosion_rings_override"] = std::move(Rings);
+                    }
+                    if (L.AttExplosionFlag >= 0) A["explosion_alt_override"] = At<uint8_t>(Img, B + L.AttExplosionFlag);
+                }
+            // the burst delay: an attachment's i32 replaces the tunables' (not an alternate mode's), the
+            // modifier block's f32 +4 scales it
+            if (L.AttBurstDelay >= 0)
+                if (const int64_t B = Target(P + L.AttBurstDelay); B >= 0 && !(L.AttAltMode >= 0 && At<uint8_t>(Img, P + L.AttAltMode) == 1))
+                    A["burst_delay_override"] = At<int32_t>(Img, B);
+            if (L.AttBurstDelayScale >= 0 && L.AttModifiers >= 0)
+            {
+                const int64_t T = Target(P + L.AttModifiers);
+                const int64_t B = T >= 0 ? Target(T + L.AttBurstDelayScale) : -1;
+                A["burst_delay_scale"] = B >= 0 ? (double)At<float>(Img, B + 4) : 1.0;
+            }
+            // the ballistic block that replaces the tunables' (its gravity factor and flag)
+            if (L.AttBallistic >= 0)
+                if (const int64_t B = Target(P + L.AttBallistic); B >= 0)
+                {
+                    if (L.BallisticFlag >= 0) A["ballistic_override"] = At<uint8_t>(Img, B + L.BallisticFlag);
+                    if (L.BallisticGravity >= 0) A["gravity_override"] = (double)At<float>(Img, B + L.BallisticGravity);
                 }
             Attachments[Hex(Id)] = std::move(A);
             N.Attachments++;
@@ -613,6 +764,20 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
             U16("reload_empty_add", L.PkgReloadEmptyAdd);
             U16("reload_start", L.PkgReloadStart);
             U16("reload_end", L.PkgReloadEnd);
+            // the anim table: {id, xanim} of each sorted id (the xanim's name, its hash when unnamed)
+            if (const int64_t A = L.PkgAnims >= 0 ? Target(P + L.PkgAnims) : -1; A >= 0 && L.PkgAnimCount >= 0 && A + L.PkgAnimCount + 8 <= (int64_t)Img.size())
+            {
+                const int64_t Ids = Target(A + L.PkgAnimIds), Xanims = Target(A + L.PkgAnimXanims);
+                const int64_t Count = std::min<int64_t>(At<int64_t>(Img, A + L.PkgAnimCount), 0x10000);
+                Json Anims = Json::array();
+                for (int64_t J = 0; Ids >= 0 && Xanims >= 0 && J < Count; J++)
+                {
+                    const uint64_t X = RefId(Xanims + 8 * J, 0);
+                    Anims.push_back(Json::array({ At<uint16_t>(Img, Ids + 2 * J),
+                                                  X == 0 ? std::string() : L.AnimName ? L.AnimName(X) : Hex(X) }));
+                }
+                K["anims"] = std::move(Anims);
+            }
             Pkgs[Hex(Id)] = std::move(K);
             N.AnimPkgs++;
         }
@@ -745,6 +910,22 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
     for (const char* H : { "sprint_speed_scale", "super_sprint_speed_scale", "prone_speed_scale", "suit", "sprint_mps",
                            "super_sprint_mps", "sprint_mps_mp_suit", "super_sprint_mps_mp_suit" })
         Head.push_back(H);
+    // the columns of the fields only some games give, each after its neighbour
+    const std::vector<std::string> BaseHead = Head;
+    const auto After = [&Head](const char* Neighbour, bool Has, std::initializer_list<const char*> Columns) {
+        if (!Has) return;
+        auto It = std::find(Head.begin(), Head.end(), Neighbour) + 1;
+        for (const char* C : Columns) It = Head.insert(It, C) + 1;
+    };
+    After("burst_count", L.BurstDelay.At >= 0, { "burst_delay_ms" });
+    After("muzzle_velocity_mps", L.BallisticBlock.At >= 0 && L.BallisticFlag >= 0, { "ballistic" });
+    After(L.BallisticFlag >= 0 ? "ballistic" : "muzzle_velocity_mps", L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f,
+          { "gravity_mps2" });
+    After("explosion_radius_m", L.ExplosionDamage.At >= 0, { "explosion_inner_damage", "explosion_outer_damage" });
+    After(L.ExplosionDamage.At >= 0 ? "explosion_outer_damage" : "explosion_radius_m", L.ExplosionRings.At >= 0,
+          { "explosion_inner_radius_m", "explosion_mid_radius_m", "explosion_mid_damage" });
+    After("prone_speed_scale", L.MoveSpeedScale.At >= 0, { "move_speed_scale" });
+    After(L.MoveSpeedScale.At >= 0 ? "move_speed_scale" : "prone_speed_scale", L.AdsMoveSpeedScale.At >= 0, { "ads_move_speed_scale" });
 
     // the UI's speed: base x suit multiplier(s), through the weapon's scale entry (max(add, 0) x mul
     // x speed + offset; mul = the tunables scale, add 1, offset 0)
@@ -761,7 +942,7 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
     {
         std::string Weapon;
         size_t Set = 0;
-        std::vector<std::string> Cells;
+        std::map<std::string, std::string> Cells;
     };
     std::vector<Row> Table;
     std::set<std::string> Seen;
@@ -835,6 +1016,9 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
             }
             std::string MaxAmmo;
             if (T.contains("max_ammo") && IntOr(T, "max_ammo_by_clips", 0) == 0) MaxAmmo = std::to_string(T["max_ammo"].get<int>());
+            // by magazines: the clip size times the magazine count
+            else if (IntOr(T, "max_ammo_by_clips", 0) != 0 && T.contains("reserve_clips") && T.contains("clip_size"))
+                MaxAmmo = std::to_string(T["clip_size"].get<int>() * T["reserve_clips"].get<int>());
             std::vector<std::string> C = { Name, Display, W.value("class", std::string()), std::to_string(K), TagText, IntCell("fire_time"),
                                            Fire > 0 ? Num(60000.0 / Fire, 2) : "", IntCell("burst_count"), FireText, IntCell("clip_size"),
                                            Start, MaxAmmo, PkgTime("reload"), PkgTime("reload_empty"), PkgTime("reload_add"),
@@ -856,7 +1040,34 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
             C.push_back(Speed(RowSuit, T, "super_sprint_speed_scale", true));
             C.push_back(Speed(Suit(L.MpSuit), T, "sprint_speed_scale", false));
             C.push_back(Speed(Suit(L.MpSuit), T, "super_sprint_speed_scale", true));
-            Table.push_back({ Name, K, std::move(C) });
+            std::map<std::string, std::string> Cells;
+            for (size_t I = 0; I < BaseHead.size(); I++) Cells[BaseHead[I]] = C[I];
+            // the burst delay in whole ms: floor(t + 0.5)
+            if (T.contains("burst_delay")) Cells["burst_delay_ms"] = std::to_string((int)std::floor((float)T["burst_delay"].get<double>() + 0.5f));
+            if (T.contains("ballistic")) Cells["ballistic"] = std::to_string(T["ballistic"].get<int>());
+            if (T.contains("gravity") && L.GravityInches > 0.0f) Cells["gravity_mps2"] = Num(L.GravityInches * T["gravity"].get<double>() * 0.0254, 2);
+            // the explosion's damages, with its radius: the three rings' when the flag picks them
+            if (Radius > 0)
+            {
+                const bool Rings = T.value("explosion_alt", 0) != 0 && T.contains("explosion_rings");
+                if (Rings)
+                {
+                    const auto& R = T["explosion_rings"];
+                    Cells["explosion_inner_damage"] = std::to_string(R[3].get<int>());
+                    Cells["explosion_outer_damage"] = std::to_string(R[5].get<int>());
+                    Cells["explosion_inner_radius_m"] = Num((double)((float)R[0].get<int>() / InchesPerMetre), 2);
+                    Cells["explosion_mid_radius_m"] = Num((double)((float)R[1].get<int>() / InchesPerMetre), 2);
+                    Cells["explosion_mid_damage"] = std::to_string(R[4].get<int>());
+                }
+                else if (T.contains("explosion_damage"))
+                {
+                    Cells["explosion_inner_damage"] = std::to_string(T["explosion_damage"][0].get<int>());
+                    Cells["explosion_outer_damage"] = std::to_string(T["explosion_damage"][1].get<int>());
+                }
+            }
+            Cells["move_speed_scale"] = FloatCell("move_speed_scale", 4);
+            Cells["ads_move_speed_scale"] = FloatCell("ads_move_speed_scale", 4);
+            Table.push_back({ Name, K, std::move(Cells) });
         }
     }
     std::sort(Table.begin(), Table.end(), [](const Row& A, const Row& B) { return A.Weapon != B.Weapon ? A.Weapon < B.Weapon : A.Set < B.Set; });
@@ -872,11 +1083,14 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
     for (size_t I = 0; I < Zones.size(); I++) Readme += (I ? ", " : "") + Zones[I];
     Readme += L.Columns;
     std::string AttCsv, LoadCsv;
-    const size_t AttRows = AttachmentTables(Weapons, Tunables, Pkgs, Attachments, AttachmentNames, Strings, Dir, AttCsv, LoadCsv);
+    const size_t AttRows = AttachmentTables(L, Weapons, Tunables, Pkgs, Attachments, AttachmentNames, Strings, Dir, AttCsv, LoadCsv);
     Readme += L.AttachmentNotes;
     std::string PartsCsv;
-    const size_t PartRows = L.DefaultAttachments >= 0 ? DefaultPartsTable(L, Weapons, Attachments, AttachmentNames, Strings, PartsCsv) : 0;
+    const size_t PartRows = L.DefaultAttachments >= 0 || L.DefaultSlots >= 0 ? DefaultPartsTable(L, Weapons, Attachments, AttachmentNames, Strings, PartsCsv) : 0;
     if (PartRows != 0) Readme += L.DefaultPartsNotes;
+    std::string AnimCsv;
+    const size_t AnimRows = L.PkgAnims >= 0 ? AnimTable(Weapons, Pkgs, AnimCsv) : 0;
+    if (AnimRows != 0) Readme += L.AnimNotes;
     std::error_code E2;
     fs::create_directories(Dir, E2);
     if (AttRows != 0)
@@ -885,6 +1099,7 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
         if (!LoadCsv.empty()) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_loadouts.csv", (const uint8_t*)LoadCsv.data(), LoadCsv.size());
     }
     if (PartRows != 0) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_default_parts.csv", (const uint8_t*)PartsCsv.data(), PartsCsv.size());
+    if (AnimRows != 0) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_anims.csv", (const uint8_t*)AnimCsv.data(), AnimCsv.size());
     const std::string JsonText = Out.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
     const bool Ok = ExportWriters::WriteBytes(fs::path(Dir) / "weapon_stats.csv", (const uint8_t*)Csv.data(), Csv.size()) &&
                     ExportWriters::WriteBytes(fs::path(Dir) / "weapon_stats.json", (const uint8_t*)JsonText.data(), JsonText.size()) &&
@@ -928,8 +1143,17 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
             Name(*F, 0, N, "i32");
         for (const auto& [F, N] : { std::pair<const Field*, const char*>{ &L.MuzzleVelocity, "muzzle_velocity" },
                                     { &L.SprintOutScale, "sprint_out_time_scale" }, { &L.SprintSpeedScale, "sprint_speed_scale" },
-                                    { &L.SuperSprintSpeedScale, "super_sprint_speed_scale" }, { &L.ProneSpeedScale, "prone_speed_scale" } })
+                                    { &L.SuperSprintSpeedScale, "super_sprint_speed_scale" }, { &L.ProneSpeedScale, "prone_speed_scale" },
+                                    { &L.BurstDelay, "burst_delay" }, { &L.MoveSpeedScale, "move_speed_scale" },
+                                    { &L.AdsMoveSpeedScale, "ads_move_speed_scale" } })
             Name(*F, 0, N, "f32");
+        Name(L.ReserveClips, 0, "reserve_clips", "i32");
+        Name(L.ExplosionDamage, 0, "explosion.centre_damage", "i32");
+        Name(L.ExplosionDamage, 4, "explosion.edge_damage", "i32");
+        static const char* Rings[] = { "inner_radius", "mid_radius", "outer_radius", "inner_damage", "mid_damage", "outer_damage" };
+        // (the outer radius is explosion_radius_alt, already named)
+        for (int K = 0; K < 6; K++)
+            if (K != 2) Name(L.ExplosionRings, K * 4, std::string("explosion_rings.") + Rings[K], "i32");
         for (const auto& [F, N] : { std::pair<const Field*, const char*>{ &L.FireType, "fire_type" }, { &L.MaxAmmoByClips, "max_ammo_by_clips" },
                                     { &L.ReloadType, "reload_type" }, { &L.ExplosionAlt, "explosion_alt" } })
             if (const std::string P = Prefix(*F); P != "-") Byte(P, F->At, N);
@@ -954,6 +1178,7 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
         Put("", L.Slots, "attachment_slots", "");
         if (L.DefaultAttachments >= 0)
             for (int64_t S = 1; S < L.SlotCount; S++) Put("", L.DefaultAttachments + 8 * S, std::format("default_attachment_slot{}", S), "");
+        if (L.DefaultSlots >= 0) Put("", L.DefaultSlots, "default_attachment_slots", "");
         if (L.WeaponDef >= 0)
         {
             const std::string D = Key(L.WeaponDef) + "/";
@@ -978,8 +1203,8 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
         Put("", L.AttModifiers, "modifiers", "");
         Put("", L.AttAdsOverride, "ads_time_override", "");
         Put("", L.AttExplosion, "explosion_radius_override", "");
-        Put("", L.AttWorldModel, "world_model", "hash");
-        Put("", L.AttViewModel, "view_model", "hash");
+        Put("", L.AttWorldModel, "world_model", L.AttModelCount >= 0 ? "" : "hash");
+        Put("", L.AttViewModel, "view_model", L.AttModelCount >= 0 ? "" : "hash");
     }
     else if (Type == "animpkg" && L.PkgBlock >= 0)
     {

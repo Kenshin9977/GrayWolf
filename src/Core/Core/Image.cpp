@@ -33,7 +33,7 @@ namespace
     constexpr uint32_t GX_DDS_MAX_HEADER = sizeof(uint32_t) + sizeof(GxDdsHeader) + sizeof(GxDdsHeaderDxt10);
 }
 
-bool Image::ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFormat InFormat, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch)
+bool Image::ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFormat InFormat, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch, uint32_t MinSide)
 {
     auto Image = std::make_unique<DirectX::ScratchImage>();
     DirectX::TexMetadata ImageMetadata;
@@ -63,10 +63,10 @@ bool Image::ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFor
 
     auto OutputFormat = (OutFormat == ImageFormat::NoConversion) ? InFormat : OutFormat;
 
-    return ConvertToFormat(Image, ImageMetadata, OutputFile, OutputFormat, Patch);
+    return ConvertToFormat(Image, ImageMetadata, OutputFile, OutputFormat, Patch, MinSide);
 }
 
-bool Image::ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, DirectX::TexMetadata ImageMetadata, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch)
+bool Image::ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, DirectX::TexMetadata ImageMetadata, const std::string& OutputFile, ImageFormat OutFormat, ImagePatch Patch, uint32_t MinSide)
 {
     // Stage 1: Check if the image is planar, if so, convert to a single plane
     if (DirectX::IsPlanar(ImageMetadata.format))
@@ -147,6 +147,18 @@ bool Image::ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, Direc
         case ImagePatch::Normal_COD_NOG: PatchNormalCODFromNOG(Image); break;
         case ImagePatch::Color_StripAlpha: PatchAlphaChannel(Image); break;
         }
+    }
+
+    // Stage 3b: a tiny image (an engine built-in, 1x1) repeated up to MinSide, the first mip only
+    if (MinSide > 0 && (ImageMetadata.width < MinSide || ImageMetadata.height < MinSide))
+    {
+        auto TemporaryImage = std::make_unique<DirectX::ScratchImage>();
+        const size_t W = std::max<size_t>(ImageMetadata.width, MinSide), H = std::max<size_t>(ImageMetadata.height, MinSide);
+        const auto Result = DirectX::Resize(*Image->GetImage(0, 0, 0), W, H,
+                                            DirectX::TEX_FILTER_FLAGS::TEX_FILTER_POINT | DirectX::TEX_FILTER_FLAGS::TEX_FILTER_FORCE_NON_WIC, *TemporaryImage);
+        if (FAILED(Result)) return false;
+        ImageMetadata = TemporaryImage->GetMetadata();
+        Image.reset(TemporaryImage.release());
     }
 
     // This format only applies for DDS saving

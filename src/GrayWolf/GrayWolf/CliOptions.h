@@ -151,5 +151,6 @@ struct CliOptions
     std::string DiskGameId;   // disk-export --game (DiskGame.h); detected when empty
     bool EstimateKept = false;  // disk-estimate --kept: the samples kept from the last run, not measured again
     std::string EstimateZones; // disk-estimate --picked: the zones picked, comma-separated (as the panel lists them)
+    std::string WhereNames;    // disk-where --names: asset names, comma-separated, matched whole (no case)
 };
 

@@ -279,10 +279,41 @@ WeaponFiles::Notes GameNotes(const std::string& Title, const std::string& Langua
     return N;
 }
 
+WeaponFiles::Notes StatsNotes(const Layout& L)
+{
+    WeaponFiles::Notes N = L.Notes;
+    std::vector<WeaponFiles::Column> Cols;
+    std::string Notes;
+    // the hit locations past the older games' gun (their table's columns): shield, armor, soft, each
+    // its column hit_<name>
+    static const WeaponFiles::Column Later[] = { { "hit_shield", "locShield", WeaponFiles::Unit::Scale },
+                                                 { "hit_armor", "locArmor", WeaponFiles::Unit::Scale },
+                                                 { "hit_soft", "locSoft", WeaponFiles::Unit::Scale } };
+    std::string Names;
+    for (const auto& Col : Later)
+        if (std::find(L.HitLocations.begin(), L.HitLocations.end(), std::string(Col.Name + 4)) != L.HitLocations.end())
+        {
+            Cols.push_back(Col);
+            Names += (Names.empty() ? "" : ", ") + std::string(Col.Name);
+        }
+    if (!Cols.empty())
+        Notes += "- " + Names + ": the hit locations the exe's table names after the gun (loc<Location> as the\n"
+                 "  others: the next entries of the same table, x damage).\n";
+    // the rounds of a burst, when the layout reads them
+    if (std::any_of(L.Fields.begin(), L.Fields.end(), [](const Field& F) { return F.Name == "burstCount" && F.At >= 0; }))
+    {
+        Cols.push_back({ "burst_count", "burstCount", WeaponFiles::Unit::Count });
+        Notes += "- burst_count: burstCount, the rounds a burst fires (fire_type Burst).\n";
+    }
+    N.Extra.insert(N.Extra.begin(), Cols.begin(), Cols.end());
+    N.ExtraNotes = Notes + N.ExtraNotes;
+    return N;
+}
+
 void Export(const Layout& L, const IwWeaponStats::ZoneView& V, const std::vector<std::pair<std::string, std::string>>& Strings,
             const std::string& Zone, const DiskGame::Context& C, DiskGame::Totals& T, const std::map<std::string, std::string>& Tables)
 {
-    WeaponFiles::ExportStats(Weapons(L, V), Strings, Zone, C, T, L.Notes, Tables);
+    WeaponFiles::ExportStats(Weapons(L, V), Strings, Zone, C, T, StatsNotes(L), Tables);
 }
 
 std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L)

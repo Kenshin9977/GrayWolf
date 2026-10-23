@@ -29,8 +29,11 @@
 #include <filesystem>
 #include <format>
 #include <functional>
+#include <map>
+#include <memory>
 #include <set>
 #include <mutex>
+#include <unordered_set>
 
 namespace
 {
@@ -52,6 +55,7 @@ namespace
             if (const auto* Models = ExporterOf(Kind::Model))
                 Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
                     LoadBeside();
+                    LoadMaterialsBeside();
                     Read(C, T);
                 });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
@@ -157,13 +161,15 @@ namespace
             Install = I;
         }
 
-        // What other zones name and this one holds (the install index's parts): its xmodelsurfs by
-        // name hash (another zone's models' meshes), its gfx_map_trzone by map and number (map id
-        // u32 0x10, zone number u32 0x14: a map's surfaces name their transient zone by number)
+        // What other zones name and this one holds (the install index's parts): its xmodelsurfs,
+        // materials and images by name hash (another zone's models' meshes, materials and their
+        // images), its gfx_map_trzone by map and number (map id u32 0x10, zone number u32 0x14: a
+        // map's surfaces name their transient zone by number)
         void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
         {
             for (const auto& I : Walk().Instances)
-                if (OwnerIs(I, "xmodelsurfs")) Out.emplace_back("xmodelsurfs", At<uint64_t>(Image(), I.Pos) & 0x7FFFFFFFFFFFFFFFull);
+                if (OwnerIs(I, "xmodelsurfs") || OwnerIs(I, "material") || OwnerIs(I, "image"))
+                    Out.emplace_back(Walk().OwnerNames[I.Owner], At<uint64_t>(Image(), I.Pos) & 0x7FFFFFFFFFFFFFFFull);
                 else if (OwnerIs(I, "gfx_map_trzone"))
                     Out.emplace_back("gfx_map_trzone", (uint64_t)At<uint32_t>(Image(), I.Pos + 0x10) << 32 | At<uint32_t>(Image(), I.Pos + 0x14));
         }
@@ -216,7 +222,7 @@ namespace
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "image") && HasPixels(I.Pos)) Out.push_back({ Kind::Image, AssetName(Kind::Image, I.Pos) });
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+parts2"; }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+parts3"; }
         void Served(bool On) override
         {
             if (On)
@@ -243,7 +249,7 @@ namespace
         ExportOptions Options;
         std::string Install;
         IwBeside::Set Beside;
-        bool BesideTried = false;
+        bool BesideTried = false, MaterialsTried = false;
         // the transient zone numbers the map's surface records name (ReadMap's layout)
         std::set<int32_t> TransientNumbers() const;
 
@@ -328,6 +334,128 @@ namespace
             Beside.Serve();
         }
 
+        // The materials and images this zone's models (and the zones loaded beside) name by hash and
+        // no loaded zone defines (a weapon part's _tr zone names the materials of a shared zone), found
+        // in the install index's parts and loaded beside as the meshes are, a few rounds (a material
+        // loaded beside naming an image of yet another zone). Once per zone, before models are read.
+        void LoadMaterialsBeside()
+        {
+            if (MaterialsTried || Game == nullptr || Install.empty()) return;
+            MaterialsTried = true;
+            const auto& Rs = Rules();
+            const auto& R = Walk();
+            std::string ProfileError;
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), ProfileError);
+            if (Loaded == nullptr) return;
+            const auto Typed = [](const std::string& Type) { return Type == "material" || Type == "image"; };
+            const auto PutMain = [this](uint64_t Field, uint64_t Value) {
+                if (Live().Contains(Field)) Live().Poke(Field - Live().Origin(), Value);
+            };
+            std::unique_ptr<DiskGame::ZoneIndex> Index;
+            std::set<std::pair<std::string, uint64_t>> Asked;
+            std::map<std::string, size_t> Counts;
+            for (int Round = 0; Round < 3; Round++)
+            {
+                std::set<std::pair<std::string, uint64_t>> Wanted;
+                const auto Want = [&](const std::string& Type, uint64_t Value) {
+                    if (Typed(Type) && !Asked.count({ Type, Value & Rs.AssetHashMask })) Wanted.emplace(Type, Value & Rs.AssetHashMask);
+                };
+                if (Round == 0)
+                    for (size_t K = 0; K < R.BackRefs.size(); K++)
+                    {
+                        if (K >= R.BackRefIsAsset.size() || !R.BackRefIsAsset[K]) continue;
+                        const auto Type = R.RefTypes.find(R.BackRefs[K].first);
+                        if (Type == R.RefTypes.end() || Type->second >= R.OwnerNames.size()) continue;
+                        if (Off(PointerAt(R.BackRefs[K].first)) < 0) Want(R.OwnerNames[Type->second], R.BackRefs[K].second);
+                    }
+                else
+                {
+                    // the images the materials asked for leave unresolved in the zones that gave them
+                    // (a trial link, its counts dropped; their zones' other references are not wanted)
+                    std::map<std::string, std::vector<std::pair<int64_t, int64_t>>> FromMaterials;
+                    for (const auto& Z : Beside.All())
+                        for (const auto& I : Z->R.Instances)
+                            if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "material" && (uint64_t)I.Pos + 8 <= Z->Bytes.size() &&
+                                Asked.count({ "material", ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & Rs.AssetHashMask }))
+                                FromMaterials[Z->Name].emplace_back(I.Pos, I.End);
+                    std::map<std::string, size_t> Trial;
+                    Beside.Link(R, Live().Origin(), Zone(), Rs, PutMain, Trial,
+                                [&](const std::string& In, uint64_t Field, uint64_t Value, const std::string& Type) {
+                                    if (Type != "image") return;
+                                    const auto It = FromMaterials.find(In);
+                                    if (It == FromMaterials.end()) return;
+                                    for (const auto& [From, To] : It->second)
+                                        if ((int64_t)Field >= From && (int64_t)Field < To) return Want(Type, Value);
+                                });
+                }
+                if (Wanted.empty()) break;
+                Asked.insert(Wanted.begin(), Wanted.end());
+                Counts["materials_beside_wanted"] += Wanted.size();
+                if (!Index)
+                {
+                    std::string Error;
+                    Park();
+                    Index = DiskGame::ZoneIndex::For(*Game, Options, Install, IndexKey(), nullptr, nullptr, Error);
+                    Resume();
+                    if (!Index)
+                    {
+                        Counts["materials_beside_no_index"]++;
+                        break;
+                    }
+                }
+                // the zones giving the most of them first, none already loaded
+                std::set<std::string> Have{ ExportNaming::Lower(Name()) };
+                for (const auto& S : Beside.All()) Have.insert(ExportNaming::Lower(S->Name));
+                std::map<size_t, std::set<std::pair<std::string, uint64_t>>> Gives;
+                for (const auto& W : Wanted)
+                    for (const size_t Z : Index->PartIn(W.first, W.second))
+                        if (!Have.count(ExportNaming::Lower(fs::path(Index->Zones()[Z]).stem().string()))) Gives[Z].insert(W);
+                std::set<std::pair<std::string, uint64_t>> Left = Wanted;
+                std::vector<std::string> Paths;
+                while (!Left.empty() && !Gives.empty())
+                {
+                    const auto Count = [&](const auto& Ws) { return std::count_if(Ws.begin(), Ws.end(), [&](const auto& W) { return Left.count(W) != 0; }); };
+                    const auto Best = std::max_element(Gives.begin(), Gives.end(), [&](const auto& A, const auto& B) { return Count(A.second) < Count(B.second); });
+                    size_t Takes = 0;
+                    for (const auto& W : Best->second) Takes += Left.erase(W);
+                    if (Takes == 0) break;
+                    std::vector<std::string> Found;
+                    std::string Why;
+                    if (Game->ResolveZones(Install, { Index->Zones()[Best->first] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
+                    Gives.erase(Best);
+                }
+                Counts["materials_beside_not_indexed"] += Left.size();
+                if (Paths.empty()) break;
+                Counts["materials_beside_zones"] += Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+            }
+            if (!Beside.Empty() && Counts["materials_beside_zones"] != 0)
+            {
+                Beside.Link(R, Live().Origin(), Zone(), Rs, PutMain, Counts);
+                Beside.Serve();
+            }
+            for (const auto& [K, N] : Counts)
+                if (N != 0) Counter(K) += N;
+        }
+
+        // an image instance of a zone loaded beside (LoadMaterialsBeside's)
+        bool ImageBeside(uint64_t Address) const override
+        {
+            if (ImagesBeside.size() != Beside.All().size())
+            {
+                ImagesBeside.clear();
+                for (const auto& Z : Beside.All())
+                {
+                    auto& Own = ImagesBeside.emplace_back();
+                    for (const auto& I : Z->R.Instances)
+                        if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "image") Own.insert(Z->Base + (uint64_t)I.Pos);
+                }
+            }
+            for (const auto& Own : ImagesBeside)
+                if (Own.count(Address)) return true;
+            return false;
+        }
+        mutable std::vector<std::unordered_set<uint64_t>> ImagesBeside;   // per zone beside, its images' addresses
+
         // an image with pixels: in the zone, or levels in the packages
         bool HasPixels(int64_t Pos) const
         {
@@ -398,6 +526,17 @@ namespace
             // (0x329c960), explosion 0x530
             L.AttachmentName = 0x238, L.AttClipScale = 0xa50, L.AttClipOverride = 0x3b8, L.AttModifiers = 0x240, L.AttAdsOverride = 0x410,
             L.AttExplosion = 0x530, L.AttExplosionAlt = 0x28;
+            // the burst delay f32 0x690 (0x32875e0, Black Ops 7's 0x4637000 instruction for instruction; its
+            // caller 0x32c581c adds floor(t + 0.5) to the fire time 0x64c for fire type 2), the explosion's
+            // damages 0x554 / 0x558 and three rings 0x568.. (0x32898c0, the same output as Black Ops 7's
+            // 0x4639d80), the base and aiming move scales 0x978 / 0x984 (the speed-scale builder 0x30aa9c0
+            // reads them into Black Ops 7's 0x5bf0 / 0x5bfc entries)
+            L.BurstDelay = 0x690, L.ExplosionDamage = 0x554, L.ExplosionRings = 0x568, L.MoveSpeedScale = 0x978, L.AdsMoveSpeedScale = 0x984;
+            // attachment: burst delay i32 * 0x598 (not from an alternate mode's, u8 0xbf5), its scale block
+            // 0x240->0xe8 +4 (0x32875e0); explosion block damages +8 / +0xc, rings +0x20.., ring flag +0x50
+            // (0x32898c0)
+            L.AttBurstDelay = 0x598, L.AttAltMode = 0xbf5, L.AttBurstDelayScale = 0xe8, L.AttExplosionDamage = 8, L.AttExplosionRings = 0x20,
+            L.AttExplosionFlag = 0x50;
             // animation package: block 0x18 (0x329f4a0 reads it at a byte offset)
             L.PkgBlock = 0x18, L.PkgFirstRaise = 0x2, L.PkgReloadEmpty = 0x74, L.PkgReload = 0x76, L.PkgSprintOut = 0x2e0, L.PkgSuperSprintOut = 0x2e2,
             L.PkgRaise = 0xda, L.PkgDrop = 0xd8, L.PkgRaiseQuick = 0xf4, L.PkgReloadStart = 0x8c, L.PkgReloadEnd = 0xb4;
@@ -428,6 +567,9 @@ namespace
                 "- burst_count: 0x688 (weaponburstcount 0x59f2040 -> 0x329e6c0). fire_type: u8 0x648 (0x329f7b0; an\n"
                 "  attachment's +0x2f8 overrides it): 0 auto (weaponisauto), 2 burst, 5 beam (weaponisbeam), 1, 3, 4\n"
                 "  semi-auto (weaponissemiauto).\n"
+                "- burst_delay_ms: the wait after a burst, floor(f32 0x690 + 0.5): 0x32875e0 (Black Ops 7's 0x4637000\n"
+                "  instruction for instruction); 0x32c581c adds it to the fire time 0x64c for fire type 2. Held by every\n"
+                "  weapon, used by burst weapons only.\n"
                 "- clip_size: 0x718 (weaponclipsize 0x59f22f0 -> 0x33024d0). start_ammo: 0x6ec when not 0, else 0x6e8\n"
                 "  (weaponstartammo -> 0x32ba410). max_ammo: 0x714 (weaponmaxammo -> 0x32af480); empty when u8 0x740 is\n"
                 "  set (then it counts magazines, not reproduced).\n"
@@ -447,6 +589,11 @@ namespace
                 "- muzzle_velocity_mps: not proven for this game (empty).\n"
                 "- explosion_radius_m: getweaponexplosionradius (0x5b66900 -> 0x327dce0): i32 0x548, or 0x570 when u8\n"
                 "  0x598 is set; an attachment's block at 0x530 overrides it. Inches / 39.37. Empty when 0.\n"
+                "- explosion_inner_damage / explosion_outer_damage: 0x32898c0 fills radii[3] and damages[3] as Black Ops\n"
+                "  7's 0x4639d80: one ring radii 0 / 0x548 / 0x548, damages i32 0x554 (centre) / 0x558 / 0x558 (edge); with\n"
+                "  u8 0x598 three rings: radii 0x568 / 0x56c / 0x570, damages 0x574 / 0x578 / 0x57c. inner = damages[0],\n"
+                "  outer = damages[2]; three-ring weapons also explosion_inner_radius_m, explosion_mid_radius_m,\n"
+                "  explosion_mid_damage. Written with the radius.\n"
                 "- damage_*: the first record of the table at 0x3c (0x3288900: 2 profiles of 3 records, 0x12c, 0x21c and\n"
                 "  0x30c for the other modes): damage_max up to range_max_m, then the first mid whose range is set and\n"
                 "  beyond the distance, else damage_min (0x3297920, 0x3295a80). Ranges are inches / 39.37.\n"
@@ -454,6 +601,8 @@ namespace
                 "  game's hit location order (its table 0x9a71520).\n"
                 "- sprint_speed_scale (0x99c), super_sprint_speed_scale (0x9b0), prone_speed_scale (0x990): scales\n"
                 "  (0x30aa9c0, the speed-scale builder).\n"
+                "- move_speed_scale (0x978), ads_move_speed_scale (0x984): the builder's standing entries of the two\n"
+                "  families, where Black Ops 7's reads 0x5bf0 / 0x5bfc (the second used while aiming).\n"
                 "- sprint_mps = 190 x suit 0xc28 x sprint_speed_scale / 39.37, super_sprint_mps also x suit 0xc84: the\n"
                 "  weapon stats UI's formula (0x37ece60). suit: the suit of the gametype settings whose tag the set\n"
                 "  holds (the settings bundles of global_shared_mp name no tag: empty). *_mp_suit: the same with\n"
@@ -473,6 +622,12 @@ namespace
                 "- ads_time_ms = max(1, ads_time / (1 + sum(0x240->0x18 +4 - 1)) + (int)(1000 x sum(0x240->0x90 +4)))\n"
                 "  (0x3280340, 0x3282680); ads_time is replaced by (int)(1000 x t) of the first attachment with ADS times\n"
                 "  at 0x410 (0x329c960). ads_out_time_ms: the same with ads_out_time.\n"
+                "- burst_delay_ms = floor(t x max(0, 1 + sum(attachment 0x240->0xe8 +4 - 1)) + 0.5) (0x32875e0): t is the\n"
+                "  i32 the first attachment's pointer 0x598 leads to (that attachment's own scale then left out), else\n"
+                "  tunables 0x690; an alternate mode's attachment (u8 0xbf5 = 1) overrides only while active: not here.\n"
+                "- explosion_inner_damage / explosion_outer_damage: the first attachment with an explosion block (0x530)\n"
+                "  gives the radius, the damages (+8 / +0xc; three rings +0x20 radii, +0x2c / +0x34 damages) and the ring\n"
+                "  flag (u8 +0x50) (0x32898c0).\n"
                 "- Attachment display names are not read for this game.\n";
             return L;
         }();

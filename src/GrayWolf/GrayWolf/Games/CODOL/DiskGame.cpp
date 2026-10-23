@@ -243,7 +243,9 @@ namespace
             for (auto& A : Codol::AttachmentFiles(V)) Weapons.push_back(std::move(A));
             std::vector<std::pair<std::string, std::string>> S;
             Strings(S);
-            for (auto& [Key, Text] : S) Text = ExportWriters::Utf8(Text, LocalizeCodePage());   // (GBK)
+            // (GBK, every one: 16 weapon names, the Desert Eagle's C9 B3 D3 A5 among them, are GBK bytes
+            // that also read as UTF-8)
+            for (auto& [Key, Text] : S) Text = ExportWriters::Utf8(Text, LocalizeCodePage(), true);
             std::map<std::string, std::string> Tables;
             for (const auto& I : Walk().Instances)
             {
@@ -259,7 +261,7 @@ namespace
                 }
                 Tables[Codol::AttachmentTable] = Csv;
             }
-            WeaponFiles::ExportStats(Weapons, S, Name(), C, T, L.Notes, Tables);
+            WeaponFiles::ExportStats(Weapons, S, Name(), C, T, IwWeaponDefs::StatsNotes(L), Tables);
         }
 
         std::shared_ptr<Ifs::Install> Archives_(std::string& Error)

@@ -141,6 +141,9 @@ protected:
     virtual const char* ModelType() const { return "xmodel"; }
     virtual const char* AnimType() const { return "xanim"; }
     virtual const char* ImageType() const { return "image"; }   // what a texture slot points at
+    // Whether a texture slot's address is an image of a zone served beside this one (its pixels
+    // then pulled by name from the zone that defines it, as any texture this zone lacks)
+    virtual bool ImageBeside(uint64_t Address) const { return false; }
     // localized strings: the zone-level type, and an entry's key and text (value at +0, name at
     // +8 by default); an empty key is a reference, defined in another zone
     virtual const char* LocalizeType() const { return "localize"; }
