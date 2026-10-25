@@ -4,12 +4,14 @@
 // template: the LOD surfaces the game links at load time, the streamed-image table some titles keep
 // in the .ff header, and the level's records they have in common.
 
+#include "Games/IW/IWMaterialBooks.h"
 #include "ZonekitZone.h"
 
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -19,6 +21,16 @@ namespace IwWeaponDefs
 {
     struct Layout;
 }
+namespace IWSoundAliases
+{
+    struct Layout;
+}
+class CoDAsset_t;
+namespace IwEffects
+{
+    struct Layout;
+}
+struct XMaterial_t;
 
 class IWZone : public ZonekitZone
 {
@@ -89,6 +101,12 @@ public:
         int64_t SModelCount = 0, Surfaces = 0, SModels = 0, SModelSize = 0, SModelModel = 0x38;
         int64_t SurfaceSize = 0x28, SurfaceFirstVertex = 4, SurfaceMaterial = 0x18;
         int64_t SurfaceTris = 0, SurfaceBaseIndex = 0;
+        // the transient zone a surface's vertices are in (i32 at SurfaceTransient, -1: not read) and
+        // each VertexAsset's number (i32 at TransientNumber): a level split over several (Infinite
+        // Warfare's campaign, its other zones' from TransientsBeside)
+        int64_t SurfaceTransient = -1, TransientNumber = 0;
+        // a surface's vertices' other UV sets (WorldLayout::MoreUvs; WWII's blended surfaces)
+        std::function<uint32_t(int64_t Surface, uint32_t Local, float* Out, uint32_t Max)> MoreUvs;
         const char* Clip = nullptr;
         int64_t DynCounts = 0x188, DynLists = 0x190;   // clipMap_t's two u16 counts and two pointers
         int64_t DynSize = 0, DynDestroyed = -1;
@@ -106,7 +124,61 @@ public:
     // Advanced Warfare's and MWR's clipMap_t brushes (the same shapes in both)
     static Maps::ClipLayout AwClipBrushes();
 
+    // The install whose index says which zones hold what this one names only (ZonesHolding)
+    void SetInstall(const DiskGame::IDiskGame* G, const DiskGame::ExportOptions& O, const std::string& I)
+    {
+        Owner = G, Options = O, Install = I;
+    }
+    // with the material headers other zones' books filled (BookMaterialsElsewhere), and those none did
+    void Measures(DiskGame::Totals& T) const override;
+
 protected:
+    const DiskGame::IDiskGame* Owner = nullptr;
+    DiskGame::ExportOptions Options;
+    std::string Install;
+    // The install index's zones holding what this zone names only (IWZone.Elsewhere.cpp): Find gives
+    // the index's zones for wanted item K (DefinedIn, PartIn), this zone left out. First: each
+    // item's first such zone, in the install's order; else the fewest holding them all, the one
+    // holding the most first (IwBeside::Cover). The index is read, or built (this zone's session
+    // parked meanwhile). Paths: their fast files; NotIndexed: the items no zone holds. False when
+    // there is no install or no index.
+    bool ZonesHolding(size_t Count, const std::function<std::vector<size_t>(const DiskGame::ZoneIndex& Index, size_t K)>& Find, bool First,
+                      std::vector<std::string>& Paths, size_t& NotIndexed);
+    // The material books (Games/IW/IWMaterialBooks.h) of those zones, kept under --cache (or the
+    // temporary folder) by profile
+    std::unique_ptr<IWMaterialBooks::Lookup> MaterialBooks(const IWMaterialBooks::Layout& L, std::vector<std::string> Paths) const;
+    // The materials this zone names only (headers, IsReference) and defines nowhere, by the name
+    // they stand for (Referenced)
+    std::vector<std::string> MaterialHeaders() const;
+    // The books (L) of the zones holding the materials this zone's models name only (Count wanted
+    // items found as ZonesHolding finds them): MaterialsElsewhere, what a model reader looks a
+    // material up in. Once per zone, before its models are read.
+    void BookMaterialsElsewhere(size_t Count, const std::function<std::vector<size_t>(const DiskGame::ZoneIndex& Index, size_t K)>& Find,
+                                bool First, const IWMaterialBooks::Layout& L);
+    std::unique_ptr<IWMaterialBooks::Lookup> MaterialsElsewhere;
+    size_t MaterialsNotIndexed = 0;
+    // A hashed material's images as MaterialsElsewhere has them, each named by Named(its image's
+    // hash); the engine's fill-ins ($white, $black...) are no zone's to write and left out
+    bool HashedImagesElsewhere(const std::string& Hash, IWMaterialBooks::ImageList& Out, const std::function<std::string(uint64_t)>& Named) const;
+    // A zone string's text through the profile's string cipher (Games/Common/StringCipher.h,
+    // strings.cipher.txt): false when it is encrypted and no table knows its cipher
+    bool CipherDecrypt(const std::string& Raw, std::string& Text) const;
+    // A zone string's text, decrypted when it is encrypted (CipherDecrypt), else as it is
+    std::string Decrypted(const std::string& Raw) const
+    {
+        std::string Text;
+        return CipherDecrypt(Raw, Text) ? Text : Raw;
+    }
+    // A transient zone's vertex records held by another zone (a level's _tr zone): its bytes, where
+    // the records are in them, how many
+    struct TransientVertices
+    {
+        const std::vector<uint8_t>* Bytes = nullptr;
+        int64_t Vertices = -1;
+        uint32_t Count = 0;
+    };
+    // The transient zones of the level other zones hold, by number (none by default)
+    virtual void TransientsBeside(std::map<int32_t, TransientVertices>&) {}
     // ReadMap for a title of MapLayout's family, its materials read by the live reader
     bool ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const MapLayout& M,
                    const std::function<XMaterial_t(uint64_t)>& Material);
@@ -131,6 +203,18 @@ protected:
     std::vector<int64_t> StreamOrder() const;
     // An image's pak entries mixed into its content key
     void MixStreams(int64_t Pos, ExportWriters::ContentKey& Key) const;
+    // The file a stream entry names (Ghosts, Advanced Warfare): imagefile<word >> 16>.pak beside the
+    // .ff, the .ff itself for index 0
+    std::string StreamPak(const PakEntry& E) const;
+    // The zone's script strings (Ghosts, Advanced Warfare, MWR): count u64 at 0x48, the list's
+    // marker at 0x50, marker-tested slots from 0x70, then their text
+    std::vector<std::string> HeaderScriptStrings() const;
+    // The sound kind of Ghosts, Advanced Warfare and MWR (IWZone.Sounds.cpp): every alias list's
+    // file specs through the live reader (Add: the game's AddAliasSounds over the list at Address),
+    // written from Install's soundfile<N>.pak (a language folder when localized), then the alias CSV
+    using AliasSounds = std::function<void(uint64_t Address, const std::string& Name, std::set<uint64_t>& Unique, std::vector<CoDAsset_t*>& Found)>;
+    void ExportPakSounds(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Install, bool EmptyFileFails,
+                         const IWSoundAliases::Layout& Aliases, const AliasSounds& Add);
     // The sounds of the sound banks (.sabl, .sabs) at these paths, through SABSupport, each written
     // under its folder in the bank (sounds/cp/dlc4/p6/i/) in the saved sound format; a sound both
     // banks hold once, from the one holding more of it. Patches: the zone's patch_ banks (Modern
@@ -140,6 +224,10 @@ protected:
                           const std::vector<std::string>& Patches = {});
     // The file ExportSoundBanks writes a bank's sound Name (cp\dlc4\x.pn.75.36000.french) to,
     // under the sound kind's folder: cp/dlc4/x<Extension>, each part made safe
+    // The zone's script strings (Modern Warfare 2019, MWIII): count u32 at 0, 8-byte slots from 0x20
+    // when the list's pointer at 8 is inline; a -2 or -1 slot's text follows the slots, in slot
+    // order (iw8 0x2ddc1b0, MWIII 0x3b035b0), any other holds none here
+    static std::vector<std::string> InlineScriptStrings(const std::vector<uint8_t>& Z);
     static std::string SoundBankFile(const std::string& Name, const std::string& Extension);
     // Defines' images: Streams' and Also's, those named in place (at their position + NameAt)
     void DefineStreamed(std::vector<DiskGame::AssetId>& Out, int64_t NameAt, const std::vector<int64_t>& Also = {}) const;
@@ -154,4 +242,9 @@ protected:
     // their 0, the layout's fields named) and the weaponstats kind (IwWeaponDefs) of the games
     // keeping the classic WeaponDef, Ghosts to WWII
     void ExportsIwWeapons(const IwWeaponDefs::Layout& L);
+    // The material kind (its techset, images and blend as JSON, its images by the image kind) and
+    // the fx kind (IwEffects.h, a material visual with its images when the run exports images) of
+    // Ghosts, Advanced Warfare and MWR: Read the game's material reader, TechsetAt where its
+    // Material keeps the techniqueSet pointer (IwEffects.cpp)
+    void ExportsIwEffects(const IwEffects::Layout& L, std::function<XMaterial_t(uint64_t Address)> Read, int64_t TechsetAt);
 };

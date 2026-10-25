@@ -6,8 +6,10 @@
 // gave the names. There is no running-game reader: Black Ops 7 is read from its files only.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CoDXModelTranslator.h"
@@ -43,6 +45,12 @@ public:
     // An asset's name from its 63-bit hash (HashIWAsset: FNV-1a 64 from 0x47f5817a5ef961ba, lower
     // case), "<prefix>_<hex>" when no index knows it
     static std::string HashName(const char* Prefix, uint64_t Hash);
+    // A material no zone served defines (its pointer the hash a reference keeps), by that hash in
+    // hex: its images as (semantic, image name), when the caller knows them. Read by name only:
+    // ReadXMaterial gives them the ExportWriters::ImageElsewhere pointer.
+    static thread_local std::function<bool(const std::string& Hash, std::vector<std::pair<uint32_t, std::string>>& Images)> ImagesElsewhere;
+    // The same material's techset name and sort key (what its alpha mode is read from)
+    static thread_local std::function<bool(const std::string& Hash, std::string& Techset, int& SortKey)> DetailsElsewhere;
     static uint64_t HashIWAsset(const std::string& Name);
 
     // A model's bone names: FNV-1a 64 of the name; bone_<hex> when no index knows it

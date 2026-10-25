@@ -19,6 +19,7 @@
 
 struct XImageDDS;
 struct XImage_t;
+struct XMaterial_t;
 struct XSound;
 class CoDModel_t;
 class CoDAnim_t;
@@ -95,6 +96,8 @@ namespace ExportWriters
 
     // Writes Size bytes to P as they are, its folders made first; false when the file is not written
     bool WriteBytes(const std::filesystem::path& P, const uint8_t* Data, size_t Size);
+    // Reads the whole file P into Out; false when it does not open
+    bool ReadBytes(const std::filesystem::path& P, std::vector<uint8_t>& Out);
 
     // ---- Sounds: every game's sounds written by WriteSound, in the format the user chose (setting
     // "exportsnd", --audio-format): WAV (the default), FLAC or OPUS.
@@ -196,6 +199,9 @@ namespace ExportWriters
         // When set, each texture is handed to it (renamed as it says, dropped when it returns
         // false) and written by the caller, all in ImagesDir: the image kind's own writer.
         std::function<bool(XImage_t& Image)> Take;
+        // When set, each material read without an image is handed to it first (it may give it the
+        // images of the material another zone defines: LiveExport::MaterialFiller)
+        std::function<void(XMaterial_t& Material)> Fill;
     };
     // The pointer of a texture known by name only: a material another zone defines named it, and
     // this zone holds no image for it (Take hands it on, the zone that defines it writes it).
@@ -205,6 +211,9 @@ namespace ExportWriters
     // Crash naming the exception (C++ type, or SEH code and module offset). GH_EXPORT_CRASHDUMP
     // (legacy GH_BO4_CRASHDUMP) = <file> writes a full minidump of the first crash.
     int ExportModel(const CoDModel_t& Model, const std::string& Dir, const ModelTextures& Textures, std::string& Crash);
+    // A composite model's parts as one model, Name (LiveExport::ExportCompositeModel)
+    int ExportComposite(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& Dir, const ModelTextures& Textures,
+                        size_t& PartsRead, std::string& Crash);
     int ExportAnim(const CoDAnim_t& Anim, const std::string& Dir, std::string& Crash);
     int ExportSound(const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, std::string& Crash);
 

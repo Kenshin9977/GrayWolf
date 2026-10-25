@@ -10,6 +10,7 @@ INSTANCES = "collection"
 # ---- body
 import bpy, os, json, struct, time, math
 import numpy as np
+from urllib.parse import unquote
 from mathutils import Matrix, Vector
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +72,7 @@ def image(index):
     src = DOC["images"][index]
     try:
         if "uri" in src:
-            img = bpy.data.images.load(os.path.join(DIR, src["uri"]), check_existing=True)
+            img = bpy.data.images.load(os.path.join(DIR, unquote(src["uri"])), check_existing=True)   # a URI: %-encoded
         elif "bufferView" in src:
             v = DOC["bufferViews"][src["bufferView"]]
             data = bytes(BIN[v.get("byteOffset", 0):v.get("byteOffset", 0) + v["byteLength"]])

@@ -48,7 +48,47 @@ namespace
         uint64_t Size = 0;   // its footprint, 0 when it does not open
         std::vector<AssetId> Defined;   // sorted, once each
         std::vector<std::pair<std::string, uint64_t>> Parts;   // sorted, once each
+        std::vector<std::string> Renamed;   // ZoneIndex::Renamed's lines for this zone
     };
+
+    // Whether a name is text: UTF-8 without control bytes. A reader whose name pointer resolved
+    // into other data (a layout off in a block, MW2019's common_mp before its equipsndtable
+    // entries) gives bytes, a tab or a line break among them, which would cut the index's lines.
+    bool TextName(const std::string& N)
+    {
+        for (size_t I = 0; I < N.size();)
+        {
+            const uint8_t C = (uint8_t)N[I];
+            if (C < 0x20 || C == 0x7f) return false;
+            const size_t Len = C < 0x80 ? 1 : (C & 0xe0) == 0xc0 ? 2 : (C & 0xf0) == 0xe0 ? 3 : (C & 0xf8) == 0xf0 ? 4 : 0;
+            if (Len == 0 || I + Len > N.size()) return false;
+            for (size_t K = 1; K < Len; K++)
+                if (((uint8_t)N[I + K] & 0xc0) != 0x80) return false;
+            I += Len;
+        }
+        return true;
+    }
+
+    // What the index keeps instead of a name that is not text: "#<kind>_<FNV-1a of its bytes>",
+    // the same from one build to the next
+    std::string FallbackName(Kind K, const std::string& N)
+    {
+        return "#" + std::string(KindName(K)) + "_" + Hex16(Fnv1a(N));
+    }
+
+    // A name's bytes for a report line: printable ASCII as it is, the rest \xNN, the first 48
+    std::string Escaped(const std::string& N)
+    {
+        static const char* Digits = "0123456789abcdef";
+        std::string Out;
+        for (size_t I = 0; I < N.size() && I < 48; I++)
+        {
+            const uint8_t C = (uint8_t)N[I];
+            if (C >= 0x20 && C < 0x7f && C != '\\') Out += (char)C;
+            else Out += std::string("\\x") + Digits[C >> 4] + Digits[C & 15];
+        }
+        return N.size() > 48 ? Out + "..." : Out;
+    }
 
     // The zone opened alone: what it defines and holds (nothing when it does not open)
     ZoneEntry ReadZone(const IDiskGame& Game, const ExportOptions& Options, const std::string& Path)
@@ -59,6 +99,13 @@ namespace
         const auto Zone = Game.Open(Path, Options, Why);
         if (!Zone) return E;
         Zone->Defines(E.Defined);
+        for (auto& A : E.Defined)
+            if (!TextName(A.Name))
+            {
+                const std::string Name = FallbackName(A.K, A.Name);
+                E.Renamed.push_back(fs::path(Path).filename().string() + ": " + KindName(A.K) + " " + Escaped(A.Name) + " -> " + Name);
+                A.Name = Name;
+            }
         std::sort(E.Defined.begin(), E.Defined.end());
         E.Defined.erase(std::unique(E.Defined.begin(), E.Defined.end(),
                                     [](const AssetId& A, const AssetId& B) { return !(A < B) && !(B < A); }),
@@ -125,7 +172,12 @@ namespace
                         if (Tab2 == std::string::npos) Z = SIZE_MAX;
                         else E.Parts.emplace_back(Line.substr(Tab + 1, Tab2 - Tab - 1), std::strtoull(Line.c_str() + Tab2 + 1, nullptr, 16));
                     }
-                    else if (const KindInfo* K = KindNamed(Line.substr(0, Tab)); K != nullptr) E.Defined.push_back({ K->Id, Line.substr(Tab + 1) });
+                    else if (const KindInfo* K = KindNamed(Line.substr(0, Tab)); K != nullptr)
+                    {
+                        std::string Name = Line.substr(Tab + 1);
+                        if (!TextName(Name)) Name = FallbackName(K->Id, Name);
+                        E.Defined.push_back({ K->Id, std::move(Name) });
+                    }
                     else Z = SIZE_MAX;
                 }
             }
@@ -265,6 +317,27 @@ std::string KeptFile(const IDiskGame& Game, const ExportOptions& Options, const 
     return (Dir / (std::string(Game.Id()) + "_" + Hex16(Fnv1a(Lower(fs::absolute(Install).string()))) + Extension)).string();
 }
 
+std::vector<std::string> KeptInstalls(const IDiskGame& Game, const ExportOptions& Options)
+{
+    std::vector<std::string> Out;
+    const fs::path Dir = fs::path(KeptFile(Game, Options, ".", ".install")).parent_path();
+    const std::string Prefix = Lower(std::string(Game.Id()) + "_");
+    std::error_code Ec;
+    for (auto It = fs::directory_iterator(Dir, Ec); !Ec && It != fs::directory_iterator(); It.increment(Ec))
+    {
+        if (Lower(It->path().filename().string()).rfind(Prefix, 0) != 0 || It->path().extension() != ".install") continue;
+        std::ifstream In(It->path(), std::ios::binary);
+        std::string Install;
+        std::getline(In, Install);
+        if (!Install.empty() && Install.back() == '\r') Install.pop_back();
+        // its own (the file's name holds the folder's hash), and still there
+        std::error_code Ec2;
+        if (!Install.empty() && Lower(KeptFile(Game, Options, Install, ".install")) == Lower(It->path().string()) && fs::is_directory(Install, Ec2))
+            Out.push_back(Install);
+    }
+    return Out;
+}
+
 size_t ZoneIndex::AssetHash::operator()(const AssetId& A) const
 {
     // FNV-1a over the name's lower-case letters, mixed with the kind
@@ -362,7 +435,10 @@ bool ZoneIndex::Load(const std::string& Key)
             for (const auto& [N, K] : KindNames)
                 if (Head == N)
                 {
-                    Add(Names.size() - 1, { K, std::string(Line.substr(Tab + 1)) });
+                    // (a file built before names were checked: the fallback a build gives now)
+                    std::string Name(Line.substr(Tab + 1));
+                    if (!TextName(Name)) Name = FallbackName(K, Name);
+                    Add(Names.size() - 1, { K, std::move(Name) });
                     break;
                 }
     }
@@ -422,6 +498,10 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
 
     const auto Done = [&] {
         Ix->Seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
+        // the install's folder beside its index (KeptInstalls): an install no detection finds is found again
+        const std::string Beside = KeptFile(Game, Options, Install, ".install");
+        std::error_code Ec;
+        if (!fs::exists(Beside, Ec)) std::ofstream(Beside, std::ios::binary) << fs::absolute(Install).string() << "\n";
         return std::move(Ix);
     };
 
@@ -447,6 +527,7 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     {
         Ix->Sizes[Z] = Read[Z].Size;
         for (auto& A : Read[Z].Defined) Ix->Add(Z, std::move(A));
+        for (auto& N : Read[Z].Renamed) Ix->Renamed.push_back(std::move(N));
         Parts[Z] = std::move(Read[Z].Parts);
         for (const auto& P : Parts[Z]) Ix->PartsWhere[P].push_back(Z);
     }

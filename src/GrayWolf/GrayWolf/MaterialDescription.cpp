@@ -355,13 +355,49 @@ Description DescribeBySemantic(const Source& M, const std::vector<SemanticRole>&
     return D;
 }
 
+void BaseColorFactor(const Description& D, float Rgb[3])
+{
+    for (int c = 0; c < 3; c++) Rgb[c] = D.Color.Empty() ? 1.0f : D.Color.Color[c];
+}
+
 std::string SidecarPath(const std::string& ModelPath)
 {
     const std::filesystem::path P(ModelPath);
     return (P.parent_path() / (P.stem().string() + ".materials.json")).string();
 }
 
+namespace
+{
+    std::string SidecarText(const Sidecar& S);
+
+    bool FileHolds(const std::string& Path, const std::string& Text)
+    {
+        std::error_code Ec;
+        if (std::filesystem::file_size(Path, Ec) != Text.size() || Ec) return false;
+        std::ifstream In(Path, std::ios::binary);
+        std::string Old(Text.size(), '\0');
+        return In.read(Old.data(), (std::streamsize)Old.size()) && Old == Text;
+    }
+}
+
+bool SidecarHolds(const std::string& Path, const Sidecar& S)
+{
+    return FileHolds(Path, SidecarText(S));
+}
+
 bool WriteSidecar(const std::string& Path, const Sidecar& S)
+{
+    const std::string Text = SidecarText(S);
+    if (FileHolds(Path, Text)) return true;   // already those bytes: not rewritten
+    std::ofstream Out(Path, std::ios::binary | std::ios::trunc);
+    if (!Out) return false;
+    Out << Text;
+    return (bool)Out;
+}
+
+namespace
+{
+std::string SidecarText(const Sidecar& S)
 {
     nlohmann::json Mats = nlohmann::json::array();
     for (size_t i = 0; i < S.Materials.size(); i++)
@@ -386,6 +422,8 @@ bool WriteSidecar(const std::string& Path, const Sidecar& S)
         }
         PutMap(J, "occlusion", D.Occlusion, true);
         PutMap(J, "emissive", D.Emissive, false);
+        if (!D.Emissive.Empty() && (D.EmissiveColor[0] != 1.0f || D.EmissiveColor[1] != 1.0f || D.EmissiveColor[2] != 1.0f))
+            J["emissive"]["color"] = Floats(D.EmissiveColor, 3);
         if (!D.Transmission.Empty())
         {
             PutMap(J, "transmission", D.Transmission.Image, true);
@@ -418,6 +456,7 @@ bool WriteSidecar(const std::string& Path, const Sidecar& S)
         {
             const Source& Src = S.Sources[i];
             if (!Src.Techset.empty()) J["techset"] = Src.Techset;
+            if (Src.SortKey >= 0) J["sort_key"] = Src.SortKey;
             nlohmann::json Imgs = nlohmann::json::array();
             char Hex[16];
             for (const auto& Img : Src.Images)
@@ -432,11 +471,8 @@ bool WriteSidecar(const std::string& Path, const Sidecar& S)
     const nlohmann::json Root{ { "format", "greyhound-materials" }, { "version", 1 },
                                { "game", S.Game }, { "adapter", S.Adapter }, { "materials", Mats } };
     // names are raw game strings: bytes that are not UTF-8 become U+FFFD instead of throwing
-    const std::string Text = Root.dump(1, '\t', false, nlohmann::json::error_handler_t::replace);
-    std::ofstream Out(Path, std::ios::binary | std::ios::trunc);
-    if (!Out) return false;
-    Out << Text;
-    return (bool)Out;
+    return Root.dump(1, '\t', false, nlohmann::json::error_handler_t::replace);
+}
 }
 
 bool ReadSidecar(const std::string& Path, Sidecar& S)
@@ -473,6 +509,7 @@ bool ReadSidecar(const std::string& Path, Sidecar& S)
             }
             GetMap(J, "occlusion", D.Occlusion);
             GetMap(J, "emissive", D.Emissive);
+            if (J.contains("emissive") && J["emissive"].is_object()) GetFloats(J["emissive"], "color", D.EmissiveColor, 3);
             GetMap(J, "transmission", D.Transmission.Image);
             if (J.contains("transmission") && J["transmission"].is_object()) GetFloats(J["transmission"], "color", D.Transmission.Color, 3);
             GetMap(J, "alpha_map", D.AlphaMap.Image);

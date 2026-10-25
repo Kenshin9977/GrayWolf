@@ -108,10 +108,13 @@ namespace IW12
     };
 
     // materials/<name> (CoD2): the technique set and the images by sampler ("colorMap", "normalMap",
-    // "detailMap", "specularMap"...). Offsets point into a string pool that ends the file.
+    // "detailMap", "specularMap"...). Offsets point into a string pool that ends the file. An effect
+    // material's images can be an atlas: its rows and columns at 0xe, 0xf (gfx_smokepuff_atlas 4 x 4;
+    // every other material 1 x 1).
     struct MaterialFile
     {
         std::string Name, Techset;
+        uint8_t AtlasRows = 1, AtlasCols = 1;
         std::vector<std::pair<std::string, std::string>> Textures;   // sampler, image name
     };
 

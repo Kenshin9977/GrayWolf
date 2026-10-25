@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <unordered_map>
 
@@ -31,6 +32,11 @@ namespace Gdt
 {
     class Type;
     struct Memory;
+}
+namespace Treyarch
+{
+    struct EffectZone;
+    enum class EffectLayout;
 }
 
 // Every pointer of a layout walk, resolved: inline links, asset-list references, data back
@@ -100,6 +106,8 @@ public:
     // Parked: the session ended (its lock freed), the relocated zone kept; Resume serves it again.
     bool Park() override;
     void Resume() override;
+    // its MaterialType materials' images through ReadsMaterials' reader (ZonekitZone.Materials.cpp)
+    bool MaterialImages(DiskGame::MaterialBook& Out) override;
     // Visit each zone-level asset of the profile's gdt type Id (<profile>/gdt/<Id>/) with the type
     // and how it reads the zone (Gdt::Type::Values); false and Error when the profile has no such type
     bool ForEachGdtAsset(const std::string& Id, const std::function<void(const Gdt::Type&, const Gdt::Memory&, int64_t Pos)>& Visit,
@@ -228,9 +236,12 @@ protected:
     // The image kind of a zone whose images are found by name (an archive's file, else the pixels
     // the zone carries): each image it holds, once per name in name order, decoded by Decode; a
     // "," name no image here has is needed from the zone defining it. Unread says where an image
-    // that does not decode was looked for.
+    // that does not decode was looked for. ReferencesByName: a "," name is first decoded by its
+    // name alone (Pos -1: an archive file no zone holds whole, a localized .iwd's), needed from
+    // another zone only when it does not.
     using NamedImageDecoder = std::function<std::unique_ptr<XImageDDS>(const std::string& Name, int64_t Pos)>;
-    void ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread);
+    void ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
+                           bool ReferencesByName = false);
     // Defines' images for such a zone: every named image it holds whole
     void DefineImages(std::vector<DiskGame::AssetId>& Out) const;
 
@@ -262,6 +273,27 @@ protected:
     // (false: not read, a failure) and written as fx/<name>.json, the name's folders kept.
     using EffectReader = std::function<bool(int64_t Pos, const std::string& Name, std::string& Json)>;
     void ExportEffects(const DiskGame::Context& C, DiskGame::Totals& T, const char* Type, const EffectReader& Read);
+    // The served zone as the effect readers read it (Treyarch::EffectZone); and the material and
+    // fx kinds of a game whose effects Treyarch's reader reads with layout L, its materials
+    // through the live reader Read (both in Games/Treyarch/TreyarchEffects.cpp)
+    Treyarch::EffectZone EffectView() const;
+    void ExportsEffects(std::function<XMaterial_t(uint64_t Address)> Read, Treyarch::EffectLayout L);
+    // The material kind, for a game that reads its materials (ExportsMaterials): each top-level
+    // asset of Type (a reference needed from the zone that defines it), read by Read into JSON
+    // text and the names of its images, written as materials/<name>.json, its images by the
+    // image kind (ExportTextures). The install index then lists the zone's materials, so an
+    // effect's material defined in another zone is pulled from there (C.Needs(Kind::Material)).
+    // Indexed false: the zone's materials are complete without another zone's (Black Ops 4's
+    // books), the index does not list them.
+    using MaterialReader = std::function<bool(const std::string& Name, uint64_t Address, std::string& Json, std::set<std::string>& Images)>;
+    void ExportsMaterials(const char* Type, MaterialReader Read, bool Indexed = true);
+    // The live material reader: the model kind then gives a name-only material header (a material
+    // of Type, ExportsMaterials', this zone or another defines whole) that one's images
+    // (Context::MaterialsElsewhere; ExportsEffects sets it). ZonekitZone.Materials.cpp
+    void ReadsMaterials(std::function<XMaterial_t(uint64_t Address)> Read) { MaterialOf = std::move(Read); }
+    // Images some materials name (a game's own fx kind), as the material kind writes them: by the
+    // image kind, those not in the zone needed from the one that defines them
+    void ExportMaterialImages(std::set<std::string> Images, const DiskGame::Context& C, DiskGame::Totals& T);
 
     // The rawfile kind (ZonekitZone.Data.cpp), for a game whose zones hold rawfiles or Lua files
     // (Exports(Kind::Rawfile, ...)): each top-level asset of a type of Readers, its name first
@@ -422,8 +454,9 @@ protected:
         std::function<bool(int64_t Pos, const std::vector<std::pair<int64_t, int64_t>>& Reads, std::string& Folder, std::string& Json)>;
     void ExportJsonAssets(DiskGame::Kind K, const DiskGame::Context& C, DiskGame::Totals& T, const char* Type, const JsonAssetReader& Read);
     // A Lua file's name ending as its bytes are: .luac for compiled bytecode (ESC "Lua", LuaJIT's
-    // ESC "LJ"), else .lua (in place of the name's own .lua or .luac)
-    static void NameLua(std::string& Name, const std::vector<uint8_t>& Bytes);
+    // ESC "LJ"), else .lua (in place of the name's own .lua or .luac); deflated bytecode (zlib)
+    // inflated first
+    static void NameLua(std::string& Name, std::vector<uint8_t>& Bytes);
 
     // The data kind's string tables (ZonekitZone.Tables.cpp, Exports(Kind::Data, ...)): each
     // top-level asset of Type, named by AssetName(Kind::Data) (a reference left out), its cells
@@ -489,15 +522,16 @@ protected:
     template <class Z>
     static Z* ServedZone() { return static_cast<Z*>(Serving); }
     bool IsServed() const { return Serving == this; }
+    // The textures the models (or an effect's materials) named, written by this zone's image
+    // exporter (Only those names); what it does not hold is needed from the zone that defines it.
+    void ExportTextures(const std::set<std::string>& Names, const DiskGame::Context& C, DiskGame::Totals& T);
+    // the kind's assets of the type, each by the live reader (a game wrapping its model kind calls it)
+    void ExportLive(DiskGame::Kind K, const char* Type, const DiskGame::Context& C, DiskGame::Totals& T);
 
 private:
     static ZonekitZone* Serving;
 
     void Relocate(const ResolvedLinks& L);
-    // The textures the models named, written by this zone's image exporter (Only those names);
-    // what it does not hold is needed from the zone that defines it.
-    void ExportTextures(const std::set<std::string>& Names, const DiskGame::Context& C, DiskGame::Totals& T);
-    void ExportLive(DiskGame::Kind K, const char* Type, const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportLocalize(const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T);
     // the profile's gdt types (<profile>/gdt/<type>/), read once per profile; empty and Error when they do not read
@@ -515,6 +549,11 @@ private:
     std::unique_ptr<CoDPackageCache> SavedPackages;   // CoDAssets' own while ServePackages serves
     bool PackagesServed = false;
     bool Walked = false;
+    const char* MaterialType = nullptr;   // ExportsMaterials' type: Defines lists those materials
+    std::function<XMaterial_t(uint64_t Address)> MaterialOf;   // ReadsMaterials'
+    // the model kind's: the images of the material headers this zone names (MaterialImages, its
+    // own or Context::MaterialsElsewhere's), for ModelTextures::Fill; empty when none is
+    std::function<void(XMaterial_t& Material)> HeaderFiller(const DiskGame::Context& C);
     std::map<std::string, size_t> Counters;   // Measures() adds them to the run's totals
     std::vector<std::pair<std::string, double>> Steps;   // Open's, in seconds
 };

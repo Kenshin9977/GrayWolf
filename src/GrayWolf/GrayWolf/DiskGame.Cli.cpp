@@ -4,6 +4,7 @@
 #include "DiskGameSizes.h"
 #include "ExportNaming.h"
 
+#include "CliCommands.h"
 #include "CliOptions.h"
 #include "CliSupport.h"
 #include "GameCommand.h"
@@ -49,6 +50,9 @@ namespace
         O.AudioFormat = Cli.AudioFormat;
         O.ActsExe = Cli.ActsExe;
         O.GscToolExe = Cli.GscToolExe;
+        if (!Cli.CodLuaJitExe.empty()) O.Settings["cod_luajit_decompiler_exe"] = Cli.CodLuaJitExe;
+        if (!Cli.CodLuaExe.empty()) O.Settings["cod_lua_decompiler_exe"] = Cli.CodLuaExe;
+        if (!Cli.FfmpegExe.empty()) O.Settings["ffmpeg_exe"] = Cli.FfmpegExe;
         O.GameExe = Cli.GameExe;
         O.OatModelFormat = Cli.OatModelFmt;
         O.OatImageFormat = Cli.OatImageFmt;
@@ -87,12 +91,19 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
     Context C;
     C.OutRoot = (fs::path(Options.Out) / Game.Id()).string();
     C.NameFilter = Options.NameFilter;
+    C.Limit = Options.Limit;
     std::string Error;
     if (!ReadOptions(Game, Options, O, Error) || !ParseKinds(Options.Type, C.Kinds, Error)) return Fail(Error);
     O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons || K == Kind::WeaponStats || K == Kind::MapInfo || K == Kind::Scriptables || K == Kind::MapEnts || K == Kind::AiTypes; }) && !C.Kinds.empty();
     std::vector<std::string> Zones;
     const auto Start = std::chrono::steady_clock::now();
-    if (!Game.Zones(Input, O, Zones, Error)) return Fail(Error);
+    if (!Game.Zones(Input, O, Zones, Error))
+    {
+        // a zone named as the install lists it (ListZones, the install index), from --install
+        std::string Why;
+        Zones.clear();
+        if (O.Install.empty() || !Game.ResolveZones(O.Install, { Input }, O, Zones, Why) || Zones.empty()) return Fail(Error);
+    }
     C.ResolveSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
     const Totals T = Export(Game, O, Zones, C);
     const bool Ignored = !C.NameFilter.empty() && !Game.FiltersByName();
@@ -179,9 +190,11 @@ namespace
         }
         size_t Opened = 0;
         for (size_t Z = 0; Z < Ix->Zones().size(); Z++) Opened += Ix->Footprint(Z) != 0;
+        std::string Renamed = "index_renamed=" + std::to_string(Ix->Renamed.size()) + "\n";
+        for (const auto& R : Ix->Renamed) Renamed += "index_renamed " + R + "\n";
         CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nzones=" + std::to_string(Ix->Zones().size()) +
                                "\nopened=" + std::to_string(Opened) + "\nassets=" + std::to_string(Ix->Entries) +
-                               "\nbuilt=" + (Ix->Built ? "1" : "0") + "\nseconds=" + std::to_string(Ix->Seconds) + "\nfile=" + Ix->File + "\n");
+                               "\nbuilt=" + (Ix->Built ? "1" : "0") + "\nseconds=" + std::to_string(Ix->Seconds) + "\nfile=" + Ix->File + "\n" + Renamed);
         return 0;
     }
 
@@ -354,4 +367,24 @@ namespace
     };
     const GameCommandRegistration DiskWhereRegistered(DiskWhereCommand);
 }
+}
+
+// disk-export <input> [--game id]: every game on the disk template, plus their aliases
+void AddDiskExportCommands(CliCommandBuilders& B)
+{
+    B["disk-export"] = [](CLI::App& App, CliOptions& Options) {
+        std::string Ids, KindNames;
+        for (const DiskGame::IDiskGame* G : DiskGame::Games()) Ids += std::string(Ids.empty() ? "" : ", ") + G->Id();
+        for (const DiskGame::KindInfo& K : DiskGame::Kinds) KindNames += std::string(KindNames.empty() ? "" : ", ") + K.Folder;
+        auto* Sub = App.add_subcommand("disk-export",
+            "Read zones from disk and export " + KindNames + " to <out>/<game>/<kind>/ (--type; games: " + Ids + ")");
+        Sub->add_option("zones", Options.DiskExportIn["disk-export"], "A zone, or an install / folder of zones")->required();
+        Sub->add_option("--game", Options.DiskGameId, "The game (" + Ids + "); detected from the zones when omitted");
+        for (const DiskGame::IDiskGame* G : DiskGame::Games())
+            for (const auto& Alias : G->Aliases())
+            {
+                auto* A = App.add_subcommand(Alias, std::string(G->Title()) + " from disk (same as disk-export --game " + G->Id() + ")");
+                A->add_option("zones", Options.DiskExportIn[Alias], "A zone, or an install / folder of zones")->required();
+            }
+    };
 }

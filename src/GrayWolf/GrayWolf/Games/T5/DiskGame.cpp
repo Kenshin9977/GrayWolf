@@ -15,12 +15,14 @@
 #include "ExportWriters.h"
 #include "GameBlackOps.h"
 #include "Games/IW3/Iw3Install.h"
+#include "Games/IW3/LoadDefImage.h"
 
 #include "Image.h"
 #include "IWDCache.h"
 #include "MapLive.h"
 #include <miniz/miniz.h>
 #include "ZonekitZone.h"
+#include "WmaSounds.h"
 #include "Games/OAT/OatWeapons.h"
 
 #include <algorithm>
@@ -106,9 +108,7 @@ namespace
                 {
                     char Name[512];
                     if (mz_zip_reader_get_filename(Zip.get(), K, Name, sizeof(Name)) == 0) continue;
-                    std::string Key = ExportNaming::Lower(Name);
-                    std::replace(Key.begin(), Key.end(), '\\', '/');
-                    Files.emplace(Key, std::make_pair(Archives.size(), K));
+                    Files.emplace(ExportNaming::ForwardSlashes(ExportNaming::Lower(Name)), std::make_pair(Archives.size(), K));
                 }
                 Archives.push_back(std::move(Zip));
             }
@@ -122,9 +122,7 @@ namespace
 
         bool Read(const std::string& Path, std::vector<uint8_t>& Out)
         {
-            std::string Key = ExportNaming::Lower(Path);
-            std::replace(Key.begin(), Key.end(), '\\', '/');
-            const auto It = Files.find(Key);
+            const auto It = Files.find(ExportNaming::ForwardSlashes(ExportNaming::Lower(Path)));
             if (It == Files.end()) return false;
             std::lock_guard<std::mutex> G(Lock);
             mz_zip_archive* Zip = Archives[It->second.first].get();
@@ -151,12 +149,6 @@ namespace
         return P;
     }
 
-    std::string Slashes(std::string S)
-    {
-        std::replace(S.begin(), S.end(), '\\', '/');
-        return S;
-    }
-
     class Bo1Zone final : public TreyarchLevelZone
     {
     public:
@@ -171,6 +163,13 @@ namespace
             Exports(Kind::Rawfile, [this](const Context& C, Totals& T) {
                 ExportRawfiles(C, T, { { "rawfile", [this](int64_t Pos, std::string& Nm, std::vector<uint8_t>& Bytes) { return RawfileBytes(Pos, Nm, Bytes); } } });
             });
+            // stringtable (0x14, OpenAssetTools' layout) {name, i32 columns 4, rows 8, cells 0xc of 8
+            // bytes {string, hash}, cell index 0x10}: CSV
+            Exports(Kind::Data, [this](const Context& C, Totals& T) {
+                ExportStringTables(C, T, "stringtable", [this](int64_t Pos, uint32_t& Columns, uint32_t& Rows, std::vector<std::string>& Cells) {
+                    return StringTableCells(Pos, { 4, 8, 0xc, 8 }, Columns, Rows, Cells);
+                });
+            });
             // the .gsc/.csc rawfiles: source
             Exports(Kind::Script, [this](const Context& C, Totals& T) {
                 ExportScripts(C, T, {}, { { "rawfile", [this](int64_t Pos, Scripts::Script& S) {
@@ -179,13 +178,9 @@ namespace
                               } } });
             });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+            // Material: its techset, images and blend factors as JSON, its images by the image kind;
             // FxEffectDef (0x3c, elements 0x124) as JSON
-            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
-                const Treyarch::EffectZone Z{ &Image(), [this](uint64_t A) { return Off(A); }, [this](uint64_t A) { return StringAt(A); } };
-                ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
-                    return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::Bo1, Pos, N, J);
-                });
-            });
+            ExportsEffects(GameBlackOps::ReadXMaterial, Treyarch::EffectLayout::Bo1);
         }
         ~Bo1Zone() override
         {
@@ -243,11 +238,13 @@ namespace
         }
 
         // Every image the zone names (its own and its materials'): from the .iwd by name, or from
-        // the pixels the zone carries (a loadDef: the code images). A "," name is a reference.
+        // the pixels the zone carries (a loadDef: the code images). A "," name is a reference, read
+        // from the .iwd by name too: a localized archive's image (localized_<language>_iw*.iwd: the
+        // waypoint_* icons common_mp names) is held whole by no zone.
         void ExportImages(const Context& C, Totals& T)
         {
             ExportNamedImages(C, T, [this](const std::string& N, int64_t Pos) { return Decode(N, Pos); },
-                              "neither in the .iwd archives nor in the zone");
+                              "neither in the .iwd archives nor in the zone", true);
         }
 
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
@@ -285,31 +282,20 @@ namespace
             const uint32_t Format = At<uint32_t>(Z, Def + 4), Size = At<uint32_t>(Z, Def + 8);
             ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
             uint64_t Level = 0;
-            const uint64_t Blocks = (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4);
             bool Swap = false;
-            uint32_t Packed = 0;   // 23 R5G6B5, 34 G16R16 (the lightmaps): widened to 8-bit RGBA
-            switch (Format)
+            const bool Packed = Format == 23 || Format == 34;   // 23 R5G6B5, 34 G16R16 (the lightmaps): widened to 8-bit RGBA
+            if (Packed)
+                Fmt = ImageFormat::DDS_Standard_A8R8G8B8, Level = (uint64_t)W * H * (Format == 23 ? 2 : 4);
+            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
             {
-            case 0x31545844: Fmt = ImageFormat::DDS_BC1_UNORM; Level = Blocks * 8; break;    // DXT1
-            case 0x33545844: Fmt = ImageFormat::DDS_BC2_UNORM; Level = Blocks * 16; break;   // DXT3
-            case 0x35545844: Fmt = ImageFormat::DDS_BC3_UNORM; Level = Blocks * 16; break;   // DXT5
-            case 21: case 22: Fmt = ImageFormat::DDS_Standard_A8R8G8B8; Level = (uint64_t)W * H * 4; Swap = true; break;
-            case 23: Fmt = ImageFormat::DDS_Standard_A8R8G8B8; Level = (uint64_t)W * H * 2; Packed = 23; break;
-            case 34: Fmt = ImageFormat::DDS_Standard_A8R8G8B8; Level = (uint64_t)W * H * 4; Packed = 34; break;
-            case 50: Fmt = ImageFormat::DDS_Standard_A8_UNORM; Level = (uint64_t)W * H; break;   // L8
-            default:
                 Counter("images_in_zone_unknown_format")++;
                 return nullptr;
             }
             if (W == 0 || H == 0 || Level > Size || Def + 0xc + (int64_t)Level > (int64_t)Z.size()) return nullptr;
-            const uint64_t Out = Packed ? (uint64_t)W * H * 4 : Level;
-            auto Result = std::make_unique<XImageDDS>();
-            auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Out];
-            uint32_t Header = 0;
-            Image::WriteDDSHeaderToStream(Buffer, W, H, 1, Fmt, Header, false);
             const uint8_t* Src = Z.data() + Def + 0xc;
-            auto* Dst = reinterpret_cast<uint8_t*>(Buffer + Header);
-            if (Packed == 23)
+            if (!Packed) return LoadDefImage::Dds(W, H, Fmt, Src, Level, Swap);
+            std::vector<uint8_t> Dst((size_t)W * H * 4);
+            if (Format == 23)
                 for (uint64_t P = 0; P < (uint64_t)W * H; P++)
                 {
                     const uint16_t V = (uint16_t)(Src[2 * P] | (Src[2 * P + 1] << 8));
@@ -318,7 +304,7 @@ namespace
                     Dst[4 * P + 2] = (uint8_t)((V & 31) * 255 / 31);
                     Dst[4 * P + 3] = 255;
                 }
-            else if (Packed == 34)
+            else
                 for (uint64_t P = 0; P < (uint64_t)W * H; P++)
                 {
                     Dst[4 * P] = Src[4 * P + 1];       // R16's high byte
@@ -326,14 +312,7 @@ namespace
                     Dst[4 * P + 2] = 0;
                     Dst[4 * P + 3] = 255;
                 }
-            else
-                std::memcpy(Dst, Src, (size_t)Level);
-            Level = Out;
-            if (Swap)
-                for (uint64_t P = 0; P + 3 < Level; P += 4) std::swap(Buffer[Header + P], Buffer[Header + P + 2]);   // BGRA -> RGBA
-            Result->DataBuffer = Buffer;
-            Result->DataSize = (uint32_t)(Header + Level);
-            return Result;
+            return LoadDefImage::Dds(W, H, Fmt, Dst.data(), Dst.size());
         }
 
         // Every alias of every SndBank: a loaded sound is a whole RIFF/WAVE in the zone, written as
@@ -345,7 +324,7 @@ namespace
             // a SoundFile's file as ExportSoundFiles writes it: its sound's name, .wav added
             const auto File = [&](int64_t Spec) -> std::string {
                 const int64_t Snd = Spec < 0 ? -1 : Off(PointerAt(Spec));
-                std::string Nm = Snd < 0 ? std::string() : Slashes(StringAt(PointerAt(Snd)));
+                std::string Nm = Snd < 0 ? std::string() : ExportNaming::ForwardSlashes(StringAt(PointerAt(Snd)));
                 if (!Nm.empty() && (Nm.size() < 4 || ExportNaming::Lower(Nm.substr(Nm.size() - 4)) != ".wav")) Nm += ".wav";
                 return Nm.empty() ? Nm : ExportWriters::SoundFileName(Nm, ExportWriters::SoundFormatSetting());
             };
@@ -353,6 +332,89 @@ namespace
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "sound") && I.Parent < 0) Treyarch::ReadBo1SoundBank(AliasView(), I.Pos, File, Rows);
             SoundAliasCsv::Write(C, T, Name(), Rows);
+        }
+
+        // A WMA loaded sound (format 7) as the RIFF XWMA World at War keeps the same packets in (fmt
+        // 0x161), for ffmpeg to decode (WmaSounds.h; none: false, the sound left out as before). The
+        // packets are fixed-size (mp_nuked: 2230 bytes at 44.1 kHz mono, 4096 at 48 kHz stereo), one
+        // a seek table entry (snd_asset seek_table_count 0x2c, seek_table 0x30), each entry the bytes
+        // decoded at the end of its packet: xWMA's dpds (its last frames x 2 x channels). The bit rate
+        // xWMA's fmt carries is not kept: World at War's 12000 bytes a second for mono, 20000 for
+        // stereo (the one ffmpeg decodes the stereo ones with), else WmaSounds tries the others.
+        bool WrapWma(int64_t Snd, const uint8_t* Data, uint32_t Size, std::vector<uint8_t>& Out)
+        {
+            const auto& Z = Image();
+            if (!WmaSounds::Available())
+            {
+                Counter(WmaSounds::NoFfmpegCounter)++;
+                return false;
+            }
+            const uint32_t Frames = At<uint32_t>(Z, Snd + 8), Rate = At<uint32_t>(Z, Snd + 0xc), Channels = At<uint32_t>(Z, Snd + 0x10);
+            const uint32_t Packets = At<uint32_t>(Z, Snd + 0x2c);
+            const int64_t Seek = Off(PointerAt(Snd + 0x30));
+            if (Channels == 0 || Channels > 2 || Rate == 0 || Packets == 0 || Seek < 0 || Size % Packets != 0 ||
+                (uint64_t)Seek + Packets * 4ull > Z.size() || Size / Packets > 0xffff)
+            {
+                Counter("sounds_loaded_wma_unread")++;
+                return false;
+            }
+            std::vector<uint32_t> Dpds(Packets);
+            std::memcpy(Dpds.data(), Z.data() + Seek, Packets * 4ull);
+            if (!std::is_sorted(Dpds.begin(), Dpds.end()) || Dpds.back() != (uint64_t)Frames * 2 * Channels)
+            {
+                Counter("sounds_loaded_wma_seek_table_odd")++;
+                return false;
+            }
+            Out = WmaSounds::Xwma((uint16_t)Channels, Rate, Channels == 1 ? 12000 : 20000, (uint16_t)(Size / Packets), Dpds.data(),
+                                  Dpds.size(), Data, Size);
+            Counter("sounds_loaded_wma")++;
+            return true;
+        }
+
+        // A loaded sound without a container (LoadedSound: its snd_asset at 4, OAT's T5 layout: frame
+        // count 8, rate 0xc, channels 0x10, block size 0x18, format 0x20): MS-ADPCM (6) as a WAV of
+        // that format, every block's predictors checked (below 7); WMA (7) as an xWMA (WrapWma);
+        // false for any other
+        bool WrapLoaded(int64_t Snd, const uint8_t* Data, uint32_t Size, std::vector<uint8_t>& Out)
+        {
+            const auto& Z = Image();
+            const uint32_t Frames = At<uint32_t>(Z, Snd + 8), Rate = At<uint32_t>(Z, Snd + 0xc), Channels = At<uint32_t>(Z, Snd + 0x10);
+            const uint32_t Format = At<uint32_t>(Z, Snd + 0x20);
+            if (Format == 7) return WrapWma(Snd, Data, Size, Out);
+            // the block size field (67072) is the streaming chunk, as in the .iwd files: the blocks are
+            // the standard 512-sample ones (IWDSoundDecoder), 262 bytes a channel (mp_nuked: 16 of 16
+            // sizes are a whole number of them, frames / 512 x 262)
+            const uint32_t Block = 262 * Channels;
+            if (Format != 6 || Channels == 0 || Channels > 2 || Rate == 0) return false;
+            for (uint32_t B = 0; B + Block <= Size; B += Block)
+                for (uint32_t Ch = 0; Ch < Channels; Ch++)
+                    if (Data[B + Ch] >= 7)
+                    {
+                        Counter("sounds_loaded_adpcm_bad_block")++;
+                        return false;
+                    }
+            if (Size % Block != 0)
+            {
+                Counter("sounds_loaded_adpcm_partial_block")++;
+                return false;
+            }
+            const uint16_t PerBlock = 512;
+            static constexpr int16_t Coefs[7][2] = { { 256, 0 }, { 512, -256 }, { 0, 0 }, { 192, 64 }, { 240, 0 }, { 460, -208 }, { 392, -232 } };
+            Out.clear();
+            const auto U16 = [&](uint32_t V) { Out.push_back((uint8_t)V), Out.push_back((uint8_t)(V >> 8)); };
+            const auto U32 = [&](uint32_t V) { U16(V & 0xffff), U16(V >> 16); };
+            const auto Tag = [&](const char* T4) { Out.insert(Out.end(), T4, T4 + 4); };
+            Tag("RIFF"), U32(0), Tag("WAVE");
+            Tag("fmt "), U32(50);
+            U16(2), U16(Channels), U32(Rate), U32((uint32_t)((uint64_t)Rate * Block / PerBlock)), U16(Block), U16(4), U16(32), U16(PerBlock), U16(7);
+            for (const auto& C2 : Coefs) U16((uint16_t)C2[0]), U16((uint16_t)C2[1]);
+            Tag("fact"), U32(4), U32(Frames);
+            Tag("data"), U32(Size);
+            Out.insert(Out.end(), Data, Data + Size);
+            if (Size & 1) Out.push_back(0);
+            const uint32_t Riff = (uint32_t)Out.size() - 8;
+            std::memcpy(Out.data() + 4, &Riff, 4);
+            return true;
         }
 
         void ExportSoundFiles(const Context& C, Totals& T)
@@ -377,7 +439,7 @@ namespace
                         if (File < 0) continue;
                         const int64_t Snd = Off(PointerAt(File));
                         if (Snd < 0) continue;
-                        std::string Nm = Slashes(StringAt(PointerAt(Snd)));
+                        std::string Nm = ExportNaming::ForwardSlashes(StringAt(PointerAt(Snd)));
                         if (Nm.empty()) continue;
                         if (Nm.size() < 4 || ExportNaming::Lower(Nm.substr(Nm.size() - 4)) != ".wav") Nm += ".wav";
                         if (At<uint8_t>(Z, File + FileType) == 1) Loaded.emplace(Nm, Snd);
@@ -399,6 +461,21 @@ namespace
                 if (!C.Wants(Kind::Sound, F)) continue;
                 const uint32_t Size = At<uint32_t>(Z, Snd + LoadedDataSize);
                 const int64_t Data = Off(PointerAt(Snd + LoadedData));
+                std::vector<uint8_t> Wrapped;
+                if (Size >= 12 && Data >= 0 && (uint64_t)Data + Size <= Z.size() && std::memcmp(Z.data() + Data, "RIFF", 4) != 0 &&
+                    WrapLoaded(Snd, Z.data() + Data, Size, Wrapped))
+                {
+                    Kt.Seen++;
+                    std::string Why;
+                    if (Write(Wrapped.data(), Wrapped.size(), F, Why))
+                    {
+                        Kt.Written++;
+                        Counter("sounds_loaded_wrapped")++;
+                    }
+                    else
+                        T.Fail(Name(), Kind::Sound, F, Why);
+                    continue;
+                }
                 if (Size < 12 || Data < 0 || (uint64_t)Data + Size > Z.size() || std::memcmp(Z.data() + Data, "RIFF", 4) != 0 ||
                     std::memcmp(Z.data() + Data + 8, "WAVE", 4) != 0)
                 {
@@ -491,6 +568,16 @@ namespace
                                                { "zombie_*", { "MENU_{NAME}", "MENU_{NAME}_CAPS" } },
                                                { "*", { "MENU_LEVEL_{NAME}_CAPS" } } } };
             return &Naming;
+        }
+
+        // zone\Common\<zone>.ff: the zone folder above, its language's zones beside (zone\French\
+        // fr_zombie_theater.ff holds zombie_theater's lobby doors), all in the install index
+        std::string InstallOfZone(const std::string& Zone) const override
+        {
+            const fs::path Dir = fs::path(Zone).parent_path();
+            if (ExportNaming::Lower(Dir.filename().string()) == "common" && ExportNaming::Lower(Dir.parent_path().filename().string()) == "zone")
+                return Dir.parent_path().string();
+            return IDiskGame::InstallOfZone(Zone);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override

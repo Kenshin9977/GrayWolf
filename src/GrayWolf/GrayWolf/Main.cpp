@@ -208,9 +208,15 @@ static int RunCli(const CliOptions& Options)
 
     if (!Options.Ui.empty()) return RunUiMode(Options);
 
+    if (!Options.UiGridShot.empty()) return RunUiGridShot(Options);
+
+    if (!Options.AnimRigs.empty()) return RunAnimRigs(Options);
+
     if (!Options.PreviewWindow.empty()) return RunPreviewWindow(Options);
 
     if (!Options.RenderModel.empty()) return RunRenderModelCli(Options);
+
+    if (!Options.RenderFx.empty()) return RunRenderFxCli(Options);
 
     if (!Options.SabProbe.empty()) return RunSabProbe(Options);
 
@@ -239,6 +245,23 @@ static int RunCli(const CliOptions& Options)
 
     return RunLoadFileMode(Options);
 }
+
+// The subcommands in the order the help lists them; each one's builder is in the file that runs
+// it (CliCommands.h). "<game commands>": the games' own (GameCommand.h); "zone-walk" adds
+// bo4-walk too, "disk-export" the games' aliases.
+static const char* const kHelpOrder[] = {
+    "self-test", "list-installs", "verify-opus", "decompress-ff", "identify",
+    "bo3-images", "bo3-dump-xpak-entries", "salsa20-selftest", "bo3-decrypt-movie",
+    "index-assets", "query-assets", "audio-probe",
+    "casc-list", "xpak-index", "xsub-index", "xsub-extract", "casc-extract", "zone-decompress",
+    "bo4-export-localize-disk", "bo4-export-rawstrings-disk", "zone-walk", "<game commands>", "disk-export",
+    "decode-iwd", "gltf-selftest", "export-map-glb", "open-map", "cerberus-selftest", "seanim-selftest", "cast-selftest",
+    "make-test-seanim", "render-anim", "coverage", "oat-extract",
+    "xanimbin-dump", "xanimbin-selftest", "xanimbin-to-seanim", "xanimbin-export-dir",
+    "oat-fx", "oat-fx-export", "oat-xmodel-materials", "oat-weapon", "oat-rawfiles", "gen-disc", "acts-extract",
+    "dump-model", "dump-glb", "render-glb-png", "ui", "ui-grid-shot", "anim-rigs", "preview-window", "render-model", "render-fx",
+    "sab-probe", "update-name-db", "update", "apply-update", "import-hash-csv", "bo4-decrypt", "file",
+};
 
 // CLI11 front end: a subcommand alone means "run headless". Shared options
 // (--install/--out/--cache/--threads/--limit/--type/--report/--name-filter/format overrides/
@@ -276,330 +299,16 @@ static int RunHeadlessCli(int argc, char** argv, bool& CliInvoked)
     App.require_subcommand(0, 1);
 
     // Shared options, usable by any subcommand
-    App.add_option("--install", Options.Install, "Game install / asset source directory")
-        ->check(CLI::ExistingDirectory)->group("Shared options");
-    App.add_option("--out", Options.Out, "Output file or directory (meaning depends on the command)")->group("Shared options");
-    App.add_option("--cache", Options.Cache, "Persistent decompression cache directory")->group("Shared options");
-    App.add_option("--threads", Options.Threads, "Worker thread count")->group("Shared options");
-    App.add_option("--limit", Options.Limit, "Cap the number of assets processed")->group("Shared options");
-    App.add_option("--type", Options.Type, "Asset type filter (model, image, sound, ...)")->group("Shared options");
-    App.add_option("--report", Options.Report, "Write the result report to this file")->group("Shared options");
-    App.add_flag("--export-all", Options.ExportAll, "Export every asset matching --type/--limit/--name-filter")->group("Shared options");
-    App.add_option("--name-filter", Options.NameFilter,
-        "Comma separated substrings, matches any (case-insensitive)")->group("Shared options");
-    App.add_option("--model-format", Options.ModelFormat,
-        "cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, or a comma list (cast,semodel)")->group("Shared options");
-    App.add_option("--anim-format", Options.AnimFormat,
-        "cast|seanim|xanim_export|none, or a comma list (cast,seanim)")->group("Shared options");
-    App.add_option("--image-format", Options.ImageFormat, "png|tga|dds")->group("Shared options");
-    App.add_option("--ui-res", Options.UiRes,
-                   "4k|1080|all: BO4 UI texture zones to read, 4K (default) or 1080p (the same images at half size)")
-        ->group("Shared options");
-    App.add_option("--map-textures", Options.MapTextures,
-                   "full|2k|1k: map textures larger than that copied at that size with mips (maps/textures/), "
-                   "which the import script reads (full: none)")
-        ->group("Shared options");
-    App.add_option("--map-png", Options.MapPng,
-                   "on|off: also write PNG copies of map colour maps (maps/textures/) for glTF tools other than "
-                   "Blender (off: the .glb names the DDS files, Blender's import script reads them)")
-        ->group("Shared options");
-    App.add_option("--map-cast", Options.MapCast,
-                   "on|off: also write the map as a Cast scene (<map>.cast placing maps/models/<model>.cast), "
-                   "for Maya and the Cast plugins (off: the .glb only)")
-        ->group("Shared options");
-    App.add_option("--map-radiant", Options.MapRadiant,
-                   "on|off: also write the map as a Radiant source (<map>.map: the clip map's brushes, the entities, "
-                   "misc_model placements; <map>_radiant/: the world and models as XMODEL_EXPORT, a GDT), for the mod tools")
-        ->group("Shared options");
-    App.add_option("--material-gdt", Options.MaterialGdt,
-                   "on|off: also write Black Ops III Mod Tools material and image GDT entries for the exported materials "
-                   "(models: source_data/graywolf_<out folder>.gdt, their XMODEL_EXPORT files naming them; maps: in the "
-                   "Radiant GDT with --map-radiant on)")
-        ->group("Shared options");
-    App.add_option("--sound-aliases", Options.SoundAliases,
-                   "on|off: the sound kind also writes each zone's sound aliases as a Black Ops III mod tools alias CSV "
-                   "(sounds/<zone>.csv, FileSpec relative to sounds/), to port sounds with their behaviour (off: audio only)")
-        ->group("Shared options");
-    App.add_option("--map-collision", Options.MapCollision,
-                   "on|off: also write the map's collision as <map>_collision.json (the clip map's brushes, brush "
-                   "models, triggers and triangles), for navigation and top-down tools")
-        ->group("Shared options");
-    App.add_option("--map-content", Options.MapContent,
-                   "all|terrain: the whole map, or its terrain alone (meshes and their materials; no models, "
-                   "lights or entities)")
-        ->group("Shared options");
-    App.add_flag("--decompile{on}", Options.Decompile,
-                 "--type script: also decompile the compiled scripts (acts or gsc-tool, by the game's VM); "
-                 "a script the tool does not decompile keeps its bytecode file (--decompile=off: bytecode only)")
-        ->group("Shared options");
-    App.add_option("--language", Options.Language,
-                   "english|french|german|italian|spanish|russian|polish: CoD1/CoD2, the localized archives that "
-                   "replace the base ones' files (english: none, the base wins)")
-        ->group("Shared options");
-    App.add_option("--audio-format", Options.AudioFormat,
-                   "wav|flac|opus: sounds (wav: as the game keeps them, or decoded; flac: lossless; opus: the game's own "
-                   "Opus packets kept as they are, any other sound encoded)")
-        ->transform(CLI::IsMember({ "wav", "flac", "opus" }, CLI::ignore_case))
-        ->group("Shared options");
-    App.add_option("--unit", Options.Unit, "Centimeter|Meter|Inch (model export scale)")->group("Shared options");
-    App.add_flag("--lods", Options.Lods, "Export every available model LOD")->group("Shared options");
-    App.add_option("--normal-map", Options.NormalMap, "none|opengl (flip normal-map green for Blender/DCC)")->group("Shared options");
-    App.add_option("--acts-exe", Options.ActsExe, "Path to acts.exe (else acts.exe on PATH)")->group("Shared options");
-    App.add_option("--gsc-tool-exe", Options.GscToolExe, "Path to gsc-tool.exe (else gsc-tool.exe on PATH)")->group("Shared options");
-    App.add_option("--game-exe", Options.GameExe,
-                   "--decompile: the game's dumped (unpacked) exe acts decrypts the scripts' encrypted strings with, "
-                   "for a game that encrypts them (default: the game's dump in acts' deps folder; not found: strings left encrypted)")
-        ->group("Shared options");
-    App.add_option("--acts-handler", Options.ActsHandler, "Force a game handler for acts (bo4/cw/mwiii/bo6/...)")->group("Shared options");
-    App.add_option("--oat-model-format", Options.OatModelFmt, "gltf|glb|obj|xmodel_export|xmodel_bin")->group("Shared options");
-    App.add_option("--oat-image-format", Options.OatImageFmt, "dds|iwi")->group("Shared options");
-    App.add_flag("--oat-gdt", Options.OatGdt, "Also emit a source_data/<zone>.gdt")->group("Shared options");
-    App.add_flag("--with-sounds", Options.WithSounds, "Also extract sounds OAT can't dump (T5/BO1)")->group("Shared options");
+    AddSharedOptions(App, Options);
 
-    auto* SubSelfTest = App.add_subcommand("self-test", "Run built-in assertions that need no game files or window");
-
-    auto* SubListInstalls = App.add_subcommand("list-installs", "The Call of Duty installs found on this machine, as the Load Game panel lists them");
-
-    auto* SubVerifyOpus = App.add_subcommand("verify-opus", "Decode an Opus file and report duration/rate/peaks");
-    SubVerifyOpus->add_option("file", Options.VerifyOpus, "Opus file to decode")->required()->check(CLI::ExistingFile);
-
-    auto* SubDecompressFF = App.add_subcommand("decompress-ff", "Decompress a fast file and report its header/zone info");
-    SubDecompressFF->add_option("file", Options.DecompressFF, "Fast file (.ff) to decompress")->required()->check(CLI::ExistingFile);
-    SubDecompressFF->add_flag("--strings", Options.Strings, "Also dump the zone's string table");
-
-
-    auto* SubIdentify = App.add_subcommand("identify", "Identify a game/asset by name or hash");
-    SubIdentify->add_option("name", Options.Identify, "Name or hash to identify")->required();
-
-    auto* SubBo3Images = App.add_subcommand("bo3-images", "BO3 zone images -> PNG, pixels sourced from the .xpaks");
-    SubBo3Images->add_option("file", Options.Bo3Images, "Fast file (.ff) to read image assets from")->required()->check(CLI::ExistingFile);
-    SubBo3Images->add_option("--bo3-xpaks", Options.Bo3Xpaks, "Where the packages are (default: beside the ff)");
-
-    auto* SubBo3DumpXpakEntries = App.add_subcommand("bo3-dump-xpak-entries",
-        "Diagnostic: dump every entry >= --bo3-xpak-min-mb to --out (cinematic-encryption brute-force search)");
-    SubBo3DumpXpakEntries->add_option("files", Options.Bo3DumpXpakEntries, "Comma separated .xpak file list")->required();
-    SubBo3DumpXpakEntries->add_option("--bo3-xpak-min-mb", Options.Bo3XpakMinMB, "Size floor in MB (default 2)");
-
-    auto* SubSalsa20SelfTest = App.add_subcommand("salsa20-selftest", "Verify the hand-written Salsa20 cipher vs a test vector");
-
-    auto* SubBo3DecryptMovie = App.add_subcommand("bo3-decrypt-movie",
-        "Decrypt a BO3 cinematic (Salsa20, key comes from the zone's own GSC, never hardcoded)");
-    SubBo3DecryptMovie->add_option("zone", Options.Bo3DecryptMovie, "Zone name whose cinematic to decrypt")->required();
-
-    auto* SubIndexAssets = App.add_subcommand("index-assets", "Build a searchable asset index (assets_index.json)");
-    SubIndexAssets->add_option("iwd-dir", Options.IndexAssets, "IWD package directory to index");
-    SubIndexAssets->add_option("--models-dir", Options.ModelsDir, "Model directory to index");
-
-    auto* SubQueryAssets = App.add_subcommand("query-assets", "Apply a saved filter to an asset index and list the matches");
-    SubQueryAssets->add_option("query", Options.QueryAssets, "Asset index (.json) to query")->required();
-    SubQueryAssets->add_option("--filter", Options.FilterFile, "Saved filter file to apply");
-    SubQueryAssets->add_option("--contact-sheet", Options.ContactSheet, "Also render matches into one contact sheet image");
-    SubQueryAssets->add_option("--preview-dir", Options.PreviewDir, "Also render each match to a PNG/WAV in this directory");
-
-    auto* SubAudioProbe = App.add_subcommand("audio-probe", "Decode via AudioPlayer and print duration/rate/peaks");
-    SubAudioProbe->add_option("file", Options.AudioProbe, "Audio file to decode")->required()->check(CLI::ExistingFile);
-
-    auto* SubCascList = App.add_subcommand("casc-list", "List every file in a CASC storage matching --casc-pattern");
-    SubCascList->add_option("dir", Options.CascList, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
-    SubCascList->add_option("--casc-pattern", Options.CascPattern, "Glob pattern (default: *.sab*)");
-
-    auto* SubXpakIndex = App.add_subcommand("xpak-index", "Write every .xpak's index (package, key, offset, stored size) as TSV to --out");
-    SubXpakIndex->add_option("dir", Options.XpakIndex, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
-    (void)SubXpakIndex;
-
-    auto* SubXsubIndex = App.add_subcommand("xsub-index", "Write every .xsub's hash table (package, type, key, offset, stored size; version 23 adds the size) as TSV to --out");
-    SubXsubIndex->add_option("dir", Options.XsubIndex, "Install: CASC storage or plain folder")->required()->check(CLI::ExistingDirectory);
-    SubXsubIndex->add_option("--casc-pattern", Options.CascPattern, "Packages to read (default: *.xsub); --type probe also reads each object's block headers and first block");
-
-    auto* SubXsubExtract = App.add_subcommand("xsub-extract", "Write .xsub objects (Cold War, Modern Warfare III, Black Ops 6 and 7), decompressed, as <out>/<key>.bin (a streamkey's key at its 8)");
-    SubXsubExtract->add_option("dir", Options.XsubExtract, "Install (CASC storage or plain folder)")->required()->check(CLI::ExistingDirectory);
-    SubXsubExtract->add_option("--keys", Options.XsubKeys, "Object keys, hex, comma separated")->required();
-
-    auto* SubCascExtractDir = App.add_subcommand("casc-extract", "Pull one file out of CASC storage as-is");
-    SubCascExtractDir->add_option("dir", Options.CascExtractDir, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
-    SubCascExtractDir->add_option("name", Options.CascExtractName, "File name inside CASC storage")->required();
-    SubCascExtractDir->add_option("outfile", Options.CascExtractOut, "Where to write the extracted file")->required();
-
-    auto* SubZoneDecompress = App.add_subcommand("zone-decompress", "Decompress a local fastfile to raw zone bytes (FastFile::Decompress)");
-    SubZoneDecompress->add_option("in", Options.ZoneDecompressIn, "Local .ff fastfile path (already extracted via casc-extract)")->required()->check(CLI::ExistingFile);
-    SubZoneDecompress->add_option("outfile", Options.ZoneDecompressOut, "Where to write the raw decompressed zone bytes")->required();
-
-    auto* SubBo4LocalizeDisk = App.add_subcommand("bo4-export-localize-disk",
-        "Fully offline BO4 Localize export from an already-decompressed zone (zone-decompress output)");
-    SubBo4LocalizeDisk->add_option("in", Options.Bo4ExportLocalizeDiskIn, "Decompressed zone bytes (from zone-decompress)")->required()->check(CLI::ExistingFile);
-    SubBo4LocalizeDisk->add_option("outfile", Options.Bo4ExportLocalizeDiskOut, "Where to write the JSONL output")->required();
-
-    auto* SubBo4RawStringsDisk = App.add_subcommand("bo4-export-rawstrings-disk",
-        "Fully offline BO4 dialogue/rawstring export (Value+Hash+Pad header shape) from a decompressed zone");
-    SubBo4RawStringsDisk->add_option("in", Options.Bo4ExportRawStringsDiskIn, "Decompressed zone bytes (from zone-decompress)")->required()->check(CLI::ExistingFile);
-    SubBo4RawStringsDisk->add_option("outfile", Options.Bo4ExportRawStringsDiskOut, "Where to write the JSONL output")->required();
-
-    // bo4-walk: the same command, profile bo4 by default
-    for (const char* Name : {"zone-walk", "bo4-walk"})
-    {
-        auto* SubZoneWalk = App.add_subcommand(Name,
-            "Walk decompressed zones with a zonekit profile's reader tables and write every read");
-        SubZoneWalk->add_option("zone-list", Options.ZoneWalkList, "Text file: one decompressed zone path per line")->required()->check(CLI::ExistingFile);
-        SubZoneWalk->add_option("--profile", Options.ZoneWalkProfile, "zonekit profile: a name (bo4) or a profile directory");
-        SubZoneWalk->add_option("--tables", Options.ZoneWalkTables, "Reader table file(s) instead of the profile's; later ones override");
-        SubZoneWalk->add_option("--types", Options.ZoneWalkTypes, "Text file: `<type id> <table name>` per line, instead of the profile's")->check(CLI::ExistingFile);
-        SubZoneWalk->add_flag("--layout", Options.ZoneWalkLayout, "Also write each read's block and offset in the stream memory (output version 2)");
-        SubZoneWalk->add_option("--assets-out", Options.ZoneWalkAssetsOut,
-            "Also write <dir>/<zone>.assets.tsv: every asset instance walked (type, parent, start, end, u64 at start) and each image's mip records (layout walk)");
-    }
-
-    // A game's own commands (GameCommand.h, e.g. Games/T8/ZoneDiag.cpp)
-    for (const GameCommand* Command : GameCommands())
-    {
-        auto* Sub = App.add_subcommand(Command->Name, Command->Help);
-        Sub->add_option("zones", Options.DiskExportIn[Command->Name], Command->InputHelp)->required();
-        if (Command->AddOptions) Command->AddOptions(*Sub, Options);
-    }
-    // disk-export <input> [--game id]: every game on the disk template, plus their aliases
-    {
-        std::string Ids, KindNames;
-        for (const DiskGame::IDiskGame* G : DiskGame::Games()) Ids += std::string(Ids.empty() ? "" : ", ") + G->Id();
-        for (const DiskGame::KindInfo& K : DiskGame::Kinds) KindNames += std::string(KindNames.empty() ? "" : ", ") + K.Folder;
-        auto* Sub = App.add_subcommand("disk-export",
-            "Read zones from disk and export " + KindNames + " to <out>/<game>/<kind>/ (--type; games: " + Ids + ")");
-        Sub->add_option("zones", Options.DiskExportIn["disk-export"], "A zone, or an install / folder of zones")->required();
-        Sub->add_option("--game", Options.DiskGameId, "The game (" + Ids + "); detected from the zones when omitted");
-        for (const DiskGame::IDiskGame* G : DiskGame::Games())
-            for (const auto& Alias : G->Aliases())
-            {
-                auto* A = App.add_subcommand(Alias, std::string(G->Title()) + " from disk (same as disk-export --game " + G->Id() + ")");
-                A->add_option("zones", Options.DiskExportIn[Alias], "A zone, or an install / folder of zones")->required();
-            }
-    }
-
-    auto* SubDecodeIwd = App.add_subcommand("decode-iwd", "BO1 IWD sound -> PCM WAV (--audio-format opus for opus)");
-    SubDecodeIwd->add_option("file", Options.DecodeIwd, "IWD sound entry to decode")->required()->check(CLI::ExistingFile);
-
-    auto* SubGltfSelfTest = App.add_subcommand("gltf-selftest", "Write a tiny GLB scene to verify the writer");
-    SubGltfSelfTest->add_option("outfile", Options.GltfSelfTest, "Where to write the test .glb")->required();
-
-    auto* SubExportMapGlb = App.add_subcommand("export-map-glb", "Export a T5 map's GfxWorld to a Blender .glb");
-    SubExportMapGlb->add_option("file", Options.ExportMapGlb, "Fast file (.ff) holding the GfxWorld")->required()->check(CLI::ExistingFile);
-    SubExportMapGlb->add_flag("--map-no-tex", Options.MapNoTex, "Skip embedding textures (much smaller, geometry preview)");
-
-    auto* SubOpenMap = App.add_subcommand("open-map", "Open a map export in Blender: the first time its import script runs and "
-                                                      "<map>.blend is saved beside it, later that .blend opens");
-    SubOpenMap->add_option("map", Options.OpenMap, "The map's .glb, its _import.py, its .blend, or a folder holding one map")
-        ->required()->check(CLI::ExistingPath);
-    SubOpenMap->add_flag("--reimport", Options.OpenMapReimport, "Run the import script again, even when the .blend exists");
-    SubOpenMap->add_flag("--background", Options.OpenMapBackground, "Import and save the .blend without opening Blender's window");
-
-    auto* SubCerberusSelfTest = App.add_subcommand("cerberus-selftest", "Verify ported CRC32/Salsa20 (Cerberus crypto)");
-
-    auto* SubSeAnimSelfTest = App.add_subcommand("seanim-selftest", "Round-trip a synthetic .seanim + verify pose evaluation");
-    auto* SubCastSelfTest = App.add_subcommand("cast-selftest", "Write a synthetic model/anim as .cast and SE, read both back (--out keeps them)");
-
-    auto* SubMakeTestSeAnim = App.add_subcommand("make-test-seanim", "Write a spinning test .seanim (--out sets the path)");
-    SubMakeTestSeAnim->add_option("bonename", Options.MakeTestSeAnim, "Bone to animate")->required();
-
-    auto* SubRenderAnimModel = App.add_subcommand("render-anim", "Skinned PNG at one frame (--out sets the path)");
-    SubRenderAnimModel->add_option("parts", Options.RenderAnimModel, "\"<model>;<anim>;<frame>\"")->required();
-
-    auto* SubCoverage = App.add_subcommand("coverage", "Per-type disk-extraction coverage for one fastfile (what comes out, and through which mechanism)");
-    SubCoverage->add_option("file", Options.Coverage, "Fast file to report on")->required()->check(CLI::ExistingFile);
-
-    auto* SubOatExtract = App.add_subcommand("oat-extract", "Extract a CoD4/WaW/BO1/BO2/MW2/MW3 fastfile via linked OAT libs (in-process)");
-    SubOatExtract->add_option("file", Options.OatExtract, "Fast file to extract")->required()->check(CLI::ExistingFile);
-    SubOatExtract->add_flag("--oat-list", Options.OatList, "List the fastfile's assets instead of extracting");
-
-    auto* SubXAnimBinDump = App.add_subcommand("xanimbin-dump", "Parse a Mod Tools .xanim_bin, print the resolved record stream");
-    SubXAnimBinDump->add_option("file", Options.XAnimBinDump, ".xanim_bin file")->required()->check(CLI::ExistingFile);
-
-    auto* SubXAnimBinSelfTest = App.add_subcommand("xanimbin-selftest", "Assemble Layer 2, report bone/frame/notify counts");
-    SubXAnimBinSelfTest->add_option("file", Options.XAnimBinSelfTest, ".xanim_bin file")->required()->check(CLI::ExistingFile);
-
-    auto* SubXAnimBinToSeAnim = App.add_subcommand("xanimbin-to-seanim", "Convert one .xanim_bin to .seanim");
-    SubXAnimBinToSeAnim->add_option("infile", Options.XAnimBinToSeAnimIn, ".xanim_bin input")->required()->check(CLI::ExistingFile);
-    SubXAnimBinToSeAnim->add_option("outfile", Options.XAnimBinToSeAnimOut, ".seanim output")->required();
-
-    auto* SubXAnimBinExportDir = App.add_subcommand("xanimbin-export-dir",
-        "Bulk .xanim_bin -> .seanim, mirroring the source tree so the result is browsable with `ui`");
-    SubXAnimBinExportDir->add_option("indir", Options.XAnimBinExportDirIn, "Source directory of .xanim_bin files")
-        ->required()->check(CLI::ExistingDirectory);
-    SubXAnimBinExportDir->add_option("outdir", Options.XAnimBinExportDirOut, "Destination directory")->required();
-
-    auto* SubOatFx = App.add_subcommand("oat-fx", "Per-element FX/material/blend detail, T5+T6, no game needed");
-    SubOatFx->add_option("file", Options.OatFx, "Fast file to read")->required()->check(CLI::ExistingFile);
-
-    auto* SubOatFxExport = App.add_subcommand("oat-fx-export", "Real per-effect JSON export to --out, T5+T6");
-    SubOatFxExport->add_option("file", Options.OatFxExport, "Fast file to read")->required()->check(CLI::ExistingFile);
-
-    auto* SubOatXModelMtl = App.add_subcommand("oat-xmodel-materials", "Per-xmodel-surface material/blend, T5+T6");
-    SubOatXModelMtl->add_option("file", Options.OatXModelMtl, "Fast file to read")->required()->check(CLI::ExistingFile);
-
-    auto* SubOatWeapon = App.add_subcommand("oat-weapon", "Compiled WeaponDef splash/damage-falloff fields, T5+T6");
-    SubOatWeapon->add_option("file", Options.OatWeapon, "Fast file to read")->required()->check(CLI::ExistingFile);
-
-    auto* SubOatRawfiles = App.add_subcommand("oat-rawfiles", "Dump .gsc/.csc (T5) / plain rawfiles+.atr (T6) source to --out");
-    SubOatRawfiles->add_option("file", Options.OatRawfiles, "Fast file to read")->required()->check(CLI::ExistingFile);
-
-    auto* SubGenDisc = App.add_subcommand("gen-disc", "Write a flat N-gon disc (or ring) XMODEL_EXPORT");
-    SubGenDisc->add_option("outfile", Options.GenDisc, "Where to write the .XMODEL_EXPORT")->required();
-    SubGenDisc->add_option("--gen-disc-radius", Options.GenDiscRadius, "Outer radius in units (default 50)");
-    SubGenDisc->add_option("--gen-disc-inner-radius", Options.GenDiscInnerRadius, ">0 makes an annulus (ring) instead of a filled disc");
-    SubGenDisc->add_option("--gen-disc-segments", Options.GenDiscSegments, "Segment count (default 32)");
-    SubGenDisc->add_option("--gen-disc-material", Options.GenDiscMaterial, "Existing alpha material to reference, no new asset needed");
-
-    auto* SubActsExtract = App.add_subcommand("acts-extract", "Extract a modern-CoD fastfile via ate47's acts");
-    SubActsExtract->add_option("file", Options.ActsExtract, "Fast file to extract")->required()->check(CLI::ExistingFile);
-
-    auto* SubDumpModel = App.add_subcommand("dump-model", "Print a .semodel's bones/bbox");
-    SubDumpModel->add_option("file", Options.DumpModel, ".semodel file")->required()->check(CLI::ExistingFile);
-
-    auto* SubDumpGlb = App.add_subcommand("dump-glb", "Print a .glb's PreviewGeometry stats");
-    SubDumpGlb->add_option("file", Options.DumpGlb, ".glb file")->required()->check(CLI::ExistingFile);
-
-    auto* SubRenderGlbPng = App.add_subcommand("render-glb-png", "Headless PNG render of a .glb (--out sets the path)");
-    SubRenderGlbPng->add_option("file", Options.RenderGlbPng, "Input .glb")->required()->check(CLI::ExistingFile);
-
-    auto* SubUi = App.add_subcommand("ui", "Open the ImGui + D3D11 asset browser shell on a folder of exported assets");
-    SubUi->add_option("dir", Options.Ui, "Folder of exported assets (empty starts with nothing loaded)");
-
-    auto* SubPreviewWindow = App.add_subcommand("preview-window", "Open an interactive D3D11 orbit viewer");
-    SubPreviewWindow->add_option("parts", Options.PreviewWindow, "Semicolon separated model part paths")->required();
-
-    auto* SubRenderModel = App.add_subcommand("render-model", "Render a model to PNG (software, --gpu, or --turntable N views)");
-    SubRenderModel->add_option("file", Options.RenderModel, "Model file to render")->required()->check(CLI::ExistingFile);
-    SubRenderModel->add_flag("--gpu", Options.Gpu, "Use the offscreen D3D11 renderer");
-    SubRenderModel->add_option("--turntable", Options.Turntable, "Render N views around the model into one contact sheet");
-
-    auto* SubSabProbe = App.add_subcommand("sab-probe", "Run SABSupport on a sound bank");
-    SubSabProbe->add_option("file", Options.SabProbe, "Sound bank (.sab) file, or a folder of .sabl banks")->required()->check(CLI::ExistingPath);
-
-    auto* SubUpdateNameDb = App.add_subcommand("update-name-db", "Fetch echo000/cod-name-db's CSVs into package_index\\*.wni");
-    SubUpdateNameDb->add_option("--name-db-dir", Options.NameDbDir, "Override the package_index output directory");
-
-    auto* SubUpdate = App.add_subcommand("update", "Update the hash packages (package_index) from the latest GitHub release; report or apply a newer GrayWolf");
-    SubUpdate->add_flag("--check", Options.UpdateCheck, "Only report what is newer, download nothing");
-    SubUpdate->add_flag("--app", Options.UpdateApp, "Also download a newer GrayWolf and replace this one once it exits");
-    SubUpdate->add_flag("--force", Options.UpdateForce, "Install the packages even when not newer, hand-built or linked");
-    SubUpdate->add_option("--package-dir", Options.UpdatePackageDir, "Override the package_index directory");
-    SubUpdate->add_option("--repo", Options.UpdateRepo, "owner/name (default: the update_repo setting)");
-
-    // Run by `update --app` / the GUI's Restart now, from a copy of the exe: not for users.
-    auto* SubApplyUpdate = App.add_subcommand("apply-update", "(internal) Replace GrayWolf's files with a verified update");
-    SubApplyUpdate->group("");
-    SubApplyUpdate->add_option("stage", Options.ApplyUpdate, "Verified update folder")->required();
-    SubApplyUpdate->add_option("--target", Options.ApplyTarget, "GrayWolf's folder")->required();
-    SubApplyUpdate->add_option("--wait-pid", Options.ApplyWaitPid, "Wait for this process to exit first");
-    SubApplyUpdate->add_flag("--relaunch", Options.ApplyRelaunch, "Start the new GrayWolf.exe afterwards");
-
-    auto* SubImportHashCsv = App.add_subcommand("import-hash-csv", "Convert a local \"hash,name\" CSV to .wni");
-    SubImportHashCsv->add_option("file", Options.ImportHashCsv, "Local hash,name CSV")->required()->check(CLI::ExistingFile);
-    SubImportHashCsv->add_option("--import-hash-name", Options.ImportHashName, "Output .wni stem (no extension)");
-    SubImportHashCsv->add_option("--name-db-dir", Options.NameDbDir, "Override the package_index output directory");
-
-    auto* SubBo4Decrypt = App.add_subcommand("bo4-decrypt", "Decrypt one BO4 string given as hex bytes [EncryptionID][StringSize][ciphertext][NUL]");
-    SubBo4Decrypt->add_option("--hex", Options.Bo4DecryptHex, "Through the zone's string cipher (DecryptString)");
-    SubBo4Decrypt->add_option("--disk-hex", Options.Bo4DecryptDiskHex, "Through the on-disk Localize cipher");
-
-    auto* SubFile = App.add_subcommand("file", "Load a package file straight off disk and export it");
-    SubFile->add_option("path", Options.File, "Package/fast file to load")->required()->check(CLI::ExistingFile);
+    // The subcommands, in the help's order. A subcommand with no options of its own sets its
+    // CliOptions bool from its callback once parsed.
+    CliCommandBuilders Builders;
+    for (const auto Add : { AddMiscCommands, AddToolsCommands, AddAudioCommands, AddAssetExportCommands, AddCascCommands,
+                            AddZoneWalkCommands, AddModelPreviewCommands, AddBlenderCommands, AddFxPreviewCommands,
+                            AddBo3Commands, AddBo4StringCommands, AddGameCommands, AddDiskExportCommands })
+        Add(Builders);
+    for (const char* Name : kHelpOrder) Builders.at(Name)(App, Options);
 
     try
     {
@@ -617,30 +326,6 @@ static int RunHeadlessCli(int argc, char** argv, bool& CliInvoked)
         // No subcommand was invoked (a plain launch) - fall through to the classic GUI.
         return 0;
     }
-
-    // Resolve the trigger-only bools (subcommands with no options of their own) and the
-    // optional-trailing-value flags that could not bind straight to their CliOptions field.
-    if (*SubSelfTest) Options.SelfTest = true;
-    if (*SubListInstalls) Options.ListInstalls = true;
-    if (*SubSalsa20SelfTest) Options.Salsa20SelfTest = true;
-    if (*SubCerberusSelfTest) Options.CerberusSelfTest = true;
-    if (*SubSeAnimSelfTest) Options.SeAnimSelfTest = true;
-    if (*SubCastSelfTest) Options.CastSelfTest = true;
-    if (*SubUpdateNameDb) Options.UpdateNameDb = true;
-    if (*SubUpdate) Options.Update = true;
-
-
-    (void)SubVerifyOpus; (void)SubDecompressFF; (void)SubIdentify;
-    (void)SubBo3Images; (void)SubBo3DumpXpakEntries; (void)SubBo3DecryptMovie; (void)SubIndexAssets;
-    (void)SubQueryAssets; (void)SubAudioProbe; (void)SubCascList; (void)SubCascExtractDir; (void)SubDecodeIwd;
-    (void)SubZoneDecompress;
-    (void)SubGltfSelfTest; (void)SubExportMapGlb; (void)SubOpenMap; (void)SubMakeTestSeAnim; (void)SubRenderAnimModel;
-    (void)SubCoverage; (void)SubOatExtract; (void)SubXAnimBinDump; (void)SubXAnimBinSelfTest; (void)SubXAnimBinToSeAnim;
-    (void)SubXAnimBinExportDir; (void)SubOatFx; (void)SubOatFxExport;
-    (void)SubOatXModelMtl; (void)SubOatWeapon; (void)SubOatRawfiles; (void)SubGenDisc;
-    (void)SubActsExtract; (void)SubDumpModel; (void)SubDumpGlb; (void)SubRenderGlbPng; (void)SubUi;
-    (void)SubPreviewWindow; (void)SubRenderModel; (void)SubSabProbe; (void)SubImportHashCsv; (void)SubApplyUpdate;
-    (void)SubFile; (void)SubBo4Decrypt;
 
     CliInvoked = true;
     g_CliMode = true;
@@ -667,6 +352,13 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             { "game_folder", "" },
             // blender.exe for Open in Blender (BlenderLauncher.h); empty: detected
             { "blender_path", "" },
+            // the decompilers' exes (--decompile; OatBridge.h); empty: on PATH
+            { "acts_exe", "" },
+            { "gsc_tool_exe", "" },
+            { "cod_luajit_decompiler_exe", "" },
+            { "cod_lua_decompiler_exe", "" },
+            // ffmpeg.exe, the WMA sounds' decoder (WmaSounds.h); empty: found (FfmpegFindExe)
+            { "ffmpeg_exe", "" },
             // Updates (Updater.h): at GUI start, hash packages installed and a newer app announced
             { "auto_update", "true" },
             { "update_repo", "Kenshin9977/GrayWolf" },

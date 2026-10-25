@@ -1917,7 +1917,11 @@ struct IWXMaterial
 {
     uint64_t NamePtr;
 
-    uint8_t Padding[40];
+    uint8_t Padding0[2];
+    // MaterialInfo sortKey (the atlas row and column counts follow it, 0xb and 0xc)
+    uint8_t SortKey;
+
+    uint8_t Padding[37];
 
     uint8_t ImageCount;
 
@@ -2659,21 +2663,6 @@ struct MW4XMaterialImage
 };
 #pragma pack(pop)
 
-#pragma pack(push, 1)
-struct MW4SoundBank
-{
-    uint64_t NamePtr;
-    uint64_t BankNamePtr;
-    uint64_t LanguagePtr;
-    uint64_t TypePtr;
-    uint64_t AliasCount;
-    uint64_t AliasesPtr;
-    uint8_t Padding[448];
-    uint64_t SoundBankPtr;
-    uint64_t Unk1;
-};
-#pragma pack(pop)
-
 #pragma region Black Ops Cold War
 
 #pragma pack(push, 1)
@@ -2713,10 +2702,25 @@ struct BOCWXAnim
     uint64_t UnknownZero2;
     uint64_t DataShortPtr;
     uint64_t RandomDataShortPtr;
-    uint8_t Unknown3[0x18];
+    uint64_t IndicesPtr;
+    uint64_t Unknown3;
+    // a streamkey (0x38) when the data arrays are one block, in the zone or in the .xsub packages
+    uint64_t StreamKeyPtr;
     float Framerate;
     float Frequency;
-    uint8_t Unknown4[0x34];
+    uint8_t Unknown4[0x8];
+    // the arrays' sizes, in elements (the zone's tables read them so)
+    uint32_t IndexCount;
+    uint32_t UnknownCount1;
+    uint32_t UnknownCount2;
+    uint32_t RandomDataShortCount;
+    uint32_t UnknownCount3;
+    uint32_t DataByteCount;
+    uint32_t DataIntCount;
+    uint32_t DataShortCount;
+    uint32_t UnknownZero3Count;
+    uint32_t RandomDataByteCount;
+    uint32_t UnknownZero2Count;
     uint16_t NoneRotatedBoneCount;
     uint16_t TwoDRotatedBoneCount;
     uint16_t NormalRotatedBoneCount;
@@ -2731,7 +2735,10 @@ struct BOCWXAnim
     uint8_t AssetType;
     uint16_t Unknown6;
     uint16_t NumFrames;
-    uint8_t Unknown[0x1A];
+    uint8_t Unknown[0x5];
+    // 1: the data ints open on a mask of the bones, a bit per bone (pt_ anims)
+    uint8_t HasBoneMask;
+    uint8_t Unknown7[0x14];
 };
 #pragma pack(pop)
 

@@ -242,44 +242,9 @@ bool FastFile::ParseSledgehammerZone(const std::vector<uint8_t>& Zone, ZoneInfo&
 
     size_t At = Header + ListSize;
 
-    if (Strings == Marker)
+    if (Strings == Marker && !ReadStringList(Zone, 8, StringCount, Marker, At, Out, Error))
     {
-        const auto SlotsEnd = At + (uint64_t)StringCount * 8;
-
-        if (SlotsEnd > Zone.size())
-        {
-            Error = std::format("string count {} runs past the end of the zone", StringCount);
-            return false;
-        }
-
-        const auto Slots = At;
-        At = (size_t)SlotsEnd;
-        Out.StringTableOffset = At;
-
-        for (uint32_t i = 0; i < StringCount; i++)
-        {
-            if (Read64(Slots + (size_t)i * 8) != Marker)
-            {
-                continue;
-            }
-
-            Out.StringsInline++;
-
-            const auto Start = At;
-            while (At < Zone.size() && Zone[At] != 0)
-            {
-                At++;
-            }
-
-            if (At >= Zone.size())
-            {
-                Error = std::format("string {} of {} runs off the end of the zone", i, StringCount);
-                return false;
-            }
-
-            Out.Strings.emplace_back((const char*)Zone.data() + Start, At - Start);
-            At++;
-        }
+        return false;
     }
 
     if (Assets != Marker)

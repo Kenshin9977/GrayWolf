@@ -454,5 +454,68 @@ namespace FastFileInternal
         return Value;
     }
 
+    // The zone states how much follows its own header (Content bytes) - checking that first
+    // catches a wrong layout before any field is trusted, rather than after producing a
+    // plausible asset list.
+    inline bool ContentMatches(const std::vector<uint8_t>& Zone, size_t Content, std::string& Error)
+    {
+        const auto Declared = ReadU32(Zone, 0);
+        if (Declared == Zone.size() - Content) return true;
+        Error = std::format("zone declares {} bytes of content but {} follow a {} byte header",
+            Declared, (unsigned long long)(Zone.size() - Content), (unsigned long long)Content);
+        return false;
+    }
+
+    // The strings of Count pointer slots (SlotSize bytes each, from Slots): a slot holding
+    // Marker has its NUL-terminated string at At, one after the other. At ends past the last.
+    inline bool ReadInlineStrings(const std::vector<uint8_t>& Zone, size_t Slots, size_t SlotSize, uint32_t Count, uint64_t Marker,
+                                  size_t& At, ZoneInfo& Out, std::string& Error)
+    {
+        for (uint32_t i = 0; i < Count; i++)
+        {
+            const uint64_t Slot = SlotSize == 4 ? ReadU32(Zone, Slots + (size_t)i * 4) : ReadU64(Zone, Slots + (size_t)i * 8);
+            if (Slot != Marker)
+            {
+                continue;
+            }
+
+            Out.StringsInline++;
+
+            const auto Start = At;
+            while (At < Zone.size() && Zone[At] != 0)
+            {
+                At++;
+            }
+
+            if (At >= Zone.size())
+            {
+                Error = std::format("string {} of {} runs off the end of the zone", i, Count);
+                return false;
+            }
+
+            Out.Strings.emplace_back((const char*)Zone.data() + Start, At - Start);
+            At++;
+        }
+        return true;
+    }
+
+    // A string list inline at At: its Count slots, then their strings (ReadInlineStrings)
+    inline bool ReadStringList(const std::vector<uint8_t>& Zone, size_t SlotSize, uint32_t Count, uint64_t Marker, size_t& At, ZoneInfo& Out,
+                               std::string& Error)
+    {
+        const auto SlotsEnd = At + (uint64_t)Count * SlotSize;
+
+        if (SlotsEnd > Zone.size())
+        {
+            Error = std::format("string count {} runs past the end of the zone", Count);
+            return false;
+        }
+
+        const auto Slots = At;
+        At = (size_t)SlotsEnd;
+        Out.StringTableOffset = At;
+        return ReadInlineStrings(Zone, Slots, SlotSize, Count, Marker, At, Out, Error);
+    }
+
 
 }

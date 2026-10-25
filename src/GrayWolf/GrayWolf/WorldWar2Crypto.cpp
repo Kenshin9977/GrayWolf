@@ -2,6 +2,7 @@
 
 #include "WorldWar2Crypto.h"
 
+#include "FastFile.Internal.h"
 
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -192,42 +193,6 @@ namespace
         bool Primed = false;
     };
 
-    bool ReadWhole(const std::string& FilePath, std::vector<uint8_t>& Out, std::string& Error)
-    {
-        FILE* Raw = nullptr;
-        if (fopen_s(&Raw, FilePath.c_str(), "rb") != 0 || Raw == nullptr)
-        {
-            Error = "could not open the file";
-            return false;
-        }
-
-        auto Owned = std::unique_ptr<FILE, decltype(&fclose)>(Raw, fclose);
-
-        if (_fseeki64(Owned.get(), 0, SEEK_END) != 0)
-        {
-            Error = "could not measure the file";
-            return false;
-        }
-
-        const auto Length = _ftelli64(Owned.get());
-        if (Length <= 0)
-        {
-            Error = "the file is empty";
-            return false;
-        }
-
-        Out.resize((size_t)Length);
-        _fseeki64(Owned.get(), 0, SEEK_SET);
-
-        if (fread(Out.data(), 1, Out.size(), Owned.get()) != Out.size())
-        {
-            Error = "could not read the whole file";
-            return false;
-        }
-
-        return true;
-    }
-
     // Unseals the 40 byte key. The DER is a PKCS#1 private key, which CNG will not import
     // directly, so it goes through the older decoder first to reach a blob CNG accepts.
     bool UnsealKey(const uint8_t* Sealed, uint8_t* Out, std::string& Error)
@@ -286,7 +251,7 @@ bool WorldWar2Crypto::Decrypt(const std::string& FilePath, std::vector<uint8_t>&
     Error.clear();
 
     std::vector<uint8_t> File;
-    if (!ReadWhole(FilePath, File, Error))
+    if (!FastFileInternal::ReadWholeFile(FilePath, File, Error))
     {
         return false;
     }

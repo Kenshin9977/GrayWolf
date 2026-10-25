@@ -260,17 +260,30 @@ void PreserveAlphaCoverage(PreviewImage& Img, float Cutoff)
     }
 }
 
-ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* Dev, const PreviewImage& Img, bool Srgb)
+ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* Dev, const PreviewImage& Img, bool Srgb, int MaxSize)
 {
     ComPtr<ID3D11ShaderResourceView> Srv;
     if (Img.Dds)
     {
-        CreateDDSTextureFromMemoryEx(Dev, Img.Dds->data(), Img.Dds->size(), 0, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE,
-                                     0, 0, Srgb ? DDS_LOADER_FORCE_SRGB : DDS_LOADER_DEFAULT, nullptr, Srv.GetAddressOf());
+        // the loader skips the mips over MaxSize, and fails when none fits: then the whole image
+        for (const size_t Max : { (size_t)std::max(0, MaxSize), (size_t)0 })
+        {
+            CreateDDSTextureFromMemoryEx(Dev, Img.Dds->data(), Img.Dds->size(), Max, D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE,
+                                         0, 0, Srgb ? DDS_LOADER_FORCE_SRGB : DDS_LOADER_DEFAULT, nullptr, Srv.GetAddressOf());
+            if (Srv || Max == 0) break;
+        }
     }
     else if (Img.Image)
     {
-        CreateShaderResourceViewEx(Dev, Img.Image->GetImages(), Img.Image->GetImageCount(), Img.Image->GetMetadata(),
+        TexMetadata Meta = Img.Image->GetMetadata();
+        size_t First = 0;
+        if (MaxSize > 0 && Meta.arraySize == 1 && Meta.depth == 1)
+            while (First + 1 < Meta.mipLevels && std::max(Meta.width >> First, Meta.height >> First) > (size_t)MaxSize) First++;
+        const Image* Images = Img.Image->GetImage(First, 0, 0);
+        Meta.width = std::max<size_t>(1, Meta.width >> First);
+        Meta.height = std::max<size_t>(1, Meta.height >> First);
+        Meta.mipLevels -= First;
+        CreateShaderResourceViewEx(Dev, Images, First ? Meta.mipLevels : Img.Image->GetImageCount(), Meta,
                                    D3D11_USAGE_IMMUTABLE, D3D11_BIND_SHADER_RESOURCE, 0, 0,
                                    Srgb ? CREATETEX_FORCE_SRGB : CREATETEX_DEFAULT, Srv.GetAddressOf());
     }

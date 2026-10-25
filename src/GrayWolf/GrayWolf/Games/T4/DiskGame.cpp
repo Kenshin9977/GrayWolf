@@ -12,6 +12,7 @@
 #include "DiskGame.h"
 #include "GameWorldAtWar.h"
 #include "Games/IW3/IwdZone.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/OAT/OatWeapons.h"
 
 #include <cstring>
@@ -38,6 +39,9 @@ namespace
             // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
             Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty: World at War"); });
+            // Material: its techset, images and blend factors as JSON, its images by the image kind;
+            // FxEffectDef (0x24, elements 0x100) as JSON, CoD4's with a wind influence
+            ExportsEffects(GameWorldAtWar::ReadXMaterial, Treyarch::EffectLayout::T4);
         }
 
     protected:

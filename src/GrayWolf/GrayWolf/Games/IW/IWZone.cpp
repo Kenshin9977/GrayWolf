@@ -99,6 +99,20 @@ void IWZone::MixStreams(int64_t Pos, ExportWriters::ContentKey& Key) const
     for (const PakEntry& E : Streams.at(Pos)) Key.Mix(PakOf(E)).Mix(E.Start).Mix(E.End);
 }
 
+std::string IWZone::StreamPak(const PakEntry& E) const
+{
+    const std::string& Ff = FastFilePath();
+    return (E.Pak >> 16) == 0 ? Ff : (fs::path(Ff).parent_path() / std::format("imagefile{}.pak", (unsigned long long)(E.Pak >> 16))).string();
+}
+
+std::vector<std::string> IWZone::HeaderScriptStrings() const
+{
+    const auto& Z = Zone();
+    const uint64_t Count = At<uint64_t>(Z, 0x48);
+    if (At<uint64_t>(Z, 0x50) == Rules().Marker && Count != 0 && Count <= Z.size() / 8) return InlineStrings(Z, 0x70, Count, 8, Rules().Marker);
+    return {};
+}
+
 void IWZone::DefineStreamed(std::vector<DiskGame::AssetId>& Out, int64_t NameAt, const std::vector<int64_t>& Also) const
 {
     const auto Add = [&](int64_t Pos) {
@@ -143,16 +157,52 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
     const auto Normal = [](uint32_t N, float* Out) {
         for (int K = 0; K < 3; K++) Out[K] = (float)((N >> (10 * K)) & 0x3ff) / 1023.0f * 2.0f - 1.0f;
     };
+    // A level split over several transient zones (its own and those TransientsBeside gives): each
+    // zone's records placed one after the other in one vertex space, a surface's first vertex moved
+    // to where its zone starts (VertexBase)
+    std::map<int32_t, TransientVertices> Transients;
+    std::vector<std::pair<uint32_t, TransientVertices>> Spans;   // where each zone starts, in order
+    std::unordered_map<int32_t, uint32_t> SpanOf;
+    if (M.SurfaceTransient >= 0 && !Streams && M.VertexAsset)
+    {
+        for (const auto& I : Walk().Instances)
+            if (OwnerIs(I, M.VertexAsset))
+                Transients.try_emplace(At<int32_t>(Img, I.Pos + M.TransientNumber),
+                                       TransientVertices{ &Img, Off(At<uint64_t>(Img, I.Pos + M.Vertices)), At<uint32_t>(Img, I.Pos + M.VertexCount) });
+        TransientsBeside(Transients);
+        if (Transients.size() > 1)
+        {
+            uint32_t Next = 0;
+            for (const auto& [Number, T] : Transients)
+            {
+                SpanOf[Number] = Next;
+                Spans.emplace_back(Next, T);
+                Next += T.Count;
+            }
+            Counter("map_transient_zones") += Transients.size();
+        }
+    }
     // a record: position, binormal sign, colour, uv, then its packed normal at 36
     const auto Record = [&](uint32_t I, Maps::Vertex& V) {
-        if (I >= VertexCount || Vertices < 0) return false;
-        const int64_t P = Vertices + (int64_t)I * VertexSize;
-        for (int K = 0; K < 3; K++) V.Pos[K] = At<float>(Img, P + K * 4);
-        const uint32_t Color = At<uint32_t>(Img, P + 16);
+        const std::vector<uint8_t>* Bytes = &Img;
+        int64_t From = Vertices;
+        uint32_t Count = VertexCount;
+        if (!Spans.empty())
+        {
+            const auto It = std::upper_bound(Spans.begin(), Spans.end(), I, [](uint32_t X, const auto& S) { return X < S.first; });
+            if (It == Spans.begin()) return false;
+            const auto& [Start, T] = *std::prev(It);
+            Bytes = T.Bytes, From = T.Vertices, Count = T.Count, I -= Start;
+        }
+        if (I >= Count || From < 0) return false;
+        const int64_t P = From + (int64_t)I * VertexSize;
+        if (P + VertexSize > (int64_t)Bytes->size()) return false;
+        for (int K = 0; K < 3; K++) V.Pos[K] = At<float>(*Bytes, P + K * 4);
+        const uint32_t Color = At<uint32_t>(*Bytes, P + 16);
         std::memcpy(V.Color, &Color, 4);
-        V.Uv[0] = At<float>(Img, P + 20);
-        V.Uv[1] = At<float>(Img, P + 24);
-        Normal(At<uint32_t>(Img, P + 36), V.Normal);
+        V.Uv[0] = At<float>(*Bytes, P + 20);
+        V.Uv[1] = At<float>(*Bytes, P + 24);
+        Normal(At<uint32_t>(*Bytes, P + 36), V.Normal);
         return true;
     };
     // the streams, each where its asset has it
@@ -178,6 +228,14 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
     L.SurfaceSize = M.SurfaceSize, L.FirstVertex = M.SurfaceFirstVertex, L.TriCount = M.SurfaceTris, L.BaseIndex = M.SurfaceBaseIndex;
     L.Material = M.SurfaceMaterial;
     L.BrushSize = M.BrushSize, L.FirstSurface = M.BrushFirstSurface, L.SurfaceCountAt = M.BrushSurfaceCount;
+    L.MoreUvs = M.MoreUvs;
+    if (!Spans.empty())
+        L.VertexBase = [&](int64_t Surface) {
+            const auto It = SpanOf.find(At<int32_t>(Img, Surface + M.SurfaceTransient));
+            if (It != SpanOf.end()) return It->second;
+            Counter("map_surfaces_transient_missing")++;
+            return 0xF0000000u;   // no zone: its vertices are not read
+        };
     const auto MaterialOf = [&](uint64_t Address) { return Off(Address) < 0 ? std::string() : Maps::AddMaterial(Scene, Material(Address)); };
     if (const size_t Bad = Maps::AddWorld(Scene, L, Fetch, MaterialOf)) Counter("map_triangles_unread") += Bad;
 
@@ -381,4 +439,24 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
     if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
     CoDAssets::GameAssets = std::move(SavedPool);
     CoDAssets::GamePackageCache = std::move(SavedCache);
+}
+
+std::vector<std::string> IWZone::InlineScriptStrings(const std::vector<uint8_t>& Z)
+{
+    std::vector<std::string> Out;
+    if (Z.size() < 0x20) return Out;
+    const uint32_t Count = ExportNaming::At<uint32_t>(Z, 0);
+    const uint64_t List = ExportNaming::At<uint64_t>(Z, 8);
+    const auto Inline = [](uint64_t V) { return V == ~0ull || V == ~1ull; };
+    if (!Inline(List) || Count == 0 || 0x20 + (uint64_t)Count * 8 > Z.size()) return Out;
+    Out.resize(Count);
+    size_t Text = 0x20 + (size_t)Count * 8;
+    for (uint32_t K = 0; K < Count && Text < Z.size(); K++)
+    {
+        if (!Inline(ExportNaming::At<uint64_t>(Z, 0x20 + (int64_t)K * 8))) continue;
+        const auto End = std::find(Z.begin() + (std::ptrdiff_t)Text, Z.end(), 0);
+        Out[K].assign(Z.begin() + (std::ptrdiff_t)Text, End);
+        Text = (size_t)(End - Z.begin()) + 1;
+    }
+    return Out;
 }

@@ -14,6 +14,17 @@ void ProcessReader::AddVirtual(const uint8_t* Data, size_t Size, uintptr_t Base)
     Extra.push_back({ Data, Size, Base });
 }
 
+void ProcessReader::SetVirtual(const uint8_t* Data, size_t Size, uintptr_t Base)
+{
+    for (auto& R : Extra)
+        if (R.Base == Base)
+        {
+            R.Data = Data, R.Size = Size;
+            return;
+        }
+    AddVirtual(Data, Size, Base);
+}
+
 size_t ProcessReader::ReadVirtual(uint8_t* Buffer, uintptr_t Offset, uintptr_t Length) const
 {
     const uint8_t* Data = VirtualData;

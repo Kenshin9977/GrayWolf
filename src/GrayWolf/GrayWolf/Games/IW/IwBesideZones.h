@@ -12,11 +12,15 @@
 // The keys: stream.keyed_refs' (Black Ops 6) or the rewind table's (stream.rewind_prepare, Black
 // Ops 7: the walker links a zone's own, the rest is left to Link).
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ExportWriters.h"
@@ -60,6 +64,9 @@ namespace IwBeside
         const uint8_t* Locate(uint64_t Address, uint64_t N) const;
         // Writes 8 bytes at an address of a loaded zone; false when it is in none
         bool Put(uint64_t Field, uint64_t Value);
+        // Whether an address is an instance of Type in a loaded zone (an image a texture slot points
+        // at: its pixels then pulled by name from the zone that defines it)
+        bool Holds(const std::string& Type, uint64_t Address) const;
         bool Empty() const { return Zones.empty(); }
         uint64_t End() const { return Next; }
         const std::vector<std::unique_ptr<Zone>>& All() const { return Zones; }
@@ -67,5 +74,27 @@ namespace IwBeside
     private:
         std::vector<std::unique_ptr<Zone>> Zones;
         uint64_t Next = 0;
+        mutable std::mutex HeldLock;
+        mutable std::map<std::string, std::pair<size_t, std::unordered_set<uint64_t>>> Held;   // type -> (zones seen, addresses)
     };
+
+    // The zones to load beside for what Left still wants, Gives the wanted items each zone (by its
+    // install index number) holds: the one giving the most first, until none gives more (greedy);
+    // what no zone gives stays in Left
+    template <class Item>
+    std::vector<size_t> Cover(std::map<size_t, std::set<Item>> Gives, std::set<Item>& Left)
+    {
+        std::vector<size_t> Out;
+        while (!Left.empty() && !Gives.empty())
+        {
+            const auto Count = [&](const std::set<Item>& Is) { return std::count_if(Is.begin(), Is.end(), [&](const Item& I) { return Left.count(I) != 0; }); };
+            const auto Best = std::max_element(Gives.begin(), Gives.end(), [&](const auto& A, const auto& B) { return Count(A.second) < Count(B.second); });
+            size_t Takes = 0;
+            for (const Item& I : Best->second) Takes += Left.erase(I);
+            if (Takes == 0) break;
+            Out.push_back(Best->first);
+            Gives.erase(Best);
+        }
+        return Out;
+    }
 }

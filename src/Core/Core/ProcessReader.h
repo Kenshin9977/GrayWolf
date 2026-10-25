@@ -31,6 +31,8 @@ public:
     void AttachVirtual(const uint8_t* Data, size_t Size, uintptr_t Base);
     // A further buffer served at Base beside the image; it must outlive the reader.
     void AddVirtual(const uint8_t* Data, size_t Size, uintptr_t Base);
+    // The buffer served at Base replaced by this one (added when none is there yet)
+    void SetVirtual(const uint8_t* Data, size_t Size, uintptr_t Base);
 
     // True once an image is attached.
     bool IsRunning() const;

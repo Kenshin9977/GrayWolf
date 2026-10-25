@@ -11,6 +11,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -363,3 +365,24 @@ int RunLoadFileMode(const CliOptions& Options)
     return RunExport(Options, CliElapsedMs(LoadStart, LoadEnd));
 }
 
+// ---- the subcommands (CliCommands.h)
+
+void AddAssetExportCommands(CliCommandBuilders& B)
+{
+    B["index-assets"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("index-assets", "Build a searchable asset index (assets_index.json)");
+        Sub->add_option("iwd-dir", Options.IndexAssets, "IWD package directory to index");
+        Sub->add_option("--models-dir", Options.ModelsDir, "Model directory to index");
+    };
+    B["query-assets"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("query-assets", "Apply a saved filter to an asset index and list the matches");
+        Sub->add_option("query", Options.QueryAssets, "Asset index (.json) to query")->required();
+        Sub->add_option("--filter", Options.FilterFile, "Saved filter file to apply");
+        Sub->add_option("--contact-sheet", Options.ContactSheet, "Also render matches into one contact sheet image");
+        Sub->add_option("--preview-dir", Options.PreviewDir, "Also render each match to a PNG/WAV in this directory");
+    };
+    B["file"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("file", "Load a package file straight off disk and export it");
+        Sub->add_option("path", Options.File, "Package/fast file to load")->required()->check(CLI::ExistingFile);
+    };
+}

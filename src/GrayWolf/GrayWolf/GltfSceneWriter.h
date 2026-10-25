@@ -54,14 +54,18 @@ public:
     int AddMaterial(const std::string& name, int baseColorImage, float r = 1, float g = 1, float b = 1, float a = 1,
                     Alpha alpha = Alpha::Opaque, float alphaCutoff = 0.5f);
     // Adds a mesh with one primitive (one material). Returns the mesh index, or -1 if empty.
+    // moreUvs: moreSets UV pairs per vertex in a row, written as TEXCOORD_1.. (none when null).
     int AddMesh(const std::string& name, const std::vector<Vertex>& verts,
-                const std::vector<uint32_t>& indices, int material);
+                const std::vector<uint32_t>& indices, int material,
+                const std::vector<float>* moreUvs = nullptr, uint32_t moreSets = 0);
     // Adds a mesh of several primitives (a model: one per material); empty parts are left out.
     struct Part
     {
         const std::vector<Vertex>* verts;
         const std::vector<uint32_t>* indices;
         int material;
+        const std::vector<float>* moreUvs = nullptr;
+        uint32_t moreSets = 0;
     };
     int AddMesh(const std::string& name, const std::vector<Part>& parts);
 
@@ -85,7 +89,7 @@ private:
     struct BufferView { size_t offset, length; int target; }; // target: 0=none,34962 array,34963 element
     struct Accessor { int bufferView, componentType, count; std::string type; bool normalized;
                       std::vector<double> min, max; bool hasBounds; };
-    struct Primitive { int posAcc, normAcc, uvAcc, colAcc, idxAcc, material; };
+    struct Primitive { int posAcc, normAcc, uvAcc, colAcc, idxAcc, material; std::vector<int> moreUvAcc; };
     struct Mesh { std::string name; std::vector<Primitive> prims; };
     struct Material { std::string name; int baseColorImage; float rgba[4]; Alpha alpha; float cutoff; };
     struct Image { std::string name; int bufferView; std::string uri; };

@@ -99,7 +99,8 @@ std::string ZonekitZone::SlotString(uint64_t Index)
     return VirtualGameSession::SlotString(Serving ? &Serving->Slots : nullptr, Index);
 }
 
-void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread)
+void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
+                                    bool ReferencesByName)
 {
     using DiskGame::Kind;
     auto& Kt = T.Kinds[Kind::Image];
@@ -118,6 +119,11 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
     for (const auto& N : ReferencedHere)
         if (!Names.count(N))
         {
+            if (ReferencesByName)
+            {
+                Names.emplace(N, -1);   // read by name below, else needed
+                continue;
+            }
             Kt.References++;
             C.Needs(Kind::Image, N);
         }
@@ -128,8 +134,15 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
     {
         const auto& [ImageName, Pos] = Order[N];
         if (!C.Advance(N, Order.size(), ImageName)) break;
-        Kt.Seen++;
         auto Dds = Decode(ImageName, Pos);
+        if (!Dds && Pos < 0)
+        {
+            Kt.References++;
+            C.Needs(Kind::Image, ImageName);
+            continue;
+        }
+        Kt.Seen++;
+        if (Pos < 0) Counter("images_referenced_read_by_name")++;
         if (!Dds)
         {
             Counter("images_unread")++;
@@ -636,6 +649,8 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
     ExportWriters::ModelTextures Tex = Textures(C);
     if (K == DiskGame::Kind::Model && ExporterOf(DiskGame::Kind::Image) != nullptr)
     {
+        // first: another zone may be opened meanwhile, this one parked
+        Tex.Fill = HeaderFiller(C);
         for (const auto& I : R.Instances)
             if (OwnerIs(I, ImageType())) Images.insert(I.Pos);
         Tex.Take = [&](XImage_t& I) {
@@ -1216,11 +1231,89 @@ void ZonekitZone::Defines(std::vector<DiskGame::AssetId>& Out) const
             std::string Name = AssetName(K, I.Pos);
             if (!IsReference(K, Name, I.Pos) && !Unwritable(K, I.Pos)) Out.push_back({ K, std::move(Name) });
         }
+    // the materials it defines, for a game that exports them (each name once)
+    std::set<std::string> Materials;
+    if (MaterialType)
+        for (const auto& I : R.Instances)
+        {
+            if (!OwnerIs(I, MaterialType)) continue;   // inline in an effect or a model too
+            std::string Name = AssetName(Kind::Material, I.Pos);
+            if (!Name.empty() && !IsReference(Kind::Material, Name, I.Pos) && Materials.insert(ExportNaming::Lower(Name)).second)
+                Out.push_back({ Kind::Material, std::move(Name) });
+        }
 }
 
 std::string ZonekitZone::IndexKey() const
 {
-    return ProfileKey(*Loaded);
+    // an index made before the zones listed their materials is made again
+    return ProfileKey(*Loaded) + (MaterialType ? "+materials2" : "");
+}
+
+void ZonekitZone::ExportMaterialImages(std::set<std::string> Images, const DiskGame::Context& C, DiskGame::Totals& T)
+{
+    for (auto It = Images.begin(); It != Images.end();)
+        It = It->empty() || (*It)[0] == '$' ? Images.erase(It) : std::next(It);
+    if (!Images.empty() && ExporterOf(DiskGame::Kind::Image) != nullptr) ExportTextures(Images, C, T);
+}
+
+void ZonekitZone::ExportsMaterials(const char* Type, MaterialReader Read, bool Indexed)
+{
+    if (Indexed) MaterialType = Type;
+    Exports(DiskGame::Kind::Material, [this, Type, Read = std::move(Read)](const DiskGame::Context& C, DiskGame::Totals& T) {
+        using DiskGame::Kind;
+        auto& Kt = T.Kinds[Kind::Material];
+        std::vector<std::pair<int64_t, std::string>> Found;
+        std::set<std::string> Seen, ReferencedHere;
+        for (const auto& I : R.Instances)
+        {
+            if (!OwnerIs(I, Type)) continue;   // inline in an effect or a model too
+            std::string Name = AssetName(Kind::Material, I.Pos);
+            if (IsReference(Kind::Material, Name, I.Pos))
+            {
+                Name = Referenced(Kind::Material, Name);
+                if (!Name.empty() && C.Wants(Kind::Material, Name)) ReferencedHere.insert(Name);
+                continue;
+            }
+            if (Name.empty() || !C.Wants(Kind::Material, Name) || !Seen.insert(ExportNaming::Lower(Name)).second) continue;
+            Found.emplace_back(I.Pos, std::move(Name));
+        }
+        for (const auto& N : ReferencedHere)
+            if (!Seen.count(ExportNaming::Lower(N)))
+            {
+                Kt.References++;
+                C.Needs(Kind::Material, N);
+            }
+        const fs::path Dir = C.KindDir(Kind::Material);
+        std::set<std::string> Images;
+        for (size_t N = 0; N < Found.size(); N++)
+        {
+            const auto& [Pos, Name] = Found[N];
+            if (!C.Advance(N, Found.size(), Name)) break;
+            Kt.Seen++;
+            std::string Json;
+            if (!Read(Name, Live().Addr((uint64_t)Pos), Json, Images))
+            {
+                T.Fail(ZoneName, Kind::Material, Name, "not read");
+                continue;
+            }
+            // ei/gfx_fire: its folders kept, each part a safe file name
+            fs::path File = Dir;
+            std::string Part;
+            for (char Ch : Name + "/")
+                if (Ch == '/' || Ch == '\\')
+                {
+                    if (!Part.empty() && Part != "." && Part != "..") File /= ExportNaming::SafeFileName(Part);
+                    Part.clear();
+                }
+                else Part += Ch;
+            File += ".json";
+            if (ExportWriters::WriteBytes(File, reinterpret_cast<const uint8_t*>(Json.data()), Json.size())) Kt.Written++;
+            else T.Fail(ZoneName, Kind::Material, Name, "write failed");
+        }
+        C.Advance(Found.size(), Found.size());
+        // their images, as a model's textures: this zone's, the others needed from where they are
+        ExportMaterialImages(std::move(Images), C, T);
+    });
 }
 
 std::string ProfileKey(const ExportWriters::LoadedProfile& Loaded)

@@ -1,3 +1,71 @@
 # Cold War (T9) hand tables: readers with a shape the machine-code transcriber does not render.
 # Each cites the disassembly that justifies it. A table here overrides the generated one of the
 # same name.
+
+# XAnimPtr arrays (execution f1bc7690, gesture f1bca8a0, attachmentunique f1be3df0,
+# weaponblueprint f1be4df0, weapon f1be6350, and the lists f1be97a0 / f1be9850): each element
+# a pointer read inline with the xanim struct reader f1be9110 under -1 / -2, i.e. an xanim
+# asset loaded in place. The generated tables leave the type off (SUB*|0x0|f1be9110), so these
+# anims were no instance: core_common's weapon attachments hold anims that zm_common and
+# mp_common only name (zm_common: 2 450 found in no zone of the install index, 40 now). Typed as BO4's tables type
+# their XAnimPtr (SUB*|..|xanim): an instance of xanim, its back reference an asset's.
+
+### f1bc7690_e1
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bc7690_e2
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bc7690_e3
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bc7690_e4
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bca8a0_e1
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bca8a0_e2
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1bca8a0_e3
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be3df0_e4
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be3df0_e5
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be4df0_e3
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be4df0_e4
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be6350_e3
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be6350_e4
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be97a0
+SELF|0x8
+SUB*|0x0|f1be9110|xanim
+
+### f1be9850
+SELF|0x8
+SUB*|0x0|f1be9110|xanim

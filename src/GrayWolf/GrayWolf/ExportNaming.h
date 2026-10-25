@@ -19,6 +19,14 @@ namespace ExportNaming
         return S;
     }
 
+    // A path with every '\' a '/'.
+    inline std::string ForwardSlashes(std::string S)
+    {
+        for (auto& C : S)
+            if (C == '\\') C = '/';
+        return S;
+    }
+
     // Replaces the characters Windows refuses in a file name.
     inline std::string SafeFileName(std::string S)
     {
@@ -105,8 +113,8 @@ namespace ExportNaming
         return N;
     }
 
-    // "a,b" (or "a, b") keeps names containing a or b, case-insensitively; an empty filter keeps
-    // everything.
+    // "a,b" (or "a, b") keeps names containing a or b, case-insensitively; "=a" keeps the name a
+    // only; an empty filter keeps everything.
     class NameFilter
     {
     public:
@@ -132,7 +140,12 @@ namespace ExportNaming
             if (Parts.empty()) return true;
             const std::string L = Lower(Name);
             for (const auto& P : Parts)
-                if (L.find(P) != std::string::npos) return true;
+            {
+                if (P[0] != '=') { if (L.find(P) != std::string::npos) return true; continue; }
+                // "=name": that name whole (or a path's last part)
+                const size_t Cut = L.find_last_of("/\\");
+                if (L.compare(Cut == std::string::npos ? 0 : Cut + 1, std::string::npos, P, 1) == 0) return true;
+            }
             return false;
         }
 

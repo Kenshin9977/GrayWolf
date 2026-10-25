@@ -11,6 +11,7 @@
 #include "SettingsManager.h"
 #include "Sound.h"
 #include "Strings.h"
+#include "WmaSounds.h"
 
 #include "miniaudio.h"
 #include <opus/opus.h>
@@ -335,6 +336,27 @@ bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const s
     }
     std::error_code Ec;
     std::filesystem::create_directories(Path.parent_path(), Ec);
+
+    // WMA, with an ffmpeg (WmaSounds.h): decoded to a PCM WAV, then written as one (a .wav under WAV)
+    if (IsFile && WmaSounds::IsWma(S.Data, S.Size) && WmaSounds::Available())
+    {
+        std::vector<uint8_t> Wav;
+        bool Retried = false;
+        uint32_t Short = 0;
+        std::string Failed;
+        if (WmaSounds::Decode(S.Data, S.Size, Wav, Retried, Short, Failed))
+        {
+            Count("sounds_wma_decoded");
+            if (Retried) Count("sounds_wma_bitrate_retried");
+            if (Short != 0) Count("sounds_wma_decoded_short");
+            std::filesystem::path Out = Path;
+            if (F != "FLAC" && F != "OPUS") Out.replace_extension(".wav");
+            return WriteSound(SoundSource::OfFile(Wav.data(), Wav.size(), ".wav"), Out, Format, Why);
+        }
+        Count("sounds_wma_decode_failed");
+    }
+    else if (IsFile && WmaSounds::IsWma(S.Data, S.Size))
+        Count(WmaSounds::NoFfmpegCounter);
 
     if (F != "FLAC" && F != "OPUS")
     {

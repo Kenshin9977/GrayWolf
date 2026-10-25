@@ -9,6 +9,7 @@
 
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "LuaExport.h"
 #include "Techsets.h"
 
 #include <miniz/miniz.h>
@@ -67,6 +68,7 @@ void ZonekitZone::ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T
             for (const auto& [Type, Read] : Readers)
                 if (OwnerIs(I, Type)) Found.emplace_back(I.Pos, Type, &Read);
     const fs::path Dir = C.KindDir(Kind::Rawfile);
+    LuaScripts::Sink Lua(C, T, ZoneName);   // compiled Lua decompiled with the decompile setting on
     std::set<std::string> Written;
     for (size_t N = 0; N < Found.size(); N++)
     {
@@ -100,9 +102,14 @@ void ZonekitZone::ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T
             T.Fail(ZoneName, Kind::Rawfile, Asked, "payload not read");
             continue;
         }
-        if (WriteRawfile(Dir, UnderFolder(Dir, Name), Bytes)) Kt.Written++;
+        const fs::path File = UnderFolder(Dir, Name);
+        if (Lua.Decompiling() && ExportNaming::Lower(File.extension().string()) == ".luac" && LuaScripts::IsBytecode(Bytes))
+            Lua.Add(File, std::move(Bytes));
+        else if (WriteRawfile(Dir, File, Bytes)) Kt.Written++;
         else T.Fail(ZoneName, Kind::Rawfile, Asked, "write failed");
     }
+    if (Lua.Decompiling()) C.Advance(Found.size(), Found.size(), std::string("(decompiler)"));
+    Lua.Finish();
     C.Advance(Found.size(), Found.size());
 }
 
@@ -127,8 +134,20 @@ bool ZonekitZone::RawBytes(int64_t Pos, const RawLayout& L, std::vector<uint8_t>
     return true;
 }
 
-void ZonekitZone::NameLua(std::string& Name, const std::vector<uint8_t>& Bytes)
+void ZonekitZone::NameLua(std::string& Name, std::vector<uint8_t>& Bytes)
 {
+    // zlib (Modern Warfare 2019 and later keep most of their Lua files deflated): inflated when the
+    // bytes inflate whole to bytecode
+    if (Bytes.size() > 2 && Bytes[0] == 0x78 && ((Bytes[0] << 8) | Bytes[1]) % 31 == 0)
+    {
+        size_t Size = 0;
+        if (void* Out = tinfl_decompress_mem_to_heap(Bytes.data(), Bytes.size(), &Size, TINFL_FLAG_PARSE_ZLIB_HEADER))
+        {
+            const auto* P = static_cast<const uint8_t*>(Out);
+            if (Size > 0 && P[0] == 0x1b) Bytes.assign(P, P + Size);
+            mz_free(Out);
+        }
+    }
     // the name's own .lua or .luac off, then the one the bytes are
     const std::string L = ExportNaming::Lower(Name);
     if (L.size() > 5 && L.compare(L.size() - 5, 5, ".luac") == 0) Name.resize(Name.size() - 5);

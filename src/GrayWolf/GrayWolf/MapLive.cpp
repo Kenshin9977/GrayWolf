@@ -5,6 +5,7 @@
 #include "CoDAssetType.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "HalfFloats.h"
 #include "Strings.h"
 #include "WraithModel.h"
 
@@ -33,6 +34,7 @@ std::string AddMaterial(MapScene& Scene, const XMaterial_t& M)
     Out.Name = Name;
     Out.Techset = M.TechsetName;
     Out.Constants = M.Constants;
+    Out.SortKey = M.SortKey;
     for (const XImage_t& I : M.Images)
     {
         if (I.ImageName.empty()) continue;
@@ -143,6 +145,18 @@ FILE* DebugFile()
     }();
     if (F) std::fflush(F);
     return F;
+}
+
+Instance PackedPlacement(const std::vector<uint8_t>& Image, int64_t Pos, bool HalfScale)
+{
+    using ExportNaming::At;
+    Instance In;
+    for (int A = 0; A < 3; A++) In.Origin[A] = (float)At<int32_t>(Image, Pos + A * 4) / 4096.0f;
+    float Q[4];
+    for (int A = 0; A < 4; A++) Q[A] = (float)At<uint16_t>(Image, Pos + 12 + A * 2) / 65535.0f * 2.0f - 1.0f;
+    AxisFromQuat(Q, In.Axis);
+    In.Scale = HalfScale ? HalfFloats::ToFloat(At<uint16_t>(Image, Pos + 20)) : At<float>(Image, Pos + 20);
+    return In;
 }
 
 std::string InlineName(const std::vector<uint8_t>& Image, int64_t Pos, size_t Max)
@@ -324,6 +338,14 @@ bool WorldBuilder::Triangle(const std::string& Material, uint32_t A, uint32_t B,
         Vertex V;
         if (!Read(In[K], V)) return false;
         Local[K] = (uint32_t)Sf.Vertices.size();
+        if (MoreUvs)
+        {
+            // the surface's first vertex says how many sets it has (its material's layers)
+            float Uvs[MaxMoreUvs * 2] = {};
+            const uint32_t N = std::min(MoreUvs(In[K], Uvs, MaxMoreUvs), MaxMoreUvs);
+            if (Sf.Vertices.empty()) Sf.UvSets = 1 + N;
+            Sf.MoreUvs.insert(Sf.MoreUvs.end(), Uvs, Uvs + (Sf.UvSets - 1) * 2);
+        }
         Sf.Vertices.push_back(V);
         Map.emplace(In[K], Local[K]);
     }
@@ -333,13 +355,13 @@ bool WorldBuilder::Triangle(const std::string& Material, uint32_t A, uint32_t B,
 }
 
 void BuildWorld(MapScene& Scene, uint32_t BrushCount, uint32_t SurfaceCount, const std::function<std::pair<uint32_t, uint32_t>(uint32_t)>& Range,
-                const WorldBuilder::Fetch& Read, const std::function<void(uint32_t, WorldBuilder&)>& Surface)
+                const WorldBuilder::Fetch& Read, const std::function<void(uint32_t, WorldBuilder&)>& Surface, const WorldBuilder::FetchUvs& MoreUvs)
 {
     for (uint32_t B = 0; B < BrushCount; B++)
     {
         const auto [First, End] = Range(B);
         if (End <= First || First >= SurfaceCount) continue;
-        WorldBuilder Mesh(B == 0 ? "world" : "brushmodel_" + std::to_string(B), Read);
+        WorldBuilder Mesh(B == 0 ? "world" : "brushmodel_" + std::to_string(B), Read, MoreUvs);
         for (uint32_t S = First; S < End && S < SurfaceCount; S++) Surface(S, Mesh);
         if (Mesh.Triangles()) Scene.Objects.push_back(Mesh.Take());
     }
@@ -362,10 +384,18 @@ size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch
         const int32_t Count = (int32_t)Field(Brush + L.SurfaceCountAt);
         return std::make_pair(First, Count <= 0 ? First : First + (uint32_t)Count);
     };
+    // the surface being added, for MoreUvs (a vertex's number in it)
+    int64_t Current = -1;
+    uint32_t CurrentBase = 0;
+    WorldBuilder::FetchUvs MoreUvs;
+    if (L.MoreUvs && L.VertexBytes == 0)
+        MoreUvs = [&](uint32_t I, float* Out, uint32_t Max) { return I >= CurrentBase ? L.MoreUvs(Current, I - CurrentBase, Out, Max) : 0u; };
     BuildWorld(Scene, L.BrushCount, L.SurfaceCount, Range, Read, [&](uint32_t S, WorldBuilder& Mesh) {
         if (L.Skip && L.Skip->count(S)) return;
         const int64_t Sf = L.Surfaces + (int64_t)S * L.SurfaceSize;
-        const uint32_t Base = U32(Sf + L.FirstVertex) / std::max(L.FirstVertexUnit, 1u), BaseIndex = U32(Sf + L.BaseIndex);
+        const uint32_t Base = U32(Sf + L.FirstVertex) / std::max(L.FirstVertexUnit, 1u) + (L.VertexBase ? L.VertexBase(Sf) : 0u),
+                       BaseIndex = U32(Sf + L.BaseIndex);
+        Current = Sf, CurrentBase = Base;
         const uint16_t Tris = ExportNaming::At<uint16_t>(Img, Sf + L.TriCount);
         const uint64_t MatAddress = L.PointerSize == 4 ? ExportNaming::At<uint32_t>(Img, Sf + L.Material)
                                                        : ExportNaming::At<uint64_t>(Img, Sf + L.Material);
@@ -381,7 +411,7 @@ size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch
             };
             if (!Mesh.Triangle(Found->second, Idx(0), Idx(1), Idx(2))) Bad++;
         }
-    });
+    }, MoreUvs);
     return Bad;
 }
 }

@@ -35,6 +35,8 @@ namespace GameReaders
         template <typename T> struct HasDelta3D<T, std::void_t<decltype(T::Delta3DRotationsPtr)>> : std::true_type {};
         template <typename T, typename = void> struct HasSurfaceArray : std::false_type {};
         template <typename T> struct HasSurfaceArray<T, std::void_t<decltype(T::SurfacesPtr)>> : std::true_type {};
+        template <typename T, typename = void> struct HasSemanticHash : std::false_type {};
+        template <typename T> struct HasSemanticHash<T, std::void_t<decltype(T::SemanticHash)>> : std::true_type {};
 
         struct NoExtra
         {
@@ -132,6 +134,19 @@ namespace GameReaders
         Asset.RotationsPtr = Data.RotationsPtr;
         Asset.TranslationsPtr = Data.TranslationsPtr;
         Asset.BaseMatriciesPtr = Data.BaseMatriciesPtr;
+    }
+
+    // A streamed IW XModel's skeleton (MW 2019, MWIII): its bones then the unnamed ones after
+    // them, divide-by-size; none for a model of several bones with no parent list (thousands of
+    // bones with no info)
+    template <typename TModel>
+    void CopyStreamedBones(XModel_t& Asset, const std::string& Name, const TModel& Data, uint8_t BoneParentSize)
+    {
+        CopyModelBones(Asset, Name, Data, 4, BoneParentSize);
+        Asset.BoneCount = Data.NumBones + Data.UnkBoneCount;
+        if (Asset.BoneCount > 1 && Data.ParentListPtr == 0) Asset.BoneCount = Asset.RootBoneCount = 0;
+        Asset.BoneRotationData = BoneDataTypes::DivideBySize;
+        Asset.IsModelStreamed = true;
     }
 
     // A surface whose vertices, faces and weights the zone holds
@@ -241,7 +256,19 @@ namespace GameReaders
         }
     }
 
-    // Count TImage entries (image pointer, semantic hash) at Table: each image named by
+    // The same for Treyarch's shaders (BO3, BO4, CW): their specular semantic differs
+    inline ImageUsageType TreyarchSemanticUsage(uint32_t Semantic)
+    {
+        switch (Semantic)
+        {
+        case 0xA0AB1041: return ImageUsageType::DiffuseMap;
+        case 0x59D30D0F: return ImageUsageType::NormalMap;
+        case 0xEC443804: return ImageUsageType::SpecularMap;
+        default: return ImageUsageType::Unknown;
+        }
+    }
+
+    // Count TImage entries (image pointer, semantic hash or type) at Table: each image named by
     // NameOf(ImagePtr), used as UsageOf(Semantic)
     template <typename TImage, typename FName, typename FUsage>
     void AddMaterialImages(XMaterial_t& Result, uint64_t Table, uint32_t Count, FName NameOf, FUsage UsageOf)
@@ -249,7 +276,11 @@ namespace GameReaders
         for (uint32_t m = 0; m < Count; m++)
         {
             const auto Image = CoDAssets::GameInstance->Read<TImage>(Table);
-            Result.Images.emplace_back(UsageOf(Image.SemanticHash), Image.SemanticHash, Image.ImagePtr, NameOf(Image.ImagePtr));
+            const auto Semantic = [&Image] {
+                if constexpr (Detail::HasSemanticHash<TImage>::value) return Image.SemanticHash;
+                else return Image.Type;
+            }();
+            Result.Images.emplace_back(UsageOf(Semantic), Semantic, Image.ImagePtr, NameOf(Image.ImagePtr));
             Table += sizeof(TImage);
         }
     }
@@ -373,6 +404,23 @@ namespace GameReaders
     // An image from the IWD image cache, by name (CoD4, WaW, BO1): a normal map marked as a
     // bump map when "patchnormals" is on
     std::unique_ptr<XImageDDS> LoadIwdImage(const XImage_t& Image);
+
+    // A 64-bit IW material whose images the zone holds (Ghosts, AW, MW 2019), named after its
+    // file: each image named by the string pointer NameAt bytes into it, used as UsageOf(its
+    // semantic); a name-only header (",name") gets the images the zone defining it names (Elsewhere)
+    template <typename TMaterial, typename TImage, typename FUsage>
+    XMaterial_t ReadNamedMaterial(uint64_t MaterialPointer, uint64_t NameAt, const ImagesElsewhereFn& Elsewhere, FUsage UsageOf)
+    {
+        const auto Data = CoDAssets::GameInstance->Read<TMaterial>(MaterialPointer);
+        const auto RawName = CoDAssets::GameInstance->ReadNullTerminatedString(Data.NamePtr);
+
+        XMaterial_t Result(Data.ImageCount);
+        Result.MaterialName = FileSystems::GetFileNameWithoutExtension(RawName);
+        AddMaterialImages<TImage>(Result, Data.ImageTablePtr, Data.ImageCount, [NameAt](uint64_t Image) { return ImageNameAt<uint64_t>(Image, NameAt); },
+                                  UsageOf);
+        if (Data.ImageCount == 0 && !RawName.empty() && RawName[0] == ',') AddImagesElsewhere(Result, Elsewhere, RawName.substr(1), UsageOf);
+        return Result;
+    }
 
     // A 32-bit IW material (CoD4, WaW): its images named by the pointer 4 bytes before their
     // end, and its technique set's name (the techset pointer at TechsetOffset, its name first; a

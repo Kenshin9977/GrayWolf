@@ -72,6 +72,12 @@ struct PreviewGeometry
 bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGeometry& Out,
                          const std::function<bool()>& Cancelled = {});
 
+// The same, as one skeleton an anim plays on (AnimRigs.h): a later part's bones join the first's
+// (a bone of the same name is that bone, the others are appended, the part's root under the bone it
+// is seated on: a weapon's j_gun on the hands' tag_weapon) and its vertices keep their weights.
+bool LoadRigGeometry(const std::vector<std::string>& Paths, PreviewGeometry& Out,
+                     const std::function<bool()>& Cancelled = {});
+
 // Loads a map .glb (our own map-export writer's output, or any glTF 2.0 binary) into a PreviewGeometry
 // via tinygltf, so map previews reuse the exact same GPU upload + viewport code as .semodel/.XMODEL_EXPORT
 // models. Every node places its mesh with its transform (a map's models are instanced), except the

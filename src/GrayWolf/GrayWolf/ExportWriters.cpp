@@ -40,6 +40,14 @@ namespace ExportWriters
         return (bool)O;
     }
 
+    bool ReadBytes(const std::filesystem::path& P, std::vector<uint8_t>& Out)
+    {
+        std::ifstream F(P, std::ios::binary);
+        if (!F) return false;
+        Out.assign(std::istreambuf_iterator<char>(F), std::istreambuf_iterator<char>());
+        return true;
+    }
+
 namespace
 {
     bool EnvSet(const char* Name, const char* Legacy)
@@ -400,6 +408,14 @@ namespace
             const auto* Types = reinterpret_cast<const int32_t*>(Base + (uint32_t)Throw[3]);
             const auto* First = reinterpret_cast<const int32_t*>(Base + (uint32_t)Types[1]);
             LastCrash += std::format(" type {}", reinterpret_cast<const char*>(Base + (uint32_t)First[1] + 16));
+            // a std::exception (one of its catchable types): its what(), the object at [1]
+            for (int32_t I = 0; I < Types[0] && R->ExceptionInformation[1]; I++)
+            {
+                const auto* Type = reinterpret_cast<const int32_t*>(Base + (uint32_t)Types[1 + I]);
+                if (strcmp(reinterpret_cast<const char*>(Base + (uint32_t)Type[1] + 16), ".?AVexception@std@@") != 0) continue;
+                LastCrash += std::format(": {}", reinterpret_cast<const std::exception*>(R->ExceptionInformation[1])->what());
+                break;
+            }
         }
         static volatile LONG Dumped = 0;
         char Path[MAX_PATH] = {};
@@ -421,7 +437,27 @@ namespace
     // No C++ object may live in a function with __try: these take everything prepared.
     int ModelSeh(const CoDModel_t* M, const std::string* Dir, const ModelTextures* T)
     {
-        __try { return static_cast<int>(LiveExport::ExportModel(M, *Dir, T->ImagesDir, T->Relative, T->Extension, T->Take ? &T->Take : nullptr)); }
+        __try { return static_cast<int>(LiveExport::ExportModel(M, *Dir, T->ImagesDir, T->Relative, T->Extension, T->Take ? &T->Take : nullptr,
+                                                                    T->Fill ? &T->Fill : nullptr)); }
+        __except (NoteCrash(GetExceptionInformation())) { return -1; }
+    }
+
+    struct CompositeCall
+    {
+        const std::string* Name;
+        const std::vector<CoDModel_t>* Parts;
+        const std::string* Dir;
+        const ModelTextures* T;
+        size_t* Read;
+    };
+    int CompositeSeh(const CompositeCall* C)
+    {
+        __try
+        {
+            return static_cast<int>(LiveExport::ExportCompositeModel(*C->Name, *C->Parts, *C->Dir, C->T->ImagesDir, C->T->Relative, C->T->Extension,
+                                                                     C->T->Take ? &C->T->Take : nullptr, C->Read,
+                                                                     C->T->Fill ? &C->T->Fill : nullptr));
+        }
         __except (NoteCrash(GetExceptionInformation())) { return -1; }
     }
 
@@ -660,6 +696,13 @@ size_t ResizedDdsCopies(const std::vector<std::pair<std::string, std::string>>& 
 int ExportModel(const CoDModel_t& Model, const std::string& Dir, const ModelTextures& Textures, std::string& Crash)
 {
     return Guarded([&]() { return ModelSeh(&Model, &Dir, &Textures); }, Crash);
+}
+
+int ExportComposite(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& Dir, const ModelTextures& Textures,
+                    size_t& PartsRead, std::string& Crash)
+{
+    const CompositeCall Call{ &Name, &Parts, &Dir, &Textures, &PartsRead };
+    return Guarded([&]() { return CompositeSeh(&Call); }, Crash);
 }
 
 int ExportAnim(const CoDAnim_t& Anim, const std::string& Dir, std::string& Crash)

@@ -331,7 +331,10 @@ namespace
         return Result;
     }
 
-    bool ShouldExportModel(const std::string& ExportPath)
+    // Expected: the model's materials sidecar, when described. Its files all there are not enough to
+    // skip it: a sidecar that differs (materials read better since) rewrites the model too, whose
+    // .cast carries the same material slots.
+    bool ShouldExportModel(const std::string& ExportPath, const Materials::Sidecar* Expected = nullptr)
     {
         std::error_code Ec;
         auto SkipPrevModels = SettingsManager::GetSetting("skipprevmodel") == "true";
@@ -339,7 +342,7 @@ namespace
         if (!SkipPrevModels)
             return true;
 
-        bool Result = false;
+        bool Result = Expected != nullptr && !Materials::SidecarHolds(ExportPath + ".materials.json", *Expected);
 
         if (SettingsManager::GetSetting("export_xmexport") == "true" && !std::filesystem::is_regular_file(ExportPath + ".XMODEL_EXPORT", Ec))
             Result = true;
@@ -481,10 +484,16 @@ namespace
         }
     }
 
-    // The model in every format the settings ask for; Materials: its materials as Cast slots, for the .cast
+    // The model in every format the settings ask for; Materials: its materials as Cast slots, for the .cast;
+    // Described: its materials as the game's adapter describes them (their colour factor, for glTF)
     void WriteModelFiles(const std::unique_ptr<WraithModel>& Model, const std::string& ExportPath,
-                         const std::vector<CastMaterialSlots>* Materials = nullptr)
+                         const std::vector<CastMaterialSlots>* Materials = nullptr,
+                         const std::vector<::Materials::Description>* Described = nullptr)
     {
+        if (Described != nullptr)
+            for (auto& Material : Model->Materials)
+                for (const auto& D : *Described)
+                    if (D.Name == Material.MaterialName) ::Materials::BaseColorFactor(D, Material.ColorFactor);
         std::ofstream Cosmetics((std::filesystem::path(ExportPath) / (Model->AssetName + "_cosmetics.mel")).string());
 
         for (auto& Bone : Model->Bones)
@@ -538,13 +547,15 @@ namespace
         {
             XNALara::ExportXNA(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".mesh.ascii")).string());
         }
+        // glTF is in metres: its scene root scales the model's unit (and turns Z up into Y up)
+        const float GltfMetres = SettingsManager::GetSetting("unit", "Centimeter") == "Inch" ? 0.0254f : 0.01f;
         if (SettingsManager::GetSetting("export_gltf") == "true")
         {
-            GLTF::ExportGLTF(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".gltf")).string());
+            GLTF::ExportGLTF(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".gltf")).string(), false, false, GltfMetres);
         }
         if (SettingsManager::GetSetting("export_glb") == "true")
         {
-            GLTF::ExportGLTF(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".glb")).string(), false, true);
+            GLTF::ExportGLTF(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".glb")).string(), false, true, GltfMetres);
         }
         if (SettingsManager::GetSetting("export_semodel") == "true")
         {
@@ -582,6 +593,7 @@ namespace
             if (!Seen.insert(Src.Name).second) continue;
             Src.Techset = Mat.TechsetName;
             Src.Constants = Mat.Constants;
+            Src.SortKey = Mat.SortKey;
             for (const auto& Image : Mat.Images)
             {
                 Materials::Role Hint = Materials::Role::Unknown;
@@ -705,7 +717,6 @@ ExportGameResult LiveExport::ExportWraithModel(std::unique_ptr<WraithModel>& Mod
                                                 const Materials::Sidecar* Sidecar)
 {
     if (Model == nullptr) return ExportGameResult::UnknownError;
-    if (!ShouldExportModel((std::filesystem::path(ExportPath) / Model->AssetName).string())) return ExportGameResult::Success;
     std::vector<CastMaterialSlots> Slots;
     bool Described = false;
     if (Sidecar != nullptr)
@@ -717,7 +728,9 @@ ExportGameResult LiveExport::ExportWraithModel(std::unique_ptr<WraithModel>& Mod
         }
         catch (const std::exception&) {}
     }
-    WriteModelFiles(Model, ExportPath, Described ? &Slots : nullptr);
+    if (!ShouldExportModel((std::filesystem::path(ExportPath) / Model->AssetName).string(), Described ? Sidecar : nullptr))
+        return ExportGameResult::Success;
+    WriteModelFiles(Model, ExportPath, Described ? &Slots : nullptr, Described ? &Sidecar->Materials : nullptr);
     if (Described)
     {
         try { Materials::WriteSidecar((std::filesystem::path(ExportPath) / Model->AssetName).string() + ".materials.json", *Sidecar); }
@@ -726,82 +739,31 @@ ExportGameResult LiveExport::ExportWraithModel(std::unique_ptr<WraithModel>& Mod
     return ExportGameResult::Success;
 }
 
+namespace
+{
+    // The textures of every LOD's materials written (or handed to TakeImages) and named as the
+    // model files refer to them
+    void PrepareTextures(XModel_t& GenericModel, const std::string& ExportPath, const std::string& ImagesPath,
+                         const std::string& ImageRelativePath, const std::string& ImageExtension, const LiveExport::ImageTaker* TakeImages,
+                         const LiveExport::MaterialFiller* FillMaterials);
+}
+
 ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::string& ExportPath, const std::string& ImagesPath, const std::string& ImageRelativePath, const std::string& ImageExtension,
-                                             const ImageTaker* TakeImages)
+                                             const ImageTaker* TakeImages, const MaterialFiller* FillMaterials)
 {
     std::unique_ptr<XModel_t> GenericModel = ReadModel(Model);
-    auto ImageFormatType = ImageFormat::Standard_PNG;
-    auto ImageSetting = SettingsManager::GetSetting("exportimg", "PNG");
-    auto ExportImages = SettingsManager::GetSetting("exportmodelimg") == "true";
-    auto ExportImageNames = SettingsManager::GetSetting("exportimgnames") == "true";
-    auto ExportMaterialFolders = SettingsManager::GetSetting("mdlmtlfolders") == "true" && TakeImages == nullptr;
-
-    if (ExportImages)
-    {
-        std::error_code Ec;
-        std::filesystem::create_directories(ImagesPath, Ec);
-    }
-
-    if (ImageSetting == "DDS")
-    {
-        ImageFormatType = ImageFormat::DDS_WithHeader;
-    }
-    else if (ImageSetting == "TGA")
-    {
-        ImageFormatType = ImageFormat::Standard_TGA;
-    }
-    else if (ImageSetting == "TIFF")
-    {
-        ImageFormatType = ImageFormat::Standard_TIFF;
-    }
-
+    if (GenericModel != nullptr) PrepareTextures(*GenericModel, ExportPath, ImagesPath, ImageRelativePath, ImageExtension, TakeImages, FillMaterials);
     if (GenericModel != nullptr)
     {
-        for (auto& LOD : GenericModel->ModelLods)
-        {
-            for (auto& Material : LOD.Materials)
-            {
-                auto CompleteImagesPath = ImagesPath;
-                auto CompleteImageRelativePath = ImageRelativePath;
-
-                if (ExportMaterialFolders && ExportImages)
-                {
-                    std::error_code Ec;
-                    CompleteImagesPath = (std::filesystem::path(ImagesPath) / Material.MaterialName).string();
-                    CompleteImageRelativePath = (std::filesystem::path(ImageRelativePath) / Material.MaterialName).string() + "\\\\";
-                    std::filesystem::create_directories(CompleteImagesPath, Ec);
-                }
-
-                if (ExportImageNames)
-                {
-                    ExportMaterialImageNames(Material, ExportPath);
-                }
-                if (ExportImages && TakeImages != nullptr)
-                {
-                    // The caller writes the textures: it may rename one, or drop it
-                    auto& Images = Material.Images;
-                    Images.erase(std::remove_if(Images.begin(), Images.end(), [&](XImage_t& Image) { return !(*TakeImages)(Image); }), Images.end());
-                }
-                else if (ExportImages)
-                {
-                    ExportMaterialImages(Material, CompleteImagesPath, ImageExtension, ImageFormatType);
-                }
-
-                for (auto& Image : Material.Images)
-                {
-                    // Append the relative path and image extension here, since we are done with these images
-                    Image.ImageName = CompleteImageRelativePath + Image.ImageName + ImageExtension;
-                }
-            }
-        }
-
         if (SettingsManager::GetSetting("exportalllods") == "true")
         {
             auto LodCount = (uint32_t)GenericModel->ModelLods.size();
 
             for (uint32_t i = 0; i < LodCount; i++)
             {
-                if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + std::format("_LOD{}", i))).string()))
+                const DescribedLod Described = DescribeLod(GenericModel->ModelLods[i]);
+                if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + std::format("_LOD{}", i))).string(),
+                                      Described.Ok ? &Described.Sidecar : nullptr))
                 {
                     auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, i);
 
@@ -809,8 +771,7 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
 
                     if (Result != nullptr)
                     {
-                        const DescribedLod Described = DescribeLod(GenericModel->ModelLods[i]);
-                        WriteModelFiles(Result, ExportPath, Described.CastSlots());
+                        WriteModelFiles(Result, ExportPath, Described.CastSlots(), Described.Ok ? &Described.Sidecar.Materials : nullptr);
                         WriteSidecar(Described, (std::filesystem::path(ExportPath) / Result->AssetName).string());
                     }
                     else
@@ -834,7 +795,9 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
                     LodIndexSuffix = std::format("_LOD{}", BiggestLodIndex);
                 }
 
-                if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + LodIndexSuffix)).string()))
+                const DescribedLod Described = DescribeLod(GenericModel->ModelLods[BiggestLodIndex]);
+                if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + LodIndexSuffix)).string(),
+                                      Described.Ok ? &Described.Sidecar : nullptr))
                 {
                     const auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, BiggestLodIndex);
 
@@ -842,8 +805,7 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
 
                     if (Result != nullptr)
                     {
-                        const DescribedLod Described = DescribeLod(GenericModel->ModelLods[BiggestLodIndex]);
-                        WriteModelFiles(Result, ExportPath, Described.CastSlots());
+                        WriteModelFiles(Result, ExportPath, Described.CastSlots(), Described.Ok ? &Described.Sidecar.Materials : nullptr);
                         WriteSidecar(Described, (std::filesystem::path(ExportPath) / Result->AssetName).string());
                     }
                     else
@@ -880,6 +842,161 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
     }
 
     return ExportGameResult::Success;
+}
+
+ExportGameResult LiveExport::ExportCompositeModel(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& ExportPath,
+                                                  const std::string& ImagesPath, const std::string& ImageRelativePath,
+                                                  const std::string& ImageExtension, const ImageTaker* TakeImages, size_t* PartsRead,
+                                                  const MaterialFiller* FillMaterials)
+{
+    // each part's largest LOD, its bones joined by name (a bone of two parts is one bone: the part's
+    // own skeleton is the composite's, its rig on the same tags), its materials by name
+    auto Merged = std::make_unique<WraithModel>();
+    Merged->AssetName = Name + "_LOD0";
+    Materials::Sidecar Sidecar;
+    std::vector<CastMaterialSlots> Slots;
+    bool Described = true;
+    std::unordered_map<std::string, uint32_t> BoneOf, MaterialOf;
+    size_t Read = 0;
+    for (const CoDModel_t& Part : Parts)
+    {
+        std::unique_ptr<XModel_t> Generic = ReadModel(&Part);
+        if (Generic == nullptr) continue;
+        PrepareTextures(*Generic, ExportPath, ImagesPath, ImageRelativePath, ImageExtension, TakeImages, FillMaterials);
+        const int32_t Lod = CoDXModelTranslator::CalculateBiggestLodIndex(Generic);
+        if (Lod < 0) continue;
+        const auto Mesh = CoDXModelTranslator::TranslateXModel(Generic, (uint32_t)Lod);
+        if (Mesh == nullptr) continue;
+        Read++;
+        const DescribedLod D = DescribeLod(Generic->ModelLods[(size_t)Lod]);
+        Described = Described && D.Ok && D.Slots.size() == Mesh->Materials.size() && D.Sidecar.Materials.size() == Mesh->Materials.size();
+        std::vector<uint32_t> Bones(Mesh->Bones.size());
+        for (size_t B = 0; B < Mesh->Bones.size(); B++)
+        {
+            const WraithBone& Bone = Mesh->Bones[B];
+            if (const auto It = BoneOf.find(Bone.TagName); It != BoneOf.end())
+            {
+                Bones[B] = It->second;
+                continue;
+            }
+            Bones[B] = (uint32_t)Merged->Bones.size();
+            BoneOf.emplace(Bone.TagName, Bones[B]);
+            WraithBone Copy = Bone;
+            Copy.BoneParent = Bone.BoneParent >= 0 && (size_t)Bone.BoneParent < B ? (int32_t)Bones[(size_t)Bone.BoneParent] : -1;
+            Merged->Bones.push_back(Copy);
+        }
+        std::vector<int32_t> Materials(Mesh->Materials.size());
+        for (size_t M = 0; M < Mesh->Materials.size(); M++)
+        {
+            const auto [It, New] = MaterialOf.try_emplace(Mesh->Materials[M].MaterialName, (uint32_t)Merged->Materials.size());
+            Materials[M] = (int32_t)It->second;
+            if (!New) continue;
+            Merged->Materials.push_back(Mesh->Materials[M]);
+            if (Described && M < D.Slots.size() && M < D.Sidecar.Materials.size())
+            {
+                Slots.push_back(D.Slots[M]);
+                Sidecar.Materials.push_back(D.Sidecar.Materials[M]);
+                if (M < D.Sidecar.Sources.size()) Sidecar.Sources.push_back(D.Sidecar.Sources[M]);
+            }
+            if (Sidecar.Game.empty()) Sidecar.Game = D.Sidecar.Game, Sidecar.Adapter = D.Sidecar.Adapter;
+        }
+        for (WraithSubmesh& Sub : Mesh->Submeshes)
+        {
+            for (WraithVertex& V : Sub.Verticies)
+                for (WraithVertexWeight& W : V.Weights)
+                    if (W.BoneIndex < Bones.size()) W.BoneIndex = Bones[W.BoneIndex];
+            for (int32_t& M : Sub.MaterialIndicies)
+                if (M >= 0 && (size_t)M < Materials.size()) M = Materials[(size_t)M];
+            Merged->Submeshes.push_back(std::move(Sub));
+        }
+    }
+    if (PartsRead != nullptr) *PartsRead = Read;
+    if (Read == 0) return ExportGameResult::UnknownError;
+    if (!ShouldExportModel((std::filesystem::path(ExportPath) / Merged->AssetName).string(), Described ? &Sidecar : nullptr))
+        return ExportGameResult::Success;
+    WriteModelFiles(Merged, ExportPath, Described ? &Slots : nullptr);
+    if (Described)
+    {
+        try { Materials::WriteSidecar((std::filesystem::path(ExportPath) / Merged->AssetName).string() + ".materials.json", Sidecar); }
+        catch (const std::exception&) {}
+    }
+    return ExportGameResult::Success;
+}
+
+namespace
+{
+void PrepareTextures(XModel_t& GenericModel, const std::string& ExportPath, const std::string& ImagesPath,
+                     const std::string& ImageRelativePath, const std::string& ImageExtension, const LiveExport::ImageTaker* TakeImages,
+                     const LiveExport::MaterialFiller* FillMaterials)
+{
+    XModel_t* const Generic = &GenericModel;
+    auto ImageFormatType = ImageFormat::Standard_PNG;
+    auto ImageSetting = SettingsManager::GetSetting("exportimg", "PNG");
+    auto ExportImages = SettingsManager::GetSetting("exportmodelimg") == "true";
+    auto ExportImageNames = SettingsManager::GetSetting("exportimgnames") == "true";
+    auto ExportMaterialFolders = SettingsManager::GetSetting("mdlmtlfolders") == "true" && TakeImages == nullptr;
+
+    if (ExportImages)
+    {
+        std::error_code Ec;
+        std::filesystem::create_directories(ImagesPath, Ec);
+    }
+
+    if (ImageSetting == "DDS")
+    {
+        ImageFormatType = ImageFormat::DDS_WithHeader;
+    }
+    else if (ImageSetting == "TGA")
+    {
+        ImageFormatType = ImageFormat::Standard_TGA;
+    }
+    else if (ImageSetting == "TIFF")
+    {
+        ImageFormatType = ImageFormat::Standard_TIFF;
+    }
+
+    {
+        for (auto& LOD : Generic->ModelLods)
+        {
+            for (auto& Material : LOD.Materials)
+            {
+                if (FillMaterials != nullptr && Material.Images.empty()) (*FillMaterials)(Material);
+                auto CompleteImagesPath = ImagesPath;
+                auto CompleteImageRelativePath = ImageRelativePath;
+
+                if (ExportMaterialFolders && ExportImages)
+                {
+                    std::error_code Ec;
+                    CompleteImagesPath = (std::filesystem::path(ImagesPath) / Material.MaterialName).string();
+                    CompleteImageRelativePath = (std::filesystem::path(ImageRelativePath) / Material.MaterialName).string() + "\\\\";
+                    std::filesystem::create_directories(CompleteImagesPath, Ec);
+                }
+
+                if (ExportImageNames)
+                {
+                    ExportMaterialImageNames(Material, ExportPath);
+                }
+                if (ExportImages && TakeImages != nullptr)
+                {
+                    // The caller writes the textures: it may rename one, or drop it
+                    auto& Images = Material.Images;
+                    Images.erase(std::remove_if(Images.begin(), Images.end(), [&](XImage_t& Image) { return !(*TakeImages)(Image); }), Images.end());
+                }
+                else if (ExportImages)
+                {
+                    ExportMaterialImages(Material, CompleteImagesPath, ImageExtension, ImageFormatType);
+                }
+
+                for (auto& Image : Material.Images)
+                {
+                    // Append the relative path and image extension here, since we are done with these images
+                    Image.ImageName = CompleteImageRelativePath + Image.ImageName + ImageExtension;
+                }
+            }
+        }
+
+    }
+}
 }
 
 ExportGameResult LiveExport::ExportImage(const CoDImage_t* Image, const std::string& ExportPath, const std::string& ImageExtension)

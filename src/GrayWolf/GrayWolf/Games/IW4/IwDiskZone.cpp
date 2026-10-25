@@ -6,11 +6,13 @@
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/IW/IWSoundAliases.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "IWDCache.h"
 #include <miniz/miniz.h>
 #include "SettingsManager.h"
 #include "Strings.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -18,6 +20,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -71,7 +74,33 @@ namespace Iw64
         Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
         Exports(Kind::Rawfile, [this](const Context& C, Totals& T) { ExportRawfiles(C, T); });
         Exports(Kind::Data, [this](const Context& C, Totals& T) { ExportStringTables(C, T); });
-        Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+        Exports(Kind::Map, [this](const Context& C, Totals& T) {
+            BookMaterialsElsewhere();
+            ExportMap(C, T);
+        });
+        // a model's material headers: the materials this zone or another defines
+        if (const auto* Models = ExporterOf(Kind::Model))
+            Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                BookMaterialsElsewhere();
+                Read(C, T);
+            });
+        // Material: its techset, images and blend factors as JSON, its images by the image kind,
+        // with its techset's name (the pointer before the texture table: the iw4 table's material
+        // 0x58, iw5's 0x60), what tells the preview how it blends; the model kind's reader leaves it
+        // FxEffectDef (MW2 0x28, MW3 0x40; elements 0x120) as JSON, CoD4's with 8-byte pointers
+        ExportsEffects(
+            [this](uint64_t A) {
+                // a header as it is: the fx and material kinds name it and need it from where it is
+                // defined, whichever kinds ran before (MaterialDefinedAt, MaterialImagesElsewhere)
+                auto Defined = std::exchange(MaterialDefinedAt, nullptr);
+                auto Elsewhere = std::exchange(MaterialImagesElsewhere, nullptr);
+                XMaterial_t M = ReadXMaterial(A, *Game.Readers);
+                MaterialDefinedAt = std::move(Defined), MaterialImagesElsewhere = std::move(Elsewhere);
+                const int64_t Techset = Off(At<uint64_t>(Image(), Off(A) + Game.Readers->MaterialTextureTable - 8));
+                if (Techset >= 0) M.TechsetName = StringAt(At<uint64_t>(Image(), Techset));
+                return M;
+            },
+            Game.Readers == &Mw3 ? Treyarch::EffectLayout::Iw5 : Treyarch::EffectLayout::Iw4);
         // the .gsc rawfiles (source), and MW3's scriptfiles (bytecode)
         Exports(Kind::Script, [this](const Context& C, Totals& T) {
             ExportScripts(C, T, Game.ScriptVm,
@@ -83,8 +112,61 @@ namespace Iw64
         });
     }
 
+    IwDiskZone::~IwDiskZone()
+    {
+        if (!IsServed()) return;
+        MaterialDefinedAt = nullptr;
+        MaterialImagesElsewhere = nullptr;
+    }
+
+    void IwDiskZone::ReadMaterials()
+    {
+        if (MaterialsRead) return;
+        MaterialsRead = true;
+        // a material's name pointer is its first field; a header's name starts with ','
+        for (const auto& I : Walk().Instances)
+        {
+            if (!OwnerIs(I, "material")) continue;
+            const std::string N = StringAt(At<uint64_t>(Image(), I.Pos));
+            if (!IsReference(DiskGame::Kind::Material, N, I.Pos)) Materials.emplace(ExportNaming::Lower(N), I.Pos);
+        }
+    }
+
+    void IwDiskZone::Served(bool On)
+    {
+        MaterialDefinedAt = nullptr;
+        MaterialImagesElsewhere = nullptr;
+        if (!On) return;
+        MaterialDefinedAt = [this](const std::string& Name) -> uint64_t {
+            ReadMaterials();
+            const auto It = Materials.find(ExportNaming::Lower(Name));
+            return It == Materials.end() ? 0 : Live().Addr((uint64_t)It->second);
+        };
+        MaterialImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+            return MaterialsElsewhere != nullptr && MaterialsElsewhere->Find(Name, Out);
+        };
+    }
+
+    void IwDiskZone::BookMaterialsElsewhere()
+    {
+        if (BooksTried || Owner == nullptr || Install.empty()) return;
+        BooksTried = true;
+        // Material: the texture count u8 and table, slots {u32 name hash, pad, image*} of 0x10; GfxImage's name
+        IWMaterialBooks::Layout L;
+        L.Profile = Game.Profile;
+        L.ImageCount = Game.Readers->MaterialTextureCount, L.Images = Game.Readers->MaterialTextureTable;
+        L.SlotSize = 0x10, L.SlotImage = 8, L.ImageName = ImageName;
+        L.WithSlotsOnly = true;
+        // each header's first defining zone (the install's order), this one left out
+        const auto Headers = MaterialHeaders();
+        IWZone::BookMaterialsElsewhere(
+            Headers.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.DefinedIn({ DiskGame::Kind::Material, Headers[K] }); },
+            true, L);
+    }
+
     void IwDiskZone::Fixups()
     {
+        Served(true);   // opened: the zone the handlers reach
         // the script strings: count and pointer in the XAssetList just before the
         // stream, then one u64 slot each, then the text of every inline slot
         const auto& Z = Zone();
@@ -558,6 +640,7 @@ namespace Iw64
     {
         auto Zone = std::make_unique<IwDiskZone>(Path, Game);
         if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
+        Zone->SetInstall(this, Options, !Options.Install.empty() ? Options.Install : InstallOfZone(Path));
         if (!Zone->Open(Error)) return nullptr;
         return Zone;
     }

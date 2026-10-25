@@ -16,14 +16,18 @@
 #include "GameInfiniteWarfare.h"
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwWeaponDefs.h"
 #include "Games/IW7/EntityKeys.h"
 #include "Games/IW7/HavokShapes.h"
+#include "Games/IW7/VfxLayout.h"
 #include "MapRadiantWriter.h"
 #include "PAKSupport.h"
 #include "SABSupport.h"
 #include "SettingsManager.h"
 #include "Strings.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -148,12 +152,14 @@ namespace
 
     // A name-only material header names a material of the zones the game loads first: the common
     // zones (common*, global*, code_pre_gfx, code_post_gfx and their patch_ zones) and each level's
-    // techsets_ zone. Material (0x118): image count u8 at 0x30, image table at 0x40.
+    // techsets_ zone. Material (0x118): image count u8 at 0x30, image table at 0x40; MaterialInfo's sort
+    // key u8 0xa, atlas rows 0xb and columns 0xc, the techset at 0x38 (the material adapter's alpha mode).
     IWMaterialBooks::Layout MaterialLayout()
     {
         IWMaterialBooks::Layout L;
         L.Profile = "iw7";
         L.ImageCount = 0x30, L.Images = 0x40, L.ImageName = ImageNameAt;
+        L.SortKey = 0xa, L.AtlasRows = 0xb, L.AtlasCols = 0xc, L.Techset = 0x38;
         return L;
     }
     constexpr const char* BookZones = "(patch_)?(techsets_[a-z0-9_]+|(common|global|code_pre_gfx|code_post_gfx)(_[a-z0-9_]+)?)[.]ff";
@@ -258,10 +264,27 @@ namespace
             ExportsScriptFiles(Scripts::GscToolBin("iw7"));
             ExportsIwRawfiles("lua_file");
             ExportsIwStringTables();
+            // Material (0x118): its techset's name (the pointer at 0x38), images and their semantics,
+            // as JSON; its images by the image kind
+            ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
+                Vfx::AddAtlas(J, IW7::VfxLayout(), Image(), Off(A));
+            }));
+            // vfx (ParticleSystemDef) as the vfx core's JSON (Games/IW/Vfx.h)
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                auto Z = EffectView();
+                Z.ReadMaterials(C, Materials());
+                Vfx::Counts N;
+                ExportEffects(C, T, "vfx", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                    return Vfx::ReadSystem(Z, IW7::VfxLayout(), Pos, Name, J, &N);
+                });
+                for (const auto& [K, V] : N.Named()) Counter(K) += V;
+            });
         }
         ~IW7Zone() override
         {
-            if (IsServed()) GameInfiniteWarfare::ImagesElsewhere = nullptr;
+            if (!IsServed()) return;
+            GameInfiniteWarfare::ImagesElsewhere = nullptr;
+            GameInfiniteWarfare::DetailsElsewhere = nullptr;
         }
 
         // the material headers the common zones' book filled, and those it did not
@@ -295,9 +318,16 @@ namespace
             if (!On)
             {
                 GameInfiniteWarfare::ImagesElsewhere = nullptr;
+                GameInfiniteWarfare::DetailsElsewhere = nullptr;
                 return;
             }
             GameInfiniteWarfare::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); };
+            GameInfiniteWarfare::DetailsElsewhere = [this](const std::string& Name, std::string& Techset, int& SortKey) {
+                IWMaterialBooks::Extra E;
+                if (!Books.Details(Name, E)) return false;
+                Techset = E.Techset, SortKey = E.SortKey;
+                return true;
+            };
         }
         void Defines(std::vector<DiskGame::AssetId>& Out) const override;   // with the images
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
@@ -315,6 +345,19 @@ namespace
 
     private:
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image);
+        // the live material reader with the techset's name (Material 0x38 -> its name at 0), the book's
+        // for a name-only header
+        decltype(Treyarch::EffectZone::Material) Materials()
+        {
+            return Treyarch::MaterialReader(
+                [this](uint64_t A) {
+                    XMaterial_t M = GameInfiniteWarfare::ReadXMaterial(A);
+                    if (const int64_t Techset = Off(At<uint64_t>(Image(), Off(A) + 0x38)); M.TechsetName.empty() && Techset >= 0)
+                        M.TechsetName = StringAt(At<uint64_t>(Image(), Techset));
+                    return M;
+                },
+                [this](uint64_t A) { return Off(A); });
+        }
 
         std::unique_ptr<XImageDDS> Decode(int64_t Pos, ImageUsageType Usage);
         uint64_t ContentKey(int64_t Pos, const std::string& Extension) const;
@@ -327,6 +370,44 @@ namespace
         std::vector<std::pair<int64_t, int64_t>> SharedAssets;  // appended one-asset streams: where, how long
         std::unordered_map<int64_t, std::array<StreamRecord, StreamLevels>> Levels;   // image position -> levels
         IWMaterialBooks::Lookup Books;
+        IwBeside::Set Beside;   // a campaign level's transient zones (TransientsBeside)
+
+        // A campaign level's transient zones, <level>_<part>_tr.ff beside it, each walked alone
+        // (Games/IW/IwBesideZones.h): their gfxworld_transient_zone (number i32 8, count u32 0xc,
+        // the 44-byte records 0x10) hold the vertices of the level's surfaces that name them
+        void TransientsBeside(std::map<int32_t, TransientVertices>& Out) override
+        {
+            const fs::path Me(FastFilePath());
+            const std::string Level = ExportNaming::Lower(Me.stem().string());
+            if (Level.ends_with("_tr")) return;
+            if (Beside.Empty())
+            {
+                std::vector<std::string> Paths;
+                std::error_code Ec;
+                for (const auto& E : fs::directory_iterator(Me.parent_path(), Ec))
+                {
+                    const std::string F = ExportNaming::Lower(E.path().filename().string());
+                    if (F.rfind(Level + "_", 0) == 0 && F.ends_with("_tr.ff")) Paths.push_back(E.path().string());
+                }
+                std::sort(Paths.begin(), Paths.end());
+                std::string Error;
+                const auto* Loaded = ExportWriters::ZoneProfile(Profile(), Error);
+                if (Paths.empty() || Loaded == nullptr) return;
+                std::map<std::string, size_t> Counts;
+                Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+                for (const auto& [K, N] : Counts) Counter("map_" + K) += N;
+            }
+            for (const auto& Z : Beside.All())
+                for (const auto& I : Z->R.Instances)
+                    if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "gfxworld_transient_zone" &&
+                        (uint64_t)I.Pos + 0x18 <= Z->Bytes.size())
+                    {
+                        const uint64_t Records = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos + 0x10);
+                        const int64_t From = Records >= Z->Base && Records < Z->Base + Z->Bytes.size() ? (int64_t)(Records - Z->Base) : -1;
+                        Out.try_emplace(ExportNaming::At<int32_t>(Z->Bytes, I.Pos + 8),
+                                        TransientVertices{ &Z->Bytes, From, ExportNaming::At<uint32_t>(Z->Bytes, I.Pos + 0xc) });
+                    }
+        }
     };
 
     std::unique_ptr<XImageDDS> IW7Zone::DiskImage(const XImage_t& Image)
@@ -609,6 +690,7 @@ namespace
         IWZone::MapLayout M;
         M.World = "gfxworld", M.Com = "comworld";
         M.VertexAsset = "gfxworld_transient_zone", M.VertexCount = 0xc, M.Vertices = 0x10;
+        M.SurfaceTransient = 0x2c, M.TransientNumber = 8;
         M.IndexCount = 0xa8 + 0x1f0, M.Indices = 0xa8 + 0x1f8;
         M.BrushCount = 0x9f8, M.Brushes = 0xa00, M.BrushSize = 60, M.BrushFirstSurface = 52, M.BrushSurfaceCount = 56;
         M.SModelCount = 0xba0, M.Surfaces = 0xba0 + 0x348, M.SModels = 0xba0 + 0x358, M.SModelSize = 0xb8, M.SModelModel = 0x38;

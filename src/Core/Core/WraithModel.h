@@ -111,6 +111,8 @@ public:
     std::string NormalMapName;
     // The file name of the specular map for this material
     std::string SpecularMapName;
+    // Linear rgb the diffuse map is multiplied by (a material colour constant; glTF's baseColorFactor)
+    float ColorFactor[3] = { 1.0f, 1.0f, 1.0f };
 
     static const WraithMaterial DefaultMaterial;
 };

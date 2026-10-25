@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "GameBlackOps2.h"
+#include "Games/T5/GameBlackOps.h"
 
 #include "CoDAssets.h"
 #include "GameReaders.h"
@@ -8,25 +9,6 @@
 
 #include "FileSystems.h"
 #include "SettingsManager.h"
-
-namespace
-{
-    // A material's blend mode off its GfxStateBits table (src/dst RGB blend factors, bits 0-3/4-7
-    // of the first entry's loadBits): T6's GfxStateBits starts as T5's (BOXStateBits)
-    bool ReadMaterialBlendBits(uint32_t MaterialPointer, uint32_t& OutSrcBlendRgb, uint32_t& OutDstBlendRgb)
-    {
-        auto MatData = CoDAssets::GameInstance->Read<BO2XMaterial>(MaterialPointer);
-        if (MatData.StateBitsCount == 0 || MatData.StateBitsTablePtr == 0)
-        {
-            return false;
-        }
-
-        auto Bits = CoDAssets::GameInstance->Read<BOXStateBits>(MatData.StateBitsTablePtr);
-        OutSrcBlendRgb = Bits.LoadBits0 & 0xF;
-        OutDstBlendRgb = (Bits.LoadBits0 >> 4) & 0xF;
-        return true;
-    }
-}
 
 // These read the zone the disk path serves as game memory (Games/T6/DiskGame.cpp)
 std::unique_ptr<XAnim_t> GameBlackOps2::ReadXAnim(const CoDAnim_t* Animation)
@@ -84,12 +66,7 @@ const XMaterial_t GameBlackOps2::ReadXMaterial(uint64_t MaterialPointer)
     GameReaders::AddMaterialImages<BO2XMaterialImage>(Result, MaterialData.ImageTablePtr, MaterialData.ImageCount,
                                                       [](uint64_t Image) { return GameReaders::ImageNameAt<uint32_t>(Image, sizeof(BO2GfxImage) - 8); }, UsageOf);
 
-    uint32_t SrcBlendRgb = 0, DstBlendRgb = 0;
-    if (ReadMaterialBlendBits((uint32_t)MaterialPointer, SrcBlendRgb, DstBlendRgb))
-    {
-        uint32_t BlendBits[2] = { SrcBlendRgb, DstBlendRgb };
-        Result.Settings.emplace_back("blendMode", "uint", BlendBits, 2);
-    }
+    GameBlackOps::AddBlendMode(Result, MaterialData.StateBitsTablePtr, MaterialData.StateBitsCount);
     return Result;
 }
 

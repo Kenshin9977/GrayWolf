@@ -10,11 +10,10 @@
 #include "ExportWriters.h"
 #include "GameModernWarfareRM.h"
 #include "GameReaders.h"
-#include "GameWorldWar2.h"
 #include "Games/IW/IWMaterialBooks.h"
-#include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
 #include "Games/H1/EntityKeys.h"
 #include "MapLive.h"
@@ -135,6 +134,9 @@ namespace
             ExportsIwRawfiles();
             ExportsIwStringTables();
             ExportsIwWeapons(WeaponLayout());
+            // the material and fx kinds: FxEffectDef 0x40, elements 0x140; Material's techniqueSet at
+            // 0x128 (the h1 tables f36c7d0 and f375ba0, x64-zt's H1 structs.hpp)
+            ExportsIwEffects(IwEffects::ModernWarfareRemastered(), GameModernWarfareRM::ReadXMaterial, 0x128);
         }
         ~MwrZone() override
         {
@@ -238,12 +240,8 @@ namespace
     void MwrZone::Fixups()
     {
         Served(true);   // opened: the zone the handlers reach
-        // the script strings: count at 0x48, marker-tested slots from 0x70, then their text
+        Slots = HeaderScriptStrings();
         const auto& Z = Zone();
-        const uint64_t Count = At<uint64_t>(Z, 0x48);
-        if (At<uint64_t>(Z, 0x50) == Rules().Marker && Count != 0 && Count <= Z.size() / 8)
-            Slots = InlineStrings(Z, 0x70, Count, 8, Rules().Marker);
-
         LinkLodSurfaces(ModelLods());
         ReadStreams(ImageStreamedAt);
         for (const auto& I : Walk().Instances)
@@ -300,32 +298,12 @@ namespace
 
     void MwrZone::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
     {
-        // every alias's file specs, through the live reader: loaded sounds are in the zone,
-        // streamed and primed ones FLAC in soundfile<N>.pak (french/fra_soundfile<N>.pak when
-        // localized)
-        std::set<uint64_t> Unique;
-        std::vector<CoDAsset_t*> Found;
-        std::vector<std::pair<int64_t, std::string>> Lists;
-        for (const auto& I : Walk().Instances)
-        {
-            if (!OwnerIs(I, "sound")) continue;
-            const std::string AliasName = AssetName(DiskGame::Kind::Sound, I.Pos);
-            if (IsReference(DiskGame::Kind::Sound, AliasName, I.Pos)) continue;
-            const auto Alias = CoDAssets::GameInstance->Read<MWRSoundAlias>(VirtualGameSession::Address((uint64_t)I.Pos));
-            GameModernWarfareRM::AddAliasSounds(Alias, AliasName, Unique, Found);
-            Lists.emplace_back(I.Pos, AliasName);
-        }
-        PAKCache Packages;
-        Packages.LoadPackageCache(InstallRoot(FastFilePath()).string());
-        IWPakSounds::WriteOptions Options;
-        Options.EmptyFileFails = true;
-        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
-        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
-
-        if (!SoundAliasCsv::Wanted(C)) return;
-        SoundAliasCsv::Rows Rows;
-        IWSoundAliases::ReadLive(AliasView(), Lists, AliasLayout(), Rows);
-        SoundAliasCsv::Write(C, T, Name(), Rows);
+        // loaded sounds are in the zone, streamed and primed ones FLAC in soundfile<N>.pak
+        // (french/fra_soundfile<N>.pak when localized); an empty file is a failure
+        ExportPakSounds(C, T, InstallRoot(FastFilePath()).string(), true, AliasLayout(),
+                        [](uint64_t Address, const std::string& Name, std::set<uint64_t>& Unique, std::vector<CoDAsset_t*>& Found) {
+                            GameModernWarfareRM::AddAliasSounds(CoDAssets::GameInstance->Read<MWRSoundAlias>(Address), Name, Unique, Found);
+                        });
     }
 
     // The level (the h1 tables): GfxWorld (gfx_map, 0xb30) with GfxWorldDraw at 0xb0 and

@@ -3,6 +3,7 @@
 #include "Games/IW4/Iw4Readers.h"
 
 #include "CoDAssets.h"
+#include "ExportWriters.h"
 #include "FileSystems.h"
 
 #include <algorithm>
@@ -124,9 +125,24 @@ namespace Iw4Family
     {
         const uint8_t Count = Get<uint8_t>(MaterialPointer + L.MaterialTextureCount);
         const uint64_t Table = Ptr(MaterialPointer + L.MaterialTextureTable, L);
+        const std::string RawName = CoDAssets::GameInstance->ReadNullTerminatedString(Ptr(MaterialPointer + L.MaterialName, L));
+        // a name-only header (a model's handle to a material the zone, or another, defines whole):
+        // the game swaps it for that material by name once loaded
+        const bool Header = Table == 0 && RawName.size() > 1 && RawName[0] == ',';
+        if (Header && L.MaterialByName)
+            if (const uint64_t Whole = L.MaterialByName(RawName.substr(1)); Whole != 0 && Whole != MaterialPointer)
+                return ReadXMaterial(Whole, L);
+        const auto UsageOf = [](uint32_t Hash) {
+            switch (Hash)
+            {
+            case 0xA0AB1041: return ImageUsageType::DiffuseMap;    // colorMap
+            case 0x59D30D0F: return ImageUsageType::NormalMap;     // normalMap
+            case 0x34ECCCB3: return ImageUsageType::SpecularMap;   // specularMap
+            default: return ImageUsageType::Unknown;
+            }
+        };
         XMaterial_t Result(Count);
-        Result.MaterialName = FileSystems::GetFileNameWithoutExtension(
-            CoDAssets::GameInstance->ReadNullTerminatedString(Ptr(MaterialPointer + L.MaterialName, L)));
+        Result.MaterialName = FileSystems::GetFileNameWithoutExtension(RawName);
         for (uint8_t M = 0; Table && M < Count; M++)
         {
             const uint64_t Def = Table + M * L.TextureDefSize;
@@ -135,16 +151,13 @@ namespace Iw4Family
             const uint64_t Image = Ptr(Def + TextureImage, L);
             if (Image == 0) continue;
             const std::string Name = CoDAssets::GameInstance->ReadNullTerminatedString(Ptr(Image + L.ImageName, L));
-            ImageUsageType Usage = ImageUsageType::Unknown;
-            switch (Hash)
-            {
-            case 0xA0AB1041: Usage = ImageUsageType::DiffuseMap; break;    // colorMap
-            case 0x59D30D0F: Usage = ImageUsageType::NormalMap; break;     // normalMap
-            case 0x34ECCCB3: Usage = ImageUsageType::SpecularMap; break;   // specularMap
-            default: break;
-            }
-            Result.Images.emplace_back(Usage, Hash, Image, Name);
+            Result.Images.emplace_back(UsageOf(Hash), Hash, Image, Name);
         }
+        // a material another zone defines: its images by name, that zone's
+        std::vector<std::pair<uint32_t, std::string>> Elsewhere;
+        if (Header && L.MaterialImagesByName && L.MaterialImagesByName(RawName.substr(1), Elsewhere))
+            for (const auto& [Hash, Name] : Elsewhere)
+                Result.Images.emplace_back(UsageOf(Hash), Hash, ExportWriters::ImageElsewhere, Name);
         return Result;
     }
 }

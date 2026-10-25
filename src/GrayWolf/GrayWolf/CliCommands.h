@@ -2,6 +2,37 @@
 
 #include "CliOptions.h"
 
+#include <functional>
+#include <map>
+#include <string>
+
+namespace CLI
+{
+    class App;
+}
+
+// The command line's grammar. Each subcommand is built by the file that runs it: a builder adds it
+// to App, its options bound to Options; Main.cpp adds them in the help's order (kHelpOrder).
+using CliCommandBuilder = std::function<void(CLI::App& App, CliOptions& Options)>;
+using CliCommandBuilders = std::map<std::string, CliCommandBuilder>;   // by subcommand name
+
+// --install, --out, --type, the format overrides...: on the parent app, any subcommand's
+void AddSharedOptions(CLI::App& App, CliOptions& Options);   // CliCommands.Shared.cpp
+
+void AddMiscCommands(CliCommandBuilders& B);           // CliCommands.Misc.cpp
+void AddToolsCommands(CliCommandBuilders& B);          // CliCommands.Tools.cpp
+void AddAudioCommands(CliCommandBuilders& B);          // CliCommands.Audio.cpp
+void AddAssetExportCommands(CliCommandBuilders& B);    // CliCommands.AssetExport.cpp
+void AddCascCommands(CliCommandBuilders& B);           // CliCommands.Casc.cpp
+void AddZoneWalkCommands(CliCommandBuilders& B);       // CliCommands.ZoneWalk.cpp
+void AddModelPreviewCommands(CliCommandBuilders& B);   // CliCommands.ModelPreview.cpp
+void AddBlenderCommands(CliCommandBuilders& B);        // CliCommands.Blender.cpp
+void AddFxPreviewCommands(CliCommandBuilders& B);      // FxPreviewCli.cpp
+void AddBo3Commands(CliCommandBuilders& B);            // Games/T7/CliCommands.BO3.cpp
+void AddBo4StringCommands(CliCommandBuilders& B);      // Games/T8/CliCommands.Bo4Strings.cpp
+void AddGameCommands(CliCommandBuilders& B);           // GameCommand.cpp: the games' own (GameCommand.h)
+void AddDiskExportCommands(CliCommandBuilders& B);     // DiskGame.Cli.cpp: disk-export and its aliases
+
 int RunSelfTest(const CliOptions& Options);
 int RunListInstalls(const CliOptions& Options);
 int RunIdentify(const CliOptions& Options);
@@ -65,6 +96,9 @@ int RunDumpModel(const CliOptions& Options);
 int RunDumpGlb(const CliOptions& Options);
 int RunRenderGlbPng(const CliOptions& Options);
 int RunUiMode(const CliOptions& Options);
+int RunUiGridShot(const CliOptions& Options);
 int RunPreviewWindow(const CliOptions& Options);
 int RunRenderModelCli(const CliOptions& Options);
+int RunRenderFxCli(const CliOptions& Options);   // FxPreviewCli.cpp
+int RunAnimRigs(const CliOptions& Options);      // AssetGrid/AnimRigsCli.cpp
 

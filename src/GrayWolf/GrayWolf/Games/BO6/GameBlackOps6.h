@@ -61,7 +61,7 @@ public:
     struct Layout
     {
         int64_t ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate;
-        uint32_t RigidRunSize, FaceTableSize, SoundHeader;
+        uint32_t RigidRunSize, FaceTableSize;
         int32_t SoundPreSkip;          // the Opus pre-skip (multiplayer 312, campaign 960: SABSupport::OpusPreSkip...)
         const uint8_t* ImageFormats;   // GfxImage format -> DXGI, ImageFormatCount entries
         uint32_t ImageFormatCount;

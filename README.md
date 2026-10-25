@@ -62,45 +62,56 @@ only when named; the data dumps [below](#data-dumps) too).
 
 | Game | `--game` | Models | Anims | Images | Sounds | Rawfiles | Data | Localize | Maps | Scripts | GDT | FX |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| Call of Duty | `cod1` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
-| Call of Duty 2 | `cod2` | ~ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | – |
-| Call of Duty 4: Modern Warfare | `cod4` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| World at War | `waw` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| Modern Warfare 2 | `mw2` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| Modern Warfare 3 | `mw3` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| Black Ops | `bo1` | ✓ | ✓ | ✓ | ~ | ✓ | – | ✓ | ✓ | ✓ | – | ✓ |
-| Black Ops II | `bo2` | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | – | ✓ |
-| Ghosts | `ghosts` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| Call of Duty Online | `codol` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | – | – | – |
-| Advanced Warfare | `aw` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
+| Call of Duty | `cod1` | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | ✓ |
+| Call of Duty 2 | `cod2` | ✓ | ✓ | ✓ | ✓ | – | – | ✓ | ✓ | ✓ | – | ✓ |
+| Call of Duty 4: Modern Warfare | `cod4` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| World at War | `waw` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Modern Warfare 2 | `mw2` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Modern Warfare 3 | `mw3` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Black Ops | `bo1` | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Black Ops II | `bo2` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Ghosts | `ghosts` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Call of Duty Online | `codol` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | – | – | ✓ |
+| Advanced Warfare | `aw` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
 | Black Ops III | `bo3` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Infinite Warfare | `iw` | ~ | ✓ | ✓ | ✓ | ~ | ~ | ✓ | ~ | ✓ | – | – |
-| Modern Warfare Remastered | `mwr` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| WWII | `ww2` | ~ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | – |
-| Black Ops 4 | `bo4` | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | ✓ | ~ | ~ | – |
-| Modern Warfare (2019) | `mw2019` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | – | – |
+| Infinite Warfare | `iw` | ~ | ✓ | ✓ | ✓ | ~ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| Modern Warfare Remastered | `mwr` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ✓ |
+| WWII | `ww2` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | ✓ |
+| Black Ops 4 | `bo4` | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | ✓ | ~ | ~ | ✓ |
+| Modern Warfare (2019) | `mw2019` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ~ | – | ~ |
 | Black Ops Cold War | `coldwar` | ✓ | ✓ | ✓ | ~ | ~ | ~ | ~ | ✓ | ✓ | ~ | ~ |
-| Modern Warfare III (2023) | `mwiii`, `mwiii_sp` | ~ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | – |
-| Black Ops 6 | `bo6`, `bo6sp` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
-| Black Ops 7 | `bo7` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | – |
+| Modern Warfare III (2023) | `mwiii`, `mwiii_sp` | ~ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ | ✓ | – | ~ |
+| Black Ops 6 | `bo6`, `bo6sp` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ~ |
+| Black Ops 7 | `bo7` | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ | ✓ | – | ~ |
 
 `_sp` / `sp` ids are the campaigns. Notes:
-- **Models**: Call of Duty and Call of Duty 2 give LOD 0 only; Infinite Warfare and MWIII miss some
-  models whose parts live in other zones (`_tr`); WWII misses some composite models.
-- **Sounds**: Black Ops keeps a few ADPCM/WMA sounds unread; Black Ops 4 and Cold War sound names
-  are partly still hashes (`xsound_<hash>`), and Cold War leaves out its few `rev/` vehicle engine
-  models (not audio). In FLAC or Opus, a sound no decoder here reads (World at War's xWMA) is kept as it
-  is.
+- **Models**: MWIII multiplayer reads a model's LODs
+  from the zones that hold them (the install index lists the `_tr` zones' meshes); its campaign does
+  not. A few Infinite Warfare level models have no mesh (mp_rivet: 30 of 981). WWII writes a composite
+  model (weapons, heads) whole, from the parts its zone holds.
+- **Sounds**: the WMA sounds (World at War's xWMA, Black Ops' WMA loaded sounds) are decoded by
+  [FFmpeg](https://ffmpeg.org) when one is found (`ffmpeg.exe` on `PATH`, `ffmpeg_exe` in
+  `graywolf.json` or `--ffmpeg-exe`); without it World at War's stay as the game keeps them and Black
+  Ops' are left out. Black Ops 4 and Cold War sound names are partly still hashes (`xsound_<hash>`),
+  and Cold War leaves out its few `rev/` vehicle engine models (not audio).
 - **Rawfiles**: the game's raw files (configs, scripts' sources, visions, animtrees, ...), inflated
-  where the game compresses them, and its Lua files, as `.lua` (source) or `.luac` (bytecode, not
-  decompiled). The recent games hash their names: names the name packages know, else
+  where the game compresses them, and its Lua files, as `.lua` (source) or `.luac` (bytecode).
+  With `--decompile` the bytecode is decompiled to `.lua` through
+  [cod-luajit-decompiler](https://github.com/Nico-Posada/cod-luajit-decompiler) (Cold War, MWIII,
+  Black Ops 6/7) and [CoDLuaDecompiler](https://github.com/Nico-Posada/CoDLuaDecompiler) (Havok
+  Script: Black Ops III and 4, Ghosts to WWII; MW2019; the files the first one does not read), on `PATH` or
+  set in `graywolf.json` (`cod_luajit_decompiler_exe`, `cod_lua_decompiler_exe`); a file neither
+  reads stays `.luac`. Both name hashes from a `PackageIndex` folder beside their own exe (a junction
+  to GrayWolf's `package_index` works). Black Ops 6 decompiles about a quarter of its files: on a
+  Windows whose decimal separator is a comma, cod-luajit-decompiler fails every file holding a
+  fractional number. The recent games hash their names: names the name packages know, else
   `rawfile_<hash>` (with the extension the asset says, MWIII to Black Ops 7). Cold War leaves out
   its encrypted `rawfilepreproc` and `rawtextfile`; Infinite Warfare leaves out the few whose name
   the zone keeps elsewhere.
 - **Data**: string tables as CSV (`data/stringtables/`; a typed cell of the recent games written as
   acts writes it: `#name` a hash, `&#name` a localized one, `TRUE`/`FALSE`...) for MW2/MW3, CoD4,
-  World at War, Call of Duty Online and Ghosts to Black Ops 7 (MW2/MW3 under `data/`); Black Ops III materials, string tables, structured tables and
-  DDL as JSON. Black Ops and Black Ops II data goes through `bo1-oat` / `bo2-oat` (below).
+  World at War, Black Ops, Black Ops II, Call of Duty Online and Ghosts to Black Ops 7 (MW2/MW3 under `data/`); Black Ops III materials, string tables, structured tables and
+  DDL as JSON. Black Ops and Black Ops II's other data goes through `bo1-oat` / `bo2-oat` (below).
 - **Localize**: Black Ops 4 and Cold War keys are partly still hashes. Modern Warfare III, Black
   Ops 6 and Black Ops 7 keep only a key's hash: `package_index\fnv1a_localize.wni` names the known
   ones (about half), the others are written `localize_<hash>`. Modern Warfare 2019, Cold War,
@@ -108,16 +119,39 @@ only when named; the data dumps [below](#data-dumps) too).
   the game's string cipher table (`zonekit/profiles/<game>/strings.cipher.txt`, not shipped),
   written empty without it.
 - **Maps**: world geometry, static models, entities, lights, sky, collision (`--map-collision`) and,
-  for Cold War, Black Ops 6/7 and MWIII, terrain. MW2019 has no scriptables and no collision;
-  MWIII, BO6 and BO7 have no collision; MWIII terrain is its coarsest level only; WWII maps keep
-  one UV layer; Infinite Warfare campaign maps miss the vertices of their `_tr` zones.
+  for Cold War, Black Ops 6/7 and MWIII, terrain. MW2019 places each scriptable's first model;
+  MW2019, MWIII, BO6 and BO7 have no collision; MWIII terrain is its coarsest level only. WWII's
+  blended surfaces carry each layer's UV set (glTF `TEXCOORD_1`.., Cast `u1`..).
 - **Scripts**: GSC/CSC, as compiled files or decompiled (`--decompile`) through
   [acts](https://github.com/ate47/atian-cod-tools) and [gsc-tool](https://github.com/xensik/gsc-tool)
   (both on `PATH`, or set in `graywolf.json`). The oldest games ship their scripts as source.
   Black Ops 4 names are partly hashes; MW2019 keeps its encrypted string literals.
 - **GDT**: Black Ops III Mod Tools entries: Black Ops III's own assets, Black Ops 4 and Cold War
   weapons ported.
-- **FX**: each effect's elements, timings and what they draw, as JSON. Cold War has no timings.
+- **FX**: each effect's elements, timings and what they draw, as JSON. Cold War's give their spawn, spawn delay
+  and life span timings only; Black Ops 4's effects, materials and sounds are partly hashes.
+  Spark fountains (CoD4 to WWII) play as ballistic sparks, their fields' meaning read from their
+  names and values, not the games' code; trails are drawn with their profile. Ghosts', Advanced
+  Warfare's, MWR's and WWII's particle simulations and vector fields are written, not played; smoke the games light from the light grid is lit by a neutral sky light;
+  three WWII element types are written by number (15, 19, 20). Call of Duty Online's materials have no techset in the JSON (their blend
+  factors only).
+  Call of Duty and Call of Duty 2 read their `.efx` text (no compiled form): the graphs are sampled
+  into the same JSON, with assumed units (rates per second, gravity in units/s², an emitter's
+  density per 100 units: the JSON's `notes`); CoD1's animated shaders (`animMap`) give their frames
+  and rate (played as an atlas), but the install ships none of their images; cylinders play as a
+  ring wall (size and size2 its radii, length its height, along the effect's forward: assumed from
+  the fields' names), camera shakes are written, not played.
+  Infinite Warfare's particle systems (`vfx`) are written as their emitters, states and modules
+  (graphs as curves); the preview leaves out vector fields, attractors, GPU particle sims, mesh
+  spawning and collisions. Whether a vfx sprite's size is its width or half of it is not settled
+  (the vertices are made on the GPU): the preview takes it as the width.
+  The Assets tab plays them in 3D (FX), textured when the images are exported with them
+  (`--type fx,image`, the common zone's too); `render-fx <json>` draws one offscreen.
+  Black Ops 6 (multiplayer and zombies) and 7: every module of the particle systems, as JSON; the preview
+  leaves out what it has no model for (GPU simulations, vector fields, meshes, collisions).
+  MW2019 and MWIII (`~`): their particle systems' modules as JSON; the preview leaves out GPU
+  simulations, vector fields and mesh spawns; MWIII's effect names are hashes, its blend read from
+  its images' usages (its techsets are hashed).
 
 Black Ops, Black Ops II, CoD4, World at War, MW2 and MW3 can also go through
 [OpenAssetTools](https://github.com/Laupetin/OpenAssetTools): `bo1-oat`, `bo2-oat`, `cod4-oat`,
@@ -274,7 +308,9 @@ itself a fork of [Greyhound](https://github.com/Scobalula/Greyhound) by Scobalul
 on Wraith Archon by DTZxPorter. It was renamed once little of the original code was left.
 It uses [OpenAssetTools](https://github.com/Laupetin/OpenAssetTools) for the `*-oat` games and runs
 [acts](https://github.com/ate47/atian-cod-tools) and [gsc-tool](https://github.com/xensik/gsc-tool)
-to decompile scripts.
+to decompile scripts, [cod-luajit-decompiler](https://github.com/Nico-Posada/cod-luajit-decompiler)
+and [CoDLuaDecompiler](https://github.com/Nico-Posada/CoDLuaDecompiler) to decompile Lua files,
+and [FFmpeg](https://ffmpeg.org) to decode WMA sounds.
 
 GrayWolf is distributed under the GNU General Public License v3.0, as the projects it comes from;
 see [LICENSE](LICENSE).

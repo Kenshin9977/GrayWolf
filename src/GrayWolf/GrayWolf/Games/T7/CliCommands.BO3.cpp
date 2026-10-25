@@ -4,6 +4,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -72,3 +74,28 @@ int RunBo3DecryptMovie(const CliOptions& Options)
     return Ok ? 0 : 5;
 }
 
+// ---- the subcommands (CliCommands.h)
+
+void AddBo3Commands(CliCommandBuilders& B)
+{
+    B["bo3-images"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo3-images", "BO3 zone images -> PNG, pixels sourced from the .xpaks");
+        Sub->add_option("file", Options.Bo3Images, "Fast file (.ff) to read image assets from")->required()->check(CLI::ExistingFile);
+        Sub->add_option("--bo3-xpaks", Options.Bo3Xpaks, "Where the packages are (default: beside the ff)");
+    };
+    B["bo3-dump-xpak-entries"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo3-dump-xpak-entries",
+            "Diagnostic: dump every entry >= --bo3-xpak-min-mb to --out (cinematic-encryption brute-force search)");
+        Sub->add_option("files", Options.Bo3DumpXpakEntries, "Comma separated .xpak file list")->required();
+        Sub->add_option("--bo3-xpak-min-mb", Options.Bo3XpakMinMB, "Size floor in MB (default 2)");
+    };
+    B["salsa20-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        App.add_subcommand("salsa20-selftest", "Verify the hand-written Salsa20 cipher vs a test vector")
+            ->callback([&Options] { Options.Salsa20SelfTest = true; });
+    };
+    B["bo3-decrypt-movie"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo3-decrypt-movie",
+            "Decrypt a BO3 cinematic (Salsa20, key comes from the zone's own GSC, never hardcoded)");
+        Sub->add_option("zone", Options.Bo3DecryptMovie, "Zone name whose cinematic to decrypt")->required();
+    };
+}

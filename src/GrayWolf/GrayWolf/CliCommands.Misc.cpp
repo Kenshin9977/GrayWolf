@@ -16,6 +16,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "CoDAssets.h"
@@ -811,3 +813,21 @@ int RunDecompressFF(const CliOptions& Options)
     return Ok ? 0 : 6;
 }
 
+// ---- the subcommands (CliCommands.h)
+
+void AddMiscCommands(CliCommandBuilders& B)
+{
+    B["self-test"] = [](CLI::App& App, CliOptions& Options) {
+        App.add_subcommand("self-test", "Run built-in assertions that need no game files or window")
+            ->callback([&Options] { Options.SelfTest = true; });
+    };
+    B["decompress-ff"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("decompress-ff", "Decompress a fast file and report its header/zone info");
+        Sub->add_option("file", Options.DecompressFF, "Fast file (.ff) to decompress")->required()->check(CLI::ExistingFile);
+        Sub->add_flag("--strings", Options.Strings, "Also dump the zone's string table");
+    };
+    B["identify"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("identify", "Identify a game/asset by name or hash");
+        Sub->add_option("name", Options.Identify, "Name or hash to identify")->required();
+    };
+}

@@ -22,6 +22,7 @@
 #include "Games/Common/WeaponFiles.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "GameBlackOps3.h"
+#include "LuaExport.h"
 #include "Games/Treyarch/TreyarchMaps.h"
 #include "MapLive.h"
 #include "XPAKCache.h"
@@ -91,13 +92,9 @@ namespace
             });
             // the placed models read through the live reader, which streams meshes from the packages
             Exports(Kind::Map, [this](const Context& C, Totals& T) { WithPackages([&] { ExportMap(C, T); }); });
+            // Material: its techset, images and blend factors as JSON, its images by the image kind;
             // FxEffectDef (0x90, elements 0x260) as JSON
-            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
-                const Treyarch::EffectZone Z{ &Image(), [this](uint64_t A) { return Off(A); }, [this](uint64_t A) { return StringAt(A); } };
-                ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
-                    return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::Bo3, Pos, N, J);
-                });
-            });
+            ExportsEffects(GameBlackOps3::ReadXMaterial, Treyarch::EffectLayout::Bo3);
             // BO3's own assets as Mod Tools GDT entries (zonekit/profiles/t7/gdt, HydraX's tables)
             ExportsGdt();
             // the weapons' GDT entries read as the older games' weapon files (Games/Common/WeaponFiles)
@@ -379,11 +376,14 @@ namespace
 
     // RawFile (47) and ScriptParseTree (54, compiled GSC/CSC bytecode): a name, a size and a
     // payload, 0x18 bytes, written by Bo3WriteRawfilePayload (GSC decompiled via acts, or the bytes).
+    // A Lua file is a RawFile holding Havok Script bytecode (ESC "Lua"): <name>.luac, decompiled with
+    // the decompile setting on (LuaExport.h), as the other games' luafile assets.
     void T7Zone::ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Rawfile];
         const std::string Dir = C.KindDir(DiskGame::Kind::Rawfile);
         size_t Decompiled = 0, DecompileFailed = 0, WriteFailed = 0;
+        LuaScripts::Sink Lua(C, T, Name());
 
         std::vector<const ZoneTables::ZoneResult::Instance*> Raws;
         for (const auto& I : Walk().Instances)
@@ -404,11 +404,29 @@ namespace
                 continue;
             }
             Kt.Seen++;
-            if (Bo3WriteRawfilePayload(Zone().data() + Payload, Size, Nm, Dir, ActsExe, Decompiled, DecompileFailed, WriteFailed))
+            const uint8_t* Bytes = Zone().data() + Payload;
+            if (OwnerIs(I, "rawfile") && LuaScripts::IsBytecode(std::vector<uint8_t>(Bytes, Bytes + std::min<uint32_t>(Size, 4))))
+            {
+                std::string LuaName = Nm;
+                std::vector<uint8_t> Code(Bytes, Bytes + Size);
+                NameLua(LuaName, Code);
+                for (char& Ch : LuaName)
+                    if (Ch == '\\') Ch = '/';
+                while (!LuaName.empty() && LuaName.front() == '/') LuaName.erase(LuaName.begin());
+                const fs::path File = (fs::path(Dir) / fs::path(LuaName)).make_preferred();
+                if (LuaName.empty() || LuaName.find("..") != std::string::npos) T.Fail(Name(), DiskGame::Kind::Rawfile, Nm, "write failed");
+                else if (Lua.Decompiling()) Lua.Add(File, std::move(Code));
+                else if (ExportWriters::WriteBytes(File, Code.data(), Code.size())) Kt.Written++;
+                else T.Fail(Name(), DiskGame::Kind::Rawfile, Nm, "write failed");
+                continue;
+            }
+            if (Bo3WriteRawfilePayload(Bytes, Size, Nm, Dir, ActsExe, Decompiled, DecompileFailed, WriteFailed))
                 Kt.Written++;
             else
                 T.Fail(Name(), DiskGame::Kind::Rawfile, Nm, "write failed");
         }
+        if (Lua.Decompiling()) C.Advance(Raws.size(), Raws.size(), std::string("(decompiler)"));
+        Lua.Finish();
         Counter("rawfiles_decompiled") += Decompiled;
         Counter("rawfiles_decompile_failed") += DecompileFailed;
         Counter("rawfiles_write_failed") += WriteFailed;

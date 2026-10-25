@@ -14,7 +14,8 @@
 // at the offsets the t7 profile's shading.txt gives (from the shaders' RDEF).
 // Backlit materials: thicknessMap (inverted) and backlightScatterColor as the transmission; the
 // alpha mode of transparent technique sets from what their shader writes as alpha (a reveal map's
-// soft edge for the reveal ones, the "reveal" recipe).
+// soft edge for the reveal ones, the "reveal" recipe). The colour tint (colorTint by the colour map's
+// alpha or tintMask, the "color" recipe) as the colour tint, emissiveTint1 as the emission's colour.
 namespace
 {
     // Texture semantics: the hash of the shader's own texture name (mod tools' techsetdefs).
@@ -82,6 +83,46 @@ namespace
         D.Alpha = Materials::AlphaMode::Blend;
     }
 
+    // The colour tint of lit technique sets (the "color" recipe): rgb *= lerp(1, colorTint, mask.c), the
+    // mask the colour map's alpha (lit, lit_advanced...) or tintMask (lit_alphatest, lit_transparent,
+    // decals). A white colour map ($white_diffuse) takes its whole colour from it. A white tint
+    // changes nothing: left out.
+    void DescribeColor(const Materials::Source& M, Materials::Description& D)
+    {
+        const Materials::Recipe* R = RecipeWith(M, "color");
+        if (R == nullptr) return;
+        const size_t Technique = (size_t)std::stoul(R->at("color_technique"));
+        const uint32_t MaskSemantic = (uint32_t)std::stoul(R->at("tint_mask"), nullptr, 16);
+        // the gbuffer technique (3) writes an opaque surface: a colour map's alpha that is the tint mask
+        // is no cutout (the barrels' worn paint, 0 where the tint stops)
+        if (MaskSemantic == ColorMap && R->at("tint_mask_channel") == "a" && Technique == 3 && TechsetName(M).find("alphatest") == std::string::npos)
+            D.Alpha = Materials::AlphaMode::Opaque;
+        if (Technique >= M.Constants.size() || M.Constants[Technique].empty()) return;
+        const std::vector<uint8_t>& Cb = M.Constants[Technique];
+        float Color[3];
+        bool White = true;
+        for (int c = 0; c < 3; c++)
+        {
+            Color[c] = Materials::RecipeFloat(*R, "tint_color", Cb, c, 1.0f);
+            White = White && std::abs(Color[c] - 1.0f) < 1e-4f;
+        }
+        const Materials::Source::Image* Mask = M.BySemantic(MaskSemantic);
+        if (White || Mask == nullptr) return;
+        D.Color.Mask = { Mask->Path, (int)std::string("rgba").find(R->at("tint_mask_channel")[0]), false };
+        for (int c = 0; c < 3; c++) D.Color.Color[c] = Color[c];
+    }
+
+    // The emission's colour (lit_emissive*, eye_dni, decal_emissive: the "emissive" recipe):
+    // emissiveMap.rgb * emissiveTint1, a white emissive map ($white_diffuse) glowing in that colour.
+    void DescribeEmissive(const Materials::Source& M, Materials::Description& D)
+    {
+        const Materials::Recipe* R = RecipeWith(M, "emissive");
+        if (R == nullptr || D.Emissive.Empty()) return;
+        const size_t Technique = (size_t)std::stoul(R->at("emissive_technique"));
+        if (Technique >= M.Constants.size() || M.Constants[Technique].empty()) return;
+        for (int c = 0; c < 3; c++) D.EmissiveColor[c] = Materials::RecipeFloat(*R, "emissive_color", M.Constants[Technique], c, 1.0f);
+    }
+
     void DescribeLayers(const Materials::Source& M, Materials::Description& D)
     {
         const Materials::Recipe* R = RecipeWith(M, "layers");
@@ -136,6 +177,8 @@ namespace
             });
             DescribeAlpha(M, D);
             if (M.BySemantic(ColorMapDetail2) && M.BySemantic(MixMap)) DescribeLayers(M, D);
+            if (D.Layers.empty()) DescribeColor(M, D);   // the layers carry their own tints
+            DescribeEmissive(M, D);
             DescribeBacklight(M, D);
             return D;
         }

@@ -14,6 +14,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -378,4 +380,40 @@ int RunZoneDecompress(const CliOptions& Options)
 
     CliReport(Options, std::format("result=ok\nsize={}\nout={}\n", Zone.size(), Options.ZoneDecompressOut.c_str()));
     return 0;
+}
+
+// ---- the subcommands (CliCommands.h)
+
+void AddCascCommands(CliCommandBuilders& B)
+{
+    B["casc-list"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("casc-list", "List every file in a CASC storage matching --casc-pattern");
+        Sub->add_option("dir", Options.CascList, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("--casc-pattern", Options.CascPattern, "Glob pattern (default: *.sab*)");
+    };
+    B["xpak-index"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xpak-index", "Write every .xpak's index (package, key, offset, stored size) as TSV to --out");
+        Sub->add_option("dir", Options.XpakIndex, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
+    };
+    B["xsub-index"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xsub-index", "Write every .xsub's hash table (package, type, key, offset, stored size; version 23 adds the size) as TSV to --out");
+        Sub->add_option("dir", Options.XsubIndex, "Install: CASC storage or plain folder")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("--casc-pattern", Options.CascPattern, "Packages to read (default: *.xsub); --type probe also reads each object's block headers and first block");
+    };
+    B["xsub-extract"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xsub-extract", "Write .xsub objects (Cold War, Modern Warfare III, Black Ops 6 and 7), decompressed, as <out>/<key>.bin (a streamkey's key at its 8)");
+        Sub->add_option("dir", Options.XsubExtract, "Install (CASC storage or plain folder)")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("--keys", Options.XsubKeys, "Object keys, hex, comma separated")->required();
+    };
+    B["casc-extract"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("casc-extract", "Pull one file out of CASC storage as-is");
+        Sub->add_option("dir", Options.CascExtractDir, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("name", Options.CascExtractName, "File name inside CASC storage")->required();
+        Sub->add_option("outfile", Options.CascExtractOut, "Where to write the extracted file")->required();
+    };
+    B["zone-decompress"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("zone-decompress", "Decompress a local fastfile to raw zone bytes (FastFile::Decompress)");
+        Sub->add_option("in", Options.ZoneDecompressIn, "Local .ff fastfile path (already extracted via casc-extract)")->required()->check(CLI::ExistingFile);
+        Sub->add_option("outfile", Options.ZoneDecompressOut, "Where to write the raw decompressed zone bytes")->required();
+    };
 }

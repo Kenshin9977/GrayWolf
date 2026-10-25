@@ -49,17 +49,13 @@ std::unique_ptr<XModel_t> GameGhosts::ReadXModel(const CoDModel_t* Model)
     return GameReaders::ReadModel<GhostsXModel, GhostsXModelSurface, uint64_t>(Model, 4, ReadXMaterial);
 }
 
+thread_local GameReaders::ImagesElsewhereFn GameGhosts::ImagesElsewhere;
+
 const XMaterial_t GameGhosts::ReadXMaterial(uint64_t MaterialPointer)
 {
-    auto MaterialData = CoDAssets::GameInstance->Read<GhostsXMaterial>(MaterialPointer);
-
-    XMaterial_t Result(MaterialData.ImageCount);
-    Result.MaterialName = FileSystems::GetFileNameWithoutExtension(CoDAssets::GameInstance->ReadNullTerminatedString(MaterialData.NamePtr));
     // Image name pointer: end of image - 8
-    GameReaders::AddMaterialImages<GhostsXMaterialImage>(Result, MaterialData.ImageTablePtr, MaterialData.ImageCount,
-                                                         [](uint64_t Image) { return GameReaders::ImageNameAt<uint64_t>(Image, sizeof(GhostsGfxImage) - 8); },
-                                                         GameReaders::SemanticUsage);
-    return Result;
+    return GameReaders::ReadNamedMaterial<GhostsXMaterial, GhostsXMaterialImage>(MaterialPointer, sizeof(GhostsGfxImage) - 8, ImagesElsewhere,
+                                                                                 GameReaders::SemanticUsage);
 }
 
 std::unique_ptr<XImageDDS> GameGhosts::DecodePakImage(const GhostsGfxImage& Info, const std::string& PakPath, uint64_t Start, uint64_t End, uint32_t Width, uint32_t Height, ImageUsageType Usage)

@@ -1,0 +1,27 @@
+{
+  "format": "greyhound-preview-rigs 1",
+  "about": "Per disk game (DiskGame id): models an anim always has to play on (AnimRigs.h), exported once from the install into %TEMP%/greyhound_rigs/<game>/. hands: first-person arms (a viewmodel anim, its weapon attached); body: a player's full body; head: the head a body without one wears. The first name the install index holds is used; \"from\": \"install\": a game read whole from its install folder (archives, no install index), every name asked of it at once.",
+  "games": {
+    "cod1":    { "hands": ["viewmodel_hands_us", "viewmodel_hands_british"], "body": ["playerbody_american_airborne", "playerbody_default"], "head": ["playerhead_default", "head_price"], "from": "install" },
+    "cod2":    { "hands": ["viewmodel_hands_british", "viewmodel_hands_german"], "body": ["playerbody_russian_coat01", "playerbody_british_normandy01", "playerbody_default"], "head": ["playerhead_default", "head_british_macgregor"], "from": "install" },
+    "cod4":    { "hands": ["viewhands_usmc", "viewhands_sas_woodland", "viewhands_op_force"], "body": ["body_mp_usmc_assault", "body_mp_opforce_assault"], "head": ["head_mp_usmc_nomex", "head_mp_usmc_tactical_mich"] },
+    "waw":     { "hands": ["viewmodel_usa_marine_arms", "viewmodel_rus_guard_arms"], "body": ["char_usa_marine_player_body1_1", "char_rus_guard_player_body_rifle"], "head": ["char_usa_marine_head1_1", "char_rus_guard_player_head_rifle"] },
+    "mw2":     { "hands": ["viewhands_tf141", "viewhands_us_army", "viewhands_usmc"], "body": ["mp_body_desert_tf141_assault_a", "body_us_army_assault_a"], "head": ["head_tf141_desert_a", "head_us_army_a"] },
+    "bo1":     { "hands": ["viewhands_usmc", "viewmodel_usa_cia_utility_arms", "viewhands_player_usmc"], "body": ["c_usa_cia_mp_body_standard", "c_rus_spet_mp_body_standard"], "head": ["c_usa_cia_mp_head_1", "c_rus_spet_mp_head_1"] },
+    "mw3":     { "hands": ["viewhands_delta", "viewhands_sas", "viewhands_op_force"], "body": ["mp_body_delta_elite_assault_aa", "body_delta_elite_assault_aa"], "head": ["head_delta_elite_a"] },
+    "bo2":     { "hands": ["c_usa_mp_seal6_longsleeve_viewhands", "c_usa_cia_masonjr_viewhands"], "body": ["c_usa_mp_seal6_assault_fb", "c_usa_seal6_body"] },
+    "ghosts":  { "hands": ["viewhands_us_rangers", "viewhands_player_us_army", "viewhands_gs_stealth"], "body": ["mp_body_us_rangers_assault_a_urban", "body_us_rangers_assault_a"], "head": ["head_us_rangers_a"] },
+    "aw":      { "hands": ["viewhands_sentinel", "viewhands_s1_pmc", "viewhands_atlas_military"], "body": ["mp_body_ally_ghillie_urban_sniper", "body_hero_burke_sentinel_covert"] },
+    "bo3":     { "hands": ["c_t7_mp_battery_viewarms1_skin1", "c_hro_player_egypt_viewhands"], "body": ["c_t7_mp_battery_mpc_fb1_skin1", "c_t7_mp_battery_mpc_body1_skin1"] },
+    "iw":      { "hands": ["vm_hero_protagonist_arms", "viewmodel_mp_ftl_8", "viewmodel_base_viewhands_iw7"], "body": ["body_hero_marine_1", "body_un_marines_medium_a"], "head": ["head_hero_marine_1"] },
+    "mwr":     { "hands": ["viewhands_h1_arab_desert", "viewhands_h1_sas_woodland"], "body": ["body_sas_woodland_smg_mp", "body_usmc_desert_smg_mp"], "head": ["head_sas_woodland_assault_mp"] },
+    "ww2":     { "hands": ["player_generic_view_arms", "player_usa_inf_view_arms"], "body": ["player_generic_world_body", "player_usa_inf_world_body"], "head": ["mp_head_albrechtsen_org1", "mp_head_alfakey_r1c2_fc9"] },
+    "bo4":     { "hands": ["c_t8_bo_hero_mason_viewarms1", "c_t8_bo_3rd_male_viewarms1_white"], "body": ["c_t7_mp_battery_mpc_fb1_skin1", "c_t8_mp_spe_battery_body1"] },
+    "codol":   { "hands": ["viewhands_tf141", "viewhands_player_tf141"], "body": ["body_forest_tf141_assault_a", "body_us_army_assault_a"], "head": ["head_tf141_forest_b"] },
+    "mw2019":  { "hands": ["viewhands_mp_base_iw8", "viewhands_base_iw8"], "body": ["body_russian_army_ar_1_1", "body_spetsnaz_ar", "body_mp_default"], "head": ["head_russian_army_balaclava_1", "head_spetsnaz_ar", "head_mp_default"] },
+    "coldwar": { "hands": ["c_t9_rus_pl_kgb_infantry_viewarms", "c_t9_base_male_nude_viewarms1"], "body": ["c_t9_usa_pl_deltaforce_infiltration_body", "c_t9_base_male_nude_fb1"], "head": ["c_t9_usa_pl_deltaforce_infiltration_head", "c_t9_base_male_nude_2_head"] },
+    "mwiii":   { "hands": ["viewhands_mp_base_iw8", "viewhands_base_iw8"], "body": ["body_sp_opforce_al_qatala_ar", "body_mp_milsim_west_iw9_1_1", "body_mp_default"], "head": ["head_sp_opforce_al_qatala_ar", "head_mp_milsim_west_iw9_1_1", "head_mp_default"] },
+    "bo6":     { "hands": ["viewhands_base_iw8", "viewhands_mp_base_iw8"], "body": ["body_c_t10_usa_pl_jack_base", "body_c_t10_usa_pl_john_base", "body_mp_default"], "head": ["head_c_t10_usa_pl_jack_base", "head_c_t10_usa_pl_john_base", "head_mp_default"] },
+    "bo7":     { "hands": ["viewhands_base_iw8", "viewhands_mp_base_iw8"], "body": ["body_mp_default", "body_c_t10_usa_pl_bravo_infiltration"] }
+  }
+}

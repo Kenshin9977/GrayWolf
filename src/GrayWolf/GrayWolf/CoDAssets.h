@@ -15,8 +15,6 @@
 #include "CoDPackageCache.h"
 #include "CoDCDNDownloader.h"
 
-#include "Parasyte.h"
-
 #include <spdlog/spdlog.h>
 
 class WraithNameIndex;
@@ -57,12 +55,6 @@ public:
     static WraithNameIndex AssetNameCache;
     static WraithNameIndex StringCache;
 
-    // A list of game offsets, varies per-game
-    static std::vector<uint64_t> GameOffsetInfos;
-    // A list of game pool sizes, varies per-game
-    static std::vector<uint32_t> GamePoolSizes;
-
-    static ps::XAsset64 ParasyteRequest(const uint64_t& AssetPointer);
     // Releases the loaded assets, caches and game state
     static void CleanUpGame();
 

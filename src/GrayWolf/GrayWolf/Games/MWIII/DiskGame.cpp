@@ -7,6 +7,7 @@
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/MWIII/TechsetFormat.h"
+#include "Games/MWIII/VfxLayout.h"
 #include "ExportWriters.h"
 #include "FileSystems.h"
 #include "GameModernWarfare6.h"
@@ -18,12 +19,13 @@
 #include "HalfFloats.h"
 #include "MapLive.h"
 
-#include "Games/Common/StringCipher.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwEntityKeys.h"
 #include "Games/IW/IwWeaponStats.h"
 #include "Games/IW/IwTerrain.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "WraithNameIndex.h"
 #include "XSUBCache.h"
@@ -34,6 +36,8 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+
+#include <nlohmann/json.hpp>
 
 namespace
 {
@@ -54,34 +58,25 @@ namespace
     // GfxImage (0x40): hash 0, mip count u8 0x2e (24-byte records at 0x30), pixels 0x38 (u32 0x18 bytes)
     constexpr int64_t ImageMipCount = 0x2e, ImagePixels = 0x38, ImagePixelsSize = 0x18;
 
-    // The zone's script strings: count u32 at 0, 8-byte slots from 0x20 when the list's pointer at 8
-    // is inline; a -2 or -1 slot's text follows the slots, in slot order (0x3b035b0)
-    std::vector<std::string> ScriptStrings(const std::vector<uint8_t>& Z)
-    {
-        std::vector<std::string> Out;
-        if (Z.size() < 0x20) return Out;
-        const uint32_t Count = ExportNaming::At<uint32_t>(Z, 0);
-        const uint64_t List = ExportNaming::At<uint64_t>(Z, 8);
-        const auto Inline = [](uint64_t V) { return V == ~0ull || V == ~1ull; };
-        if (!Inline(List) || Count == 0 || 0x20 + (uint64_t)Count * 8 > Z.size()) return Out;
-        Out.resize(Count);
-        size_t Text = 0x20 + (size_t)Count * 8;
-        for (uint32_t K = 0; K < Count && Text < Z.size(); K++)
-        {
-            if (!Inline(ExportNaming::At<uint64_t>(Z, 0x20 + (int64_t)K * 8))) continue;
-            const auto End = std::find(Z.begin() + (std::ptrdiff_t)Text, Z.end(), 0);
-            Out[K].assign(Z.begin() + (std::ptrdiff_t)Text, End);
-            Text = (size_t)(End - Z.begin()) + 1;
-        }
-        return Out;
-    }
-
     class MWIIIZone final : public IWZone
     {
     public:
         // Campaign: a zone of sp23\ (the older build's layouts, the mwiii_sp profile)
         MWIIIZone(const std::string& Path, bool Campaign) : IWZone(Path), Campaign(Campaign)
         {
+            // a model's LODs may be another zone's xmodelsurfs: those zones are loaded beside first;
+            // its material headers read as the zones defining them have them
+            if (const auto* Models = ExporterOf(Kind::Model))
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    LoadMeshesBeside();
+                    BookMaterialsElsewhere();
+                    // named as the image kind names them
+                    GameModernWarfare6::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
+                        return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return CoDAssets::GetHashedName("ximage", H); });
+                    };
+                    Read(C, T);
+                    GameModernWarfare6::ImagesElsewhere = nullptr;
+                });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
@@ -175,21 +170,38 @@ namespace
                                Bundles, Decrypt);
             // aitype (0xf8, 0x3ad9cc0): the scriptbundle table at 0xa0, a string at 0x30
             ExportsBundleTrees(Kind::AiTypes, { { "aitype", 0xa0, -1, { { "0x30", 0x30 } }, {}, nullptr } }, Bundles, Decrypt);
+            // material (0x78) as JSON with its atlas (what an effect's frames are), its images by the
+            // image kind
+            ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
+                Vfx::AddAtlas(J, MWIII::VfxLayout(), Image(), Off(A));
+            }));
+            // vfx (ParticleSystemDef) as the vfx core's JSON (Games/IW/Vfx.h); the assets its modules
+            // link named by their hashes as their kinds name them (a model, a material, an effect)
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                std::unordered_map<int64_t, Kind> Kinds;
+                for (const auto& I : Walk().Instances)
+                    if (OwnerIs(I, "xmodel")) Kinds[I.Pos] = Kind::Model;
+                    else if (OwnerIs(I, "material")) Kinds[I.Pos] = Kind::Material;
+                auto Z = EffectView();
+                Z.AssetName = [this, &Kinds](int64_t Pos) {
+                    const auto It = Kinds.find(Pos);
+                    return AssetName(It != Kinds.end() ? It->second : Kind::Fx, Pos);
+                };
+                Z.ReadMaterials(C, Materials());
+                Vfx::Counts N;
+                ExportEffects(C, T, "vfx", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                    return Vfx::ReadSystem(Z, MWIII::VfxLayout(), Pos, Name, J, &N);
+                });
+                // their materials' images, the others needed from the zones holding them
+                if (C.Kinds.count(Kind::Image) && !N.Images.empty()) ExportTextures(N.Images, C, T);
+                for (const auto& [K, V] : N.Named()) Counter(K) += V;
+            });
         }
 
         // the weapon stats' layout (Games/IW/IwWeaponStats.h)
         static const IwWeaponStats::Layout& StatsLayout();
         static std::unordered_map<uint64_t, std::string>& PartModelNames();
         void LearnPartModelNames() const;
-
-        // a zone string's text, decrypted with the profile's cipher table when it is encrypted
-        std::string Decrypted(const std::string& Raw) const
-        {
-            std::string Error, Text;
-            const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
-            const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
-            return StringCipher::Decrypt(Cipher, Raw, Text) ? Text : Raw;
-        }
 
     protected:
         const char* Profile() const override { return Campaign ? "mwiii_sp" : "mwiii"; }
@@ -209,7 +221,7 @@ namespace
         void Fixups() override
         {
             Served(true);
-            Slots = ScriptStrings(Zone());
+            Slots = InlineScriptStrings(Zone());
             Counter("lods_without_surfaces") += LinkLods();
         }
 
@@ -223,7 +235,7 @@ namespace
             }
             const char* Prefix = K == Kind::Model ? "xmodel" : K == Kind::Anim ? "xanim" : K == Kind::Image ? "ximage"
                                : K == Kind::Sound ? "xsound" : K == Kind::Script ? "script" : K == Kind::Rawfile ? "rawfile"
-                               : K == Kind::Data ? "stringtable" : "asset";
+                               : K == Kind::Data ? "stringtable" : K == Kind::Material ? "xmaterial" : K == Kind::Fx ? "vfx" : "asset";
             return CoDAssets::GetHashedName(Prefix, At<uint64_t>(Image(), Pos) & HashMask);
         }
         // a name-only header, defined in another zone: a model with neither skeleton nor LODs, an
@@ -234,10 +246,15 @@ namespace
             if (K == Kind::Model)
                 return PointerAt(Pos + (Campaign ? SpModelBones : ModelPacked)) == 0 && PointerAt(Pos + (Campaign ? SpModelLods : ModelLods)) == 0;
             if (K == Kind::Image) return At<uint8_t>(Image(), Pos + ImageMipCount) == 0 && PointerAt(Pos + ImagePixels) == 0;
+            // a material (0x78) with neither images (u8 0x18) nor techset (0x20)
+            if (K == Kind::Material) return At<uint8_t>(Image(), Pos + 0x18) == 0 && PointerAt(Pos + 0x20) == 0;
             return false;
         }
+        // (a transient zone is indexed for its parts only: a reference is not pulled from one, as an
+        // export of a global zone would then open thousands of them)
         void Defines(std::vector<DiskGame::AssetId>& Out) const override
         {
+            if (ExportNaming::Lower(Name()).ends_with("_tr")) return;
             ZonekitZone::Defines(Out);
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "image"))
@@ -246,7 +263,16 @@ namespace
                     if (!IsReference(Kind::Image, N, I.Pos)) Out.push_back({ Kind::Image, N });
                 }
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1" : "_images1+parts2+materials1"); }
+        // what other zones' LODs name and this one holds (the install index's parts): its
+        // xmodelsurfs with surfaces, by name hash (multiplayer)
+        void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
+        {
+            if (Campaign) return;
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "xmodelsurfs") && PointerAt(I.Pos + ModelSurfsSurfs) != 0)
+                    Out.emplace_back("xmodelsurfs", At<uint64_t>(Image(), I.Pos) & HashMask);
+        }
         // localize (0x10): the key's hash at 0 (named when fnv1a_localize.wni knows it), the text at 8
         // encrypted with the string cipher (strings.cipher.txt, DecryptString 0x46a9c70)
         void LocalizeEntry(int64_t Pos, std::string& Key, std::string& Text) const override
@@ -254,21 +280,62 @@ namespace
             const uint64_t Hash = At<uint64_t>(Image(), Pos) & HashMask;
             const auto Found = CoDAssets::AssetNameCache.NameDatabase.find(Hash);
             Key = Found != CoDAssets::AssetNameCache.NameDatabase.end() ? Found->second : std::format("localize_{:x}", Hash);
-            std::string Error;
-            const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
-            const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
-            if (!StringCipher::Decrypt(Cipher, StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
+            if (!CipherDecrypt(StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
         }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the live readers read the campaign build's layouts while one of its zones is served
         void Served(bool On) override
         {
-            if (On) CoDAssets::GameFlags = Campaign ? SupportedGameFlags::SP : SupportedGameFlags::MP;
+            if (!On) return;
+            CoDAssets::GameFlags = Campaign ? SupportedGameFlags::SP : SupportedGameFlags::MP;
+            Beside.Serve();
         }
         void AddEntities(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models);
 
     private:
         const bool Campaign;
+        IwBeside::Set Beside;
+        bool BesideTried = false;
+        bool BooksTried = false;
+
+        // The material headers (IsReference) no material of this zone stands for: the zones the
+        // install index says define them, the fewest first, booked by their name hashes
+        // (IWZone::BookMaterialsElsewhere). Once, before the models are read. Multiplayer only (a
+        // campaign transient zone's materials and meshes are in other transient zones, which the
+        // index leaves out).
+        void BookMaterialsElsewhere()
+        {
+            if (BooksTried || Campaign) return;
+            BooksTried = true;
+            // Material (0x78): slots {u8 semantic, u8 image} 0x28 (count u8 0x18), image pointers
+            // 0x30 (count u8 0x1b)
+            IWMaterialBooks::Layout L;
+            L.Profile = "mwiii";
+            L.Hashed = true, L.HashMask = HashMask;
+            L.ImageCount = 0x18, L.Slots = 0x28, L.Images = 0x30, L.TableCount = 0x1b;
+            const auto Headers = MaterialHeaders();
+            IWZone::BookMaterialsElsewhere(
+                Headers.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.DefinedIn({ Kind::Material, Headers[K] }); },
+                false, L);
+        }
+
+        // the live material reader (MW6XMaterialMP 0x78: its images by their slots), the usages its
+        // particle materials show taken by semantic (mp_jup_shipment_iw9): 8 an emissive grey
+        // (vfx_fire_ball_lrg_anim_1_e), 12 a specular map, 34 the transmittance (BC4, 1 - the opacity,
+        // 1 at the sprites' corners: vfx_pyro_fireball_mid_01_smoke_t), 67 the ramp the emissive grey
+        // looks its colour up in (vfx_ramp_fire_main); 0-3 diffuse and 4-7 normal by the reader
+        decltype(Treyarch::EffectZone::Material) Materials()
+        {
+            auto Reader = Treyarch::MaterialReader([](uint64_t A) { return GameModernWarfare6::ReadXMaterial(A); },
+                                                   [this](uint64_t A) { return Off(A); });
+            return [Reader](uint64_t A, Treyarch::EffectZone::MaterialInfo& Out) {
+                if (!Reader(A, Out)) return false;
+                for (auto& I : Out.Images)
+                    I.Usage = I.Semantic == 8 ? "emissive" : I.Semantic == 12 ? "specular" : I.Semantic == 34 ? "transmittance"
+                            : I.Semantic == 67 ? "ramp" : I.Usage;
+                return true;
+            };
+        }
 
         // a material's texture: the live reader over the served zone, its levels from the packages
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image)
@@ -302,6 +369,74 @@ namespace
                 }
             }
             return Unlinked;
+        }
+
+        // The LODs whose xmodelsurfs is a name-only header here (its surfaces in another zone: a
+        // transient `_tr` zone most of the time), by the offset of the LOD and the xmodelsurfs' hash
+        std::vector<std::pair<int64_t, uint64_t>> LodsElsewhere() const
+        {
+            std::vector<std::pair<int64_t, uint64_t>> Out;
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "xmodel")) continue;
+                const int64_t Lods = Off(PointerAt(I.Pos + ModelLods));
+                if (Lods < 0) continue;
+                const int64_t N = At<uint8_t>(Image(), I.Pos + ModelLodCount);
+                for (int64_t Lod = 0; Lod < N; Lod++)
+                {
+                    const int64_t Base = Lods + Lod * LodSize, Surfs = Off(PointerAt(Base + LodModelSurfs));
+                    if (Surfs >= 0 && PointerAt(Surfs + ModelSurfsSurfs) == 0) Out.emplace_back(Base, At<uint64_t>(Image(), Surfs) & HashMask);
+                }
+            }
+            return Out;
+        }
+
+        // Loads beside the zones holding the xmodelsurfs this zone's LODs name only (found in the
+        // install index's parts, Games/IW/IwBesideZones.h, the zone giving the most first) and points
+        // each such LOD at the surfaces there, as the game's load-time fixup would (lod.surfs =
+        // modelSurfs->surfs). Once per zone, before the models are read. Multiplayer only.
+        void LoadMeshesBeside()
+        {
+            if (BesideTried || Campaign || Owner == nullptr || Install.empty()) return;
+            BesideTried = true;
+            const auto Lods = LodsElsewhere();
+            Counter("model_lods_elsewhere") += Lods.size();
+            if (Lods.empty()) return;
+            std::set<uint64_t> Wanted;
+            for (const auto& L : Lods) Wanted.insert(L.second);
+            const std::vector<uint64_t> Hashes(Wanted.begin(), Wanted.end());
+            std::vector<std::string> Paths;
+            size_t NotIndexed = 0;
+            if (!ZonesHolding(Hashes.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.PartIn("xmodelsurfs", Hashes[K]); }, false,
+                              Paths, NotIndexed))
+            {
+                Counter("model_lods_no_index")++;
+                return;
+            }
+            Counter("model_meshes_not_indexed") += NotIndexed;
+            std::string ProfileError;
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), ProfileError);
+            if (Loaded == nullptr || Paths.empty()) return;
+            std::map<std::string, size_t> Counts;
+            Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+            for (const auto& [K, N] : Counts) Counter(K) += N;
+            // each xmodelsurfs with surfaces in the zones loaded beside: its served address and theirs
+            std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> Meshes;
+            for (const auto& Z : Beside.All())
+                for (const auto& I : Z->R.Instances)
+                    if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "xmodelsurfs" &&
+                        (uint64_t)I.Pos + ModelSurfsSurfs + 8 <= Z->Bytes.size())
+                        if (const uint64_t Surfs = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos + ModelSurfsSurfs); Surfs != 0)
+                            Meshes.try_emplace(ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & HashMask, Z->Base + (uint64_t)I.Pos, Surfs);
+            for (const auto& [Base, H] : Lods)
+            {
+                const auto It = Meshes.find(H);
+                if (It == Meshes.end()) continue;
+                Live().Poke((uint64_t)(Base + LodModelSurfs), It->second.first);
+                Live().Poke((uint64_t)(Base + LodSurfs), It->second.second);
+                Counter("model_lods_beside")++;
+            }
+            Beside.Serve();
         }
 
         void ExportImages(const Context& C, Totals& T)
@@ -741,14 +876,9 @@ namespace
             for (int64_t J = FirstInstance; J < (int64_t)FirstInstance + Count && J < (int64_t)InstanceCount; J++)
             {
                 const int64_t P = Instances + J * 24;
-                Maps::Instance In;
+                Maps::Instance In = Maps::PackedPlacement(Img, P, true);
                 In.Name = "smodel_" + std::to_string(J);
                 In.Model = ModelName;
-                for (int A = 0; A < 3; A++) In.Origin[A] = (float)At<int32_t>(Img, P + A * 4) / 4096.0f;
-                float Q[4];
-                for (int A = 0; A < 4; A++) Q[A] = (float)At<uint16_t>(Img, P + 12 + A * 2) / 65535.0f * 2.0f - 1.0f;
-                Maps::AxisFromQuat(Q, In.Axis);
-                In.Scale = HalfFloats::ToFloat(At<uint16_t>(Img, P + 20));
                 Scene.StaticInstances.push_back(In);
             }
         }
@@ -804,16 +934,17 @@ namespace
             if (Names.empty()) Error = std::string("no ") + Folder + " fast file in " + Install;
             return !Names.empty();
         }
-        // the index opens the zones that define shared assets: not the transient (_tr) zones
-        // (14 000 of cod23's, 4 666 of sp23's), the localized or server ones, nor the techsets_
-        // ones (no material there)
+        // the index opens the zones that define shared assets: not the localized or server ones, nor
+        // the techsets_ ones (no material there). The multiplayer's transient (_tr) zones (14 468 of
+        // cod23's) are in it for the LOD meshes they hold (MWIIIZone::Parts), the campaign's (4 666
+        // of sp23's) are not
         bool IndexedZones(const std::string& Install, const DiskGame::ExportOptions& Options, std::vector<std::string>& Names,
                           std::string& Error) const override
         {
             if (!ListZones(Install, Options, Names, Error)) return false;
-            std::erase_if(Names, [](const std::string& N) {
+            std::erase_if(Names, [this](const std::string& N) {
                 const std::string F = Strings::ToLower(fs::path(N).filename().string());
-                return F.ends_with("_tr.ff") || F.rfind("eng_", 0) == 0 || F.rfind("fra_", 0) == 0 || F.rfind("srv_", 0) == 0 ||
+                return (Campaign && F.ends_with("_tr.ff")) || F.rfind("eng_", 0) == 0 || F.rfind("fra_", 0) == 0 || F.rfind("srv_", 0) == 0 ||
                        F.rfind("techsets_", 0) == 0;
             });
             return !Names.empty();
@@ -835,6 +966,7 @@ namespace
             // a campaign zone: one under sp23\ (a copy elsewhere reads as multiplayer)
             const std::string Folder = Strings::ToLower(fs::path(Path).parent_path().filename().string());
             auto Zone = std::make_unique<MWIIIZone>(Path, Folder == "sp23");
+            Zone->SetInstall(this, Options, Options.Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

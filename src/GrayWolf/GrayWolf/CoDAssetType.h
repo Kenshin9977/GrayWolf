@@ -263,6 +263,10 @@ struct XMaterial_t
     // The game's own constant bytes, by its block index (BO3: technique's static pixel cbuffer;
     // BO4: [0] the material's constant blob). Read by the material adapters (shading.txt).
     std::vector<std::vector<uint8_t>> Constants;
+
+    // The game's sort key for the material when its reader knows it (the draw order class the
+    // adapter reads the alpha mode from), else -1.
+    int SortKey = -1;
 };
 
 struct XModelLod_t

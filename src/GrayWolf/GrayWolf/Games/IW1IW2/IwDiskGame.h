@@ -4,7 +4,8 @@
 // files whose copy the game reads is in it (IwInstall.h); a model reads its parts, surfaces,
 // materials and textures wherever the install keeps them. Kinds: model (with its textures, written
 // by the image kind's writer), anim, image, sound, map, script, localize, weapons and weaponstats
-// (the weapon files, Games/Common/WeaponFiles.h). One implementation; each game gives its row.
+// (the weapon files, Games/Common/WeaponFiles.h), fx (the .efx files, EfxEffects.h). One
+// implementation; each game gives its row.
 
 #include "DiskGame.h"
 

@@ -1,6 +1,12 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
+#include <vector>
+
+// A path of its own under the system's temp folder, Prefix_<process>_<n>: where a tool run's
+// inputs and outputs go
+std::filesystem::path ToolScratchPath(const char* Prefix);
 
 // OatBridge drives ate47's "acts" CLI (a separate process) to extract MODERN Call of Duty
 // fastfiles that our native memory path doesn't cover. Old CoD (IW3-T6) fastfiles are extracted
@@ -59,3 +65,32 @@ bool ActsNoDecryption(const std::string& Log);
 // <WorkDir>/decompiled/<Game>/<file>.gscc|.cscc holding the source.
 bool GscToolDecompileDir(const std::string& GscToolExe, const std::string& Game, const std::string& System,
                          const std::string& InDir, const std::string& WorkDir, std::string& Log);
+
+// The Lua decompilers, external processes like acts (LuaExport.h picks one by the bytecode's header).
+// Located like ActsFindExe: Hint if it exists (the cod_luajit_decompiler_exe and cod_lua_decompiler_exe
+// settings), else on PATH. Both resolve hashes through the .wni files of a PackageIndex folder beside
+// their own exe (none: hashes left as numbers).
+// cod-luajit-decompiler (Nico-Posada, MIT): Call of Duty LuaJIT, versions 0x82 (Cold War), 0x83
+// (MWII, MWIII), 0x84 (Black Ops 6, 7); cod-luajit-decompiler.exe or its release's
+// cod-luajit-decompiler-windows-x86_64.exe on PATH.
+std::string CodLuaJitFindExe(const std::string& Hint);
+// CoDLuaDecompiler (JariKCoding, Nico-Posada's fork, MIT, .NET): Havok Script (Black Ops II to 4,
+// Ghosts to WWII) and LuaJIT 2 (Modern Warfare 2019), the Call of Duty LuaJIT versions too;
+// CoDLuaDecompiler.CLI.exe on PATH.
+std::string CodLuaFindExe(const std::string& Hint);
+// One run over every <InDir>/<file>.luac: decompiled to <OutDir>/<file>.lua (cod-luajit-decompiler,
+// Args its options) or <OutDir>/<file>.dec.lua (CoDLuaDecompiler); a file it does not decompile has
+// none. False when the run did not go through its inputs (not found, crashed, timed out after 30
+// minutes); Log is the tool's output.
+bool CodLuaJitDecompileDir(const std::string& Exe, const std::vector<std::string>& Args, const std::string& InDir,
+                           const std::string& OutDir, std::string& Log);
+bool CodLuaDecompileDir(const std::string& Exe, const std::string& InDir, const std::string& OutDir, std::string& Log);
+
+// ffmpeg (an external process like the decompilers; GrayWolf ships none): the WMA sounds' decoder
+// (WmaSounds.h). Hint if it exists (--ffmpeg-exe, the ffmpeg_exe setting), else ffmpeg.exe beside
+// GrayWolf's exe, on PATH, or where WinGet (its Links, then Gyan.FFmpeg* packages' */bin), Chocolatey
+// or Scoop install it. Empty if none.
+std::string FfmpegFindExe(const std::string& Hint);
+// ffmpeg decoding InPath's first audio stream to a 16-bit PCM WAV at OutPath (no metadata chunk);
+// true when it exited 0 and wrote it. Log is its output (errors only).
+bool FfmpegDecodeToWav(const std::string& Exe, const std::string& InPath, const std::string& OutPath, std::string& Log);

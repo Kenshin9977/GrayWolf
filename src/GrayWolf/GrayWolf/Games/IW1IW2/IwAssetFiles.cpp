@@ -367,6 +367,9 @@ bool ParseMaterial(const uint8_t* Data, size_t Size, MaterialFile& Out, std::str
         };
         const uint32_t NameAt = R.Get<uint32_t>();
         const uint32_t RefImageAt = R.Get<uint32_t>();
+        R.Seek(0xe);
+        Out.AtlasRows = R.Get<uint8_t>();
+        Out.AtlasCols = R.Get<uint8_t>();
         R.Seek(0x34);
         const uint8_t Textures = R.Get<uint8_t>();
         R.Skip(1);

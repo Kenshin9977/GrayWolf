@@ -33,6 +33,10 @@ namespace Maps
     FILE* DebugFile();
     // A placement's rotation from a quaternion (x, y, z, w) into Instance::Axis.
     void AxisFromQuat(const float Q[4], float Axis[9]);
+    // A static model's placement as MW (2019) to Black Ops 7 pack it (24 bytes at Pos): its origin
+    // in 1/4096 units (3 i32), its rotation a quaternion of u16 mapped to [-1, 1] (at 12), its scale
+    // at 20 (a float, or a half when HalfScale). Name and Model are the caller's.
+    Instance PackedPlacement(const std::vector<uint8_t>& Image, int64_t Pos, bool HalfScale);
     // A name kept inline at Pos (a char array, NUL-terminated within Max): empty when it is not
     // printable text.
     std::string InlineName(const std::vector<uint8_t>& Image, int64_t Pos, size_t Max);
@@ -58,7 +62,11 @@ namespace Maps
     {
     public:
         using Fetch = std::function<bool(uint32_t Index, Vertex& Out)>;
-        WorldBuilder(std::string Name, Fetch Read) : Out{ std::move(Name), {} }, Read(std::move(Read)) {}
+        // a vertex's UV sets after its Uv: up to Max pairs written to Out, how many returned
+        using FetchUvs = std::function<uint32_t(uint32_t Index, float* Out, uint32_t Max)>;
+        static constexpr uint32_t MaxMoreUvs = 7;
+        WorldBuilder(std::string Name, Fetch Read, FetchUvs MoreUvs = {})
+            : Out{ std::move(Name), {} }, Read(std::move(Read)), MoreUvs(std::move(MoreUvs)) {}
         // false when a vertex could not be read (the triangle is left out)
         bool Triangle(const std::string& Material, uint32_t A, uint32_t B, uint32_t C);
         size_t Triangles() const { return Count; }
@@ -67,6 +75,7 @@ namespace Maps
     private:
         Mesh Out;
         Fetch Read;
+        FetchUvs MoreUvs;
         std::unordered_map<std::string, size_t> Group;                  // material -> surface
         std::vector<std::unordered_map<uint32_t, uint32_t>> Remap;      // per surface
         size_t Count = 0;
@@ -77,7 +86,7 @@ namespace Maps
     // adding one surface's triangles to the model's builder; a model without a triangle left out
     void BuildWorld(MapScene& Scene, uint32_t BrushCount, uint32_t SurfaceCount,
                     const std::function<std::pair<uint32_t, uint32_t>(uint32_t Brush)>& Range, const WorldBuilder::Fetch& Read,
-                    const std::function<void(uint32_t Surface, WorldBuilder& Mesh)>& Surface);
+                    const std::function<void(uint32_t Surface, WorldBuilder& Mesh)>& Surface, const WorldBuilder::FetchUvs& MoreUvs = {});
 
     // A GfxWorld's surfaces as every game lays them out (C2M's readers, BO4 and Ghosts): brush
     // models own ranges of surfaces (model 0 is the level), a surface a range of triangles in the
@@ -97,6 +106,12 @@ namespace Maps
         int BrushFieldBytes = 4;   // the two brush fields' width: 4, or 2 (IW4/IW5: u16, 0xffff none)
         // surfaces left out (the sky's, which the import script draws from its texture instead)
         const std::unordered_set<uint32_t>* Skip = nullptr;
+        // added to a surface's first vertex, by the surface's position (a level whose vertices are in
+        // several transient zones: where that surface's zone starts in the vertex space Read reads)
+        std::function<uint32_t(int64_t Surface)> VertexBase;
+        // a surface's vertex's UV sets after its Uv (by the surface's position and the vertex's
+        // number in it: up to Max pairs written to Out, how many returned); unset: one set
+        std::function<uint32_t(int64_t Surface, uint32_t Local, float* Out, uint32_t Max)> MoreUvs;
     };
     // Adds one world mesh per brush model with triangles; the triangles left out (a vertex not read).
     size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch& Read,

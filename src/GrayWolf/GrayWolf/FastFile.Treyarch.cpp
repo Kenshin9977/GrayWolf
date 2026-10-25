@@ -147,6 +147,158 @@ bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileI
     return true;
 }
 
+namespace
+{
+    // The blocks of a Treyarch fast file (Black Ops 3 and 4) from HeaderBytes on, each introduced
+    // by a TreyarchBlockHeader, stored or compressed as Info says, appended to Zone
+    bool ReadTreyarchBlocks(const std::vector<uint8_t>& File, size_t HeaderBytes, const FastFileInfo& Info, std::vector<uint8_t>& Zone,
+                            std::string& Error)
+    {
+        const bool IsLZ4 = Info.Compression == FastFileCompression::LZ4 ||
+                           Info.Compression == FastFileCompression::LZ4HighCompression;
+        const bool IsNone = Info.Compression == FastFileCompression::None;
+        const bool IsOodle = Info.Compression == FastFileCompression::OodleKraken ||
+                             Info.Compression == FastFileCompression::OodleMermaid ||
+                             Info.Compression == FastFileCompression::OodleSelkie ||
+                             Info.Compression == FastFileCompression::OodleLZNA;
+
+        if (File.size() <= HeaderBytes)
+        {
+            Error = "file is shorter than its header";
+            return false;
+        }
+
+        if (Info.DeclaredZoneSize > 0)
+        {
+            ReserveZone(Zone, Info.DeclaredZoneSize, File.size());
+        }
+
+        size_t Position = HeaderBytes;
+
+        while (Position + sizeof(TreyarchBlockHeader) <= File.size())
+        {
+            TreyarchBlockHeader Block = {};
+            std::memcpy(&Block, File.data() + Position, sizeof(Block));
+
+            // Each block records where it starts, which is a cheap way to notice we have
+            // drifted out of step rather than decompressing rubbish
+            if (Block.Offset != Position)
+            {
+                Error = std::format("block at 0x{:x} claims to be at 0x{:x}",
+                    (unsigned long long)Position, Block.Offset);
+                return false;
+            }
+
+            Position += sizeof(TreyarchBlockHeader);
+
+            // An empty block is padding up to the next alignment boundary
+            if (Block.UncompressedSize == 0)
+            {
+                const auto Aligned = ((Position + TreyarchBlockAlignment - 1) / TreyarchBlockAlignment) * TreyarchBlockAlignment;
+                if (Aligned >= File.size())
+                {
+                    break;
+                }
+                Position = (size_t)Aligned;
+                continue;
+            }
+
+            // the bytes the block is read from (all of them when stored) lie within the file
+            const uint64_t Stored = IsNone ? Block.UncompressedSize : Block.CompressedSize;
+            if (Position + Block.AlignedSize > File.size() || Position + Stored > File.size())
+            {
+                Error = std::format("block at 0x{:x} runs past the end of the file", Block.Offset);
+                return false;
+            }
+            if (!IsNone && !(IsOodle ? OodleInflatesWithin(Block.UncompressedSize, Block.CompressedSize)
+                                     : InflatesWithin(Block.UncompressedSize, Block.CompressedSize)))
+            {
+                Error = std::format("block at 0x{:x} claims {} bytes from {}", Block.Offset, Block.UncompressedSize, Block.CompressedSize);
+                return false;
+            }
+
+            const auto* BlockData = File.data() + Position;
+
+            const auto ZoneOffset = Zone.size();
+            Zone.resize(ZoneOffset + Block.UncompressedSize);
+
+            if (IsNone)
+            {
+                std::memcpy(Zone.data() + ZoneOffset, BlockData, Block.UncompressedSize);
+            }
+            else if (IsLZ4)
+            {
+                const auto Produced = Compression::DecompressLZ4Block(
+                    (const int8_t*)BlockData, (int8_t*)(Zone.data() + ZoneOffset),
+                    (int32_t)Block.CompressedSize, (int32_t)Block.UncompressedSize);
+
+                if (Produced != Block.UncompressedSize)
+                {
+                    Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
+                        Block.Offset, Produced, Block.UncompressedSize);
+                    return false;
+                }
+            }
+            else if (IsOodle)
+            {
+                const auto Produced = Siren::Decompress(BlockData, Block.CompressedSize,
+                    Zone.data() + ZoneOffset, Block.UncompressedSize);
+
+                if (Produced != Block.UncompressedSize)
+                {
+                    Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
+                        Block.Offset, (unsigned long long)Produced, Block.UncompressedSize);
+                    return false;
+                }
+            }
+            else
+            {
+                // The blocks carry a normal zlib header, they just declare a smaller window
+                // than usual, so the default wrapper aware init is what we want (acts' own T8
+                // decompressor does it through plain uncompress2())
+                mz_stream Stream = {};
+                if (mz_inflateInit(&Stream) != MZ_OK)
+                {
+                    Error = "could not start the inflater";
+                    return false;
+                }
+
+                Stream.next_in = BlockData;
+                Stream.avail_in = Block.CompressedSize;
+                Stream.next_out = Zone.data() + ZoneOffset;
+                Stream.avail_out = Block.UncompressedSize;
+
+                const auto Result = mz_inflate(&Stream, MZ_FINISH);
+                const auto Produced = Stream.total_out;
+                mz_inflateEnd(&Stream);
+
+                if (Result != MZ_STREAM_END || Produced != Block.UncompressedSize)
+                {
+                    Error = std::format("block at 0x{:x} failed to inflate ({}, {} of {} bytes)",
+                        Block.Offset, Result, (unsigned long long)Produced, Block.UncompressedSize);
+                    return false;
+                }
+            }
+
+            Position += Block.AlignedSize;
+
+            // The header tells us how big the zone is, so stop rather than run off the end
+            if (Info.DeclaredZoneSize > 0 && Zone.size() >= Info.DeclaredZoneSize)
+            {
+                break;
+            }
+        }
+
+        if (Zone.empty())
+        {
+            Error = "no blocks were decompressed";
+            return false;
+        }
+
+        return true;
+    }
+}
+
 bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
 {
     if (Info.Encrypted)
@@ -170,160 +322,12 @@ bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInf
 
     // Blocks reference absolute positions, so the whole file is easiest to work from
     std::vector<uint8_t> File;
+    if (!ReadWholeFile(FilePath, File, Error))
     {
-        FILE* Raw = nullptr;
-        if (fopen_s(&Raw, FilePath.c_str(), "rb") != 0 || Raw == nullptr)
-        {
-            Error = "could not open the file";
-            return false;
-        }
-
-        auto Owned = std::unique_ptr<FILE, decltype(&fclose)>(Raw, fclose);
-
-        if (_fseeki64(Owned.get(), 0, SEEK_END) != 0)
-        {
-            Error = "could not measure the file";
-            return false;
-        }
-
-        const auto Length = _ftelli64(Owned.get());
-        if (Length <= 0)
-        {
-            Error = "the file is empty";
-            return false;
-        }
-
-        File.resize((size_t)Length);
-        _fseeki64(Owned.get(), 0, SEEK_SET);
-
-        if (fread(File.data(), 1, File.size(), Owned.get()) != File.size())
-        {
-            Error = "could not read the whole file";
-            return false;
-        }
-    }
-
-    const size_t HeaderBytes = (Info.Version > TreyarchAlphaVersion) ? TreyarchHeaderSize : TreyarchHeaderAlpha;
-
-    if (File.size() <= HeaderBytes)
-    {
-        Error = "file is shorter than its header";
         return false;
     }
 
-    if (Info.DeclaredZoneSize > 0)
-    {
-        ReserveZone(Zone, Info.DeclaredZoneSize, File.size());
-    }
-
-    size_t Position = HeaderBytes;
-
-    while (Position + sizeof(TreyarchBlockHeader) <= File.size())
-    {
-        TreyarchBlockHeader Block = {};
-        std::memcpy(&Block, File.data() + Position, sizeof(Block));
-
-        // Each block records where it starts, which is a cheap way to notice we have
-        // drifted out of step rather than decompressing rubbish
-        if (Block.Offset != Position)
-        {
-            Error = std::format("block at 0x{:x} claims to be at 0x{:x}",
-                (unsigned long long)Position, Block.Offset);
-            return false;
-        }
-
-        Position += sizeof(TreyarchBlockHeader);
-
-        // An empty block is padding up to the next alignment boundary
-        if (Block.UncompressedSize == 0)
-        {
-            const auto Aligned = ((Position + TreyarchBlockAlignment - 1) / TreyarchBlockAlignment) * TreyarchBlockAlignment;
-            if (Aligned >= File.size())
-            {
-                break;
-            }
-            Position = (size_t)Aligned;
-            continue;
-        }
-
-        // the bytes the block is read from (all of them when stored) lie within the file
-        const uint64_t Stored = IsNone ? Block.UncompressedSize : Block.CompressedSize;
-        if (Position + Block.AlignedSize > File.size() || Position + Stored > File.size())
-        {
-            Error = std::format("block at 0x{:x} runs past the end of the file", Block.Offset);
-            return false;
-        }
-        if (!IsNone && !InflatesWithin(Block.UncompressedSize, Block.CompressedSize))
-        {
-            Error = std::format("block at 0x{:x} claims {} bytes from {}", Block.Offset, Block.UncompressedSize, Block.CompressedSize);
-            return false;
-        }
-
-        const auto* BlockData = File.data() + Position;
-        const auto ZoneOffset = Zone.size();
-        Zone.resize(ZoneOffset + Block.UncompressedSize);
-
-        if (IsNone)
-        {
-            std::memcpy(Zone.data() + ZoneOffset, BlockData, Block.UncompressedSize);
-        }
-        else if (IsLZ4)
-        {
-            const auto Produced = Compression::DecompressLZ4Block(
-                (const int8_t*)BlockData, (int8_t*)(Zone.data() + ZoneOffset),
-                (int32_t)Block.CompressedSize, (int32_t)Block.UncompressedSize);
-
-            if (Produced != Block.UncompressedSize)
-            {
-                Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                    Block.Offset, Produced, Block.UncompressedSize);
-                return false;
-            }
-        }
-        else
-        {
-            // The blocks carry a normal zlib header, they just declare a smaller window
-            // than usual, so the default wrapper aware init is what we want
-            mz_stream Stream = {};
-            if (mz_inflateInit(&Stream) != MZ_OK)
-            {
-                Error = "could not start the inflater";
-                return false;
-            }
-
-            Stream.next_in = BlockData;
-            Stream.avail_in = Block.CompressedSize;
-            Stream.next_out = Zone.data() + ZoneOffset;
-            Stream.avail_out = Block.UncompressedSize;
-
-            const auto Result = mz_inflate(&Stream, MZ_FINISH);
-            const auto Produced = Stream.total_out;
-            mz_inflateEnd(&Stream);
-
-            if (Result != MZ_STREAM_END || Produced != Block.UncompressedSize)
-            {
-                Error = std::format("block at 0x{:x} failed to inflate ({}, {} of {} bytes)",
-                    Block.Offset, Result, (unsigned long long)Produced, Block.UncompressedSize);
-                return false;
-            }
-        }
-
-        Position += Block.AlignedSize;
-
-        // The header tells us how big the zone is, so stop rather than run off the end
-        if (Info.DeclaredZoneSize > 0 && Zone.size() >= Info.DeclaredZoneSize)
-        {
-            break;
-        }
-    }
-
-    if (Zone.empty())
-    {
-        Error = "no blocks were decompressed";
-        return false;
-    }
-
-    return true;
+    return ReadTreyarchBlocks(File, (Info.Version > TreyarchAlphaVersion) ? TreyarchHeaderSize : TreyarchHeaderAlpha, Info, Zone, Error);
 }
 
 // A Black Ops 4 .fd is a patch on the .ff of the same name: its own header (0x840), a copy of
@@ -478,176 +482,13 @@ bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileI
         }
     }
 
-    // Blocks reference absolute positions, so the whole file is easiest to work from
     std::vector<uint8_t> File;
+    if (!ReadWholeFile(FilePath, File, Error))
     {
-        FILE* Raw = nullptr;
-        if (fopen_s(&Raw, FilePath.c_str(), "rb") != 0 || Raw == nullptr)
-        {
-            Error = "could not open the file";
-            return false;
-        }
-
-        auto Owned = std::unique_ptr<FILE, decltype(&fclose)>(Raw, fclose);
-
-        if (_fseeki64(Owned.get(), 0, SEEK_END) != 0)
-        {
-            Error = "could not measure the file";
-            return false;
-        }
-
-        const auto Length = _ftelli64(Owned.get());
-        if (Length <= 0)
-        {
-            Error = "the file is empty";
-            return false;
-        }
-
-        File.resize((size_t)Length);
-        _fseeki64(Owned.get(), 0, SEEK_SET);
-
-        if (fread(File.data(), 1, File.size(), Owned.get()) != File.size())
-        {
-            Error = "could not read the whole file";
-            return false;
-        }
-    }
-
-    const size_t HeaderBytes = (Info.Version == BO4DevVersion) ? BO4DevHeaderSize : BO4RetailHeaderSize;
-
-    if (File.size() <= HeaderBytes)
-    {
-        Error = "file is shorter than its header";
         return false;
     }
 
-    if (Info.DeclaredZoneSize > 0)
-    {
-        ReserveZone(Zone, Info.DeclaredZoneSize, File.size());
-    }
-
-    size_t Position = HeaderBytes;
-
-    while (Position + sizeof(TreyarchBlockHeader) <= File.size())
-    {
-        TreyarchBlockHeader Block = {};
-        std::memcpy(&Block, File.data() + Position, sizeof(Block));
-
-        // Each block records where it starts, which is a cheap way to notice we have
-        // drifted out of step rather than decompressing rubbish
-        if (Block.Offset != Position)
-        {
-            Error = std::format("block at 0x{:x} claims to be at 0x{:x}",
-                (unsigned long long)Position, Block.Offset);
-            return false;
-        }
-
-        Position += sizeof(TreyarchBlockHeader);
-
-        // An empty block is padding up to the next alignment boundary
-        if (Block.UncompressedSize == 0)
-        {
-            const auto Aligned = ((Position + TreyarchBlockAlignment - 1) / TreyarchBlockAlignment) * TreyarchBlockAlignment;
-            if (Aligned >= File.size())
-            {
-                break;
-            }
-            Position = (size_t)Aligned;
-            continue;
-        }
-
-        // the bytes the block is read from (all of them when stored) lie within the file
-        const uint64_t Stored = IsNone ? Block.UncompressedSize : Block.CompressedSize;
-        if (Position + Block.AlignedSize > File.size() || Position + Stored > File.size())
-        {
-            Error = std::format("block at 0x{:x} runs past the end of the file", Block.Offset);
-            return false;
-        }
-        if (!IsNone && !(IsOodle ? OodleInflatesWithin(Block.UncompressedSize, Block.CompressedSize)
-                                 : InflatesWithin(Block.UncompressedSize, Block.CompressedSize)))
-        {
-            Error = std::format("block at 0x{:x} claims {} bytes from {}", Block.Offset, Block.UncompressedSize, Block.CompressedSize);
-            return false;
-        }
-
-        const auto* BlockData = File.data() + Position;
-
-        const auto ZoneOffset = Zone.size();
-        Zone.resize(ZoneOffset + Block.UncompressedSize);
-
-        if (IsNone)
-        {
-            std::memcpy(Zone.data() + ZoneOffset, BlockData, Block.UncompressedSize);
-        }
-        else if (IsLZ4)
-        {
-            const auto Produced = Compression::DecompressLZ4Block(
-                (const int8_t*)BlockData, (int8_t*)(Zone.data() + ZoneOffset),
-                (int32_t)Block.CompressedSize, (int32_t)Block.UncompressedSize);
-
-            if (Produced != Block.UncompressedSize)
-            {
-                Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                    Block.Offset, Produced, Block.UncompressedSize);
-                return false;
-            }
-        }
-        else if (IsOodle)
-        {
-            const auto Produced = Siren::Decompress(BlockData, Block.CompressedSize,
-                Zone.data() + ZoneOffset, Block.UncompressedSize);
-
-            if (Produced != Block.UncompressedSize)
-            {
-                Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                    Block.Offset, (unsigned long long)Produced, Block.UncompressedSize);
-                return false;
-            }
-        }
-        else
-        {
-            // Same zlib-wrapped format T7 blocks use (default wrapper-aware inflate init), as acts' own T8
-            // decompressor does through plain uncompress2().
-            mz_stream Stream = {};
-            if (mz_inflateInit(&Stream) != MZ_OK)
-            {
-                Error = "could not start the inflater";
-                return false;
-            }
-
-            Stream.next_in = BlockData;
-            Stream.avail_in = Block.CompressedSize;
-            Stream.next_out = Zone.data() + ZoneOffset;
-            Stream.avail_out = Block.UncompressedSize;
-
-            const auto Result = mz_inflate(&Stream, MZ_FINISH);
-            const auto Produced = Stream.total_out;
-            mz_inflateEnd(&Stream);
-
-            if (Result != MZ_STREAM_END || Produced != Block.UncompressedSize)
-            {
-                Error = std::format("block at 0x{:x} failed to inflate ({}, {} of {} bytes)",
-                    Block.Offset, Result, (unsigned long long)Produced, Block.UncompressedSize);
-                return false;
-            }
-        }
-
-        Position += Block.AlignedSize;
-
-        // The header tells us how big the zone is, so stop rather than run off the end
-        if (Info.DeclaredZoneSize > 0 && Zone.size() >= Info.DeclaredZoneSize)
-        {
-            break;
-        }
-    }
-
-    if (Zone.empty())
-    {
-        Error = "no blocks were decompressed";
-        return false;
-    }
-
-    return true;
+    return ReadTreyarchBlocks(File, (Info.Version == BO4DevVersion) ? BO4DevHeaderSize : BO4RetailHeaderSize, Info, Zone, Error);
 }
 
 bool FastFile::ParseTreyarchZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out, std::string& Error)
@@ -686,36 +527,12 @@ bool FastFile::ParseTreyarchZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out
 
     size_t Position = (size_t)TableOffset;
 
-    for (uint32_t i = 0; i < Count; i++)
+    // A slot only has a string behind it when the engine was told to fill it in from the
+    // stream - reading one for every slot regardless walks off the string data and into
+    // the asset list.
+    if (!ReadInlineStrings(Zone, PointerArrayOffset, 8, Count, FollowsInline, Position, Out, Error))
     {
-        // A slot only has a string behind it when the engine was told to fill it in from the
-        // stream - reading one for every slot regardless walks off the string data and into
-        // the asset list.
-        uint64_t Slot = 0;
-        std::memcpy(&Slot, Zone.data() + PointerArrayOffset + (size_t)i * 8, sizeof(Slot));
-
-        if (Slot != FollowsInline)
-        {
-            continue;
-        }
-
-        Out.StringsInline++;
-
-        const auto Start = Position;
-
-        while (Position < Zone.size() && Zone[Position] != 0)
-        {
-            Position++;
-        }
-
-        if (Position >= Zone.size())
-        {
-            Error = std::format("string {} of {} runs off the end of the zone", i, Count);
-            return false;
-        }
-
-        Out.Strings.emplace_back((const char*)Zone.data() + Start, Position - Start);
-        Position++;
+        return false;
     }
 
     // The asset list follows the strings. Its length is stated in the header rather than

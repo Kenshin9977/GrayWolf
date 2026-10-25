@@ -1,17 +1,21 @@
 #include "stdafx.h"
 
 #include "MaterialDescription.h"
+#include "Games/IW/IwMaterialAlpha.h"
 #include "Games/IW/IwTerrain.h"
 
 // Black Ops 7 materials: a slot's semantic is a byte. The global slots are below 0x47 (TechsetFormat);
 // the layers' slots from 0x47, 16 per layer (colour 0x47, 0x57, 0x67...: the layered materials of the
 // M15's parts and viewhands). Slot 0 the colour (sRGB), slot 1 the "nog" as Black Ops 6's (gloss in r,
 // normal y in g, occlusion in b, normal x in a: its fill-in for an empty slot is (0, 127, 255, 128)).
-// Only the first layer is described: what the other layers' slots and 0x61 / 0x71 (greyscale masks on
-// most weapon materials) do is not established. The terrain's material layers added (Games/IW/IwTerrain).
+// Slot 3 of a layer (0x4a) the opacity map, as Black Ops 6's (the leaves' and needles' of a map; its
+// fill-in $white); the alpha mode from the sort key (Games/IW/IwMaterialAlpha.h), never the colour
+// map's alpha. Only the first layer is described: what the other layers' slots and 0x61 / 0x71
+// (greyscale masks on most weapon materials) do is not established. The terrain's material layers
+// added (Games/IW/IwTerrain).
 namespace
 {
-    constexpr uint32_t Color = 0x47, Nog = 0x48;
+    constexpr uint32_t Color = 0x47, Nog = 0x48, OpacityMap = 0x4a;
 
     class BlackOps7Materials final : public Materials::IAdapter
     {
@@ -29,6 +33,7 @@ namespace
             if (!D.Normal.Empty()) D.NormalEnc = Materials::NormalEncoding::AG;
             // a material without these slots (no semantics, a map's): the names and the readers' hints
             if (D.Albedo.Empty() && D.Normal.Empty()) D = Materials::DefaultAdapter().Describe(M);
+            IwMaterialAlpha::Apply(M, M.BySemantic(OpacityMap), D);
             IwTerrain::DescribeLayers(M, D);
             return D;
         }

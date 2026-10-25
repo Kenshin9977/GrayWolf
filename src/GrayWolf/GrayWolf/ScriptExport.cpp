@@ -6,9 +6,7 @@
 #include "ExportWriters.h"
 #include "OatBridge.h"
 
-#include <atomic>
 #include <filesystem>
-#include <fstream>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -45,29 +43,6 @@ namespace
         const std::string Ext = ExportNaming::Lower(fs::path(Name).extension().string());
         return Ext == ".gsc" || Ext == ".csc" ? Name.substr(0, Name.size() - 4) : Name;
     }
-
-    bool Read(const fs::path& P, std::vector<uint8_t>& Out)
-    {
-        std::ifstream F(P, std::ios::binary);
-        if (!F) return false;
-        Out.assign(std::istreambuf_iterator<char>(F), std::istreambuf_iterator<char>());
-        return true;
-    }
-
-    // a folder of its own under the system's temp folder
-    fs::path ScratchDir()
-    {
-        static std::atomic<unsigned> Next{ 0 };
-        wchar_t Temp[MAX_PATH]{};
-        GetTempPathW(MAX_PATH, Temp);
-        return fs::path(Temp) / ("gh_scripts_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(Next++));
-    }
-
-    std::string SettingOf(const DiskGame::Context& C, const char* Key)
-    {
-        const auto It = C.Settings.find(Key);
-        return It == C.Settings.end() ? std::string() : It->second;
-    }
 }
 
 bool IsSourceName(const std::string& Name)
@@ -95,8 +70,8 @@ Sink::Sink(const DiskGame::Context& Ctx, DiskGame::Totals& Tot, std::string Zone
     Decompiling = DiskGame::ScriptDecompile.Of(C.Settings) == "on" && V.Decompiler != Tool::None;
     if (Decompiling)
     {
-        const std::string Exe = V.Decompiler == Tool::Acts ? ActsFindExe(SettingOf(C, "acts_exe"))
-                                                           : GscToolFindExe(SettingOf(C, "gsc_tool_exe"));
+        const std::string Exe = V.Decompiler == Tool::Acts ? ActsFindExe(C.Setting("acts_exe"))
+                                                           : GscToolFindExe(C.Setting("gsc_tool_exe"));
         if (Exe.empty())
         {
             Decompiling = false;
@@ -105,7 +80,7 @@ Sink::Sink(const DiskGame::Context& Ctx, DiskGame::Totals& Tot, std::string Zone
         else if (V.StringsDump != nullptr)
         {
             std::error_code Ec;
-            const std::string Named = SettingOf(C, "game_exe");
+            const std::string Named = C.Setting("game_exe");
             const fs::path InDeps = fs::path(Exe).parent_path() / "deps" / V.StringsDump;
             const fs::path Dump = Named.empty() ? InDeps : fs::path(Named);
             if (fs::is_regular_file(Dump, Ec)) DecryptExe = Dump.string();
@@ -167,7 +142,7 @@ void Sink::Finish()
 
 void Sink::Decompile()
 {
-    const fs::path Work = ScratchDir();
+    const fs::path Work = ToolScratchPath("gh_scripts");
     std::error_code Ec;
     fs::remove_all(Work, Ec);
 
@@ -181,10 +156,10 @@ void Sink::Decompile()
         const fs::path In = Base / "in";
         for (const Pending* P : Items) ExportWriters::WriteBytes(In / P->Input, P->Bytes.data(), P->Bytes.size());
         if (V.Decompiler != Tool::Acts)
-            return GscToolDecompileDir(SettingOf(C, "gsc_tool_exe"), V.Game, V.System, In.string(), Base.string(), Log);
+            return GscToolDecompileDir(C.Setting("gsc_tool_exe"), V.Game, V.System, In.string(), Base.string(), Log);
         for (int Try = 1;; Try++)
         {
-            const bool Ran = ActsDecompileDir(SettingOf(C, "acts_exe"), In.string(), (Base / "out").string(), Log, DecryptExe);
+            const bool Ran = ActsDecompileDir(C.Setting("acts_exe"), In.string(), (Base / "out").string(), Log, DecryptExe);
             if (DecryptExe.empty()) return Ran;
             if (ActsNoDecryption(Log)) DecryptExe.clear();   // acts exits -1 there, as for a script it fails
             else if (Ran || Try == DecryptTries) return Ran;
@@ -213,7 +188,7 @@ void Sink::Decompile()
             Candidates = { D / (StemOf + ScriptExtension(P.Name)), D / P.Input };
         }
         for (const fs::path& F : Candidates)
-            if (Read(F, Source)) return true;
+            if (ExportWriters::ReadBytes(F, Source)) return true;
         return false;
     };
 

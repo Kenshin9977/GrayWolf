@@ -69,6 +69,9 @@
     <ClCompile Include="CliCommands.ModelPreview.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CliCommands.Shared.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="ImGuiLoadGamePanel.Disk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -176,12 +179,6 @@
     </ClCompile>
     <ClCompile Include="XSUBCache.cpp">
       <Filter>Source Files\Packages</Filter>
-    </ClCompile>
-    <ClCompile Include="GameVanguard.cpp">
-      <Filter>Source Files\Games</Filter>
-    </ClCompile>
-    <ClCompile Include="Parasyte.cpp">
-      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="CoDFileHandle.cpp">
       <Filter>Source Files</Filter>
@@ -346,12 +343,6 @@
     </ClInclude>
     <ClInclude Include="XSUBCache.h">
       <Filter>Header Files\Packages</Filter>
-    </ClInclude>
-    <ClInclude Include="GameVanguard.h">
-      <Filter>Header Files\Games</Filter>
-    </ClInclude>
-    <ClInclude Include="Parasyte.h">
-      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CoDFileSystem.h">
       <Filter>Header Files</Filter>

@@ -10,6 +10,7 @@
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/BO7/TechsetFormat.h"
+#include "Games/BO7/VfxLayout.h"
 #include "Games/IW/IwWeaponStats.h"
 #include "ExportWriters.h"
 #include "FastFile.h"
@@ -18,7 +19,6 @@
 #include "HalfFloats.h"
 #include "MapLive.h"
 #include "Games/Common/MeshDecode.h"
-#include "Games/Common/StringCipher.h"
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxReaders.h"
@@ -29,6 +29,8 @@
 #include "Strings.h"
 #include "WraithNameIndex.h"
 #include "XSUBCache.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -69,12 +71,44 @@ namespace
             // count 0x34}, an entry 0x30 with its sndasset at 0x20
             ExportsSoundLinks({ 0x20, 0x34, 0x48, 0x18, 0x10, 0x34, 0x30, 0x20 });
             ExportsTechsets(BO7::TechsetFormat());
-            const auto Decrypted = [this](const std::string& Raw) {
-                std::string Error, Text;
-                const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
-                const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
-                return StringCipher::Decrypt(Cipher, Raw, Text) ? Text : Raw;
-            };
+            // a model's materials another zone defines (a weapon part's base materials): their images
+            // as the zones the install index names have them
+            if (const auto* Models = ExporterOf(Kind::Model))
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    BookMaterialsElsewhere();
+                    GameBlackOps7::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
+                        return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return GameBlackOps7::HashName("ximage", H); });
+                    };
+                    GameBlackOps7::DetailsElsewhere = [this](const std::string& Hash, std::string& Techset, int& SortKey) {
+                        IWMaterialBooks::Extra E;
+                        if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Details(Hash, E)) return false;
+                        if (!E.Techset.empty()) Techset = GameBlackOps7::HashName("xtechset", std::stoull(E.Techset, nullptr, 16));
+                        SortKey = E.SortKey;
+                        return true;
+                    };
+                    Read(C, T);
+                    GameBlackOps7::ImagesElsewhere = nullptr;
+                    GameBlackOps7::DetailsElsewhere = nullptr;
+                });
+            // material (0x78) with its atlas, and particlesystem (0x80) as the vfx core's JSON (Games/IW/Vfx.h)
+            ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
+                Vfx::AddAtlas(J, BO7::VfxLayout(), Image(), Off(A), 0x78);
+            }));
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                auto Z = EffectView();
+                Z.AssetName = [this](int64_t Pos) { return AssetName(Kind::Fx, Pos); };
+                Z.ReadMaterials(C, Materials());
+                Vfx::Counts N;
+                ExportEffects(C, T, "particlesystem", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                    // an asset another zone defines: its name hash (bit 63), or its hash at 0 in a zone served beside
+                    return Vfx::ReadSystem(Z, BO7::VfxLayout(), Pos, Name, J, &N, [this](uint64_t A) {
+                        if (A >> 63) return GameBlackOps7::HashName("xasset", A);
+                        return Locate(A, 8) != nullptr ? GameBlackOps7::HashName("xasset", Get<uint64_t>(A)) : std::string();
+                    });
+                });
+                for (const auto& [K, V] : N.Named()) Counter(K) += V;
+            });
+            const auto Decrypted = [this](const std::string& Raw) { return IWZone::Decrypted(Raw); };
             // scriptbundle (0x30, its loader 0x3887630, a table's 0x3887a40, a value's 0x3888060)
             ExportsScriptBundles({}, Decrypted);
             // mapinfo (0xe8, its loader 0x386cd80): what getactivemapinfobundle() returns, a
@@ -155,8 +189,8 @@ namespace
         {
             static std::once_flag Once;
             std::call_once(Once, [this] {
-                if (Game == nullptr || Install.empty()) return;
-                const auto Index = DiskGame::ZoneIndex::Kept(*Game, Options, Install);
+                if (Owner == nullptr || Install.empty()) return;
+                const auto Index = DiskGame::ZoneIndex::Kept(*Owner, Options, Install);
                 if (!Index) return;
                 auto& Models = IndexedModels();
                 for (size_t Z = 0; Z < Index->Zones().size(); Z++)
@@ -456,10 +490,7 @@ namespace
         void LocalizeEntry(int64_t Pos, std::string& Key, std::string& Text) const override
         {
             Key = GameBlackOps7::HashName("localize", At<uint64_t>(Image(), Pos));
-            std::string Error;
-            const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
-            const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
-            if (!StringCipher::Decrypt(Cipher, StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
+            if (!CipherDecrypt(StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
         }
         // every asset of a zone's list is inline here: references are by hash, never a header
         bool IsReference(DiskGame::Kind, const std::string&, int64_t) const override { return false; }
@@ -476,7 +507,6 @@ namespace
         // to each other resolved as the game's shared rewind table and asset pools would: by rewind
         // key (the low 60 bits of a loaded pointer) and by asset hash.
         IwBeside::Set Beside;         // the global zones (Before) and the transient zones, served beside
-        std::string Install;          // --install: where the global zones are when not beside the level
         bool Indexing = false;        // opened for the install index (ExportOptions::Indexing)
 
         // the bytes at an address of this zone or of a transient zone served beside it, null when
@@ -514,6 +544,18 @@ namespace
 
     private:
         VirtualGameSession& Live() const { return const_cast<BO7Zone*>(this)->ZonekitZone::Live(); }
+
+        // the live material reader, for the material and fx kinds, with the images another zone holds
+        // (a name hash in the slot: named, the image kind takes them from there); slots {u8 semantic,
+        // u8 image} 0x28 (count u8 0x68), images 0x30 (count u8 0x6d), colour 44 and 0x47; emissive,
+        // opacity, transmittance and ramp 73, 74, 77, 26 (IwctxReaders::SlotMaterials)
+        decltype(Treyarch::EffectZone::Material) Materials()
+        {
+            static const IwctxReaders::MaterialSlots L{ 0x78, 0x28, 0x68, 0x30, 0x6d, { 44, 0x47 }, 73, 74, 77, 26 };
+            return IwctxReaders::SlotMaterials(
+                L, [](uint64_t A) { return GameBlackOps7::ReadXMaterial(A); }, [this]() -> const std::vector<uint8_t>& { return Image(); },
+                [this](uint64_t A) { return Off(A); }, [](uint64_t V) { return GameBlackOps7::HashName("ximage", V); });
+        }
 
         // the zones the game loads before a level (FastFile load order: code, global, then the
         // mode's ingame zones): their rewind keys and assets are what a level's references name
@@ -617,14 +659,14 @@ namespace
                          std::map<std::string, size_t>& Counts)
         {
             Counts["refs_wanted_from_index"] += Wanted.size();
-            if (Game == nullptr || Install.empty())
+            if (Owner == nullptr || Install.empty())
             {
                 Counts["refs_wanted_no_index"] += Wanted.size();
                 return;
             }
             std::string Error;
             Park();
-            const auto Index = DiskGame::ZoneIndex::For(*Game, Options, Install, IndexKey(), nullptr, nullptr, Error);
+            const auto Index = DiskGame::ZoneIndex::For(*Owner, Options, Install, IndexKey(), nullptr, nullptr, Error);
             Resume();
             if (!Index)
             {
@@ -639,17 +681,11 @@ namespace
                     if (!Have.count(ExportNaming::Lower(fs::path(Index->Zones()[Z]).stem().string()))) Gives[Z].insert(W);
             std::set<std::pair<std::string, uint64_t>> Left = Wanted;
             std::vector<std::string> Paths;
-            while (!Left.empty() && !Gives.empty())
+            for (const size_t Z : IwBeside::Cover(std::move(Gives), Left))
             {
-                const auto Count = [&](const auto& Ws) { return std::count_if(Ws.begin(), Ws.end(), [&](const auto& W) { return Left.count(W) != 0; }); };
-                const auto Best = std::max_element(Gives.begin(), Gives.end(), [&](const auto& A, const auto& B) { return Count(A.second) < Count(B.second); });
-                size_t Takes = 0;
-                for (const auto& W : Best->second) Takes += Left.erase(W);
-                if (Takes == 0) break;
                 std::vector<std::string> Found;
                 std::string Why;
-                if (Game->ResolveZones(Install, { Index->Zones()[Best->first] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
-                Gives.erase(Best);
+                if (Owner->ResolveZones(Install, { Index->Zones()[Z] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
             }
             Counts["refs_not_indexed"] += Left.size();
             Counts["zones_beside_from_index"] += Beside.Load(Paths, Loaded, Above, Counts, true);
@@ -672,10 +708,43 @@ namespace
                     Out.emplace_back(R.OwnerNames[I.Owner], At<uint64_t>(Zone(), I.Pos) & Rules().AssetHashMask);
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+parts1"; }
-        const DiskGame::IDiskGame* Game = nullptr;   // whose install index LoadIndexed reads
-        DiskGame::ExportOptions Options;
 
     private:
+        bool BooksTried = false;
+
+        // The materials this zone's models name by hash and no zone loaded holds (a transient zone
+        // alone: a weapon part's base materials): the zones the install index's parts say hold them,
+        // the fewest first (IWZone::BookMaterialsElsewhere). Once, before the models are read.
+        void BookMaterialsElsewhere()
+        {
+            // (a map's zones beside resolve its references already)
+            if (BooksTried || Indexing || !Beside.Empty()) return;
+            BooksTried = true;
+            std::set<uint64_t> Wanted;
+            const auto& R = Walk();
+            for (size_t K = 0; K < R.BackRefs.size(); K++)
+            {
+                const auto& [Field, Value] = R.BackRefs[K];
+                const auto Type = K < R.BackRefIsAsset.size() && R.BackRefIsAsset[K] ? R.RefTypes.find(Field) : R.RefTypes.end();
+                if (Type != R.RefTypes.end() && Type->second < R.OwnerNames.size() && R.OwnerNames[Type->second] == "material" &&
+                    Locate(Live().Addr((uint64_t)Field), 8) != nullptr && !Mapped(Get<uint64_t>(Live().Addr((uint64_t)Field))))
+                    Wanted.insert(Value & Rules().AssetHashMask);
+            }
+            // Material (0x78): slots {u8 semantic, u8 image} 0x28 (count u8 0x68), image pointers 0x30
+            // (count u8 0x6d); its techset 0x20 and sort key u8 0x67, its alpha mode
+            IWMaterialBooks::Layout L;
+            L.Profile = "bo7";
+            L.Hashed = true, L.HashMask = Rules().AssetHashMask;
+            L.ImageCount = 0x68, L.Slots = 0x28, L.Images = 0x30, L.TableCount = 0x6d, L.Techset = 0x20, L.SortKey = 0x67;
+            const std::vector<uint64_t> Hashes(Wanted.begin(), Wanted.end());
+            IWZone::BookMaterialsElsewhere(
+                Hashes.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.PartIn("material", Hashes[K]); }, false, L);
+        }
+        // whether an address is served: this zone's or a zone's beside
+        bool Mapped(uint64_t Address) const { return Locate(Address, 1) != nullptr; }
+        // a texture slot on an image of a zone beside (a map's global or transient zone)
+        bool ImageBeside(uint64_t Address) const override { return Beside.Holds("image", Address); }
+
         // the game's load-time copy lod.surfs = lod.modelSurfs->surfs (DB_ModelFixup), for every
         // LOD whose xmodelsurfs is here or in a zone served beside; the others are left without
         // surfaces (counted, the global zones' own models apart)
@@ -1163,14 +1232,9 @@ namespace
             for (uint32_t J = FirstPlace; J < FirstPlace + Count && J < PlaceCount; J++)
             {
                 const int64_t P = Places + (int64_t)J * 24;
-                Maps::Instance In;
+                Maps::Instance In = Maps::PackedPlacement(Img, P, true);
                 In.Name = "smodel_" + std::to_string(J);
                 In.Model = ModelName;
-                for (int A = 0; A < 3; A++) In.Origin[A] = (float)At<int32_t>(Img, P + A * 4) / 4096.0f;
-                float Q[4];
-                for (int A = 0; A < 4; A++) Q[A] = (float)At<uint16_t>(Img, P + 12 + A * 2) / 65535.0f * 2.0f - 1.0f;
-                Maps::AxisFromQuat(Q, In.Axis);
-                In.Scale = HalfFloats::ToFloat(At<uint16_t>(Img, P + 20));
                 Scene.StaticInstances.push_back(In);
                 Placed++;
             }
@@ -1357,10 +1421,9 @@ namespace
                 return nullptr;
             }
             auto Zone = std::make_unique<BO7Zone>(Path);
-            Zone->Install = Options.Install;
+            // (--install: where the global zones are when not beside the level, whose index LoadIndexed reads)
+            Zone->SetInstall(this, Options, Options.Install);
             Zone->Indexing = Options.Indexing;
-            Zone->Game = this;
-            Zone->Options = Options;
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

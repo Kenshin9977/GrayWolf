@@ -27,7 +27,7 @@ public:
     // ends where the sound does (graywolf-tools docs/games/IW8.md, "Opus pre-skip").
     // OpusPreSkipPacket: Modern Warfare (2019) banks, Cold War, Modern Warfare III, Black Ops 6's
     // campaign; OpusPreSkipLookAhead: Black Ops 6 multiplayer, Black Ops 7; OpusPreSkipUnmeasured:
-    // a game not installed here (Modern Warfare II, Vanguard), every packet's samples kept.
+    // Modern Warfare (2019)'s sounds outside a file entry (not measured), every packet's samples kept.
     static constexpr int32_t OpusPreSkipPacket = 960, OpusPreSkipLookAhead = 312, OpusPreSkipUnmeasured = -1;
 
     // The game's Opus packets ({u16 size, packet}, from Offset, Size bytes of them; an empty one is

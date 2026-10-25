@@ -4,12 +4,15 @@
 
 #include "DiskGame.h"
 
+#include "DiskGame.Materials.h"
 #include "DiskGame.Monitor.h"
 #include "ExportNaming.h"
 #include "FastFile.h"
 #include "Games/GameModule.h"
 #include "MaterialGdt.h"
 #include "MemoryBudget.h"
+#include "SettingsManager.h"
+#include "WmaSounds.h"
 #include "XboxPackages.h"
 
 #include <algorithm>
@@ -117,8 +120,8 @@ const Setting MapCollision{ "map_collision", "Map collision", { { "off", "None" 
 const Setting MapContent{ "map_content", "Map content", { { "all", "Everything" }, { "terrain", "Terrain only" } },
                           "all", { Kind::Map } };
 
-const Setting ScriptDecompile{ "decompile", "Compiled scripts", { { "off", "Bytecode" }, { "on", "Decompiled" } },
-                               "off", { Kind::Script } };
+const Setting ScriptDecompile{ "decompile", "Compiled scripts and Lua", { { "off", "Bytecode" }, { "on", "Decompiled" } },
+                               "off", { Kind::Script, Kind::Rawfile } };
 
 const std::vector<Setting>& CommonSettings()
 {
@@ -197,6 +200,12 @@ bool AssetId::operator<(const AssetId& O) const
     return _stricmp(Name.c_str(), O.Name.c_str()) < 0;
 }
 
+struct Context::Limited
+{
+    std::mutex Lock;
+    std::map<Kind, Selection> Names;
+};
+
 bool Context::Wants(Kind K, const std::string& Name) const
 {
     bool Yes = false;
@@ -209,6 +218,14 @@ bool Context::Wants(Kind K, const std::string& Name) const
         thread_local ExportNaming::NameFilter Filter;
         if (Text != NameFilter) Filter = ExportNaming::NameFilter(Text = NameFilter);
         Yes = Filter.Matches(Name);
+    }
+    if (Yes && !Only && Limit > 0 && LimitSeen)
+    {
+        // the same asset asked again (a reader's second pass) is still wanted
+        std::lock_guard<std::mutex> G(LimitSeen->Lock);
+        auto& Names = LimitSeen->Names[K];
+        if (Names.size() >= Limit && !Names.count({ K, Name })) Yes = false;
+        else Names.insert({ K, Name });
     }
     if (Yes && OnWanted) OnWanted({ K, Name });
     return Yes;
@@ -358,10 +375,13 @@ std::string Report(const Totals& T)
     }
     for (Kind K : T.Unsupported) Os << "unsupported=" << KindFolder(K) << "\n";
     for (const auto& [Name, N] : T.Counters) Os << Name << "=" << N << "\n";
+    if (const auto It = T.Counters.find(WmaSounds::NoFfmpegCounter); It != T.Counters.end()) Os << "warning " << WmaSounds::NoFfmpegMessage(It->second) << "\n";
     Os << "failures=" << T.Failures.size() << "\n";
     for (const auto& F : T.Failures) Os << "failure " << F << "\n";
     if (!T.Unresolved.empty()) Os << "deps_unresolved=" << T.Unresolved.size() << "\n";
     for (const auto& U : T.Unresolved) Os << "unresolved " << U << "\n";
+    if (!T.IndexRenamed.empty()) Os << "index_renamed=" << T.IndexRenamed.size() << "\n";
+    for (const auto& R : T.IndexRenamed) Os << "index_renamed " << R << "\n";
     if (T.Cancelled) Os << "cancelled=1\n";
     for (const auto& E : T.ZoneErrors) Os << "zone_error " << E << "\n";
     for (const auto& [K, V] : T.Timing) Os << K << "=" << V << "\n";
@@ -462,6 +482,8 @@ namespace
         T.Counters[Index->Built ? "index_built_ms" : "index_read_ms"] += (size_t)(Index->Seconds * 1000);
         T.Counters["index_zones"] = Index->Zones().size();
         T.Counters["index_assets"] = Index->Entries;
+        for (const auto& R : Index->Renamed) Mon.Log("index: a name that is not text: " + R);
+        T.IndexRenamed.insert(T.IndexRenamed.end(), Index->Renamed.begin(), Index->Renamed.end());
 
         Totals Deps;                               // the dependency exports: Written is what was pulled
         std::map<AssetId, std::string> LastWhy;    // why the last zone asked did not give it
@@ -847,11 +869,16 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     };
     // every asset timed; the progress callback within a kind at most every 100 ms, and its last asset
     Context Run = C;
+    if (Run.Limit > 0) Run.LimitSeen = std::make_shared<Context::Limited>();
     if (Cancel != nullptr) Run.Cancel = Cancel;
     Run.Settings = Options.Settings;
     if (!Options.ActsExe.empty()) Run.Settings["acts_exe"] = Options.ActsExe;
     if (!Options.GscToolExe.empty()) Run.Settings["gsc_tool_exe"] = Options.GscToolExe;
     if (!Options.GameExe.empty()) Run.Settings["game_exe"] = Options.GameExe;
+    // a decompiler not given: graywolf.json's, else on PATH
+    for (const char* Tool : { "acts_exe", "gsc_tool_exe", "cod_luajit_decompiler_exe", "cod_lua_decompiler_exe", "ffmpeg_exe" })
+        if (Run.Settings[Tool].empty()) Run.Settings[Tool] = SettingsManager::GetSetting(Tool, "");
+    WmaSounds::UseFfmpeg(Run.Settings["ffmpeg_exe"]);
     const bool MaterialGdts = GdtMaterials.Of(Run.Settings) == "on";
     const MaterialGdt::AssetNamesInModelFiles ModToolsNames(MaterialGdts);
     auto Last = std::chrono::steady_clock::now();
@@ -872,6 +899,10 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     Run.OnAfter = [&Later](std::function<void()> Work) { Later.push_back(std::move(Work)); };
     Wanted Pending;
     std::string ReaderKey;
+    // a model's name-only material headers, from the zones that define them (DiskGame.Materials.h)
+    if (C.PullDependencies && !Zones.empty())
+        Run.MaterialsElsewhere = MaterialLookup(Game, Options, !Options.Install.empty() ? Options.Install : Game.InstallOfZone(Zones.front()),
+                                                ReaderKey, T);
     // what the game's readers do not export is reported unsupported; with nothing left, no zone opens
     const std::set<Kind> Declared = Game.Kinds();
     bool Any = false;
@@ -979,6 +1010,7 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         const size_t Here = N - (Was == SoundsBefore.end() ? 0 : Was->second);
         if (Here) T.Counters[Name] += Here;
     }
+    if (const auto It = T.Counters.find(WmaSounds::NoFfmpegCounter); It != T.Counters.end()) Mon.Log(WmaSounds::NoFfmpegMessage(It->second));
     if (T.Cancelled) Mon.Log("cancelled after " + Ms(Mon.Elapsed()));
     size_t Written = 0;
     for (const auto& [K, V] : T.Kinds) Written += V.Written;

@@ -14,6 +14,7 @@
 #include "Games/IW/IWSoundAliases.h"
 #include "FileSystems.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
 #include "PAKCache.h"
 #include "Strings.h"
@@ -333,6 +334,9 @@ namespace
             ExportsIwRawfiles();
             ExportsIwStringTables();
             ExportsIwWeapons(WeaponLayout());
+            // the material and fx kinds: FxEffectDef 0x48 (elements at 0x40), elements 0x168; Material's
+            // techniqueSet at 0xb8 (the s2 tables f4ac960, f4acc20 and f4b7860)
+            ExportsIwEffects(IwEffects::WorldWar2(), GameWorldWar2::ReadXMaterial, 0xb8);
         }
         ~WW2Zone() override
         {
@@ -365,6 +369,7 @@ namespace
         }
         void Defines(std::vector<DiskGame::AssetId>& Out) const override;
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        std::function<uint32_t(int64_t, uint32_t, float*, uint32_t)> BlendLayers();
         // a model whose XModelBase is not in this zone, or is a name-only header (",name", no
         // LOD): another zone defines it whole
         bool IsReference(DiskGame::Kind K, const std::string& Nm, int64_t Pos) const override
@@ -396,6 +401,24 @@ namespace
         {
             using DiskGame::Kind;
             const auto& Img = Image();
+            // the merged models' textures, written by the image kind as ExportLive's are: an image held
+            // here or in a zone served beside, renamed as the image export names it
+            std::unordered_set<int64_t> Images;
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, ImageType())) Images.insert(I.Pos);
+            std::set<std::string> TextureNames;
+            ExportWriters::ModelTextures Tex = Textures(C);
+            if (ExporterOf(Kind::Image) != nullptr)
+                Tex.Take = [&](XImage_t& X) {
+                    if (X.ImagePtr == 0 || X.ImageName.empty()) return false;
+                    if (X.ImagePtr != ExportWriters::ImageElsewhere && !Images.count((int64_t)(X.ImagePtr - Live().Origin())) &&
+                        (!ImageBeside(X.ImagePtr) || X.ImageName[0] == '$'))
+                        return false;
+                    X.ImageName = Referenced(Kind::Image, X.ImageName);
+                    TextureNames.insert(X.ImageName);
+                    X.ImageName = ExportNaming::SafeFileName(X.ImageName);
+                    return true;
+                };
             for (const auto& I : Walk().Instances)
             {
                 if (!OwnerIs(I, "xmodel") || (At<uint32_t>(Img, I.Pos + CompositeFlags) & CompositeFlag) == 0) continue;
@@ -421,7 +444,30 @@ namespace
                 const fs::path File = fs::path(C.KindDir(Kind::Model)) / ExportNaming::SafeFileName(Model) / (ExportNaming::SafeFileName(Model) + ".parts.json");
                 if (ExportWriters::WriteBytes(File, (const uint8_t*)Json.data(), Json.size())) Counter("models_composite_parts_written")++;
                 else T.Fail(Name(), Kind::Model, Model, "parts write failed");
+                // the composite as one model: its parts held here, in place (the entries' rotations are
+                // the identity and their offsets 0 on every composite read), bones joined by name
+                std::vector<CoDModel_t> Parts;
+                for (uint8_t N = 0; List >= 0 && N < Count; N++)
+                {
+                    const int64_t Part = Off(At<uint64_t>(Img, List + 0x30 * (int64_t)N));
+                    if (Part < 0 || IsReference(Kind::Model, AssetName(Kind::Model, Part), Part) || Unwritable(Kind::Model, Part) != nullptr)
+                    {
+                        Counter("models_composite_parts_elsewhere")++;
+                        continue;
+                    }
+                    CoDModel_t M;
+                    M.AssetName = ExportNaming::SafeFileName(AssetName(Kind::Model, Part));
+                    M.AssetPointer = Live().Addr((uint64_t)Part);
+                    Parts.push_back(M);
+                }
+                if (Parts.empty()) continue;
+                size_t Read = 0;
+                std::string Crash;
+                const int Code = ExportWriters::ExportComposite(ExportNaming::SafeFileName(Model), Parts, File.parent_path().string(), Tex, Read, Crash);
+                if (Code == static_cast<int>(ExportGameResult::Success)) Counter("models_composite_written")++, Counter("models_composite_parts_merged") += Read;
+                else T.Fail(Name(), Kind::Model, Model, "composite code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
             }
+            if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);
         }
 
         InstallPackages& Packages() const { return PackagesFor(FastFilePath()); }
@@ -631,6 +677,44 @@ namespace
         return M;
     }
 
+    // A blended surface's other layers' UVs: its material is named "*<a>_<b>_..." (a layer per
+    // name, the first drawn by the vertex's own uv). gfx_map_trzone's layer data (size u64 0x80,
+    // bytes 0x88) holds from the surface's offset (u32 at 0) a record per vertex of its range: the
+    // other layers' uvs (two floats each), then a u32 per other layer (not read): 12 bytes a layer.
+    // Checked on mp_egypt_02_dogfight: its six ranges (2 to 4 layers) fill the 221 520 bytes exactly.
+    std::function<uint32_t(int64_t, uint32_t, float*, uint32_t)> WW2Zone::BlendLayers()
+    {
+        const int64_t Tr = Root("gfx_map_trzone");
+        if (Tr < 0) return {};
+        const auto& Img = Image();
+        const int64_t Data = Off(At<uint64_t>(Img, Tr + 0x88));
+        const uint64_t Size = At<uint64_t>(Img, Tr + 0x80);
+        if (Data < 0 || Size == 0 || (uint64_t)Data + Size > Img.size()) return {};
+        auto Layers = std::make_shared<std::unordered_map<uint64_t, uint32_t>>();   // by material
+        return [this, &Img, Data, Size, Layers](int64_t Surface, uint32_t Local, float* Out, uint32_t Max) -> uint32_t {
+            const uint64_t Material = At<uint64_t>(Img, Surface + 0x20);
+            auto It = Layers->find(Material);
+            if (It == Layers->end())
+            {
+                const std::string Name = Off(Material) >= 0 ? StringAt(At<uint64_t>(Img, Off(Material))) : std::string();
+                const uint32_t N = !Name.empty() && Name[0] == '*' ? (uint32_t)std::count(Name.begin(), Name.end(), '_') : 0;
+                It = Layers->emplace(Material, N).first;
+                if (N) Counter("map_materials_blended")++;
+            }
+            const uint32_t N = It->second;
+            if (N == 0) return 0;
+            const uint64_t At0 = At<uint32_t>(Img, Surface) + (uint64_t)Local * N * 12;
+            if (Local >= At<uint16_t>(Img, Surface + 8) || At0 + N * 12 > Size)
+            {
+                Counter("map_uv_layers_outside")++;
+                return 0;
+            }
+            const uint32_t Read = std::min(N, Max);
+            std::memcpy(Out, Img.data() + Data + At0, (size_t)Read * 8);
+            return Read;
+        };
+    }
+
     // The collision (the s2 tables): a ClipInfo (0x2a8)
     // keeps planes, materials and leaf brush nodes; its first col_map_trzone pointer (0x228) the
     // brushes (a table at 0x10), the collision triangles and their partitions (a vertex segment of
@@ -682,7 +766,9 @@ namespace
 
     bool WW2Zone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
     {
-        if (!ReadLevel(Scene, Models, Level(), GameWorldWar2::ReadXMaterial)) return false;
+        IWZone::MapLayout M = Level();
+        M.MoreUvs = BlendLayers();
+        if (!ReadLevel(Scene, Models, M, GameWorldWar2::ReadXMaterial)) return false;
         // addon_map_ents (0x88): its entity string (8), MapTriggers (0x18, numbered from 0), a
         // ClipInfo pointer (0x48) and the brush models it owns (count 0x50, array 0x58, numbered
         // after the clip map's). Its triangles are in its models' space: counted, not placed.

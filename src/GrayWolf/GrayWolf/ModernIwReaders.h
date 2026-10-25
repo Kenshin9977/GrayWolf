@@ -1,77 +1,17 @@
 #pragma once
 
-// What the readers of MW (2019), Vanguard, MW2 (2022) and MW3 (2023) read alike: skinned weights
-// stored column by column, and images whose mips are package objects (local, on demand or CDN).
+// What a modern IW reader shares (MW3 (2023) today): images whose mips are package objects
+// (local, on demand or CDN).
 
 #include <algorithm>
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 #include "CoDRawImageTranslator.h"
 #include "CoDXModelTranslator.h"
-#include "MemoryReader.h"
 
 namespace ModernIwReaders
 {
-    // A surface's rigid vertices: VertListcount runs of vertices on one bone (TRigid)
-    template <typename TRigid>
-    void ReadRigidWeights(std::vector<WeightsData>& Weights, uint32_t& Index, const XModelSubmesh_t& Submesh)
-    {
-        for (uint32_t i = 0; i < Submesh.VertListcount; i++)
-        {
-            auto RigidInfo = CoDAssets::GameInstance->Read<TRigid>(Submesh.RigidWeightsPtr + (i * sizeof(TRigid)));
-            for (uint32_t w = 0; w < RigidInfo.VertexCount; w++)
-            {
-                Weights[Index].BoneValues[0] = RigidInfo.BoneIndex;
-                Index++;
-            }
-        }
-    }
-
-    // Then the skinned ones: eight groups (WeightCounts[g] vertices on g + 1 bones), each stored
-    // influence by influence: every vertex's first bone (and 2 bytes of padding), then every
-    // vertex's (bone, u16 weight) for the second influence, and so on
-    inline void ReadSkinnedWeights(MemoryReader& Reader, std::vector<WeightsData>& Weights, uint32_t Index, const XModelSubmesh_t& Submesh)
-    {
-        for (int i = 0; i < 8; i++)
-        {
-            for (int k = 0; k < i + 1; k++)
-            {
-                uint32_t LocalWeightDataIndex = Index;
-
-                for (int w = 0; w < Submesh.WeightCounts[i]; w++)
-                {
-                    Weights[LocalWeightDataIndex].WeightCount = k + 1;
-                    Weights[LocalWeightDataIndex].BoneValues[k] = Reader.Read<uint16_t>();
-
-                    if (k > 0)
-                    {
-                        Weights[LocalWeightDataIndex].WeightValues[k] = ((float)Reader.Read<uint16_t>() / 65536.0f);
-                        Weights[LocalWeightDataIndex].WeightValues[0] -= Weights[LocalWeightDataIndex].WeightValues[k];
-                    }
-                    else
-                    {
-                        Reader.Advance(2);
-                    }
-
-                    LocalWeightDataIndex++;
-                }
-            }
-
-            Index += Submesh.WeightCounts[i];
-        }
-    }
-
-    // The skinned weights' bytes for ReadSkinnedWeights, read from the zone
-    inline MemoryReader ReadSkinnedWeightData(const XModelSubmesh_t& Submesh)
-    {
-        uintptr_t ReadDataSize = 0;
-        auto WeightsDataLength = ((4 * Submesh.WeightCounts[0]) + (8 * Submesh.WeightCounts[1]) + (12 * Submesh.WeightCounts[2]) + (16 * Submesh.WeightCounts[3]) +
-                                  (20 * Submesh.WeightCounts[4]) + (24 * Submesh.WeightCounts[5]) + (28 * Submesh.WeightCounts[6]) + (32 * Submesh.WeightCounts[7]));
-        return MemoryReader(CoDAssets::GameInstance->Read(Submesh.WeightsPtr, WeightsDataLength, ReadDataSize), WeightsDataLength);
-    }
-
     // An image (TImage) of MW2 (2022) / MW3 (2023): its pixels in the zone when loaded, else its
     // largest mip from the CDN or the on-demand cache, else the largest the local packages hold.
     // Formats maps the game's format to DXGI.

@@ -9,6 +9,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 class CoDAnim_t;
 class CoDModel_t;
@@ -42,6 +44,12 @@ namespace Iw4Family
         // An XModelSurfs whose surfaces are not in the zone, by name: where they are served (0:
         // nowhere); unset: none is streamed
         std::function<uint64_t(const std::string& Name)> StreamedSurfs;
+        // A name-only material header (",name", no texture table), by its name without the ",":
+        // where the material it stands for is served (0: nowhere); else its images (name hash,
+        // image name) as another zone defines them, read later by name (ExportWriters::
+        // ImageElsewhere; false: no zone booked it). Unset: none is looked up.
+        std::function<uint64_t(const std::string& Name)> MaterialByName;
+        std::function<bool(const std::string& Name, std::vector<std::pair<uint32_t, std::string>>& Images)> MaterialImagesByName;
     };
 
     std::unique_ptr<XModel_t> ReadXModel(const CoDModel_t* Model, const Layout& L);

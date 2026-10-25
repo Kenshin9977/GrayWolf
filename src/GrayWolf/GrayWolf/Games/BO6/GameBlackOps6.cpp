@@ -158,9 +158,9 @@ void GameBlackOps6::PerformInitialSetup()
     IwctxReaders::LoadNameIndexes();
 }
 
-const GameBlackOps6::Layout GameBlackOps6::Multiplayer{ ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate, 16, 32, 32, SABSupport::OpusPreSkipLookAhead,
+const GameBlackOps6::Layout GameBlackOps6::Multiplayer{ ModelSkeleton, ModelMaterials, ModelLods, SoundFlags, SoundRate, 16, 32, SABSupport::OpusPreSkipLookAhead,
                                                         ImageFormats, (uint32_t)std::size(ImageFormats) };
-const GameBlackOps6::Layout GameBlackOps6::Campaign{ 0x70, 0x98, 0xa0, 0x3c, 0x2c, 12, 28, 0, SABSupport::OpusPreSkipPacket,
+const GameBlackOps6::Layout GameBlackOps6::Campaign{ 0x70, 0x98, 0xa0, 0x3c, 0x2c, 12, 28, SABSupport::OpusPreSkipPacket,
                                                      CampaignImageFormats, (uint32_t)std::size(CampaignImageFormats) };
 thread_local const GameBlackOps6::Layout* GameBlackOps6::Current = &GameBlackOps6::Multiplayer;
 
@@ -275,13 +275,14 @@ void GameBlackOps6::LoadXModel(const std::unique_ptr<XModel_t>& Model, const XMo
 
 const XMaterial_t GameBlackOps6::ReadXMaterial(uint64_t MaterialPointer)
 {
-    // Material (0x80, loader 0x2846c90): hash 0, slot count u8 0x1c, image count u8 0x21,
-    // slots {u8 semantic, u8 image} at 0x30, images at 0x38
+    // Material (0x80, loader 0x2846c90): hash 0, sort key u8 0x19 (Games/IW/IwMaterialAlpha.h), slot
+    // count u8 0x1c, image count u8 0x21, slots {u8 semantic, u8 image} at 0x30, images at 0x38
     const uint8_t SlotCount = Read<uint8_t>(MaterialPointer + 0x1c);
     const uint8_t ImageCount = Read<uint8_t>(MaterialPointer + 0x21);
     const uint64_t Slots = Read<uint64_t>(MaterialPointer + 0x30), Images = Read<uint64_t>(MaterialPointer + 0x38);
     XMaterial_t Result(SlotCount);
     Result.MaterialName = HashedName("xmaterial", Read<uint64_t>(MaterialPointer));
+    Result.SortKey = Read<uint8_t>(MaterialPointer + 0x19);
     for (uint32_t K = 0; K < SlotCount && Slots != 0 && Images != 0; K++)
     {
         const uint8_t Semantic = Read<uint8_t>(Slots + K * 2), Index = Read<uint8_t>(Slots + K * 2 + 1);
@@ -313,7 +314,7 @@ std::unique_ptr<XSound> GameBlackOps6::ReadXSound(const CoDSound_t* Sound)
         else S.Key = 0x10;
         return S;
     };
-    return IwctxReaders::ReadXSound(Sound, { Current->SoundFlags, Current->SoundRate, Where, Current->SoundHeader, false, Current->SoundPreSkip });
+    return IwctxReaders::ReadXSound(Sound, { Current->SoundFlags, Current->SoundRate, Where, false, Current->SoundPreSkip });
 }
 
 // ---- xanim (read by IwctxReaders, shared with Black Ops 7)

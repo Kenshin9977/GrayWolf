@@ -127,7 +127,9 @@ bool WriteGlb(const MapScene& Scene, const std::string& GlbPath, const Materials
         const float G = Img >= 0 ? 1.0f : 0.75f;   // white under a texture, else neutral grey
         float Cutoff = 0.5f;
         const GltfAlpha Alpha = Img >= 0 ? AlphaOf(Name, Color, Cutoff) : GltfAlpha::Opaque;
-        const int Idx = W.AddMaterial(Name.empty() ? "material" : Name, Img, G, G, G, 1.0f, Alpha, Cutoff);
+        float Rgb[3];   // times the material's colour tint (a white colour map's whole colour)
+        Materials::BaseColorFactor(DescriptionOf(Name), Rgb);
+        const int Idx = W.AddMaterial(Name.empty() ? "material" : Name, Img, G * Rgb[0], G * Rgb[1], G * Rgb[2], 1.0f, Alpha, Cutoff);
         MaterialIndex.emplace(Name, Idx);
         Stats.Materials++;
         Stats.AlphaMasked += Alpha == GltfAlpha::Mask;
@@ -164,7 +166,8 @@ bool WriteGlb(const MapScene& Scene, const std::string& GlbPath, const Materials
     };
     const auto AddSurface = [&](const std::string& MeshName, const Surface& Sf) -> int {
         const Part P = Convert(Sf);
-        return W.AddMesh(MeshName, P.V, P.I, P.Material);
+        const bool More = Sf.UvSets > 1 && Sf.MoreUvs.size() == Sf.Vertices.size() * (Sf.UvSets - 1) * 2;
+        return W.AddMesh(MeshName, P.V, P.I, P.Material, More ? &Sf.MoreUvs : nullptr, More ? Sf.UvSets - 1 : 0);
     };
 
     for (const Mesh& M : Scene.Objects)

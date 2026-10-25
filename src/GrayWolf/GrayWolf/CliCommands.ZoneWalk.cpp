@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 #include "MemoryBudget.h"
 #include "ZoneTableWalker.h"
@@ -249,4 +251,25 @@ int RunZoneWalk(const CliOptions& Options)
     printf("zone-walk (%s): %zu zones, %llu reads, %.1fs, memory budget %s\n", Profile.Name.c_str(),
            Zones.size(), (unsigned long long)Total, Secs, MemoryBudget::Gb(Budget).c_str());
     return 0;
+}
+
+// ---- the subcommands (CliCommands.h)
+
+void AddZoneWalkCommands(CliCommandBuilders& B)
+{
+    // bo4-walk: the same command, profile bo4 by default
+    B["zone-walk"] = [](CLI::App& App, CliOptions& Options) {
+        for (const char* Name : {"zone-walk", "bo4-walk"})
+        {
+            auto* Sub = App.add_subcommand(Name,
+                "Walk decompressed zones with a zonekit profile's reader tables and write every read");
+            Sub->add_option("zone-list", Options.ZoneWalkList, "Text file: one decompressed zone path per line")->required()->check(CLI::ExistingFile);
+            Sub->add_option("--profile", Options.ZoneWalkProfile, "zonekit profile: a name (bo4) or a profile directory");
+            Sub->add_option("--tables", Options.ZoneWalkTables, "Reader table file(s) instead of the profile's; later ones override");
+            Sub->add_option("--types", Options.ZoneWalkTypes, "Text file: `<type id> <table name>` per line, instead of the profile's")->check(CLI::ExistingFile);
+            Sub->add_flag("--layout", Options.ZoneWalkLayout, "Also write each read's block and offset in the stream memory (output version 2)");
+            Sub->add_option("--assets-out", Options.ZoneWalkAssetsOut,
+                "Also write <dir>/<zone>.assets.tsv: every asset instance walked (type, parent, start, end, u64 at start) and each image's mip records (layout walk)");
+        }
+    };
 }

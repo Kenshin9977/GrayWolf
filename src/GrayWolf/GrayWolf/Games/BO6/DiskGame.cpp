@@ -10,6 +10,7 @@
 #include "DiskGame.h"
 #include "FileSystems.h"
 #include "Games/BO6/TechsetFormat.h"
+#include "Games/BO6/VfxLayout.h"
 #include "GameBlackOps6.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwLanguageNames.h"
@@ -25,6 +26,8 @@
 #include "WraithNameIndex.h"
 #include "XSUBCache.h"
 #include "ZonekitZone.h"
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <format>
@@ -79,6 +82,27 @@ namespace
             ExportsSoundLinks({ Campaign ? 0x28 : 0x20, Campaign ? 0x20 : 0x48, 0x40, 0x18, 0x10, 0x2c, 0x38, 0x28 });
             // (the campaign's techset and technique differ, 0x38 and 0xb0: not read)
             if (!Campaign) ExportsTechsets(BO6::TechsetFormat());
+            // material (0x80) with its atlas, and particlesystem (0x80) as the vfx core's JSON (Games/IW/Vfx.h);
+            // the campaign's module table is not read
+            if (!Campaign)
+            {
+                ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
+                    Vfx::AddAtlas(J, BO6::VfxLayout(), Image(), Off(A), 0x80);
+                }));
+                Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                    auto Z = EffectView();
+                    Z.AssetName = [this](int64_t Pos) { return AssetName(Kind::Fx, Pos); };
+                    Z.ReadMaterials(C, Materials());
+                    Vfx::Counts N;
+                    ExportEffects(C, T, "particlesystem", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                        // an asset another zone defines: its name hash (bit 63), named as that zone names it
+                        return Vfx::ReadSystem(Z, BO6::VfxLayout(), Pos, Name, J, &N, [](uint64_t A) {
+                            return A >> 63 ? GameBlackOps6::HashedName("asset", A) : std::string();
+                        });
+                    });
+                    for (const auto& [K, V] : N.Named()) Counter(K) += V;
+                });
+            }
             ExportsColumnTables(ColumnTypes::Bo6, [](const std::string& Raw) { return Raw; });
             // scriptbundle (0x30, 0x285c8e0): Black Ops 7's but for an array (0x18 {typed entries 0,
             // u32 count 0x10}, 0x285d7c0) and an animation (9, 18, its record inline: written raw)
@@ -243,6 +267,18 @@ namespace
         }
 
     private:
+        // the live material reader, for the material and fx kinds, with the images another zone holds
+        // (a name hash in the slot: named, the image kind takes them from there); slots {u8 semantic,
+        // u8 image} 0x30 (count u8 0x1c), images 0x38 (count u8 0x21), colour 44/82/96/110/124; emissive,
+        // opacity, transmittance and ramp 84, 85, 88, 25 (IwctxReaders::SlotMaterials)
+        decltype(Treyarch::EffectZone::Material) Materials()
+        {
+            static const IwctxReaders::MaterialSlots L{ 0x80, 0x30, 0x1c, 0x38, 0x21, { 44, 82, 96, 110, 124 }, 84, 85, 88, 25 };
+            return IwctxReaders::SlotMaterials(
+                L, [](uint64_t A) { return GameBlackOps6::ReadXMaterial(A); }, [this]() -> const std::vector<uint8_t>& { return Image(); },
+                [this](uint64_t A) { return Off(A); }, [](uint64_t V) { return GameBlackOps6::HashedName("ximage", V); });
+        }
+
         bool Campaign = false;
         std::vector<std::string> Strings;
         const DiskGame::IDiskGame* Game = nullptr;
@@ -305,21 +341,11 @@ namespace
             std::vector<std::string> Paths;
             std::set<uint64_t> Left = Wanted;
             for (const uint64_t T : Transient) Left.insert(T | 1ull << 63);
-            while (!Left.empty() && !Gives.empty())
+            for (const size_t Z : IwBeside::Cover(std::move(Gives), Left))
             {
-                const auto Best = std::max_element(Gives.begin(), Gives.end(), [&](const auto& A, const auto& B) {
-                    const auto Count = [&](const std::set<uint64_t>& Hs) {
-                        return std::count_if(Hs.begin(), Hs.end(), [&](uint64_t H) { return Left.count(H) != 0; });
-                    };
-                    return Count(A.second) < Count(B.second);
-                });
-                size_t Takes = 0;
-                for (const uint64_t H : Best->second) Takes += Left.erase(H);
-                if (Takes == 0) break;
                 std::vector<std::string> Found;
                 std::string Why;
-                if (Game->ResolveZones(Install, { Index->Zones()[Best->first] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
-                Gives.erase(Best);
+                if (Game->ResolveZones(Install, { Index->Zones()[Z] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
             }
             for (const uint64_t P : Left) Counter(P >> 63 ? "map_transient_zones_not_indexed" : "model_meshes_not_indexed")++;
             std::string ProfileError;
@@ -412,17 +438,11 @@ namespace
                         if (!Have.count(ExportNaming::Lower(fs::path(Index->Zones()[Z]).stem().string()))) Gives[Z].insert(W);
                 std::set<std::pair<std::string, uint64_t>> Left = Wanted;
                 std::vector<std::string> Paths;
-                while (!Left.empty() && !Gives.empty())
+                for (const size_t Z : IwBeside::Cover(std::move(Gives), Left))
                 {
-                    const auto Count = [&](const auto& Ws) { return std::count_if(Ws.begin(), Ws.end(), [&](const auto& W) { return Left.count(W) != 0; }); };
-                    const auto Best = std::max_element(Gives.begin(), Gives.end(), [&](const auto& A, const auto& B) { return Count(A.second) < Count(B.second); });
-                    size_t Takes = 0;
-                    for (const auto& W : Best->second) Takes += Left.erase(W);
-                    if (Takes == 0) break;
                     std::vector<std::string> Found;
                     std::string Why;
-                    if (Game->ResolveZones(Install, { Index->Zones()[Best->first] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
-                    Gives.erase(Best);
+                    if (Game->ResolveZones(Install, { Index->Zones()[Z] }, Options, Found, Why) && !Found.empty()) Paths.push_back(Found.front());
                 }
                 Counts["materials_beside_not_indexed"] += Left.size();
                 if (Paths.empty()) break;
@@ -438,23 +458,7 @@ namespace
         }
 
         // an image instance of a zone loaded beside (LoadMaterialsBeside's)
-        bool ImageBeside(uint64_t Address) const override
-        {
-            if (ImagesBeside.size() != Beside.All().size())
-            {
-                ImagesBeside.clear();
-                for (const auto& Z : Beside.All())
-                {
-                    auto& Own = ImagesBeside.emplace_back();
-                    for (const auto& I : Z->R.Instances)
-                        if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "image") Own.insert(Z->Base + (uint64_t)I.Pos);
-                }
-            }
-            for (const auto& Own : ImagesBeside)
-                if (Own.count(Address)) return true;
-            return false;
-        }
-        mutable std::vector<std::unordered_set<uint64_t>> ImagesBeside;   // per zone beside, its images' addresses
+        bool ImageBeside(uint64_t Address) const override { return Beside.Holds("image", Address); }
 
         // an image with pixels: in the zone, or levels in the packages
         bool HasPixels(int64_t Pos) const
@@ -866,14 +870,9 @@ namespace
             for (uint32_t J = (uint32_t)FirstInstance; J < (uint32_t)FirstInstance + Count && J < InstanceCount; J++)
             {
                 const int64_t Pl = Placements + (int64_t)J * 24;
-                Maps::Instance In;
+                Maps::Instance In = Maps::PackedPlacement(Img, Pl, true);
                 In.Name = "smodel_" + std::to_string(J);
                 In.Model = ModelName;
-                for (int A = 0; A < 3; A++) In.Origin[A] = (float)At<int32_t>(Img, Pl + A * 4) / 4096.0f;
-                float Q[4];
-                for (int A = 0; A < 4; A++) Q[A] = (float)At<uint16_t>(Img, Pl + 12 + A * 2) / 65535.0f * 2.0f - 1.0f;
-                Maps::AxisFromQuat(Q, In.Axis);
-                In.Scale = HalfFloats::ToFloat(At<uint16_t>(Img, Pl + 20));
                 Scene.StaticInstances.push_back(In);
             }
         }

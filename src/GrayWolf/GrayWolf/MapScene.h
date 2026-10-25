@@ -27,6 +27,10 @@ namespace Maps
         std::string Material;
         std::vector<Vertex> Vertices;
         std::vector<uint32_t> Indices;   // three per triangle, into Vertices
+        // the UV sets after each vertex's Uv (a blended surface's other layers: WWII), UvSets - 1
+        // pairs per vertex in a row; empty when the surface has one set
+        uint32_t UvSets = 1;
+        std::vector<float> MoreUvs;
         size_t Triangles() const { return Indices.size() / 3; }
     };
 
@@ -73,6 +77,7 @@ namespace Maps
         std::string ColorMap;   // the image drawn as the base colour ("" when none)
         std::vector<Texture> Textures;
         std::vector<std::vector<uint8_t>> Constants;   // the game's constant blocks (the adapter's tint, layers)
+        int SortKey = -1;                               // the game's sort key, -1 when unknown
     };
 
     // An image's pixels: PNG bytes embedded in the .glb, or files (absolute paths, which may be

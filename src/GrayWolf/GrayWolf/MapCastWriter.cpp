@@ -63,15 +63,21 @@ namespace
         for (const Surface& S : M.Surfaces)
         {
             if (S.Vertices.empty() || S.Indices.size() < 3) continue;
+            // the surface's UV sets: the vertex's, then its other layers' (u1, u2...)
+            const uint32_t More = S.UvSets > 1 && S.MoreUvs.size() == S.Vertices.size() * (S.UvSets - 1) * 2 ? S.UvSets - 1 : 0;
             CastMeshBuilder Builder(*Model, Hashing::HashXXHashString(Name + "|mesh" + std::to_string(Meshes)),
-                                    S.Vertices.size(), 1);
-            for (const Vertex& V : S.Vertices)
+                                    S.Vertices.size(), 1 + More);
+            std::vector<Vector2> Uvs(1 + More);
+            for (size_t K = 0; K < S.Vertices.size(); K++)
             {
+                const Vertex& V = S.Vertices[K];
                 uint32_t Packed = 0;
                 std::memcpy(&Packed, V.Color, 4);
-                const Vector2 Uv(V.Uv[0], V.Uv[1]);
+                Uvs[0] = Vector2(V.Uv[0], V.Uv[1]);
+                for (uint32_t J = 0; J < More; J++)
+                    Uvs[1 + J] = Vector2(S.MoreUvs[(K * More + J) * 2], S.MoreUvs[(K * More + J) * 2 + 1]);
                 Builder.Vertex(Vector3(V.Pos[0] * Scale, V.Pos[1] * Scale, V.Pos[2] * Scale),
-                               Vector3(V.Normal[0], V.Normal[1], V.Normal[2]), Packed, &Uv);
+                               Vector3(V.Normal[0], V.Normal[1], V.Normal[2]), Packed, Uvs.data());
             }
             for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
                 Builder.Face(S.Indices[K], S.Indices[K + 1], S.Indices[K + 2]);

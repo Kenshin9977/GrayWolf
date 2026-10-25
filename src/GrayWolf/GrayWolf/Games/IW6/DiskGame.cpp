@@ -6,20 +6,19 @@
 
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "GameGhosts.h"
 #include "GameReaders.h"
 #include "GameWorldWar2.h"
-#include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
 #include "Games/IW6/EntityKeys.h"
 #include "MapLive.h"
-#include "PAKCache.h"
 
 #include <filesystem>
-#include <format>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -104,6 +103,23 @@ namespace
             ExportsScriptFiles(Scripts::GscToolBin("iw6"));
             ExportsIwRawfiles();
             ExportsIwStringTables();
+            // the material and fx kinds: FxEffectDef 0x40, elements 0x138; Material's techniqueSet at
+            // 0x1d0 (the iw6 table f140299440, x64-zt's IW6 structs.hpp)
+            ExportsIwEffects(IwEffects::Ghosts(), GameGhosts::ReadXMaterial, 0x1d0);
+            // a model's material headers (a transient zone's body or head): the images of the
+            // material as the zone defining it has them
+            if (const auto* Models = ExporterOf(Kind::Model))
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    BookMaterialsElsewhere();
+                    // (an engine image, $identitynormalmap, is no zone's to write)
+                    GameGhosts::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+                        if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Find(Name, Out)) return false;
+                        std::erase_if(Out, [](const auto& I) { return I.second.starts_with('$'); });
+                        return true;
+                    };
+                    Read(C, T);
+                    GameGhosts::ImagesElsewhere = nullptr;
+                });
         }
 
     protected:
@@ -126,7 +142,27 @@ namespace
         std::unique_ptr<XImageDDS> Decode(int64_t Pos);
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
+        // The material headers no material of this zone stands for: the zones the install index
+        // says define them first (IWZone::BookMaterialsElsewhere). Once, before the models are read.
+        void BookMaterialsElsewhere();
+        bool BooksTried = false;
     };
+
+    void GhostsZone::BookMaterialsElsewhere()
+    {
+        if (BooksTried) return;
+        BooksTried = true;
+        // Material (GhostsXMaterial): the image count u8 0x1c4, the table 0x1d8 of {u32 semantic
+        // hash, pad, image*}; GfxImage's name at 0x60
+        IWMaterialBooks::Layout L;
+        L.Profile = "iw6";
+        L.ImageCount = 0x1c4, L.Images = 0x1d8, L.SlotSize = 0x10, L.SlotImage = 8, L.ImageName = ImageNameAt;
+        L.WithSlotsOnly = true;
+        const auto Headers = MaterialHeaders();
+        IWZone::BookMaterialsElsewhere(
+            Headers.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.DefinedIn({ DiskGame::Kind::Material, Headers[K] }); },
+            true, L);
+    }
 
     std::unique_ptr<XImageDDS> GhostsZone::DiskImage(const XImage_t& Image)
     {
@@ -139,19 +175,12 @@ namespace
         const uint32_t Level = GameReaders::LargestLevel(Info, Width, Height);
         const PakEntry& E = It->second[Level];
         if (E.End <= E.Start) return nullptr;
-        const std::string& Ff = Current->FastFilePath();
-        const std::string Pak = (E.Pak >> 16) == 0 ? Ff
-            : (fs::path(Ff).parent_path() / std::format("imagefile{}.pak", (unsigned long long)(E.Pak >> 16))).string();
-        return GameGhosts::DecodePakImage(Info, Pak, E.Start, E.End, Width, Height, Image.ImageUsage);
+        return GameGhosts::DecodePakImage(Info, Current->StreamPak(E), E.Start, E.End, Width, Height, Image.ImageUsage);
     }
 
     void GhostsZone::Fixups()
     {
-        // the script strings: count at 0x48, marker-tested slots from 0x70, then their text
-        const auto& Z = Zone();
-        const uint64_t Count = At<uint64_t>(Z, 0x48);
-        if (At<uint64_t>(Z, 0x50) == Rules().Marker && Count != 0 && Count <= Z.size() / 8)
-            Slots = InlineStrings(Z, 0x70, Count, 8, Rules().Marker);
+        Slots = HeaderScriptStrings();
         LinkLodSurfaces(ModelLods());
         ReadStreams(ImageStreamedAt);
     }
@@ -181,30 +210,11 @@ namespace
 
     void GhostsZone::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
     {
-        // every alias's file specs, through the live reader: loaded sounds are PCM in the zone,
-        // streamed and primed ones FLAC in soundfile<N>.pak (a language folder when localized)
-        std::set<uint64_t> Unique;
-        std::vector<CoDAsset_t*> Found;
-        std::vector<std::pair<int64_t, std::string>> Lists;
-        for (const auto& I : Walk().Instances)
-        {
-            if (!OwnerIs(I, "sound")) continue;
-            const std::string AliasName = AssetName(DiskGame::Kind::Sound, I.Pos);
-            if (IsReference(DiskGame::Kind::Sound, AliasName, I.Pos)) continue;
-            const auto Alias = CoDAssets::GameInstance->Read<GhostsSoundAlias>(VirtualGameSession::Address((uint64_t)I.Pos));
-            GameGhosts::AddAliasSounds(Alias, AliasName, Unique, Found);
-            Lists.emplace_back(I.Pos, AliasName);
-        }
-        PAKCache Packages;
-        Packages.LoadPackageCache(GameWorldWar2::InstallOfZone(FastFilePath()));
-        IWPakSounds::WriteOptions Options;
-        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
-        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
-
-        if (!SoundAliasCsv::Wanted(C)) return;
-        SoundAliasCsv::Rows Rows;
-        IWSoundAliases::ReadLive(AliasView(), Lists, AliasLayout(), Rows);
-        SoundAliasCsv::Write(C, T, Name(), Rows);
+        // loaded sounds are PCM in the zone, streamed and primed ones FLAC in soundfile<N>.pak
+        ExportPakSounds(C, T, GameWorldWar2::InstallOfZone(FastFilePath()), false, AliasLayout(),
+                        [](uint64_t Address, const std::string& Name, std::set<uint64_t>& Unique, std::vector<CoDAsset_t*>& Found) {
+                            GameGhosts::AddAliasSounds(CoDAssets::GameInstance->Read<GhostsSoundAlias>(Address), Name, Unique, Found);
+                        });
     }
 
     // The level (the iw6 tables): GfxWorld (gfx_map, 0xa30) with GfxWorldDraw at 0x88 and
@@ -264,9 +274,10 @@ namespace
             return &Naming;
         }
 
-        std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions&, std::string& Error) const override
+        std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<GhostsZone>(Path);
+            Zone->SetInstall(this, Options, !Options.Install.empty() ? Options.Install : InstallOfZone(Path));
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

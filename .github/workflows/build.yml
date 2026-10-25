@@ -1,20 +1,34 @@
 name: Build
 
+# Where it runs (Actions minutes are free on the public GrayWolf, counted on the private GrayWolf-dev):
+# - a push or pull request to master: built and checked on the public repo only (Dev, no LTCG, a few
+#   minutes); the private repo skips it, its snapshot reaches the public repo when it is published;
+# - a v* tag (v1.47.0) or a manual run: the full Release build, on whichever repo it is cut; a tag also
+#   publishes a release: the installer, the app zip, the hash packages zip and the manifest.json
+#   GrayWolf's updater reads (src/GrayWolf/GrayWolf/Updater.h).
 on:
   push:
     branches: [master]
-    # A v* tag (v1.47.0) also publishes a release: the installer, the app zip, the hash packages zip and the
-    # manifest.json GrayWolf's updater reads (src/GrayWolf/GrayWolf/Updater.h).
     tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   pull_request:
     branches: [master]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   workflow_dispatch:
+
+# a newer push cancels the build of the one before it (a tag's build always runs to the end)
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
-    name: Release x64
+    name: Build x64
+    if: ${{ !github.event.repository.private || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-2022
     env:
+      # Release (LTCG, signed and published) for a tag or a manual run, Dev for a push or a pull request
+      CONFIG: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'Release' || 'Dev' }}
       # classic-mode vcpkg at the commit the local x64-windows-static-md install was built from;
       # src/Directory.Build.props reads VCPKG_ROOT
       VCPKG_COMMIT: aae277acf4e7de287ddb5e208b5316614de6aad7
@@ -113,15 +127,17 @@ jobs:
           $missing = $libs | Where-Object { -not (Test-Path "build/lib/Release_x64/$_.lib") }
           if ($missing) { throw "OpenAssetTools libs missing: $($missing -join ', ')" }
 
-      - name: Build GrayWolf.sln (Release)
+      - name: Build GrayWolf.sln (${{ env.CONFIG }})
         shell: bash
-        run: tools/build.sh Release
+        run: tools/build.sh "$CONFIG"
 
       - name: Self-tests (no game data)
         shell: pwsh
-        run: ./tools/run-selftests.ps1 -Exe src/GrayWolf/x64/Release/GrayWolf.exe -Out "$env:RUNNER_TEMP/selftests"
+        run: ./tools/run-selftests.ps1 -Exe "src/GrayWolf/x64/$env:CONFIG/GrayWolf.exe" -Out "$env:RUNNER_TEMP/selftests"
 
+      # only what the sign check and the release use
       - name: Upload build output
+        if: env.CONFIG == 'Release'
         uses: actions/upload-artifact@v7
         with:
           name: graywolf-release-x64
@@ -131,15 +147,17 @@ jobs:
             src/GrayWolf/x64/Release/zonekit/
           if-no-files-found: warn
 
+  # on Linux (half the Windows minutes): the analysis keeps --platform=win64 --library=windows
   cppcheck:
     name: cppcheck
-    runs-on: windows-2022
+    if: ${{ !github.event.repository.private || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Install cppcheck
-        run: choco install cppcheck --no-progress -y
+        run: sudo apt-get update -q && sudo apt-get install -y -q cppcheck
 
       # Same policy as the pre-commit hook: the warning/performance/portability findings are
       # reported, only error-severity ones fail the build

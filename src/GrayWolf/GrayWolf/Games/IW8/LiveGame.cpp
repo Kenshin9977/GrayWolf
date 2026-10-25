@@ -4,7 +4,6 @@
 
 #include "ICoDGame.h"
 #include "GameModernWarfare4.h"
-#include "GameVanguard.h"
 #include "SABSupport.h"
 #include "XPAKSupport.h"
 
@@ -32,13 +31,11 @@ namespace
         {
             return XPAKSupport::ReadImageFile(Image);
         }
-        // Falls through to GameVanguard::ReadXSound for the non-file-entry case, on purpose.
         std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound) const override
         {
-            // On purpose: the non-file-entry branch calls GameVanguard::ReadXSound, not MW4's own
             if (Sound->IsFileEntry)
                 return SABSupport::LoadOpusSound(Sound, SABSupport::OpusPreSkipPacket);
-            return GameVanguard::ReadXSound(Sound);
+            return GameModernWarfare4::ReadXSound(Sound);
         }
         void LoadStreamedXModel(const std::unique_ptr<XModel_t>& Model, const XModelLod_t& ModelLOD, const std::unique_ptr<WraithModel>& ResultModel) const override
         {

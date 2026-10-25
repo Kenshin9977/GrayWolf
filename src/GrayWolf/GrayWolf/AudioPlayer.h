@@ -22,6 +22,10 @@ public:
     // which we decode ourselves. Returns false if the file cannot be decoded.
     bool Load(const std::string& path, const std::string& formatHint);
     void Unload();
+    // Only the waveform envelope (Columns min/max pairs) and the length, no playback: safe on any
+    // thread, several at once.
+    static bool ReadWaveform(const std::string& path, const std::string& formatHint, int columns,
+                             std::vector<float>& outMin, std::vector<float>& outMax, double* seconds = nullptr);
 
     void Play();        // start, or resume from the current position (restarts if at the end)
     void Pause();       // pause and keep the cursor where it is

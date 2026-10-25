@@ -13,6 +13,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -28,6 +30,7 @@
 #include "SEModelExport.h"
 #include "CastExport.h"
 #include "ModelViewport.h"
+#include "AssetGrid/GridShot.h"   // ui-grid-shot
 #include "ImGuiShell.h"
 #include "ModelPreviewGPU.h"
 #include "CerberusCrypto.h"
@@ -725,6 +728,40 @@ int RunUiMode(const CliOptions& Options)
 }
 
 
+// The shell hidden on a folder, its Assets grid (--list: the list) timed over --frames frames once
+// every visible cell is drawn, the last frame saved to --out, the numbers beside it (.txt).
+int RunUiGridShot(const CliOptions& Options)
+{
+    WraithX::InitializeAPI(); // WIC, for texture decode and the PNG
+    GridShotOptions Shot;
+    Shot.OutPng = Options.Out.empty() ? "ui-grid-shot.png" : Options.Out;
+    Shot.Frames = std::max(1, Options.UiGridFrames);
+    Shot.Cell = Options.UiGridCell;
+    Shot.List = Options.UiGridList;
+    Shot.AnimRig = Options.UiGridRig;
+    Shot.Scroll = Options.UiGridScroll;
+    Shot.Still = Options.UiGridStill;
+    if (sscanf_s(Options.UiGridSize.c_str(), "%dx%d", &Shot.Width, &Shot.Height) != 2 || Shot.Width < 320 || Shot.Height < 240)
+    {
+        CliReport(Options, "result=error\nerror=--size is WxH\n");
+        return 2;
+    }
+    static const char* Types[] = { "all", "model", "image", "audio", "anim", "map", "fx" };
+    for (int i = 0; i < 7; i++)
+        if (Options.Type == Types[i] || Options.Type == std::string(Types[i]) + "s") Shot.Type = i;
+    const bool Ok = RunImGuiShell(Options.UiGridShot, &Shot);
+    std::string Numbers;
+    {
+        std::filesystem::path Txt(Shot.OutPng);
+        Txt.replace_extension(".txt");
+        std::ifstream In(Txt);
+        Numbers.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
+    CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Numbers));
+    return Ok ? 0 : 5;
+}
+
+
 // Opens an interactive Direct3D 11 window (raw Win32, DPI-crisp, MFC-free) to orbit/zoom the
 // given .semodel part(s). Blocks until the window is closed.
 int RunPreviewWindow(const CliOptions& Options)
@@ -758,3 +795,107 @@ int RunRenderModelCli(const CliOptions& Options)
     return Ok ? 0 : 5;
 }
 
+// ---- the subcommands (CliCommands.h)
+
+void AddModelPreviewCommands(CliCommandBuilders& B)
+{
+    B["gltf-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("gltf-selftest", "Write a tiny GLB scene to verify the writer");
+        Sub->add_option("outfile", Options.GltfSelfTest, "Where to write the test .glb")->required();
+    };
+    B["export-map-glb"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("export-map-glb", "Export a T5 map's GfxWorld to a Blender .glb");
+        Sub->add_option("file", Options.ExportMapGlb, "Fast file (.ff) holding the GfxWorld")->required()->check(CLI::ExistingFile);
+        Sub->add_flag("--map-no-tex", Options.MapNoTex, "Skip embedding textures (much smaller, geometry preview)");
+    };
+    B["cerberus-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        App.add_subcommand("cerberus-selftest", "Verify ported CRC32/Salsa20 (Cerberus crypto)")
+            ->callback([&Options] { Options.CerberusSelfTest = true; });
+    };
+    B["seanim-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        App.add_subcommand("seanim-selftest", "Round-trip a synthetic .seanim + verify pose evaluation")
+            ->callback([&Options] { Options.SeAnimSelfTest = true; });
+    };
+    B["cast-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        App.add_subcommand("cast-selftest", "Write a synthetic model/anim as .cast and SE, read both back (--out keeps them)")
+            ->callback([&Options] { Options.CastSelfTest = true; });
+    };
+    B["make-test-seanim"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("make-test-seanim", "Write a spinning test .seanim (--out sets the path)");
+        Sub->add_option("bonename", Options.MakeTestSeAnim, "Bone to animate")->required();
+    };
+    B["render-anim"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("render-anim", "Skinned PNG at one frame (--out sets the path)");
+        Sub->add_option("parts", Options.RenderAnimModel, "\"<model>;<anim>;<frame>\"")->required();
+    };
+    B["xanimbin-dump"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-dump", "Parse a Mod Tools .xanim_bin, print the resolved record stream");
+        Sub->add_option("file", Options.XAnimBinDump, ".xanim_bin file")->required()->check(CLI::ExistingFile);
+    };
+    B["xanimbin-selftest"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-selftest", "Assemble Layer 2, report bone/frame/notify counts");
+        Sub->add_option("file", Options.XAnimBinSelfTest, ".xanim_bin file")->required()->check(CLI::ExistingFile);
+    };
+    B["xanimbin-to-seanim"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-to-seanim", "Convert one .xanim_bin to .seanim");
+        Sub->add_option("infile", Options.XAnimBinToSeAnimIn, ".xanim_bin input")->required()->check(CLI::ExistingFile);
+        Sub->add_option("outfile", Options.XAnimBinToSeAnimOut, ".seanim output")->required();
+    };
+    B["xanimbin-export-dir"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-export-dir",
+            "Bulk .xanim_bin -> .seanim, mirroring the source tree so the result is browsable with `ui`");
+        Sub->add_option("indir", Options.XAnimBinExportDirIn, "Source directory of .xanim_bin files")
+            ->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("outdir", Options.XAnimBinExportDirOut, "Destination directory")->required();
+    };
+    B["gen-disc"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("gen-disc", "Write a flat N-gon disc (or ring) XMODEL_EXPORT");
+        Sub->add_option("outfile", Options.GenDisc, "Where to write the .XMODEL_EXPORT")->required();
+        Sub->add_option("--gen-disc-radius", Options.GenDiscRadius, "Outer radius in units (default 50)");
+        Sub->add_option("--gen-disc-inner-radius", Options.GenDiscInnerRadius, ">0 makes an annulus (ring) instead of a filled disc");
+        Sub->add_option("--gen-disc-segments", Options.GenDiscSegments, "Segment count (default 32)");
+        Sub->add_option("--gen-disc-material", Options.GenDiscMaterial, "Existing alpha material to reference, no new asset needed");
+    };
+    B["dump-model"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("dump-model", "Print a .semodel's bones/bbox");
+        Sub->add_option("file", Options.DumpModel, ".semodel file")->required()->check(CLI::ExistingFile);
+    };
+    B["dump-glb"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("dump-glb", "Print a .glb's PreviewGeometry stats");
+        Sub->add_option("file", Options.DumpGlb, ".glb file")->required()->check(CLI::ExistingFile);
+    };
+    B["render-glb-png"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("render-glb-png", "Headless PNG render of a .glb (--out sets the path)");
+        Sub->add_option("file", Options.RenderGlbPng, "Input .glb")->required()->check(CLI::ExistingFile);
+    };
+    B["ui"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("ui", "Open the ImGui + D3D11 asset browser shell on a folder of exported assets");
+        Sub->add_option("dir", Options.Ui, "Folder of exported assets (empty starts with nothing loaded)");
+    };
+    B["ui-grid-shot"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("ui-grid-shot", "Open the asset browser hidden on a folder, time its Assets grid and save the frame (--out <png>, numbers beside)");
+        Sub->add_option("dir", Options.UiGridShot, "Folder of exported assets")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("--frames", Options.UiGridFrames, "Frames timed once the cells are drawn (default 120)");
+        Sub->add_option("--cell", Options.UiGridCell, "Cell size in pixels (default: the setting)");
+        Sub->add_option("--size", Options.UiGridSize, "Window size WxH (default 1920x1080)");
+        Sub->add_flag("--list", Options.UiGridList, "Time the list view instead");
+        Sub->add_option("--rig", Options.UiGridRig, "Model the anim cells play on");
+        Sub->add_option("--scroll", Options.UiGridScroll, "Pixels a second the grid scrolls while timed");
+        Sub->add_flag("--still", Options.UiGridStill, "Model cells hold the viewport's angle instead of turning (to compare the two)");
+    };
+    B["anim-rigs"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("anim-rigs", "Each anim of a folder with the model the browser plays it on and its score (AnimRigs.h)");
+        Sub->add_option("dir", Options.AnimRigs, "Folder of exported assets")->required()->check(CLI::ExistingDirectory);
+        Sub->add_flag("--no-fetch", Options.AnimRigsNoFetch, "Export no reference model, use the ones already kept");
+    };
+    B["preview-window"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("preview-window", "Open an interactive D3D11 orbit viewer");
+        Sub->add_option("parts", Options.PreviewWindow, "Semicolon separated model part paths")->required();
+    };
+    B["render-model"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("render-model", "Render a model to PNG (software, --gpu, or --turntable N views)");
+        Sub->add_option("file", Options.RenderModel, "Model file to render")->required()->check(CLI::ExistingFile);
+        Sub->add_flag("--gpu", Options.Gpu, "Use the offscreen D3D11 renderer");
+        Sub->add_option("--turntable", Options.Turntable, "Render N views around the model into one contact sheet");
+    };
+}

@@ -114,30 +114,10 @@ const XMaterial_t GameBlackOps3::ReadXMaterial(uint64_t MaterialPointer)
         Result.Constants.push_back(std::move(Block));
     }
 
-    for (uint32_t m = 0; m < MaterialData.ImageCount; m++)
-    {
-        auto ImageInfo = CoDAssets::GameInstance->Read<BO3XMaterialImage>(MaterialData.ImageTablePtr);
-        // Image name pointer: end of image - 16
-        auto ImageName = CoDAssets::GameInstance->ReadNullTerminatedString(CoDAssets::GameInstance->Read<uint64_t>(ImageInfo.ImagePtr + (sizeof(BO3GfxImage) - 16)));
-
-        auto DefaultUsage = ImageUsageType::Unknown;
-        switch (ImageInfo.SemanticHash)
-        {
-        case 0xA0AB1041:
-            DefaultUsage = ImageUsageType::DiffuseMap;
-            break;
-        case 0x59D30D0F:
-            DefaultUsage = ImageUsageType::NormalMap;
-            break;
-        case 0xEC443804:
-            DefaultUsage = ImageUsageType::SpecularMap;
-            break;
-        }
-
-        Result.Images.emplace_back(DefaultUsage, ImageInfo.SemanticHash, ImageInfo.ImagePtr, ImageName);
-
-        MaterialData.ImageTablePtr += sizeof(BO3XMaterialImage);
-    }
+    // an image's name pointer 16 bytes before its end
+    GameReaders::AddMaterialImages<BO3XMaterialImage>(
+        Result, MaterialData.ImageTablePtr, MaterialData.ImageCount,
+        [](uint64_t ImagePtr) { return GameReaders::ImageNameAt<uint64_t>(ImagePtr, sizeof(BO3GfxImage) - 16); }, GameReaders::TreyarchSemanticUsage);
 
     return Result;
 }

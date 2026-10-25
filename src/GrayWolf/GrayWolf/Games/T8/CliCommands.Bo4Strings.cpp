@@ -13,9 +13,12 @@
 #include <iterator>
 #include <string>
 #include <format>
+#include <functional>
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -28,62 +31,94 @@
 #include "CoDFileHandle.h"
 #include "DBGameFiles.h"
 
+namespace
+{
+    // A decompressed zone's bytes (In) through Export(Zone, Report): result=ok|error, then the
+    // exporter's report (dump_error= when it throws)
+    int RunZoneExport(const CliOptions& Options, const std::string& In,
+                      const std::function<bool(const std::vector<uint8_t>& Zone, std::string& Report)>& Export)
+    {
+        std::ifstream File(In, std::ios::binary);
+        if (!File)
+        {
+            CliReport(Options, "result=error\nreason=could not open input file\n");
+            return 5;
+        }
+        std::vector<uint8_t> Zone((std::istreambuf_iterator<char>(File)), std::istreambuf_iterator<char>());
+
+        std::string Report;
+        bool Ok = false;
+        try
+        {
+            Ok = Export(Zone, Report);
+        }
+        catch (const std::exception& Ex)
+        {
+            Report += std::format("dump_error={}\n", Ex.what());
+        }
+        catch (...)
+        {
+            Report += "dump_error=unhandled exception\n";
+        }
+
+        CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Report.c_str()));
+        return Ok ? 0 : 3;
+    }
+
+    // One string hex-encoded as [EncryptionID][StringSize][ciphertext][NUL] through
+    // Decrypt(Bytes, Report): result=ok|error, source=offline, then its report
+    int RunHexDecrypt(const CliOptions& Options, const std::string& Hex,
+                      const std::function<bool(std::vector<uint8_t>& Bytes, std::string& Report)>& Decrypt)
+    {
+        std::string HexReport;
+        bool HexOk = false;
+        try
+        {
+            std::vector<uint8_t> Bytes;
+            for (size_t i = 0; i + 1 < Hex.size(); i += 2)
+            {
+                Bytes.push_back((uint8_t)std::strtoul(Hex.substr(i, 2).c_str(), nullptr, 16));
+            }
+            if (Bytes.size() < 3)
+            {
+                HexReport += "decrypt_error=need at least [EncryptionID][StringSize][data...]\n";
+            }
+            else
+            {
+                HexOk = Decrypt(Bytes, HexReport);
+            }
+        }
+        catch (const std::exception& Ex)
+        {
+            HexReport += std::format("decrypt_error={}\n", Ex.what());
+        }
+        catch (...)
+        {
+            HexReport += "decrypt_error=unhandled exception\n";
+        }
+
+        CliReport(Options, std::format(
+            "result={}\nsource=offline\n{}",
+            HexOk ? "ok" : "error",
+            HexReport.c_str()));
+
+        WraithX::ShutdownAPI();
+        return HexOk ? 0 : 3;
+    }
+}
+
 int RunBo4ExportLocalizeDisk(const CliOptions& Options)
 {
-    std::ifstream In(Options.Bo4ExportLocalizeDiskIn, std::ios::binary);
-    if (!In)
-    {
-        CliReport(Options, "result=error\nreason=could not open input file\n");
-        return 5;
-    }
-    std::vector<uint8_t> Zone((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
-
-    std::string Report;
-    bool Ok = false;
-    try
-    {
-        Ok = GameBlackOps4::ExportDiskLocalize(Zone, Options.Bo4ExportLocalizeDiskOut, Report);
-    }
-    catch (const std::exception& Ex)
-    {
-        Report += std::format("dump_error={}\n", Ex.what());
-    }
-    catch (...)
-    {
-        Report += "dump_error=unhandled exception\n";
-    }
-
-    CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Report.c_str()));
-    return Ok ? 0 : 3;
+    return RunZoneExport(Options, Options.Bo4ExportLocalizeDiskIn, [&Options](const std::vector<uint8_t>& Zone, std::string& Report) {
+        return GameBlackOps4::ExportDiskLocalize(Zone, Options.Bo4ExportLocalizeDiskOut, Report);
+    });
 }
 
 int RunBo4ExportRawStringsDisk(const CliOptions& Options)
 {
-    std::ifstream In(Options.Bo4ExportRawStringsDiskIn, std::ios::binary);
-    if (!In)
-    {
-        CliReport(Options, "result=error\nreason=could not open input file\n");
-        return 5;
-    }
-    std::vector<uint8_t> Zone((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
-
-    std::string Report;
-    bool Ok = false;
-    try
-    {
-        Ok = GameBlackOps4::ExportDiskRawStrings(Zone, Options.Bo4ExportRawStringsDiskOut, Report);
-    }
-    catch (const std::exception& Ex)
-    {
-        Report += std::format("dump_error={}\n", Ex.what());
-    }
-    catch (...)
-    {
-        Report += "dump_error=unhandled exception\n";
-    }
-
-    CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Report.c_str()));
-    return Ok ? 0 : 3;
+    return RunZoneExport(Options, Options.Bo4ExportRawStringsDiskIn, [&Options](const std::vector<uint8_t>& Zone, std::string& Report) {
+        return GameBlackOps4::ExportDiskRawStrings(Zone, Options.Bo4ExportRawStringsDiskOut, Report);
+    });
 }
 
 
@@ -93,100 +128,58 @@ int RunBo4Decrypt(const CliOptions& Options)
 {
     if (!Options.Bo4DecryptHex.empty())
     {
-        std::string HexReport;
-        bool HexOk = false;
-        try
-        {
-            std::vector<uint8_t> Bytes;
-            for (size_t i = 0; i + 1 < Options.Bo4DecryptHex.size(); i += 2)
-            {
-                Bytes.push_back((uint8_t)std::strtoul(Options.Bo4DecryptHex.substr(i, 2).c_str(), nullptr, 16));
-            }
-            if (Bytes.size() < 3)
-            {
-                HexReport += "decrypt_error=need at least [EncryptionID][StringSize][data...]\n";
-            }
-            else
-            {
-                const uint8_t EncryptionID = Bytes[0];
-                const uint8_t StringSize = Bytes[1];
-                auto Buf = Bytes.data() + 2;
-                auto Text = GameBlackOps4::DecryptString(Buf, StringSize, EncryptionID, 0);
-                HexReport += std::format(
-                    "encryption_id={} (case {})\nstring_size={}\ntext={}\n",
-                    EncryptionID, (uint8_t)(EncryptionID + 128), StringSize, Text.c_str());
-                HexOk = true;
-            }
-        }
-        catch (const std::exception& Ex)
-        {
-            HexReport += std::format("decrypt_error={}\n", Ex.what());
-        }
-        catch (...)
-        {
-            HexReport += "decrypt_error=unhandled exception\n";
-        }
-
-        CliReport(Options, std::format(
-            "result={}\nsource=offline\n{}",
-            HexOk ? "ok" : "error",
-            HexReport.c_str()));
-
-        WraithX::ShutdownAPI();
-        return HexOk ? 0 : 3;
+        return RunHexDecrypt(Options, Options.Bo4DecryptHex, [](std::vector<uint8_t>& Bytes, std::string& HexReport) {
+            const uint8_t EncryptionID = Bytes[0];
+            const uint8_t StringSize = Bytes[1];
+            auto Text = GameBlackOps4::DecryptString(Bytes.data() + 2, StringSize, EncryptionID, 0);
+            HexReport += std::format(
+                "encryption_id={} (case {})\nstring_size={}\ntext={}\n",
+                EncryptionID, (uint8_t)(EncryptionID + 128), StringSize, Text.c_str());
+            return true;
+        });
     }
 
     // The on-disk cipher (GameBlackOps4::DecryptDiskString).
     if (!Options.Bo4DecryptDiskHex.empty())
     {
-        std::string HexReport;
-        bool HexOk = false;
-        try
-        {
-            std::vector<uint8_t> Bytes;
-            for (size_t i = 0; i + 1 < Options.Bo4DecryptDiskHex.size(); i += 2)
+        return RunHexDecrypt(Options, Options.Bo4DecryptDiskHex, [](std::vector<uint8_t>& Bytes, std::string& HexReport) {
+            const uint8_t EncryptionID = Bytes[0];
+            const uint8_t StringSize = Bytes[1];
+            std::string Text;
+            if (!GameBlackOps4::DecryptDiskString(Bytes.data() + 2, (uint8_t)(StringSize - 1), EncryptionID, Text))
             {
-                Bytes.push_back((uint8_t)std::strtoul(Options.Bo4DecryptDiskHex.substr(i, 2).c_str(), nullptr, 16));
+                HexReport += std::format("decrypt_error=unknown encryption_id {}\n", EncryptionID);
+                return false;
             }
-            if (Bytes.size() < 3)
-            {
-                HexReport += "decrypt_error=need at least [EncryptionID][StringSize][data...]\n";
-            }
-            else
-            {
-                const uint8_t EncryptionID = Bytes[0];
-                const uint8_t StringSize = Bytes[1];
-                std::string Text;
-                if (GameBlackOps4::DecryptDiskString(Bytes.data() + 2, (uint8_t)(StringSize - 1), EncryptionID, Text))
-                {
-                    HexReport += std::format("encryption_id={}\nstring_size={}\ntext={}\n",
-                        EncryptionID, StringSize, Text.c_str());
-                    HexOk = true;
-                }
-                else
-                {
-                    HexReport += std::format("decrypt_error=unknown encryption_id {}\n", EncryptionID);
-                }
-            }
-        }
-        catch (const std::exception& Ex)
-        {
-            HexReport += std::format("decrypt_error={}\n", Ex.what());
-        }
-        catch (...)
-        {
-            HexReport += "decrypt_error=unhandled exception\n";
-        }
-
-        CliReport(Options, std::format(
-            "result={}\nsource=offline\n{}",
-            HexOk ? "ok" : "error",
-            HexReport.c_str()));
-
-        WraithX::ShutdownAPI();
-        return HexOk ? 0 : 3;
+            HexReport += std::format("encryption_id={}\nstring_size={}\ntext={}\n",
+                EncryptionID, StringSize, Text.c_str());
+            return true;
+        });
     }
 
     CliReport(Options, "result=error\nreason=bo4-decrypt needs --hex or --disk-hex\n");
     return 2;
+}
+
+// ---- the subcommands (CliCommands.h)
+
+void AddBo4StringCommands(CliCommandBuilders& B)
+{
+    B["bo4-export-localize-disk"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo4-export-localize-disk",
+            "Fully offline BO4 Localize export from an already-decompressed zone (zone-decompress output)");
+        Sub->add_option("in", Options.Bo4ExportLocalizeDiskIn, "Decompressed zone bytes (from zone-decompress)")->required()->check(CLI::ExistingFile);
+        Sub->add_option("outfile", Options.Bo4ExportLocalizeDiskOut, "Where to write the JSONL output")->required();
+    };
+    B["bo4-export-rawstrings-disk"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo4-export-rawstrings-disk",
+            "Fully offline BO4 dialogue/rawstring export (Value+Hash+Pad header shape) from a decompressed zone");
+        Sub->add_option("in", Options.Bo4ExportRawStringsDiskIn, "Decompressed zone bytes (from zone-decompress)")->required()->check(CLI::ExistingFile);
+        Sub->add_option("outfile", Options.Bo4ExportRawStringsDiskOut, "Where to write the JSONL output")->required();
+    };
+    B["bo4-decrypt"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("bo4-decrypt", "Decrypt one BO4 string given as hex bytes [EncryptionID][StringSize][ciphertext][NUL]");
+        Sub->add_option("--hex", Options.Bo4DecryptHex, "Through the zone's string cipher (DecryptString)");
+        Sub->add_option("--disk-hex", Options.Bo4DecryptDiskHex, "Through the on-disk Localize cipher");
+    };
 }

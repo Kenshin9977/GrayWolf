@@ -16,18 +16,22 @@
 #include "GameModernWarfare4.h"
 #include "MapLive.h"
 #include "ScriptExport.h"
-#include "Games/Common/StringCipher.h"
 #include "Games/IW8/EntityKeys.h"
+#include "Games/IW8/VfxLayout.h"
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IwWeaponStats.h"
 #include "Games/IW/IWZone.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "XPAKCache.h"
 
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <unordered_map>
+
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -46,29 +50,6 @@ namespace
 
     // GfxImage (0xe8, MW4GfxImage): the name at 0, the in-zone pixels at 0xe0, their size at 0x1c
     constexpr int64_t ImageNameAt = 0, ImageLoadedSizeAt = 0x1c, ImagePixelsAt = 0xe0;
-
-    // The zone's script strings: count u32 at 0, the slots (8 bytes) from 0x20 when the list's
-    // pointer at 8 is inline; a slot of -2 or -1 has its text after the slots, in slot order
-    // (0x2ddc1b0), any other holds none here
-    std::vector<std::string> ScriptStrings(const std::vector<uint8_t>& Z)
-    {
-        std::vector<std::string> Out;
-        if (Z.size() < 0x20) return Out;
-        const uint32_t Count = ExportNaming::At<uint32_t>(Z, 0);
-        const uint64_t List = ExportNaming::At<uint64_t>(Z, 8);
-        const auto Inline = [](uint64_t V) { return V == ~0ull || V == ~1ull; };
-        if (!Inline(List) || Count == 0 || 0x20 + (uint64_t)Count * 8 > Z.size()) return Out;
-        Out.resize(Count);
-        size_t Text = 0x20 + (size_t)Count * 8;
-        for (uint32_t K = 0; K < Count && Text < Z.size(); K++)
-        {
-            if (!Inline(ExportNaming::At<uint64_t>(Z, 0x20 + (int64_t)K * 8))) continue;
-            const auto End = std::find(Z.begin() + (std::ptrdiff_t)Text, Z.end(), 0);
-            Out[K].assign(Z.begin() + (std::ptrdiff_t)Text, End);
-            Text = (size_t)(End - Z.begin()) + 1;
-        }
-        return Out;
-    }
 
     // XFileVersions (0x73ec7d0 in the dump): the zone version the game accepts for each value of the
     // header's byte 0x12 (0x36a5de0 refuses any other). The .fp's patched header (at 0xc0) holds the
@@ -96,14 +77,17 @@ namespace
         return true;
     }
 
-    // Material (0x80, MW4XMaterial): the image count u8 at 0x1c, the 0x10-byte slots {u32 semantic,
-    // image* 8} at 0x48. A zone's materials are name-only headers (",name"): the game defines them
-    // in the techsets_ zones it loads first, the level's own (techsets_<level>) and the common ones.
+    // Material (0x78, the material table): the image count u8 at 0x1c, the 0x10-byte slots {u32
+    // semantic, image* 8} at 0x48, the atlas rows and columns u8 0x22, 0x23 (vfx_fluid_water_drips_loop:
+    // 1 x 16 over a 512 x 128 image), the techset at 0x40. A zone's materials are name-only headers
+    // (",name"): the game defines them in the techsets_ zones it loads first, the level's own
+    // (techsets_<level>) and the common ones.
     IWMaterialBooks::Layout MaterialLayout()
     {
         IWMaterialBooks::Layout L;
         L.Profile = "iw8";
         L.ImageCount = 0x1c, L.Images = 0x48, L.ImageName = ImageNameAt;
+        L.AtlasRows = 0x22, L.AtlasCols = 0x23, L.Techset = 0x40;
         return L;
     }
 
@@ -263,6 +247,47 @@ namespace
                 };
                 IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
             });
+            // vfx (ParticleSystemDef) as the vfx core's JSON (Games/IW/Vfx.h); a material's images
+            // and atlas from the techsets_ zones' books, the zone's materials being name-only headers
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                auto Z = EffectView();
+                Z.ReadMaterials(C, Treyarch::MaterialReader([](uint64_t A) { return GameModernWarfare4::ReadXMaterial(A); },
+                                                            [this](uint64_t A) { return Off(A); }),
+                                false);
+                Vfx::Counts N;
+                ExportEffects(C, T, "vfx", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                    if (!Vfx::ReadSystem(Z, IW8::VfxLayout(), Pos, Name, J, &N)) return false;
+                    FromBooks(J);
+                    return true;
+                });
+                // their materials' images, the others needed from the zones holding them
+                if (C.Kinds.count(Kind::Image) && !N.Images.empty()) ExportTextures(N.Images, C, T);
+                for (const auto& [K, V] : N.Named()) Counter(K) += V;
+            });
+        }
+
+        // an effect's materials with their atlas grid and techset, which their name-only headers here
+        // lack: the books' (each module's "assets" entries naming a material)
+        void FromBooks(std::string& Json)
+        {
+            auto J = nlohmann::ordered_json::parse(Json, nullptr, false);
+            if (J.is_discarded()) return;
+            bool Changed = false;
+            const std::function<void(nlohmann::ordered_json&)> Visit = [&](nlohmann::ordered_json& V) {
+                if (V.is_array())
+                    for (auto& E : V) Visit(E);
+                if (!V.is_object()) return;
+                IWMaterialBooks::Extra X;
+                if (const auto M = V.find("material"); M != V.end() && M->is_string() && Books.Details(M->get<std::string>(), X))
+                {
+                    if (!V.contains("atlas") && X.Rows > 0 && X.Cols > 0) V["atlas"] = { X.Rows, X.Cols };
+                    if (V.value("techset", std::string()).empty() && !X.Techset.empty()) V["techset"] = X.Techset;
+                    Changed = true;
+                }
+                for (auto& [K, E] : V.items()) Visit(E);
+            };
+            Visit(J);
+            if (Changed) Json = J.dump(1, '\t', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
         }
 
         bool PooledCells(int64_t Pos, uint32_t& Columns, uint32_t& Rows, std::vector<std::string>& Cells) const
@@ -308,7 +333,7 @@ namespace
         void Fixups() override
         {
             Served(true);   // opened: the zone the handlers reach
-            Slots = ScriptStrings(Zone());
+            Slots = InlineScriptStrings(Zone());
             Counter("lods_without_surfaces") += LinkLodSurfaces(ModelLods());
         }
         void Defines(std::vector<DiskGame::AssetId>& Out) const override
@@ -330,10 +355,7 @@ namespace
         void LocalizeEntry(int64_t Pos, std::string& Key, std::string& Text) const override
         {
             Key = StringAt(PointerAt(Pos));
-            std::string Error;
-            const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
-            const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
-            if (!StringCipher::Decrypt(Cipher, StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
+            if (!CipherDecrypt(StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
         }
 
     private:
@@ -585,20 +607,60 @@ namespace
             for (uint32_t J = FirstInstance; J < FirstInstance + Count && J < InstanceCount; J++)
             {
                 const int64_t P = Instances + (int64_t)J * 24;
-                Maps::Instance In;
+                Maps::Instance In = Maps::PackedPlacement(Img, P, false);
                 In.Name = "smodel_" + std::to_string(J);
                 In.Model = ModelName;
-                for (int A = 0; A < 3; A++) In.Origin[A] = (float)At<int32_t>(Img, P + A * 4) / 4096.0f;
-                float Q[4];
-                for (int A = 0; A < 4; A++) Q[A] = (float)At<uint16_t>(Img, P + 12 + A * 2) / 65535.0f * 2.0f - 1.0f;
-                Maps::AxisFromQuat(Q, In.Axis);
-                In.Scale = At<float>(Img, P + 20);
                 Scene.StaticInstances.push_back(In);
             }
         }
         if (Dbg)
             std::fprintf(Dbg, "[map] static models %u collections %u instances %u placed %zu\n", ModelCount, CollectionCount, InstanceCount,
                          Scene.StaticInstances.size());
+
+        // ---- the scriptables (the iw8 tables): map_ents (0x470) holds their instances in a struct
+        // inline at 0x200 (0xd8: count u32 +4, 0x48-byte records +0x38: the scriptable 0, origin 8,
+        // angles 0x14 (pitch, yaw, roll), C2M's MW4ScriptableInstance); a scriptable (0x70) lists its
+        // models at 0x60 (count u32 0x5c, xmodel pointers): the first is placed, as C2M does (the
+        // others are its parts and states, a vehicle's wheels and damaged mirrors, which the game
+        // attaches to the first one's tags)
+        if (const int64_t Ents = Root("map_ents"); Ents >= 0)
+        {
+            const uint32_t Count = At<uint32_t>(Img, Ents + 0x204);
+            const int64_t Records = Off(PointerAt(Ents + 0x238));
+            size_t Placed = 0;
+            for (uint32_t K = 0; Records >= 0 && K < Count && Records + (int64_t)(K + 1) * 0x48 <= Size; K++)
+            {
+                const int64_t Rec = Records + (int64_t)K * 0x48, Def = Off(PointerAt(Rec));
+                if (Def < 0 || Def + 0x70 > Size)
+                {
+                    Counter("map_scriptables_without_definition")++;
+                    continue;
+                }
+                float Angles[3];
+                Maps::Instance In;
+                for (int A = 0; A < 3; A++) In.Origin[A] = At<float>(Img, Rec + 8 + A * 4), Angles[A] = At<float>(Img, Rec + 0x14 + A * 4);
+                Maps::AnglesToAxis(Angles, In.Axis);
+                const uint32_t ModelsIn = At<uint32_t>(Img, Def + 0x5c);
+                const int64_t List = Off(PointerAt(Def + 0x60));
+                for (uint32_t M = 0; List >= 0 && M < ModelsIn && M < 1 && List + (int64_t)(M + 1) * 8 <= Size; M++)
+                {
+                    const uint64_t Address = PointerAt(List + (int64_t)M * 8);
+                    const std::string ModelName = ModelAt(Address);
+                    if (ModelName.empty())
+                    {
+                        Counter("map_scriptable_models_unread")++;
+                        continue;
+                    }
+                    Models.emplace(ModelName, Address);
+                    In.Name = "scriptable_" + std::to_string(K) + (M ? "_" + std::to_string(M) : std::string());
+                    In.Model = ModelName;
+                    Scene.DynamicInstances.push_back(In);
+                    Placed++;
+                }
+            }
+            Counter("map_scriptables") += Count;
+            Counter("map_scriptable_instances") += Placed;
+        }
 
         // ---- ComWorld's lights (com_map: count u32 0x30, 0xa0-byte records at 0x38: the type byte
         // 1, colour 32, direction 44, origin 68, radius 80, cosHalfFovOuter 108, the definition 0x98)
@@ -653,14 +715,7 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const DiskGame::ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XPAKCache>(Install);
-            for (const auto& N : Names)
-            {
-                const auto Paths = TreyarchPackages::ExtractFastFiles(P, N, FastFileDir(Options), Error, ".fp");
-                Out.insert(Out.end(), Paths.begin(), Paths.end());
-            }
-            if (Out.empty() && Error.empty()) Error = "no picked zone in " + Install;
-            return !Out.empty();
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install), Install, Names, FastFileDir(Options), Out, Error, ".fp");
         }
 
         // its zones open on the index's workers: their decompression and walk share nothing, its

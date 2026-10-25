@@ -7,7 +7,11 @@
 // 0x28), not a community header. MW2 and MW3 differ only where Layout says.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 class CoDAnim_t;
 class CoDModel_t;
@@ -40,6 +44,14 @@ namespace Iw64
         } Map;
     };
     extern const Layout Mw2, Mw3;
+
+    // A model's name-only material header (",name"), by the name without the ",": where the zone
+    // served now defines that material (0: it does not), else the images another zone's material
+    // of that name has (false: none booked); unset: none is looked up
+    // (Iw4Family::Layout::MaterialByName, MaterialImagesByName)
+    extern thread_local std::function<uint64_t(const std::string& Name)> MaterialDefinedAt;
+    extern thread_local std::function<bool(const std::string& Name, std::vector<std::pair<uint32_t, std::string>>& Images)>
+        MaterialImagesElsewhere;
 
     // GfxImage: the pixels' GfxImageLoadDef pointer, mapType, cardMemory (8 bytes at 0x10), width,
     // height, then the name pointer

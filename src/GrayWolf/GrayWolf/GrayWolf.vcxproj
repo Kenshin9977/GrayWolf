@@ -168,6 +168,11 @@
       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <!-- the Assets tab's grid view (AssetGrid.h): its renderers, jobs and disk cache -->
+    <ClCompile Include="AssetGrid\*.cpp">
+      <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <!-- the gdt kind's converters, one file per type (Gdt.h): a new type adds a file only -->
     <ClCompile Include="Games\*\Gdt\*.cpp">
       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
@@ -189,12 +194,14 @@
     <ClCompile Include="DiskGame.cpp" />
     <ClCompile Include="DiskGame.Cli.cpp" />
     <ClCompile Include="DiskGame.Index.cpp" />
+    <ClCompile Include="DiskGame.Materials.cpp" />
     <ClCompile Include="DiskGame.LevelNames.cpp" />
     <ClCompile Include="DiskGame.Monitor.cpp" />
     <ClCompile Include="DiskGame.Sizes.cpp" />
     <ClCompile Include="ZonekitZone.cpp" />
     <ClCompile Include="ZonekitZone.Data.cpp" />
     <ClCompile Include="ZonekitZone.Tables.cpp" />
+    <ClCompile Include="ZonekitZone.Materials.cpp" />
     <ClCompile Include="ZonekitZone.Bundles.cpp" />
     <ClCompile Include="ZonekitZone.Dump.cpp" />
     <ClCompile Include="Techsets.cpp" />
@@ -222,6 +229,8 @@
     <ClCompile Include="AssetPreview.cpp" />
     <ClCompile Include="ModelPreview.cpp" />
     <ClCompile Include="ModelPreviewGPU.cpp" />
+    <!-- the effects preview: model, simulation, renderer, CLI, panel -->
+    <ClCompile Include="FxPreview*.cpp" />
     <ClCompile Include="PreviewLoader.cpp" />
     <ClCompile Include="PreviewTextures.cpp" />
     <ClCompile Include="MaterialDescription.cpp" />
@@ -238,10 +247,12 @@
     <ClCompile Include="SeAnimReader.cpp" />
     <ClCompile Include="XAnimBinReader.cpp" />
     <ClCompile Include="SkeletalPreview.cpp" />
-    <ClCompile Include="ImGuiShell.cpp" />
+    <ClCompile Include="ImGuiShell*.cpp" />
     <ClCompile Include="AudioPlayer.cpp" />
     <ClCompile Include="CerberusCrypto.cpp" />
+    <ClCompile Include="LuaExport.cpp" />
     <ClCompile Include="OatBridge.cpp" />
+    <ClCompile Include="WmaSounds.cpp" />
     <ClCompile Include="ScriptExport.cpp" />
     <ClCompile Include="Gdt.cpp" />
     <ClCompile Include="GdtWriter.cpp" />
@@ -261,7 +272,6 @@
     <ClCompile Include="CliCommands.Blender.cpp" />
     <ClCompile Include="ImGuiLoadGamePanel.Disk.cpp" />
     <ClCompile Include="IWDSoundDecoder.cpp" />
-    <ClCompile Include="GameVanguard.cpp" />
     <ClCompile Include="GameWorldWar2.cpp" />
     <ClCompile Include="IPAKCache.cpp" />
     <ClCompile Include="IPAKSupport.cpp" />
@@ -277,10 +287,10 @@
     <ClCompile Include="ZoneTableWalker.cpp" />
     <ClCompile Include="CliCommands.Audio.cpp" />
     <ClCompile Include="CliCommands.ModelPreview.cpp" />
+    <ClCompile Include="CliCommands.Shared.cpp" />
     <ClCompile Include="Main.cpp" />
     <ClCompile Include="PAKCache.cpp" />
     <ClCompile Include="PAKSupport.cpp" />
-    <ClCompile Include="Parasyte.cpp" />
     <ClCompile Include="SABCache.cpp" />
     <ClCompile Include="SABSupport.cpp" />
     <ClCompile Include="Siren.cpp" />
@@ -313,6 +323,7 @@
     <ClInclude Include="GameCommand.h" />
     <ClInclude Include="ExportWriters.h" />
     <ClInclude Include="DiskGame.h" />
+    <ClInclude Include="DiskGame.Materials.h" />
     <ClInclude Include="DiskGame.Monitor.h" />
     <ClInclude Include="DiskGameSizes.h" />
     <ClInclude Include="DiskGameCli.h" />
@@ -368,9 +379,12 @@
     <ClInclude Include="SkeletalPreview.h" />
     <ClInclude Include="ModelViewport.h" />
     <ClInclude Include="ImGuiShell.h" />
+    <ClInclude Include="ImGuiShell.Internal.h" />
     <ClInclude Include="AudioPlayer.h" />
     <ClInclude Include="CerberusCrypto.h" />
+    <ClInclude Include="LuaExport.h" />
     <ClInclude Include="OatBridge.h" />
+    <ClInclude Include="WmaSounds.h" />
     <ClInclude Include="ScriptExport.h" />
     <ClInclude Include="Gdt.h" />
     <ClInclude Include="GdtWriter.h" />
@@ -387,7 +401,6 @@
     <ClInclude Include="ImGuiBlender.h" />
     <ClInclude Include="UiAsync.h" />
     <ClInclude Include="IWDSoundDecoder.h" />
-    <ClInclude Include="GameVanguard.h" />
     <ClInclude Include="GameWorldWar2.h" />
     <ClInclude Include="IPAKCache.h" />
     <ClInclude Include="IPAKSupport.h" />
@@ -395,7 +408,6 @@
     <ClInclude Include="IWDSupport.h" />
     <ClInclude Include="PAKCache.h" />
     <ClInclude Include="PAKSupport.h" />
-    <ClInclude Include="Parasyte.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="SABCache.h" />
     <ClInclude Include="SABSupport.h" />
@@ -436,10 +448,11 @@
   </Target>
   <!-- Ship the zonekit profiles (reader tables per game) next to the exe: zone-walk finds
        them at <exe dir>\zonekit\profiles\<game>, the material adapters its shading.txt, the gdt kind
-       its gdt\<type>\ folders (Gdt.h), Cold War its strings.cipher.txt (Games\T9\StringCipher.h). -->
+       its gdt\<type>\ folders (Gdt.h), Cold War its strings.cipher.txt (Games\T9\StringCipher.h), the anim
+       preview its reference rigs, preview_rigs.json (AssetGrid\AnimRigs.h). -->
   <Target Name="CopyZonekitProfiles" AfterTargets="Build">
     <ItemGroup>
-      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc" />
+      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\preview_rigs.json" />
     </ItemGroup>
     <Copy SourceFiles="@(ZonekitProfile)" DestinationFiles="@(ZonekitProfile->'$(OutDir)zonekit\profiles\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>

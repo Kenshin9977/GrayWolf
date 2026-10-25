@@ -96,3 +96,30 @@ f2e432d0|4|5|2
 f2e43400|3|5|8
 f2e43400|5|5|8
 weapon|15|5|4
+# equipsndtable 0x2de5ab0: push(5) after its header, then every pointer at 0x18..0x80 aligned 8 (0x2d88a10 mask 7),
+# its sub-readers too: 0x2de5930 (the list at +0, mask 7; its elements' arrays mask 3), 0x2de57e0, 0x2de58b0 and the
+# 0x50 list's elements (mask 7). Never recorded (common_mp only): the walk left them in block 1, the game's block 5
+# ran 0x21650 bytes ahead of the walk's and common_mp's later names resolved into xmodeldetailcollision data
+equipsndtable|2|5|8
+equipsndtable|3|5|8
+equipsndtable|4|5|8
+equipsndtable|5|5|8
+equipsndtable|6|5|8
+equipsndtable|7|5|8
+equipsndtable|8|5|8
+equipsndtable|9|5|8
+equipsndtable|11|5|8
+equipsndtable|12|5|8
+equipsndtable|13|5|8
+equipsndtable|14|5|8
+equipsndtable|15|5|8
+f2de5930|1|5|8
+f2de5930_e1|1|5|4
+f2de57e0|1|5|8
+f2de57e0|2|5|8
+f2de58b0|1|5|8
+f2de5ab0_e4|1|5|8
+# xcam 0x2e00ac0: its list at 0x50 aligned 8 (0x2e00ba1: mask 7), each element's array at 0x18 (0x2e00e00, 0x2e00e57:
+# mask 3) aligned 4; the recordings' largest agreeing alignment (64, 32) overfit: common_mp's block 5 drifted 0x4ff0 ahead
+xcam|4|5|8
+f2e00e00|2|5|4

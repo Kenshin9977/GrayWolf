@@ -110,7 +110,35 @@ int CreateAccessor(tinygltf::Model& GltfModel, int View, size_t Offset, size_t L
 	return Index;
 }
 
-void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, bool SupportsScale, bool writeBinary)
+// The scene's root node: CoD's Z up to glTF's Y up (x, y, z) -> (x, z, -y), and the model's unit to
+// metres. The bones hang under it; a skinned mesh node is a root of the scene itself (glTF ignores
+// its transform: the joints place its vertices), a rigid one hangs under it. Its name is the map
+// writer's root (MapGlbWriter), which GrayWolf's own preview skips to stay in CoD's space.
+std::string GLTF::ImageUri(const std::string& Path)
+{
+	static const char Hex[] = "0123456789ABCDEF";
+	std::string Out;
+	for (const char C : Path)
+	{
+		const unsigned char U = (unsigned char)(C == '\\' ? '/' : C);
+		if (U == '/')
+		{
+			if (!Out.empty() && Out.back() == '/') continue;
+			Out.push_back('/');
+		}
+		else if ((U >= 'a' && U <= 'z') || (U >= 'A' && U <= 'Z') || (U >= '0' && U <= '9') || U == '-' || U == '.' || U == '_' || U == '~')
+			Out.push_back((char)U);
+		else
+		{
+			Out.push_back('%');
+			Out.push_back(Hex[U >> 4]);
+			Out.push_back(Hex[U & 15]);
+		}
+	}
+	return Out;
+}
+
+void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, bool SupportsScale, bool writeBinary, float MetresPerUnit)
 {
 	// TODO: Adjust types based off counts, so we're not writing 4 bytes per face
 	// or joint when it isn't necessary.
@@ -119,10 +147,17 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 	tinygltf::Model GltfModel;
 	tinygltf::Skin GltfSkin;
 	tinygltf::TinyGLTF loader;
+	// the images are the export's own files: their URIs as written (tinygltf's default image
+	// writer cuts each to its file name, losing the folder it is in)
+	loader.SetImageWriter(nullptr, nullptr);
 
-	size_t NodeIndex = 0;
-
+	tinygltf::Node Root;
+	Root.name = "cod_to_gltf";
+	const double S = MetresPerUnit;
+	Root.matrix = { S, 0, 0, 0, 0, 0, -S, 0, 0, S, 0, 0, 0, 0, 0, 1 };
+	GltfModel.nodes.push_back(Root);
 	Scene.nodes.push_back(0);
+	const int FirstBone = 1;
 
 	GltfModel.asset.generator = "Greyhound";
 	GltfModel.asset.version = "2.0";
@@ -135,12 +170,6 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 
 	GltfSkin.inverseBindMatrices = MatricesAccessor;
 
-	// Create a matrix for up axis conversion
-	Matrix GlobalTransform;
-	GlobalTransform.Mat(0, 0) = 1.0f;
-	GlobalTransform.Mat(1, 2) = 1.0f;
-	GlobalTransform.Mat(2, 1) = 1.0f;
-
 	for (auto& Bone : Model.Bones)
 	{
 		tinygltf::Node GltfNode;
@@ -152,8 +181,8 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 		GltfNode.rotation.push_back(Bone.LocalRotation.Y);
 		GltfNode.rotation.push_back(Bone.LocalRotation.Z);
 		GltfNode.rotation.push_back(Bone.LocalRotation.W);
-		if(Bone.BoneParent != -1)
-			GltfModel.nodes[Bone.BoneParent].children.push_back((int)GltfModel.nodes.size());
+		// every root bone under the scene's root (a skeleton may have several)
+		GltfModel.nodes[Bone.BoneParent >= 0 ? FirstBone + Bone.BoneParent : 0].children.push_back((int)GltfModel.nodes.size());
 		Matrix Transform = Matrix::CreateFromQuaternion(Bone.GlobalRotation);
 		Transform.Mat(3, 0) = Bone.GlobalPosition.X;
 		Transform.Mat(3, 1) = Bone.GlobalPosition.Y;
@@ -170,7 +199,7 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 		if (Material.DiffuseMapName.size() != 0 && TextureMap.find(Material.DiffuseMapName) == TextureMap.end())
 		{
 			tinygltf::Image Image;
-			Image.uri = Material.DiffuseMapName;
+			Image.uri = ImageUri(Material.DiffuseMapName);
 			tinygltf::Texture Texture;
 			Texture.source = (int)GltfModel.images.size();
 			GltfModel.images.push_back(Image);
@@ -180,7 +209,7 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 		if (Material.NormalMapName.size() != 0 && TextureMap.find(Material.NormalMapName) == TextureMap.end())
 		{
 			tinygltf::Image Image;
-			Image.uri = Material.NormalMapName;
+			Image.uri = ImageUri(Material.NormalMapName);
 			tinygltf::Texture Texture;
 			Texture.source = (int)GltfModel.images.size();
 			GltfModel.images.push_back(Image);
@@ -196,6 +225,7 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 		if (Material.DiffuseMapName.size() > 0)
 		{
 			GltfMaterial.pbrMetallicRoughness.baseColorTexture.index = TextureMap[Material.DiffuseMapName];
+			for (int c = 0; c < 3; c++) GltfMaterial.pbrMetallicRoughness.baseColorFactor[c] = Material.ColorFactor[c];
 		}
 		else
 		{
@@ -395,7 +425,16 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 
 		tinygltf::Node GltfMeshNode;
 		GltfMeshNode.mesh = (int)GltfModel.meshes.size();
-		GltfMeshNode.skin = 0;
+		GltfMeshNode.name = Mesh.MaterialIndicies.empty() || Mesh.MaterialIndicies[0] < 0 || (size_t)Mesh.MaterialIndicies[0] >= Model.Materials.size()
+			? std::format("mesh_{}", GltfModel.meshes.size()) : Model.Materials[Mesh.MaterialIndicies[0]].MaterialName;
+		const int MeshNode = (int)GltfModel.nodes.size();
+		if (NumWeights > 0 && !Model.Bones.empty())
+		{
+			GltfMeshNode.skin = 0;
+			Scene.nodes.push_back(MeshNode);
+		}
+		else
+			GltfModel.nodes[0].children.push_back(MeshNode);
 		GltfModel.nodes.push_back(GltfMeshNode);
 
 		GltfMesh.primitives.push_back(GltfPrim);
@@ -420,7 +459,7 @@ void GLTF::ExportGLTF(const WraithModel& Model, const std::string& FileName, boo
 #endif
 
 	GltfModel.buffers.push_back(GltfBuffer);
-	GltfModel.skins.push_back(GltfSkin);
+	if (!Model.Bones.empty()) GltfModel.skins.push_back(GltfSkin);
 	GltfModel.scenes.push_back(Scene);
 	loader.WriteGltfSceneToFile(&GltfModel, FileName, false, false, true, writeBinary);
 }

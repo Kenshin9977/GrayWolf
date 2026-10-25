@@ -146,6 +146,19 @@ const uint8_t* Set::Locate(uint64_t Address, uint64_t N) const
     return nullptr;
 }
 
+bool Set::Holds(const std::string& Type, uint64_t Address) const
+{
+    std::lock_guard<std::mutex> G(HeldLock);
+    auto& [Seen, Addresses] = Held[Type];
+    for (; Seen < Zones.size(); Seen++)
+    {
+        const Zone& Z = *Zones[Seen];
+        for (const auto& I : Z.R.Instances)
+            if (I.Owner < Z.R.OwnerNames.size() && Z.R.OwnerNames[I.Owner] == Type) Addresses.insert(Z.Base + (uint64_t)I.Pos);
+    }
+    return Addresses.count(Address) != 0;
+}
+
 bool Set::Put(uint64_t Field, uint64_t Value)
 {
     for (const auto& Z : Zones)

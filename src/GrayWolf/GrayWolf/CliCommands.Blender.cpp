@@ -5,6 +5,8 @@
 
 #include "BlenderLauncher.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include <filesystem>
@@ -38,4 +40,18 @@ int RunOpenMap(const CliOptions& Options)
     if (!Ok && GetConsoleWindow() == nullptr && Options.Report.empty())
         MessageBoxA(nullptr, Error.c_str(), "GrayWolf: open-map", MB_OK | MB_ICONEXCLAMATION);
     return Ok ? 0 : 1;
+}
+
+// ---- the subcommands (CliCommands.h)
+
+void AddBlenderCommands(CliCommandBuilders& B)
+{
+    B["open-map"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("open-map", "Open a map export in Blender: the first time its import script runs and "
+                                                   "<map>.blend is saved beside it, later that .blend opens");
+        Sub->add_option("map", Options.OpenMap, "The map's .glb, its _import.py, its .blend, or a folder holding one map")
+            ->required()->check(CLI::ExistingPath);
+        Sub->add_flag("--reimport", Options.OpenMapReimport, "Run the import script again, even when the .blend exists");
+        Sub->add_flag("--background", Options.OpenMapBackground, "Import and save the .blend without opening Blender's window");
+    };
 }

@@ -653,21 +653,7 @@ const XMaterial_t GameBlackOps4::ReadXMaterial(uint64_t MaterialPointer)
         if (AssetNameCache.NameDatabase.find(S.Hash) != AssetNameCache.NameDatabase.end())
             ImageName = AssetNameCache.NameDatabase[S.Hash];
 
-        auto DefaultUsage = ImageUsageType::Unknown;
-        switch (S.Semantic)
-        {
-        case 0xA0AB1041:
-            DefaultUsage = ImageUsageType::DiffuseMap;
-            break;
-        case 0x59D30D0F:
-            DefaultUsage = ImageUsageType::NormalMap;
-            break;
-        case 0xEC443804:
-            DefaultUsage = ImageUsageType::SpecularMap;
-            break;
-        }
-
-        Result.Images.emplace_back(DefaultUsage, S.Semantic, S.ImagePtr, ImageName);
+        Result.Images.emplace_back(GameReaders::TreyarchSemanticUsage(S.Semantic), S.Semantic, S.ImagePtr, ImageName);
     }
 
     return Result;
@@ -865,550 +851,118 @@ void GameBlackOps4::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_pt
     }
 }
 
+namespace
+{
+    enum class Rotate { None, Left, Right };
+
+    // One DecryptString cipher: per byte, the key steps (Step), the byte may rotate by it, then is
+    // XORed with a mask derived from it (Mask) unless it already equals that mask.
+    template <typename Step, typename Mask>
+    void Unmask(uint8_t* Buffer, uint8_t Length, uint32_t k, Rotate Turn, Step StepKey, Mask KeyMask)
+    {
+        for (uint8_t i = 0; i < Length - 1; i++)
+        {
+            StepKey(k, i);
+            if (Turn == Rotate::Left)
+                Buffer[i] = RotateLeft8(Buffer[i], k);
+            else if (Turn == Rotate::Right)
+                Buffer[i] = RotateRight8(Buffer[i], k);
+            uint8_t j = KeyMask(k);
+            Buffer[i] = Buffer[i] != j ? Buffer[i] ^ j : Buffer[i];
+        }
+    }
+}
+
 std::string GameBlackOps4::DecryptString(uint8_t* InputBuffer, uint8_t InputLength, uint8_t EncryptionID, uint64_t StringHash)
 {
     switch ((uint8_t)(EncryptionID + 128))
     {
-    case 0:
-    {
-        uint32_t k = -1741536506;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[(i % 0x11C) + (314 * (k % 5))];
-            j = k + 6;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-
-    }
-    case 1:
-    {
-        uint32_t k = 1192577426;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[(314 * (i & 1)) + (k % 0x1F)];
-            j = k - 110;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 3:
-    {
-        uint32_t k = 877228565;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k -= DecryptionTable[(k % 0x8B) + (314 * (i % 0xAu))];
-            j = k ^ 21;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 7:
-    {
-        uint32_t k = 1214813561;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= DecryptionTable[k % 0xA1 + 314 * (i % 5u)];
-            j = k + 121;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 8:
-    {
-        uint32_t k = 57;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += i;
-            j = k * 57;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 10:
-    {
-        uint32_t k = -1853736935;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= i;
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k + 25;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 11:
-    {
-        uint32_t k = 841107494;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k -= DecryptionTable[314 * (i & 3) + k % 0x5D];
-            j = 38 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 14:
-    {
-        uint32_t k = 2252494689;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[(i & 7) + 314 * (k & 7)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k + 97;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 17:
-    {
-        uint32_t k = -2124904183;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x9D + 314 * (k % 3)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = 9 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 18:
-    {
-        uint32_t k = 2020090434;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= i;
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k + 66;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 20:
-    {
-        uint32_t k = 628241558;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[i % 0x74 + 314 * (k % 6)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k - 106;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 22:
-    {
-        uint32_t k = 889284759;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x67 + 314 * (k % 6)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = -105 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 23:
-    {
-        uint32_t k = 960823304;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= i;
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k + 8;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 24:
-    {
-        uint32_t k = 609355846;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x11B + 314 * (k % 3)];
-            j = 70 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 25:
-    {
-        uint32_t k = 1646539289;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k -= DecryptionTable[i % 0x74 + 314 * (k % 0xC)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k + 25;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 26:
-    {
-        uint32_t k = 592783125;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x19 + 314 * (k % 0xA)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = 21 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 27:
-    {
-        uint32_t k = 2003114280;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= i;
-            j = k ^ 40;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 29:
-    {
-        uint32_t k = 295057172;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x114 + 314 * (k % 5)];
-            j = 20 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 30:
-    {
-        uint32_t k = 2039837206;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= DecryptionTable[k % 0x118 + 314 * (i % 6)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k ^ 0x16;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 34:
-    {
-        uint32_t k = 39;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k -= i;
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = 39 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 35:
-    {
-        uint32_t k = 1126761733;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[i % 0xC1 + 314 * (k % 0xC)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = 5 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 36:
-    {
-        uint32_t k = 680949523;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x34 + 314 * (k % 0xC)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k + 19;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 39:
-    {
-        uint32_t k = 830817865;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[k % 0xCE + 314 * (i % 6)];
-            j = k ^ 73;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 40:
-    {
-        uint32_t k = 2187474786;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= DecryptionTable[(k & 0x1F) + 314 * (i % 0xB)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k ^ 98;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 41:
-    {
-        uint32_t k = 912361108;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[(i & 1) + 314 * (k % 3)];
-            j = -108 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 43:
-    {
-        uint32_t k = 1614283080;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= DecryptionTable[i % 0x5F + 314 * (k % 6)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = 72 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 44:
-    {
-        uint32_t k = 310931476;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[k % 0xB8 + 314 * (i % 7)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = 20 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 46:
-    {
-        uint32_t k = 1752254548;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[k % 0xF0 + 314 * (i % 7)];
-            j = 84 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 47:
-    {
-        uint32_t k = -1855434364;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= i;
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = -124 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 49:
-    {
-        uint32_t k = 339174210;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[k % 0x10C];
-            j = k + 66;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 50:
-    {
-        uint32_t k = 924357779;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[i % 0x10B + 314 * (k % 0xB)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k - 109;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 51:
-    {
-        uint32_t k = -2122213293;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[i % 0x25 + 314 * (k % 0xC)];
-            j = k ^ 0x53;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 52:
-    {
-        uint32_t k = 2199357493;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k ^= DecryptionTable[(i & 0x1F) + 314 * (k % 6)];
-            j = 53 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 53:
-    {
-        uint32_t k = 928594017;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += i;
-            j = k ^ 0x61;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 54:
-    {
-        uint32_t k = 428896339;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0x41 + 314 * (k % 9)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k + 83;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 55:
-    {
-        uint32_t k = 57;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += i;
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = 57 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 56:
-    {
-        uint32_t k = 113;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += i;
-            j = 113 - k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 57:
-    {
-        uint32_t k = 32;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= i;
-            j = k + 32;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 58:
-    {
-        uint32_t k = 88110114;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k -= DecryptionTable[i % 0x10F + 314 * (k % 6)];
-            InputBuffer[i] = RotateLeft8(InputBuffer[i], k);
-            j = k ^ 0x22;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 59:
-    {
-        uint32_t k = 908137505;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[i % 0x32 + 314 * (k % 0xA)];
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = 33 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 60:
-    {
-        uint32_t k = 1115976849;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += DecryptionTable[314 * (i & 3) + k % 0x45];
-            j = k ^ 0x91;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 61:
-    {
-        uint32_t k = 2004443495;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k *= DecryptionTable[i % 0xDC + 314 * (k % 0xB)];
-            j = 103 * k;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
-    case 63:
-    {
-        uint32_t k = -105;
-        uint8_t j = 0;
-        for (uint8_t i = 0; i < InputLength - 1; i++)
-        {
-            k += i;
-            InputBuffer[i] = RotateRight8(InputBuffer[i], k);
-            j = k ^ 151;
-            InputBuffer[i] = InputBuffer[i] != j ? InputBuffer[i] ^ j : InputBuffer[i];
-        }
-        break;
-    }
+    case 0: Unmask(InputBuffer, InputLength, -1741536506, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[(i % 0x11C) + (314 * (k % 5))]; }, [](uint32_t k) -> uint8_t { return k + 6; }); break;
+    case 1: Unmask(InputBuffer, InputLength, 1192577426, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[(314 * (i & 1)) + (k % 0x1F)]; }, [](uint32_t k) -> uint8_t { return k - 110; }); break;
+    case 3: Unmask(InputBuffer, InputLength, 877228565, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k -= DecryptionTable[(k % 0x8B) + (314 * (i % 0xAu))]; }, [](uint32_t k) -> uint8_t { return k ^ 21; }); break;
+    case 7: Unmask(InputBuffer, InputLength, 1214813561, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[k % 0xA1 + 314 * (i % 5u)]; }, [](uint32_t k) -> uint8_t { return k + 121; }); break;
+    case 8: Unmask(InputBuffer, InputLength, 57, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += i; }, [](uint32_t k) -> uint8_t { return k * 57; }); break;
+    case 10: Unmask(InputBuffer, InputLength, -1853736935, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k ^= i; }, [](uint32_t k) -> uint8_t { return k + 25; }); break;
+    case 11: Unmask(InputBuffer, InputLength, 841107494, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k -= DecryptionTable[314 * (i & 3) + k % 0x5D]; }, [](uint32_t k) -> uint8_t { return 38 - k; }); break;
+    case 14: Unmask(InputBuffer, InputLength, 2252494689, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[(i & 7) + 314 * (k & 7)]; }, [](uint32_t k) -> uint8_t { return k + 97; }); break;
+    case 17: Unmask(InputBuffer, InputLength, -2124904183, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x9D + 314 * (k % 3)]; }, [](uint32_t k) -> uint8_t { return 9 * k; }); break;
+    case 18: Unmask(InputBuffer, InputLength, 2020090434, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k ^= i; }, [](uint32_t k) -> uint8_t { return k + 66; }); break;
+    case 20: Unmask(InputBuffer, InputLength, 628241558, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0x74 + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return k - 106; }); break;
+    case 22: Unmask(InputBuffer, InputLength, 889284759, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x67 + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return -105 * k; }); break;
+    case 23: Unmask(InputBuffer, InputLength, 960823304, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k *= i; }, [](uint32_t k) -> uint8_t { return k + 8; }); break;
+    case 24: Unmask(InputBuffer, InputLength, 609355846, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x11B + 314 * (k % 3)]; }, [](uint32_t k) -> uint8_t { return 70 - k; }); break;
+    case 25: Unmask(InputBuffer, InputLength, 1646539289, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k -= DecryptionTable[i % 0x74 + 314 * (k % 0xC)]; }, [](uint32_t k) -> uint8_t { return k + 25; }); break;
+    case 26: Unmask(InputBuffer, InputLength, 592783125, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x19 + 314 * (k % 0xA)]; }, [](uint32_t k) -> uint8_t { return 21 - k; }); break;
+    case 27: Unmask(InputBuffer, InputLength, 2003114280, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k ^= i; }, [](uint32_t k) -> uint8_t { return k ^ 40; }); break;
+    case 29: Unmask(InputBuffer, InputLength, 295057172, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x114 + 314 * (k % 5)]; }, [](uint32_t k) -> uint8_t { return 20 * k; }); break;
+    case 30: Unmask(InputBuffer, InputLength, 2039837206, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[k % 0x118 + 314 * (i % 6)]; }, [](uint32_t k) -> uint8_t { return k ^ 0x16; }); break;
+    case 34: Unmask(InputBuffer, InputLength, 39, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k -= i; }, [](uint32_t k) -> uint8_t { return 39 * k; }); break;
+    case 35: Unmask(InputBuffer, InputLength, 1126761733, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0xC1 + 314 * (k % 0xC)]; }, [](uint32_t k) -> uint8_t { return 5 - k; }); break;
+    case 36: Unmask(InputBuffer, InputLength, 680949523, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x34 + 314 * (k % 0xC)]; }, [](uint32_t k) -> uint8_t { return k + 19; }); break;
+    case 39: Unmask(InputBuffer, InputLength, 830817865, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[k % 0xCE + 314 * (i % 6)]; }, [](uint32_t k) -> uint8_t { return k ^ 73; }); break;
+    case 40: Unmask(InputBuffer, InputLength, 2187474786, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[(k & 0x1F) + 314 * (i % 0xB)]; }, [](uint32_t k) -> uint8_t { return k ^ 98; }); break;
+    case 41: Unmask(InputBuffer, InputLength, 912361108, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[(i & 1) + 314 * (k % 3)]; }, [](uint32_t k) -> uint8_t { return -108 * k; }); break;
+    case 43: Unmask(InputBuffer, InputLength, 1614283080, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[i % 0x5F + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return 72 * k; }); break;
+    case 44: Unmask(InputBuffer, InputLength, 310931476, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[k % 0xB8 + 314 * (i % 7)]; }, [](uint32_t k) -> uint8_t { return 20 * k; }); break;
+    case 46: Unmask(InputBuffer, InputLength, 1752254548, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[k % 0xF0 + 314 * (i % 7)]; }, [](uint32_t k) -> uint8_t { return 84 - k; }); break;
+    case 47: Unmask(InputBuffer, InputLength, -1855434364, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k ^= i; }, [](uint32_t k) -> uint8_t { return -124 - k; }); break;
+    case 49: Unmask(InputBuffer, InputLength, 339174210, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[k % 0x10C]; }, [](uint32_t k) -> uint8_t { return k + 66; }); break;
+    case 50: Unmask(InputBuffer, InputLength, 924357779, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0x10B + 314 * (k % 0xB)]; }, [](uint32_t k) -> uint8_t { return k - 109; }); break;
+    case 51: Unmask(InputBuffer, InputLength, -2122213293, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0x25 + 314 * (k % 0xC)]; }, [](uint32_t k) -> uint8_t { return k ^ 0x53; }); break;
+    case 52: Unmask(InputBuffer, InputLength, 2199357493, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[(i & 0x1F) + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return 53 * k; }); break;
+    case 53: Unmask(InputBuffer, InputLength, 928594017, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += i; }, [](uint32_t k) -> uint8_t { return k ^ 0x61; }); break;
+    case 54: Unmask(InputBuffer, InputLength, 428896339, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x41 + 314 * (k % 9)]; }, [](uint32_t k) -> uint8_t { return k + 83; }); break;
+    case 55: Unmask(InputBuffer, InputLength, 57, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k += i; }, [](uint32_t k) -> uint8_t { return 57 * k; }); break;
+    case 56: Unmask(InputBuffer, InputLength, 113, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += i; }, [](uint32_t k) -> uint8_t { return 113 - k; }); break;
+    case 57: Unmask(InputBuffer, InputLength, 32, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= i; }, [](uint32_t k) -> uint8_t { return k + 32; }); break;
+    case 58: Unmask(InputBuffer, InputLength, 88110114, Rotate::Left,
+        [](uint32_t& k, uint8_t i) { k -= DecryptionTable[i % 0x10F + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return k ^ 0x22; }); break;
+    case 59: Unmask(InputBuffer, InputLength, 908137505, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0x32 + 314 * (k % 0xA)]; }, [](uint32_t k) -> uint8_t { return 33 * k; }); break;
+    case 60: Unmask(InputBuffer, InputLength, 1115976849, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k += DecryptionTable[314 * (i & 3) + k % 0x45]; }, [](uint32_t k) -> uint8_t { return k ^ 0x91; }); break;
+    case 61: Unmask(InputBuffer, InputLength, 2004443495, Rotate::None,
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0xDC + 314 * (k % 0xB)]; }, [](uint32_t k) -> uint8_t { return 103 * k; }); break;
+    case 63: Unmask(InputBuffer, InputLength, -105, Rotate::Right,
+        [](uint32_t& k, uint8_t i) { k += i; }, [](uint32_t k) -> uint8_t { return k ^ 151; }); break;
     default:
         break;
     }

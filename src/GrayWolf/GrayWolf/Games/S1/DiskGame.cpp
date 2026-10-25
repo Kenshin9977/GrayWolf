@@ -12,18 +12,16 @@
 #include "GameReaders.h"
 #include "GameWorldWar2.h"
 #include "Games/IW/IWMaterialBooks.h"
-#include "Games/IW/IWPakSounds.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
 #include "Games/S1/EntityKeys.h"
 #include "MapLive.h"
-#include "PAKCache.h"
 
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <map>
 #include <memory>
 #include <set>
@@ -113,6 +111,9 @@ namespace
             ExportsIwRawfiles();
             ExportsIwStringTables();
             ExportsIwWeapons(WeaponLayout());
+            // the material and fx kinds: FxEffectDef 0x40, elements 0x140; Material's techniqueSet at
+            // 0xf0 (the s1 tables f246690 and f24f5a0, x64-zt's S1 structs.hpp)
+            ExportsIwEffects(IwEffects::AdvancedWarfare(), GameAdvancedWarfare::ReadXMaterial, 0xf0);
         }
         ~AwZone() override
         {
@@ -173,21 +174,14 @@ namespace
         const uint32_t Level = GameReaders::LargestLevel(Info, Width, Height);
         const PakEntry& E = It->second[Level];
         if (E.End <= E.Start) return nullptr;
-        const std::string& Ff = Current->FastFilePath();
-        const std::string Pak = (E.Pak >> 16) == 0 ? Ff
-            : (fs::path(Ff).parent_path() / std::format("imagefile{}.pak", (unsigned long long)(E.Pak >> 16))).string();
-        return GameAdvancedWarfare::DecodePakImage(Info, Pak, E.Start, E.End, Width, Height, Image.ImageUsage);
+        return GameAdvancedWarfare::DecodePakImage(Info, Current->StreamPak(E), E.Start, E.End, Width, Height, Image.ImageUsage);
     }
 
     void AwZone::Fixups()
     {
         Served(true);   // opened: the zone the handlers reach
-        // the script strings: count at 0x48, marker-tested slots from 0x70, then their text
+        Slots = HeaderScriptStrings();
         const auto& Z = Zone();
-        const uint64_t Count = At<uint64_t>(Z, 0x48);
-        if (At<uint64_t>(Z, 0x50) == Rules().Marker && Count != 0 && Count <= Z.size() / 8)
-            Slots = InlineStrings(Z, 0x70, Count, 8, Rules().Marker);
-
         LinkLodSurfaces(ModelLods());
         ReadStreams(ImageStreamedAt);
         for (const auto& I : Walk().Instances)
@@ -270,30 +264,11 @@ namespace
 
     void AwZone::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
     {
-        // every alias's file specs, through the live reader: FLAC or PCM in soundfile<N>.pak (a
-        // language folder when localized), a loaded sound's in the zone when no package has it
-        std::set<uint64_t> Unique;
-        std::vector<CoDAsset_t*> Found;
-        std::vector<std::pair<int64_t, std::string>> Lists;
-        for (const auto& I : Walk().Instances)
-        {
-            if (!OwnerIs(I, "sound")) continue;
-            const std::string AliasName = AssetName(DiskGame::Kind::Sound, I.Pos);
-            if (IsReference(DiskGame::Kind::Sound, AliasName, I.Pos)) continue;
-            const auto Alias = CoDAssets::GameInstance->Read<AWSoundAlias>(VirtualGameSession::Address((uint64_t)I.Pos));
-            GameAdvancedWarfare::AddAliasSounds(Alias, AliasName, Unique, Found, true);
-            Lists.emplace_back(I.Pos, AliasName);
-        }
-        PAKCache Packages;
-        Packages.LoadPackageCache(GameWorldWar2::InstallOfZone(FastFilePath()));
-        IWPakSounds::WriteOptions Options;
-        Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
-        IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
-
-        if (!SoundAliasCsv::Wanted(C)) return;
-        SoundAliasCsv::Rows Rows;
-        IWSoundAliases::ReadLive(AliasView(), Lists, AliasLayout(), Rows);
-        SoundAliasCsv::Write(C, T, Name(), Rows);
+        // FLAC or PCM in soundfile<N>.pak, a loaded sound's in the zone when no package has it
+        ExportPakSounds(C, T, GameWorldWar2::InstallOfZone(FastFilePath()), false, AliasLayout(),
+                        [](uint64_t Address, const std::string& Name, std::set<uint64_t>& Unique, std::vector<CoDAsset_t*>& Found) {
+                            GameAdvancedWarfare::AddAliasSounds(CoDAssets::GameInstance->Read<AWSoundAlias>(Address), Name, Unique, Found, true);
+                        });
     }
 
     // The level (the s1 tables): GfxWorld (gfx_map, 0xaf0) with GfxWorldDraw at 0xb0 and

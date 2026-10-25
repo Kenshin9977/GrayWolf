@@ -47,6 +47,12 @@ struct CliOptions
     std::string Bo4ExportRawStringsDiskIn;  // bo4-export-rawstrings-disk <in.bin> <outfile>: offline dialogue/rawstring export
     std::string Bo4ExportRawStringsDiskOut;
     std::string RenderModel;
+    // render-fx <fx json>: an effect at --time seconds (--frames N at --fps: a sequence and its
+    // sheet), --size px, --seed n, --forward-up, --fx-images "dir;dir" (FxPreviewCli.cpp)
+    std::string RenderFx, FxImages;
+    double FxTime = -1, FxFps = 10;
+    int FxFrames = 0, FxSize = 512, FxSeed = 1;
+    bool FxForwardUp = false;
     std::string DumpModel;   // --dump-model: print a .semodel's bones/bbox
     std::string DumpGlb;     // --dump-glb: print a .glb's PreviewGeometry stats (LoadPreviewGeometryGlb)
     std::string RenderGlbPng; // --render-glb-png <in.glb>: headless PNG render, --out sets the path
@@ -70,6 +76,16 @@ struct CliOptions
     int Turntable = 0;       // --turntable N: render N views around the model into one contact sheet
     std::string PreviewWindow; // --preview-window <parts>: open an interactive D3D11 orbit viewer
     std::string Ui;            // --ui <models-dir>: open the ImGui+D3D11 asset browser shell
+    std::string UiGridShot;    // ui-grid-shot <dir>: the shell offscreen, the Assets grid timed, the frame saved (--out)
+    int UiGridFrames = 120;    // --frames: frames timed
+    float UiGridCell = 0;      // --cell: cell size in pixels
+    std::string UiGridSize = "1920x1080";   // --size WxH: the window
+    bool UiGridList = false;   // --list: the list view instead
+    std::string UiGridRig;     // --rig <model>: what anims play on
+    float UiGridScroll = 0;    // --scroll: pixels a second the grid scrolls while timed
+    bool UiGridStill = false;  // --still: model cells hold the viewport's angle (no turn)
+    std::string AnimRigs;      // anim-rigs <dir>: each anim's rig as the browser picks it (AnimRigs.h)
+    bool AnimRigsNoFetch = false;   // --no-fetch: no reference model exported
     std::string AudioProbe;    // --audio-probe <file>: decode via AudioPlayer and print duration/rate/peaks
     std::string XAnimBinDump;  // --xanimbin-dump <file>: parse a Mod Tools .xanim_bin, print the resolved record stream
     std::string XAnimBinSelfTest; // --xanimbin-selftest <file>: assemble Layer 2, report bone/frame/notify counts
@@ -91,6 +107,9 @@ struct CliOptions
     std::string ActsExtract; // --acts-extract <ff>: extract a modern-CoD fastfile via ate47's acts
     std::string ActsExe;     // --acts-exe <exe>: path to acts.exe (else auto-located)
     std::string GscToolExe;  // --gsc-tool-exe <exe>: path to gsc-tool.exe (else auto-located)
+    std::string CodLuaJitExe;  // --cod-luajit-decompiler-exe <exe> (LuaExport.h; else auto-located)
+    std::string CodLuaExe;     // --cod-lua-decompiler-exe <exe>: CoDLuaDecompiler.CLI.exe (else auto-located)
+    std::string FfmpegExe;     // --ffmpeg-exe <exe>: the WMA sounds' decoder (WmaSounds.h; else auto-located)
     std::string GameExe;     // --game-exe <exe>: the game's dumped exe (script string decryption)
     std::string ActsHandler; // --acts-handler <h>: force a game handler (bo4/cw/mwiii/bo6/...)
     std::string OatFx;       // --oat-fx <ff>: per-element FX/material/blend detail, T5+T6, no game needed

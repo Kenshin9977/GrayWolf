@@ -13,6 +13,7 @@
 #include "CoDXModelTranslator.h"
 #include "DiskGame.h"
 #include "Games/IW/IwEntityKeys.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 
 namespace IwctxReaders
 {
@@ -27,22 +28,21 @@ namespace IwctxReaders
 
     // sndasset: flags u8 at Flags, seek table size u32 0x20, frames' size u32 0x24, frame count
     // u32 0x28, rate u16 at Rate. Where its Opus frames are, by the flags: the .xsub object a key
-    // names (Key, -1 none; the object a header (Header bytes, or 32 when it carries the -4 tag at 8),
-    // the seek table, then the frames), else in the zone (ZoneFrames pointer, ZoneSize u32; -1 none)
+    // names (Key, -1 none; the object a 32-byte header when it carries the -4 tag at 8, else none,
+    // the seek table, then the frames), else in the zone (ZoneFrames pointer, ZoneSize u32; -1 none),
+    // else, that pointer null, the object KeyElse names (Black Ops 7's {frames, size} or {0, key})
     struct SoundSource
     {
-        int64_t Key = -1, ZoneFrames = -1, ZoneSize = -1;
+        int64_t Key = -1, ZoneFrames = -1, ZoneSize = -1, KeyElse = -1;
     };
     struct SoundLayout
     {
         int64_t Flags, Rate;
         SoundSource (*Where)(uint8_t Flags);
-        uint32_t Header;              // the .xsub object's header (BO6 multiplayer 32, its campaign and BO7 0)
         bool ZoneCappedByLoaded;      // frames in the zone: at most the frames' size (BO7) or all ZoneSize (BO6)
         int32_t PreSkip;              // the decoded samples before the sound's first (SABSupport::OpusPreSkip...)
     };
-    std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound, const SoundLayout& L);
-    constexpr int64_t SoundSeek = 0x20, SoundLoaded = 0x24, SoundFrames = 0x28;
+    std::unique_ptr<XSound> ReadXSound(const CoDSound_t* Sound, const SoundLayout& L);    constexpr int64_t SoundSeek = 0x20, SoundLoaded = 0x24, SoundFrames = 0x28;
 
     // The sndassets of a zone written in the settings' format, each once by name (the name's
     // folders kept), decoded by the game's ReadXSound: Full its name, Address where it is served
@@ -104,6 +104,24 @@ namespace IwctxReaders
     // else "string_<slot>")
     void ServeSlotStrings(const std::vector<std::string>& Slots);
     std::string SlotScriptString(uint64_t Slot);
+
+    // The live material reader for the material and fx kinds with the images another zone holds:
+    // a Material (Size bytes) keeps slots {u8 semantic, u8 image} at Slots (u8 count at SlotCount)
+    // into its image pointers at Images (u8 count at ImageCount); a slot whose image is a name hash
+    // (bit 63) not in the zone is added, named by Name, a diffuse map when its semantic is one of
+    // Colour. The first layer's emissive, opacity and transmittance (1 - opacity) maps and the ramp
+    // an emissive grey looks its colour up in (vfx_ramp_*) take those usages by their semantic,
+    // for the effect preview.
+    struct MaterialSlots
+    {
+        int64_t Size, Slots, SlotCount, Images, ImageCount;
+        std::vector<uint8_t> Colour;
+        uint8_t Emissive, Opacity, Transmittance, Ramp;
+    };
+    decltype(Treyarch::EffectZone::Material) SlotMaterials(const MaterialSlots& L, std::function<XMaterial_t(uint64_t Address)> Read,
+                                                           std::function<const std::vector<uint8_t>&()> Zone,
+                                                           std::function<int64_t(uint64_t Address)> Off,
+                                                           std::function<std::string(uint64_t Hash)> Name);
 
     // An asset's name from its 63-bit hash: the name indexes' (LoadNameIndexes), else
     // "<type>_<hex>"

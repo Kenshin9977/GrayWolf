@@ -68,9 +68,7 @@ namespace
             { "WWII",                           2017, { 476600, 476620 },         { "s2_sp64_ship.exe" },                "ww2" },
             { "Black Ops 4",                    2018, {},                         { "BlackOps4.exe" },                   "bo4" },
             { "Modern Warfare (2019)",          2019, {},                         { "ModernWarfare.exe" },               "mw2019" },
-            { "MW2 Campaign Remastered",        2020, {},                         { "mw2cr.exe" },                       "" },
             { "Black Ops Cold War",             2020, {},                         { "BlackOpsColdWar.exe" },             "coldwar" },
-            { "Vanguard",                       2021, {},                         { "Vanguard.exe" },                    "" },
             { "Call of Duty HQ",                2022, { 1938090 },                { "cod.exe", "cod23-cod.exe", "cod24-cod.exe", "cod25-cod.exe" }, "" },
         };
         return All;

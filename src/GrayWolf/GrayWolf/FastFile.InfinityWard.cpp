@@ -194,14 +194,8 @@ bool FastFile::ParseIWZone(const std::vector<uint8_t>& Zone, const ZoneLayout& L
         return false;
     }
 
-    // The zone states how much follows its own header - checking that first catches a wrong
-    // layout before any field is trusted, rather than after producing a plausible asset list.
-    const auto Declared = ReadU32(Zone, 0);
-
-    if (Declared != Zone.size() - Content)
+    if (!ContentMatches(Zone, Content, Error))
     {
-        Error = std::format("zone declares {} bytes of content but {} follow a {} byte header",
-        Declared, (unsigned long long)(Zone.size() - Content), (unsigned long long)Content);
         return false;
     }
 
@@ -216,44 +210,9 @@ bool FastFile::ParseIWZone(const std::vector<uint8_t>& Zone, const ZoneLayout& L
     size_t At = Content + ListSize;
 
     // The strings, when they are there at all
-    if (StringsPtr == FollowsInline)
+    if (StringsPtr == FollowsInline && !ReadStringList(Zone, 8, StringCount, FollowsInline, At, Out, Error))
     {
-        const auto SlotsEnd = At + (uint64_t)StringCount * 8;
-
-        if (SlotsEnd > Zone.size())
-        {
-            Error = std::format("string count {} runs past the end of the zone", StringCount);
-            return false;
-        }
-
-        auto Slots = At;
-        At = (size_t)SlotsEnd;
-        Out.StringTableOffset = At;
-
-        for (uint32_t i = 0; i < StringCount; i++)
-        {
-            if (ReadU64(Zone, Slots + (size_t)i * 8) != FollowsInline)
-            {
-                continue;
-            }
-
-            Out.StringsInline++;
-
-            const auto Start = At;
-            while (At < Zone.size() && Zone[At] != 0)
-            {
-                At++;
-            }
-
-            if (At >= Zone.size())
-            {
-                Error = std::format("string {} of {} runs off the end of the zone", i, StringCount);
-                return false;
-            }
-
-            Out.Strings.emplace_back((const char*)Zone.data() + Start, At - Start);
-            At++;
-        }
+        return false;
     }
 
     if (AssetsPtr != FollowsInline)

@@ -56,6 +56,7 @@ namespace
 const char* const Body =
 R"PY(import bpy, os, json, struct, time, math
 import numpy as np
+from urllib.parse import unquote
 from mathutils import Matrix, Vector
 
 DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,7 +118,7 @@ def image(index):
     src = DOC["images"][index]
     try:
         if "uri" in src:
-            img = bpy.data.images.load(os.path.join(DIR, src["uri"]), check_existing=True)
+            img = bpy.data.images.load(os.path.join(DIR, unquote(src["uri"])), check_existing=True)   # a URI: %-encoded
         elif "bufferView" in src:
             v = DOC["bufferViews"][src["bufferView"]]
             data = bytes(BIN[v.get("byteOffset", 0):v.get("byteOffset", 0) + v["byteLength"]])
@@ -374,10 +375,10 @@ def layered(nt, d, uv, base_rough):
         r = roughness_of(nt, Ly.get("roughness"), rv if rv >= 0 else base_rough, y - 200, luv)
         n = normal_xy(nt, Ly.get("normal"), y - 400, luv)
         n = (0.0, 0.0, 0.0) if n is None else vmath(nt, "SCALE", n, y=y - 400, scale=Ly.get("normal_scale", 1.0))
-        if color is None or "mask" not in Ly:
-            color, rough, det = c, r, n
 )PY"
-R"PY(            continue
+R"PY(        if color is None or "mask" not in Ly:
+            color, rough, det = c, r, n
+            continue
         mk = Ly["mask"]
         muv = vmath(nt, "MULTIPLY", flip_v(nt, uv, y), tuple(mk.get("uv_scale", [1, 1])) + (1.0,), y=y)
         mt = tex_node(nt, mk, False, y + 200, flip_v(nt, muv, y))
@@ -453,7 +454,8 @@ def sidecar_material(name, d, src):
     feed(nt, bsdf.inputs["Roughness"], rough)
     e = tex_node(nt, d.get("emissive"), True, -600)
     if e:
-        L.new(e.outputs["Color"], bsdf.inputs["Emission Color"])
+        ec = d["emissive"].get("color")
+        feed(nt, bsdf.inputs["Emission Color"], vmath(nt, "MULTIPLY", e.outputs["Color"], tuple(ec), y=-600) if ec else e.outputs["Color"])
         bsdf.inputs["Emission Strength"].default_value = 1.0
     set_alpha(mat, nt, bsdf, albedo, src)
     return mat
@@ -657,12 +659,12 @@ def sky_strength(node):
     small.pixels.foreach_get(px)
     bpy.data.images.remove(small)
     mean = float(px.reshape(-1, 4)[:, :3].mean())
-    return 0.25 / mean if mean > 1e-6 else 1.0
+)PY"
+R"PY(    return 0.25 / mean if mean > 1e-6 else 1.0
 
 
 def make_sky(obs):
-)PY"
-R"PY(    """The game draws its sky model around the camera, far away: here it is centred on the world
+    """The game draws its sky model around the camera, far away: here it is centred on the world
     and scaled to enclose it, lit by itself (its colour as emission) and casting no shadow."""
     world = [o for o in world_col.objects if o.type == "MESH" and o not in obs]
     if not obs or not world:

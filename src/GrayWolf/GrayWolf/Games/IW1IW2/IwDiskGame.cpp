@@ -2,6 +2,7 @@
 
 #include "IwDiskGame.h"
 
+#include "EfxEffects.h"
 #include "IwAssetFiles.h"
 #include "IwBsp.h"
 #include "IwShaders.h"
@@ -16,10 +17,13 @@
 #include "MapSceneExport.h"
 #include "MaterialDescription.h"
 #include "ScriptExport.h"
+#include "SettingsManager.h"
 #include "WraithAnim.h"
 #include "WraithModel.h"
 
 #include "DirectXTex.h"
+
+#include <nlohmann/json.hpp>
 
 #include <array>
 #include <cmath>
@@ -116,6 +120,13 @@ namespace
         {
             K = Kind::Sound;
             Name = WithoutExtension(Path.substr(6));
+            return true;
+        }
+        // effects: fx/<name>.efx, by the name a runner gives (explosions/grenade_flash)
+        if (Ext == ".efx" && Path.compare(0, 3, "fx/") == 0)
+        {
+            K = Kind::Fx;
+            Name = Efx::EffectName(Path);
             return true;
         }
         // scripts: source, maps/ and the game's script folders
@@ -364,7 +375,8 @@ namespace
     };
 
     // CoD1's shader scripts, read once per install (every scripts/<x>.shader the game sees, in
-    // name order: the first definition of a shader wins).
+    // name order: the first definition of a shader wins), then the effects' (fxshaders/<x>.shader:
+    // the shaders the .efx files name, gfx/effects/...) for the names the first left undefined.
     const ShaderScripts& ShadersOf(const Install& I)
     {
         static std::mutex Lock;
@@ -375,12 +387,13 @@ namespace
         {
             S = std::make_unique<ShaderScripts>();
             std::vector<uint8_t> Bytes;
-            for (const auto& [Path, A] : I.Files())
-                if (Path.compare(0, 8, "scripts/") == 0 && Extension(Path) == ".shader" && I.Read(Path, Bytes))
-                {
-                    bool Ok;
-                    S->Parse(std::string(Bytes.begin(), Bytes.end()), Ok);
-                }
+            for (const char* Folder : { "scripts/", "fxshaders/" })
+                for (const auto& [Path, A] : I.Files())
+                    if (Path.rfind(Folder, 0) == 0 && Extension(Path) == ".shader" && I.Read(Path, Bytes))
+                    {
+                        bool Ok;
+                        S->Parse(std::string(Bytes.begin(), Bytes.end()), Ok);
+                    }
         }
         return *S;
     }
@@ -446,6 +459,7 @@ namespace
             Exports(Kind::Localize, [this](const Context& C, Totals& T) { ExportLocalize(C, T); });
             Exports(Kind::Weapons, [this](const Context& C, Totals& T) { ExportWeapons(C, T); });
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { ExportWeaponStats(C, T); });
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) { ExportEffects(C, T); });
         }
 
         const std::string& Name() const override { return ZoneName; }
@@ -829,8 +843,22 @@ namespace
             std::string Name;                                    // as the model file names it
             std::string Techset;                                 // CoD2's (its material file); CoD1: "shader_<blend word>"
             bool NoDraw = false, Sky = false;                    // CoD1: what its shader script says
+            uint8_t AtlasRows = 1, AtlasCols = 1;                // CoD2: its images' atlas grid
             std::vector<std::pair<Materials::Role, std::string>> Images;   // role, install path
+            std::vector<std::string> Frames;                     // CoD1: an animMap's images (install paths)
+            float FrameRate = 0;                                 // their rate a second
         };
+
+        // an image a shader script names (the path as written, or with .dds, .tga, .jpg; a leading
+        // slash dropped: pj_fx's "map /gfx/effects/explosion/dirt1"), "" when the install has none
+        std::string ScriptImage(std::string Written)
+        {
+            while (!Written.empty() && Written[0] == '/') Written.erase(0, 1);
+            const std::string Base = WithoutExtension(Written);
+            for (const std::string& P : { Written, Base + ".dds", Base + ".tga", Base + ".jpg" })
+                if (Files->Owner(P) >= 0) return P;
+            return std::string();
+        }
 
         // CoD1: a shader script named Name gives the colour map (its file: the path as written, or
         // with .dds, .tga, .jpg), the blending and whether it is drawn; false when none is named so.
@@ -845,14 +873,18 @@ namespace
             M.Sky = S.Sky;
             Counter("shader_materials")++;
             if (S.ColorMap.empty()) return true;
-            const std::string Base = WithoutExtension(S.ColorMap);
-            for (const std::string& P : { S.ColorMap, Base + ".dds", Base + ".tga", Base + ".jpg" })
-                if (Files->Owner(P) >= 0)
-                {
-                    M.Images.emplace_back(Materials::Role::Albedo, P);
-                    return true;
-                }
-            Counter("shader_color_maps_missing")++;
+            const std::string P = ScriptImage(S.ColorMap);
+            if (P.empty())
+            {
+                Counter("shader_color_maps_missing")++;
+                return true;
+            }
+            M.Images.emplace_back(Materials::Role::Albedo, P);
+            // an animated one: every frame in the install, or none
+            for (const auto& F : S.Frames)
+                if (std::string Frame = ScriptImage(F); !Frame.empty()) M.Frames.push_back(std::move(Frame));
+            if (M.Frames.size() == S.Frames.size()) M.FrameRate = S.FrameRate;
+            else M.Frames.clear();
             return true;
         }
 
@@ -895,6 +927,8 @@ namespace
                 return false;
             }
             M.Techset = It->second.first.Techset;
+            M.AtlasRows = It->second.first.AtlasRows;
+            M.AtlasCols = It->second.first.AtlasCols;
             for (const auto& [Sampler, Image] : It->second.first.Textures)
             {
                 const Materials::Role R = Sampler == "colorMap" ? Materials::Role::Albedo
@@ -961,14 +995,17 @@ namespace
             return false;
         }
 
-        // A model as read: LOD 0's skeleton and surfaces as a WraithModel whose materials are named,
-        // and each material's images (role, install path), parallel to its Materials.
+        // A model as read: LOD 0's skeleton and one LOD's surfaces (LodIndex, its own xmodelsurfs
+        // file, skinned to LOD 0's bones) as a WraithModel whose materials are named, and each
+        // material's images (role, install path), parallel to its Materials. LodCount: the LODs the
+        // model names.
         struct BuiltModel
         {
             std::unique_ptr<WraithModel> Model;
             std::vector<Material> Images;
         };
-        bool BuildModel(const std::string& Path, const std::string& Name, BuiltModel& Out, std::string& Error)
+        bool BuildModel(const std::string& Path, const std::string& Name, BuiltModel& Out, std::string& Error, size_t LodIndex = 0,
+                        size_t* LodCount = nullptr)
         {
             std::vector<uint8_t> Bytes;
             XModelFile Model;
@@ -978,13 +1015,19 @@ namespace
                 Error = "no LOD";
                 return false;
             }
-            const auto& Lod = Model.Lods[0];
-            const std::string LodName = ExportNaming::Lower(Lod.Name);
+            if (LodCount != nullptr) *LodCount = Model.Lods.size();
+            if (LodIndex >= Model.Lods.size())
+            {
+                Error = "no LOD " + std::to_string(LodIndex);
+                return false;
+            }
+            const auto& Lod = Model.Lods[LodIndex];
+            const std::string LodName = ExportNaming::Lower(Lod.Name), PartsName = ExportNaming::Lower(Model.Lods[0].Name);
             XModelPartsFile Parts;
             XModelSurfsFile Surfs;
-            if (!ReadFile("xmodelparts/" + LodName, Bytes, Error) || !ParseXModelParts(Bytes.data(), Bytes.size(), Parts, Error))
+            if (!ReadFile("xmodelparts/" + PartsName, Bytes, Error) || !ParseXModelParts(Bytes.data(), Bytes.size(), Parts, Error))
             {
-                Error = "xmodelparts/" + LodName + ": " + Error;
+                Error = "xmodelparts/" + PartsName + ": " + Error;
                 return false;
             }
             if (!Model.Complete(Parts.Bones.size()))
@@ -992,7 +1035,7 @@ namespace
                 Error = "xmodel: " + std::to_string(Model.Trailing) + " bytes after the materials for " + std::to_string(Parts.Bones.size()) + " bones";
                 return false;
             }
-            Counter(Version("xmodel_exact", Model.Version))++;
+            if (LodIndex == 0) Counter(Version("xmodel_exact", Model.Version))++;
             if (!ReadFile("xmodelsurfs/" + LodName, Bytes, Error) || !ParseXModelSurfs(Bytes.data(), Bytes.size(), Surfs, Error))
             {
                 Error = "xmodelsurfs/" + LodName + ": " + Error;
@@ -1007,7 +1050,7 @@ namespace
             const size_t BoneCount = Parts.Bones.size();
 
             auto W = std::make_unique<WraithModel>();
-            W->AssetName = ExportNaming::SafeFileName(Name) + "_LOD0";
+            W->AssetName = ExportNaming::SafeFileName(Name) + "_LOD" + std::to_string(LodIndex);
             for (size_t B = 0; B < BoneCount; B++)
             {
                 auto& Bone = W->AddBone();
@@ -1107,8 +1150,13 @@ namespace
                 }
                 for (const auto& F : Surface.Faces) Mesh.AddFace(F[0], F[1], F[2]);
             }
-            Counter(Version("xmodelparts_exact", Parts.Version))++;
-            Counter(Version("xmodelsurfs_exact", Surfs.Version))++;
+            if (LodIndex == 0)
+            {
+                Counter(Version("xmodelparts_exact", Parts.Version))++;
+                Counter(Version("xmodelsurfs_exact", Surfs.Version))++;
+            }
+            else
+                Counter("model_lods_written")++;
             Out.Model = std::move(W);
             return true;
         }
@@ -1123,11 +1171,25 @@ namespace
             return Name;
         }
 
-        // One model: LOD 0 written with its materials' sidecar; its textures added to Textures.
+        // One model: LOD 0 (every LOD with --lods, each its own file) written with its materials'
+        // sidecar; its textures added to Textures.
         bool ExportModel(const Asset& A, const std::string& Dir, std::map<std::string, std::string>& Textures, std::string& Error)
         {
+            size_t Lods = 1;
+            if (!ExportLod(A, Dir, Textures, Error, 0, &Lods)) return false;
+            if (SettingsManager::GetSetting("exportalllods") == "true")
+                for (size_t L = 1; L < Lods; L++)
+                {
+                    std::string Why;
+                    if (!ExportLod(A, Dir, Textures, Why, L, nullptr)) Counter("model_lods_unread")++;
+                }
+            return true;
+        }
+        bool ExportLod(const Asset& A, const std::string& Dir, std::map<std::string, std::string>& Textures, std::string& Error, size_t LodIndex,
+                       size_t* LodCount)
+        {
             BuiltModel B;
-            if (!BuildModel(A.Path, A.Name, B, Error)) return false;
+            if (!BuildModel(A.Path, A.Name, B, Error, LodIndex, LodCount)) return false;
             // a texture is named where the image writer puts it
             const std::string Relative = "..\\\\..\\\\images\\\\";
             const std::string Ext = ExportWriters::ImageExtension(ExportWriters::ImageFormatSetting());
@@ -1237,6 +1299,69 @@ namespace
             const size_t Failed = WriteImages(Jobs, ImagesDir, C, T, Own);
             Counter("textures") += Jobs.size();
             Counter("textures_written") += Jobs.size() - Failed;   // or written earlier by another zone
+        }
+
+        // fx/<name>.json: each .efx as the fx kind's JSON (EfxEffects.h), a shader's visual with its
+        // techset, colour map and atlas or frames (the level's materials: CoD1 a shader script or an
+        // image, CoD2 a material file); with the image kind in the run, those images written too
+        void ExportEffects(const Context& C, Totals& T)
+        {
+            auto& Kt = T.Kinds[Kind::Fx];
+            const auto List = Assets(Kind::Fx, C);
+            const fs::path Dir = C.KindDir(Kind::Fx);
+            std::map<std::string, std::string> Textures;   // install path -> image name
+            const auto Fields = [&](const std::string& Shader, nlohmann::ordered_json& V) {
+                Material M;
+                std::string Why;
+                // a shader named as its image file (CoD1's textures/sfx/spark.tga): its name without it
+                const std::string Ext = Extension(ExportNaming::Lower(Shader));
+                if (!ResolveLevelMaterial(IsImage(Ext) ? WithoutExtension(Shader) : Shader, M, Why))
+                {
+                    Counter("fx_shaders_unresolved")++;
+                    return;
+                }
+                V["techset"] = M.Techset;
+                auto Images = nlohmann::ordered_json::array();
+                for (const auto& [Role, Path] : M.Images)
+                {
+                    if (Files->Owner(Path) < 0) continue;
+                    const char* Usage = Role == Materials::Role::Albedo ? "diffuse" : Role == Materials::Role::Normal ? "normal"
+                                      : Role == Materials::Role::Specular ? "specular" : "unknown";
+                    Images.push_back({ { "usage", Usage }, { "semantic", 0 }, { "name", ImageName(Path, Textures) } });
+                }
+                V["images"] = std::move(Images);
+                if (M.AtlasRows * M.AtlasCols > 1) V["atlas"] = { M.AtlasRows, M.AtlasCols };
+                // CoD1's animated shader: its frames' images in order, their rate a second
+                if (!M.Frames.empty())
+                {
+                    auto Frames = nlohmann::ordered_json::array();
+                    for (const auto& Path : M.Frames) Frames.push_back(ImageName(Path, Textures));
+                    V["frames"] = std::move(Frames);
+                    V["frameRate"] = M.FrameRate;
+                }
+            };
+            for (size_t N = 0; N < List.size(); N++)
+            {
+                const auto& A = List[N];
+                if (!C.Advance(N, List.size(), A.Name)) return;
+                Kt.Seen++;
+                std::vector<uint8_t> Bytes;
+                std::string Json, Error;
+                if (!Files->Read(A.Path, Bytes)) T.Fail(ZoneName, Kind::Fx, A.Name, "does not inflate");
+                else if (!Efx::ToJson(std::string(Bytes.begin(), Bytes.end()), A.Name, Row.Id, Fields, Json, Error))
+                    T.Fail(ZoneName, Kind::Fx, A.Name, Error);
+                else if (ExportWriters::WriteBytes(Dir / (A.Name + ".json"), reinterpret_cast<const uint8_t*>(Json.data()), Json.size()))
+                    Kt.Written++;
+                else T.Fail(ZoneName, Kind::Fx, A.Name, "write failed");
+            }
+            C.Advance(List.size(), List.size());
+            if (!C.Kinds.count(Kind::Image)) return;
+            std::vector<ImageJob> Jobs;
+            for (const auto& [Path, Name] : Textures) Jobs.push_back({ Path, Name });
+            DiskGame::KindTotals Own;
+            const size_t Failed = WriteImages(Jobs, C.KindDir(Kind::Image), C, T, Own);
+            Counter("fx_textures") += Jobs.size();
+            Counter("fx_textures_written") += Jobs.size() - Failed;
         }
 
         // A level material (CoD1: an image path without extension; CoD2: a material file) and its

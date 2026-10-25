@@ -15,8 +15,10 @@
 #include "Games/CODOL/FileCrypt.h"
 #include "Games/CODOL/IfsArchive.h"
 #include "Games/CODOL/SealedFastFile.h"
+#include "Games/IW3/LoadDefImage.h"
 #include "Games/IW/Iw32Level.h"
 #include "Games/IW/IWSoundAliases.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 
 #include "Image.h"
 #include "ZonekitZone.h"
@@ -112,6 +114,29 @@ namespace
                                             return RawBytes(Pos, { 8, 0xc, 4 }, Bytes);
                                         } } });
             });
+            // Material: its techset, images and blend as JSON, its images by the image kind; the
+            // install index lists the zone's materials (an effect's, pulled from where they are)
+            ExportsMaterials("material", Treyarch::MaterialKind(EffectMaterial()));
+            // a model's material headers: the materials this zone or another defines
+            ReadsMaterials(Codol::ReadXMaterial);
+            // FxEffectDef (0x20, elements 0x104: the codol tables f8ac60, f8abe0), CoD4's grown
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                auto Z = EffectView();
+                // an asset by the name at its 0, a material's at 0x10 (a header's ",name" as name)
+                std::set<int64_t> Materials;
+                for (const auto& I : Walk().Instances)
+                    if (OwnerIs(I, "material")) Materials.insert(I.Pos);
+                Z.AssetName = [this, &Materials](int64_t Pos) {
+                    std::string N = AssetName(Materials.count(Pos) ? Kind::Material : Kind::Model, Pos);
+                    return !N.empty() && N[0] == ',' ? N.substr(1) : N;
+                };
+                // with the images: each material's, for the preview to find among them; a material of
+                // another zone pulled from there (the material kind)
+                Z.ReadMaterials(C, EffectMaterial());
+                ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
+                    return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::Codol, Pos, N, J);
+                });
+            });
             Exports(Kind::Data, [this](const Context& C, Totals& T) {
                 ExportStringTables(C, T, "stringtable", [this](int64_t Pos, uint32_t& Columns, uint32_t& Rows, std::vector<std::string>& Cells) {
                     if (!StringTableCells(Pos, { 4, 8, 0xc, 8 }, Columns, Rows, Cells)) return false;
@@ -126,6 +151,28 @@ namespace
         }
 
     protected:
+        // a material through the live reader, with its blend factors: the first of its GfxStateBits
+        // (Material +0x64, 8 bytes each, their count u8 0x53: the codol table f88250) that blends,
+        // loadBits[0]'s source (bits 0-3) and destination (4-7) GFXS_BLEND_*. Its techset is left
+        // out: the techniqueSet's name pointer does not read back to a name here.
+        decltype(Treyarch::EffectZone::Material) EffectMaterial()
+        {
+            return Treyarch::MaterialReader([this](uint64_t A) {
+                XMaterial_t M = Codol::ReadXMaterial(A);
+                const int64_t O = Off(A);
+                const int64_t Bits = O >= 0 ? Off(PointerAt(O + 0x64)) : -1;
+                const uint32_t Count = O >= 0 ? At<uint8_t>(Image(), O + 0x53) : 0;
+                for (uint32_t I = 0; Bits >= 0 && I < Count; I++)
+                {
+                    const uint32_t Load = At<uint32_t>(Image(), Bits + 8 * I);
+                    const uint32_t Blend[2] = { Load & 0xf, (Load >> 4) & 0xf };
+                    if (I + 1 < Count && Blend[0] == 2 && Blend[1] == 1) continue;   // one, zero: opaque, another may blend
+                    M.Settings.emplace_back("blendMode", "uint", Blend, 2);
+                    break;
+                }
+                return M;
+            }, [this](uint64_t A) { return Off(A); });
+        }
         const char* Profile() const override { return "codol"; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("CODOL"); }
         // an asset pointer's back reference names the slot holding it (the Ptr loaders read
@@ -162,7 +209,8 @@ namespace
         }
         std::string AssetName(Kind K, int64_t Pos) const override
         {
-            return StringAt(PointerAt(K == Kind::Image ? Pos + Codol::ImageName : Pos));
+            // a Material keeps its name at 0x10 (CodolReaders.cpp)
+            return StringAt(PointerAt(K == Kind::Image ? Pos + Codol::ImageName : K == Kind::Material ? Pos + 0x10 : Pos));
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "|codol images 1"; }
 
@@ -326,37 +374,23 @@ namespace
             const uint32_t Size = At<uint32_t>(Z, Def + Codol::LoadDefSize);
             const uint32_t W = At<uint16_t>(Z, Pos + ImageWidth), H = At<uint16_t>(Z, Pos + ImageHeight);
             if (Size == 0 || W == 0 || H == 0) return nullptr;
-            ImageFormat Fmt;
+            ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
             uint64_t Level = 0;
-            const uint64_t Blocks = (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4);
             bool Swap = false;
-            switch (At<uint32_t>(Z, Def + Codol::LoadDefFormat))
+            const uint32_t Format = At<uint32_t>(Z, Def + Codol::LoadDefFormat);
+            if (Format == 0x32495441)   // ATI2
+                Fmt = ImageFormat::DDS_BC5_UNORM, Level = (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4) * 16;
+            else if (Format == 28)      // A8
+                Fmt = ImageFormat::DDS_Standard_A8_UNORM, Level = (uint64_t)W * H;
+            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
             {
-            case 0x31545844: Fmt = ImageFormat::DDS_BC1_UNORM; Level = Blocks * 8; break;    // DXT1
-            case 0x33545844: Fmt = ImageFormat::DDS_BC2_UNORM; Level = Blocks * 16; break;   // DXT3
-            case 0x35545844: Fmt = ImageFormat::DDS_BC3_UNORM; Level = Blocks * 16; break;   // DXT5
-            case 0x32495441: Fmt = ImageFormat::DDS_BC5_UNORM; Level = Blocks * 16; break;   // ATI2
-            case 21: case 22: Fmt = ImageFormat::DDS_Standard_A8R8G8B8; Level = (uint64_t)W * H * 4; Swap = true; break;
-            case 28: case 50: Fmt = ImageFormat::DDS_Standard_A8_UNORM; Level = (uint64_t)W * H; break;   // A8, L8
-            default:
                 Counter("images_in_zone_unknown_format")++;
                 return nullptr;
             }
-            const bool Cube = At<uint8_t>(Z, Pos + ImageMapType) == 5;
-            const uint64_t Faces = Cube ? 6 : 1;
+            const uint64_t Faces = At<uint8_t>(Z, Pos + ImageMapType) == 5 ? 6 : 1;   // a cube map
             if (Level * Faces > Size || Def + Codol::LoadDefData + (int64_t)Size > (int64_t)Z.size()) return nullptr;
-            auto Result = std::make_unique<XImageDDS>();
-            auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Level * Faces];
-            uint32_t Header = 0;
-            Image::WriteDDSHeaderToStream(Buffer, W, H, 1, Fmt, Header, Cube);
-            for (uint64_t F = 0; F < Faces; F++)
-                std::memcpy(Buffer + Header + F * Level, Z.data() + Def + Codol::LoadDefData + F * (Size / Faces), (size_t)Level);
-            if (Swap)
-                for (uint64_t P = 0; P + 3 < Level * Faces; P += 4) std::swap(Buffer[Header + P], Buffer[Header + P + 2]);
-            Result->DataBuffer = Buffer;
-            Result->DataSize = (uint32_t)(Header + Level * Faces);
             Counter("images_in_zone")++;
-            return Result;
+            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + Codol::LoadDefData, Level, Swap, Faces, Size / Faces);
         }
 
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos)

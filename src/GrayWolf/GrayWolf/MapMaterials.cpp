@@ -22,6 +22,7 @@ std::pair<Materials::Source, Materials::Description> DescribeMaterial(const MapS
     {
         Src.Techset = It->second.Techset;
         Src.Constants = It->second.Constants;
+        Src.SortKey = It->second.SortKey;
         for (const Texture& T : It->second.Textures)
         {
             const auto Img = Scene.Images.find(T.Image);

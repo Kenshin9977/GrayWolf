@@ -819,6 +819,10 @@ namespace
                     for (Materials::Map* M : { &L.Albedo, &L.Normal, &L.Roughness, &L.Mask }) Maps.push_back(M);
                 for (Materials::Map* M : Maps)
                     if (!M->Empty()) M->Path = (Dir / M->Path).lexically_normal().string();
+                // an emission through the engine's plain white image takes its colour and strength
+                // from constants the export does not carry: added whole, it washed the surface white
+                if (!D.Emissive.Empty() && std::filesystem::path(D.Emissive.Path).stem().string().rfind("$white", 0) == 0)
+                    D.Emissive = {};
                 Described[D.Name] = std::move(D);
             }
         }
@@ -989,8 +993,41 @@ namespace
 
     // Parses one .semodel and merges its geometry into Combined (offsetting vertex and material
     // indices), appending its diffuse textures to Textures. Lets several parts share one scene.
+    // A part's bones joined to the skeleton built so far (LoadRigGeometry): one of the same name is
+    // that bone; the others are appended, seated as the part's vertices are, the part's root under
+    // the bone it was seated on. Returns each part bone's index in Combined.Bones.
+    std::vector<int32_t> JoinSkeleton(Geo& Combined, const Geo& G, bool Xform, const Quat& Rref, const Quat& RpartConj,
+                                      const Vec3& Tpart, const Vec3& Tref, int32_t SeatedOn)
+    {
+        const auto Mul = [](const Quat& a, const Quat& b) {
+            return Quat{ a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                         a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+        };
+        std::unordered_map<std::string, int32_t> Have;
+        for (size_t b = 0; b < Combined.Bones.size(); b++) Have.emplace(Combined.Bones[b].Name, (int32_t)b);
+        std::vector<int32_t> Map(G.Bones.size(), -1);
+        for (size_t b = 0; b < G.Bones.size(); b++)
+        {
+            if (const auto It = Have.find(G.Bones[b].Name); It != Have.end()) { Map[b] = It->second; continue; }
+            Bone B = G.Bones[b];
+            if (Xform)
+            {
+                const Vec3 v = QRot(Rref, QRot(RpartConj, Sub(B.Pos, Tpart)));
+                B.Pos = { v.x + Tref.x, v.y + Tref.y, v.z + Tref.z };
+                const Quat Q = Mul(Rref, Mul(RpartConj, Quat{ B.Qx, B.Qy, B.Qz, B.Qw }));
+                B.Qx = Q.x; B.Qy = Q.y; B.Qz = Q.z; B.Qw = Q.w;
+            }
+            // listed parent first: a parent of the part is mapped already
+            B.Parent = (B.Parent >= 0 && (size_t)B.Parent < b) ? Map[B.Parent] : SeatedOn;
+            Map[b] = (int32_t)Combined.Bones.size();
+            Have.emplace(B.Name, Map[b]);
+            Combined.Bones.push_back(std::move(B));
+        }
+        return Map;
+    }
+
     bool LoadPart(const std::string& SemodelPath, Geo& Combined, std::vector<Tex>& Textures,
-                  const std::function<bool()>& Cancelled = {}, PreviewMaterials* Maps = nullptr)
+                  const std::function<bool()>& Cancelled = {}, PreviewMaterials* Maps = nullptr, bool Join = false)
     {
         AppLog::Timer Part("model part " + SemodelPath);
         std::vector<uint8_t> Bytes;
@@ -1024,12 +1061,21 @@ namespace
         bool Xform = false;
         Quat Rref, RpartConj;
         Vec3 Tpart{ 0,0,0 }, Tref{ 0,0,0 };
+        int32_t SeatedOn = -1;   // the Combined bone the part's root hangs from (Join)
         if (!Combined.Bones.empty() && !G.Bones.empty())
         {
             const Bone* Root = &G.Bones[0];
             for (const auto& B : G.Bones) if (B.Parent < 0) { Root = &B; break; }
             const Bone* Ref = nullptr;
             for (const auto& Rb : Combined.Bones) if (Rb.Name == Root->Name) { Ref = &Rb; break; }
+            // a rig's weapon on its hands: the root (j_gun) on the socket the game attaches it to
+            if (!Ref && Join)
+                for (const char* Socket : { "tag_weapon", "tag_weapon_right", "tag_weapon_ri", "tag_inhand", "tag_weapon_le", "tag_weapon_left" })
+                {
+                    for (const auto& Rb : Combined.Bones) if (Rb.Name == Socket) { Ref = &Rb; break; }
+                    if (Ref) break;
+                }
+            if (Ref) SeatedOn = (int32_t)(Ref - Combined.Bones.data());
             if (!Ref) // fallback: any shared bone
                 for (const auto& Pb : G.Bones) { for (const auto& Rb : Combined.Bones) if (Rb.Name == Pb.Name) { Ref = &Rb; Root = &Pb; break; } if (Ref) break; }
             if (Ref)
@@ -1066,8 +1112,32 @@ namespace
 
         // Skin weights: G's bone indices only match Combined.Bones for the first part loaded. A later
         // part (seated via Xform) never gets its bones appended, so its weights would reference the wrong
-        // skeleton: left unweighted (rigid) instead.
-        if (WasFirstPart && !G.VtxBoneIdx.empty())
+        // skeleton: left unweighted (rigid) instead. Joined (a rig), its bones are the skeleton's.
+        if (Join && !WasFirstPart && !G.Bones.empty())
+        {
+            const std::vector<int32_t> Map = JoinSkeleton(Combined, G, Xform, Rref, RpartConj, Tpart, Tref, SeatedOn);
+            if (Combined.VtxBoneIdx.empty() && !G.VtxBoneIdx.empty())
+            {
+                Combined.VtxBoneIdx.assign((size_t)VtxBase * PREVIEW_MAX_BONE_INFLUENCES, -1);
+                Combined.VtxBoneWeight.assign((size_t)VtxBase * PREVIEW_MAX_BONE_INFLUENCES, 0.0f);
+            }
+            if (!Combined.VtxBoneIdx.empty())
+            {
+                if (G.VtxBoneIdx.size() == G.Pos.size() * PREVIEW_MAX_BONE_INFLUENCES)
+                    for (size_t k = 0; k < G.VtxBoneIdx.size(); k++)
+                    {
+                        const int32_t B = G.VtxBoneIdx[k];
+                        Combined.VtxBoneIdx.push_back(B >= 0 && (size_t)B < Map.size() ? Map[B] : -1);
+                        Combined.VtxBoneWeight.push_back(G.VtxBoneWeight[k]);
+                    }
+                else
+                {
+                    Combined.VtxBoneIdx.resize(Combined.VtxBoneIdx.size() + G.Pos.size() * PREVIEW_MAX_BONE_INFLUENCES, -1);
+                    Combined.VtxBoneWeight.resize(Combined.VtxBoneWeight.size() + G.Pos.size() * PREVIEW_MAX_BONE_INFLUENCES, 0.0f);
+                }
+            }
+        }
+        else if (WasFirstPart && !G.VtxBoneIdx.empty())
         {
             Combined.VtxBoneIdx.insert(Combined.VtxBoneIdx.end(), G.VtxBoneIdx.begin(), G.VtxBoneIdx.end());
             Combined.VtxBoneWeight.insert(Combined.VtxBoneWeight.end(), G.VtxBoneWeight.begin(), G.VtxBoneWeight.end());
@@ -1378,14 +1448,15 @@ std::string DumpModelInfo(const std::string& SemodelPath)
     return S;
 }
 
-bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGeometry& Out,
-                         const std::function<bool()>& Cancelled)
+namespace
+{
+    bool LoadGeometry(const std::vector<std::string>& SemodelPaths, PreviewGeometry& Out, const std::function<bool()>& Cancelled, bool Join)
 {
     Geo G;
     std::vector<Tex> Textures;
     PreviewMaterials Maps;
     bool Any = false;
-    for (const auto& P : SemodelPaths) Any |= LoadPart(P, G, Textures, Cancelled, &Maps);
+    for (const auto& P : SemodelPaths) Any |= LoadPart(P, G, Textures, Cancelled, &Maps, Join);
     if ((Cancelled && Cancelled()) || !Any || G.Pos.empty() || G.Idx.empty()) return false;
 
     Out.Pos.reserve(G.Pos.size() * 3);
@@ -1435,6 +1506,18 @@ bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGe
     }
     Out.MaterialMaps = std::move(Maps.List);
     return true;
+}
+}
+
+bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGeometry& Out,
+                         const std::function<bool()>& Cancelled)
+{
+    return LoadGeometry(SemodelPaths, Out, Cancelled, false);
+}
+
+bool LoadRigGeometry(const std::vector<std::string>& Paths, PreviewGeometry& Out, const std::function<bool()>& Cancelled)
+{
+    return LoadGeometry(Paths, Out, Cancelled, true);
 }
 
 namespace

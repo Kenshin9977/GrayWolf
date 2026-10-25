@@ -4,7 +4,9 @@
 #include "WraithAnim.h"
 
 #include <fstream>
+#include <cmath>
 #include <cstring>
+#include <initializer_list>
 
 namespace
 {
@@ -60,6 +62,13 @@ bool ReadSeAnim(const std::string& Path, SeAnimClip& Out)
         return C.U32();
     };
 
+    // A key holding a value no pose has (not finite, or a translation of a billion units: an
+    // exporter's garbage) is dropped, its neighbours stand in: posed, it threw the viewer's framing out
+    const auto Sane = [](std::initializer_list<float> V) {
+        for (const float F : V) if (!std::isfinite(F) || std::fabs(F) > 1e9f) return false;
+        return true;
+    };
+
     // A count the rest of the file cannot hold is a corrupt header: refused before it sizes a vector
     const auto Fits = [&](uint64_t Count, uint64_t Each) { return Count <= (C.N - C.O) / Each; };
 
@@ -88,33 +97,36 @@ bool ReadSeAnim(const std::string& Path, SeAnimClip& Out)
         {
             const uint32_t Count = ReadFrameIdx();
             if (!Fits(Count, FrameSz + 12)) return false;
-            Out.Bones[i].PosKeys.resize(Count);
+            Out.Bones[i].PosKeys.reserve(Count);
             for (uint32_t k = 0; k < Count; k++)
             {
-                Out.Bones[i].PosKeys[k].Frame = ReadFrameIdx();
-                Out.Bones[i].PosKeys[k].Value = { C.F32(), C.F32(), C.F32() };
+                const uint32_t Frame = ReadFrameIdx();
+                const float X = C.F32(), Y = C.F32(), Z = C.F32();
+                if (Sane({ X, Y, Z })) Out.Bones[i].PosKeys.push_back({ Frame, { X, Y, Z } });
             }
         }
         if (DataPresent & 0x2) // SEANIM_BONE_ROT
         {
             const uint32_t Count = ReadFrameIdx();
             if (!Fits(Count, FrameSz + 16)) return false;
-            Out.Bones[i].RotKeys.resize(Count);
+            Out.Bones[i].RotKeys.reserve(Count);
             for (uint32_t k = 0; k < Count; k++)
             {
-                Out.Bones[i].RotKeys[k].Frame = ReadFrameIdx();
-                Out.Bones[i].RotKeys[k].Value = { C.F32(), C.F32(), C.F32(), C.F32() };
+                const uint32_t Frame = ReadFrameIdx();
+                const float X = C.F32(), Y = C.F32(), Z = C.F32(), W = C.F32();
+                if (Sane({ X, Y, Z, W })) Out.Bones[i].RotKeys.push_back({ Frame, { X, Y, Z, W } });
             }
         }
         if (DataPresent & 0x4) // SEANIM_BONE_SCALE
         {
             const uint32_t Count = ReadFrameIdx();
             if (!Fits(Count, FrameSz + 12)) return false;
-            Out.Bones[i].ScaleKeys.resize(Count);
+            Out.Bones[i].ScaleKeys.reserve(Count);
             for (uint32_t k = 0; k < Count; k++)
             {
-                Out.Bones[i].ScaleKeys[k].Frame = ReadFrameIdx();
-                Out.Bones[i].ScaleKeys[k].Value = { C.F32(), C.F32(), C.F32() };
+                const uint32_t Frame = ReadFrameIdx();
+                const float X = C.F32(), Y = C.F32(), Z = C.F32();
+                if (Sane({ X, Y, Z })) Out.Bones[i].ScaleKeys.push_back({ Frame, { X, Y, Z } });
             }
         }
         if (C.Bad) return false;

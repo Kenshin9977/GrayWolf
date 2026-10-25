@@ -316,19 +316,6 @@ struct MW6XAnimDeltaParts
 #pragma pack(pop)
 
 #pragma pack(push, 1)
-struct MW6XMaterial
-{
-    uint64_t Hash;
-    uint8_t Padding[16];
-    uint8_t ImageCount;
-    uint8_t Padding2[7];
-    uint64_t TechsetPtr;
-    uint64_t ImageTablePtr;
-    uint8_t Padding3[56];
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
 struct MW6XMaterialSP
 {
     uint64_t Hash;
@@ -347,20 +334,6 @@ struct MW6XMaterialImage
     uint32_t Type;
     uint8_t Padding[4];
     uint64_t ImagePtr;
-};
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-struct MW6SoundBank
-{
-    uint64_t Hash;
-    uint64_t NamePtr;
-    uint8_t Padding0[336];
-    uint64_t StreamKey;
-    uint8_t Padding1[12];
-    uint32_t SoundBankSize;
-    uint8_t Padding2[24];
-
 };
 #pragma pack(pop)
 

@@ -113,21 +113,9 @@ thread_local GameReaders::ImagesElsewhereFn GameAdvancedWarfare::ImagesElsewhere
 
 const XMaterial_t GameAdvancedWarfare::ReadXMaterial(uint64_t MaterialPointer)
 {
-    auto MaterialData = CoDAssets::GameInstance->Read<AWXMaterial>(MaterialPointer);
-    const auto RawName = CoDAssets::GameInstance->ReadNullTerminatedString(MaterialData.NamePtr);
-
-    XMaterial_t Result(MaterialData.ImageCount);
-    Result.MaterialName = FileSystems::GetFileNameWithoutExtension(RawName);
     // Image name pointer: end of image - 8
-    GameReaders::AddMaterialImages<AWXMaterialImage>(Result, MaterialData.ImageTablePtr, MaterialData.ImageCount,
-                                                     [](uint64_t Image) { return GameReaders::ImageNameAt<uint64_t>(Image, sizeof(AWGfxImage) - 8); },
-                                                     GameReaders::SemanticUsage);
-
-    // a name-only header: the zone defining the material names its images
-    if (MaterialData.ImageCount == 0 && !RawName.empty() && RawName[0] == ',')
-        GameReaders::AddImagesElsewhere(Result, ImagesElsewhere, RawName.substr(1), GameReaders::SemanticUsage);
-
-    return Result;
+    return GameReaders::ReadNamedMaterial<AWXMaterial, AWXMaterialImage>(MaterialPointer, sizeof(AWGfxImage) - 8, ImagesElsewhere,
+                                                                         GameReaders::SemanticUsage);
 }
 
 std::unique_ptr<XImageDDS> GameAdvancedWarfare::TranslateImage(std::unique_ptr<uint8_t[]> Data, uint32_t Size, uint8_t Format, uint8_t MapType,

@@ -22,6 +22,11 @@ namespace TreyarchPackages
     std::vector<std::string> ExtractFastFiles(CoDPackageCache* Packages, const std::string& Pattern,
                                               const std::string& CacheDir, std::string& Error,
                                               const char* PatchExtension = ".fd");
+    // IDiskGame::ResolveZones through ExtractFastFiles: each of Names pulled into CacheDir and its
+    // path added to Out; false with Error when none is (Install names the install there)
+    bool ExtractZones(CoDPackageCache* Packages, const std::string& Install, const std::vector<std::string>& Names,
+                      const std::string& CacheDir, std::vector<std::string>& Out, std::string& Error,
+                      const char* PatchExtension = ".fd");
 
     using Factory = std::unique_ptr<CoDPackageCache> (*)();
 

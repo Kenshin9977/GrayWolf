@@ -15,9 +15,6 @@ std::shared_ptr<spdlog::logger> CoDAssets::Log = nullptr;
 const ICoDGame* CoDAssets::Game = nullptr;
 SupportedGameFlags CoDAssets::GameFlags = SupportedGameFlags::None;
 
-std::vector<uint64_t> CoDAssets::GameOffsetInfos = std::vector<uint64_t>();
-std::vector<uint32_t> CoDAssets::GamePoolSizes = std::vector<uint32_t>();
-
 std::unique_ptr<AssetPool> CoDAssets::GameAssets = nullptr;
 std::unique_ptr<CoDPackageCache> CoDAssets::GamePackageCache = nullptr;
 std::unique_ptr<CoDPackageCache> CoDAssets::OnDemandCache = nullptr;
@@ -25,11 +22,6 @@ std::unique_ptr<CoDCDNDownloader> CoDAssets::CDNDownloader = nullptr;
 
 LoadXImageHandler CoDAssets::GameXImageHandler = nullptr;
 LoadStringHandler CoDAssets::GameStringHandler = nullptr;
-
-ps::XAsset64 CoDAssets::ParasyteRequest(const uint64_t& AssetPointer)
-{
-    return CoDAssets::GameInstance->Read<ps::XAsset64>(AssetPointer);
-}
 
 std::string CoDAssets::GetHashedName(const std::string& type, const uint64_t hash)
 {
@@ -68,9 +60,6 @@ void CoDAssets::CleanUpGame()
     }
 
     GameAssets.reset();
-
-    GameOffsetInfos.clear();
-    GamePoolSizes.clear();
 
     AssetNameCache.NameDatabase.clear();
     StringCache.NameDatabase.clear();

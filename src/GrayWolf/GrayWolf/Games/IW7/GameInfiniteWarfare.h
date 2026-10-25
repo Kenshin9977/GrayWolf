@@ -23,6 +23,8 @@ public:
     // zone defining it: its images as (semantic hash, image name), handed on with the
     // ExportWriters::ImageElsewhere pointer.
     static thread_local std::function<bool(const std::string& Name, std::vector<std::pair<uint32_t, std::string>>& Images)> ImagesElsewhere;
+    // and its techset's name and sort key (the material adapter's alpha mode)
+    static thread_local std::function<bool(const std::string& Name, std::string& Techset, int& SortKey)> DetailsElsewhere;
     // A material by its address (the map reader's surfaces too)
     static const XMaterial_t ReadXMaterial(uint64_t MaterialPointer);
 };

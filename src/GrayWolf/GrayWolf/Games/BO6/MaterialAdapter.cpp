@@ -1,12 +1,14 @@
 #include "stdafx.h"
 
 #include "MaterialDescription.h"
+#include "Games/IW/IwMaterialAlpha.h"
 #include "Games/IW/IwTerrain.h"
 
 // Black Ops 6 materials: a slot's semantic is a byte. Four layers of 14 slots from 82: colour (sRGB), "nog" (gloss in r, normal
 // y in g, occlusion in b, normal x in a), emissive, opacity, reveal, tint mask; slot 10 of a layer
 // after the first is its blend mask. 44/45 the proxy's colour and nog, 5 the thermal map, 10 the
-// damage map (both left out).
+// damage map (both left out). The alpha mode from the sort key (Games/IW/IwMaterialAlpha.h), never the
+// colour map's alpha; a reader that does not give the sort key: cutout by the opacity map.
 namespace
 {
     constexpr uint32_t Base = 82, Stride = 14;
@@ -32,11 +34,12 @@ namespace
                 { Base + Emissive, Role::Emissive },
             });
             D.NormalEnc = Materials::NormalEncoding::AG;
-            if (const auto* Op = At(M, 0, OpacityMap))
-            {
-                D.AlphaMap.Image = { Op->Path, 0, false };
-                D.Alpha = Materials::AlphaMode::Cutout;
-            }
+            if (!IwMaterialAlpha::Apply(M, At(M, 0, OpacityMap), D))
+                if (const auto* Op = At(M, 0, OpacityMap))
+                {
+                    D.AlphaMap.Image = { Op->Path, 0, false };
+                    D.Alpha = Materials::AlphaMode::Cutout;
+                }
             // the layers after the first: colour, gloss and the mask covering what is below
             for (uint32_t L = 1; L < 4; L++)
             {

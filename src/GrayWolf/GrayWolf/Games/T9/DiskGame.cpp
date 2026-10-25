@@ -24,6 +24,8 @@
 #include "ZonekitZone.h"
 #include "WraithNameIndex.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -97,8 +99,11 @@ namespace
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             // fx (0x90, elements 0x340) as far as the tables say: types, visuals, effects started
             Exports(Kind::Fx, [this](const Context& C, Totals& T) {
-                const Treyarch::EffectZone Z{ &Image(), [this](uint64_t A) { return Off(A); }, [this](uint64_t A) { return StringAt(A); },
-                                              [this](int64_t P) { return NamedAsset("asset", P); } };
+                auto Z = EffectView();
+                Z.AssetName = [this](int64_t P) { return NamedAsset("asset", P); };
+                // with the images: each material's, for the preview to find among them
+                Z.ReadMaterials(C, Treyarch::MaterialReader([](uint64_t A) { return GameBlackOpsCW::ReadXMaterial(A); }, [this](uint64_t A) { return Off(A); }),
+                                false);
                 ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
                     return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::ColdWar, Pos, N, J);
                 });
@@ -213,7 +218,14 @@ namespace
             const int64_t At0 = K == Kind::Anim ? (int64_t)offsetof(BOCWXAnim, NamePtr) : 0;
             const uint64_t Hash = At<uint64_t>(Image(), Pos + At0) & HashMask;
             const auto Found = GameBlackOpsCW::AssetNameCache.NameDatabase.find(Hash);
-            if (Found != GameBlackOpsCW::AssetNameCache.NameDatabase.end()) return Found->second;
+            // fnv1a_xanims.wni holds 8 strings that only collide with an anim's hash (material and
+            // sound paths, "mc/mtl_uicon_/env/env_rain_drainage...rr75_grating_frame_o"): an anim
+            // name is letters, digits and '_', anything else is not its name
+            const auto AnimName = [](const std::string& S) {
+                return std::all_of(S.begin(), S.end(), [](unsigned char C) { return std::isalnum(C) || C == '_'; });
+            };
+            if (Found != GameBlackOpsCW::AssetNameCache.NameDatabase.end() && (K != Kind::Anim || AnimName(Found->second)))
+                return Found->second;
             const char* Prefix = K == Kind::Model ? "xmodel" : K == Kind::Anim ? "xanim" : K == Kind::Image ? "ximage"
                                : K == Kind::Script ? "script" : K == Kind::Fx ? "fx" : K == Kind::Rawfile ? "rawfile"
                                : K == Kind::Data ? "stringtable" : K == Kind::Sound ? "xsound" : "asset";
@@ -225,6 +237,12 @@ namespace
             if (K == Kind::Model)
                 return At<uint64_t>(Image(), Pos + offsetof(BOCWXModel, XSkeletonPtr)) == 0 &&
                        At<uint64_t>(Image(), Pos + offsetof(BOCWXModel, ModelLodPtrs)) == 0;
+            // an anim with no bones, no data and no streamkey: only its name (4 745 of mp_common's 5 790)
+            if (K == Kind::Anim)
+                return At<uint64_t>(Image(), Pos + offsetof(BOCWXAnim, BoneIDsPtr)) == 0 &&
+                       At<uint64_t>(Image(), Pos + offsetof(BOCWXAnim, DataBytePtr)) == 0 &&
+                       At<uint64_t>(Image(), Pos + offsetof(BOCWXAnim, StreamKeyPtr)) == 0 &&
+                       At<uint16_t>(Image(), Pos + offsetof(BOCWXAnim, TotalBoneCount)) == 0;
             if (K == Kind::Script) return Off(PointerAt(Pos + 8)) < 0 || At<uint32_t>(Image(), Pos + 0x10) == 0;
             // a rawfile or a string table whose data another zone holds
             if (K == Kind::Rawfile) return Name.empty() || (At<uint32_t>(Image(), Pos + 8) != 0 && Off(PointerAt(Pos + 0x10)) < 0);
@@ -291,7 +309,7 @@ namespace
                 if (OwnerIs(I, "image") && At<uint8_t>(Image(), I.Pos + offsetof(BOCWGfxImage, GfxMipMaps)) != 0)
                     Out.push_back({ Kind::Image, AssetName(Kind::Image, I.Pos) });
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1"; }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+anims1"; }
 
         // The array an instance read inline (an ARRAY row the walk does not link): its read of
         // Count records of Size bytes, -1 when none
@@ -647,14 +665,7 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XSUBCache>(Install);
-            for (const auto& N : Names)
-            {
-                const auto Paths = TreyarchPackages::ExtractFastFiles(P, N, FastFileDir(Options), Error);
-                Out.insert(Out.end(), Paths.begin(), Paths.end());
-            }
-            if (Out.empty() && Error.empty()) Error = "no picked zone in " + Install;
-            return !Out.empty();
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XSUBCache>(Install), Install, Names, FastFileDir(Options), Out, Error);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override

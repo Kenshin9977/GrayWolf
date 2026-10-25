@@ -15,6 +15,7 @@
 #include "ExportWriters.h"
 #include "GameBlackOps2.h"
 #include "Games/IW3/Iw3Install.h"
+#include "Games/IW3/LoadDefImage.h"
 #include "IPAKCache.h"
 
 #include "Image.h"
@@ -169,10 +170,12 @@ namespace
         return P;
     }
 
-    std::string Slashes(std::string S)
+    // An alias's asset file without its raw/ or devraw/ root, as the sound kind writes it
+    std::string WithoutRawRoot(std::string Rel)
     {
-        std::replace(S.begin(), S.end(), '\\', '/');
-        return S;
+        for (const char* Prefix : { "raw/", "devraw/" })
+            if (Rel.rfind(Prefix, 0) == 0) Rel = Rel.substr(std::strlen(Prefix));
+        return Rel;
     }
 
     // A DXGI format's DDS format and the bytes of a W x H level (0: not one we write)
@@ -255,6 +258,13 @@ namespace
             Exports(Kind::Rawfile, [this](const Context& C, Totals& T) {
                 ExportRawfiles(C, T, { { "rawfile", [this](int64_t Pos, std::string& Nm, std::vector<uint8_t>& Bytes) { return RawfileBytes(Pos, Nm, Bytes); } } });
             });
+            // stringtable (0x14, OpenAssetTools' layout) {name, i32 columns 4, rows 8, cells 0xc of 8
+            // bytes {string, hash}, cell index 0x10}: CSV
+            Exports(Kind::Data, [this](const Context& C, Totals& T) {
+                ExportStringTables(C, T, "stringtable", [this](int64_t Pos, uint32_t& Columns, uint32_t& Rows, std::vector<std::string>& Cells) {
+                    return StringTableCells(Pos, { 4, 8, 0xc, 8 }, Columns, Rows, Cells);
+                });
+            });
             // scriptparsetree {name, u32 len, buffer}: a GSCOBJ of the T6 VM, decompiled by gsc-tool
             Exports(Kind::Script, [this](const Context& C, Totals& T) {
                 ExportScripts(C, T, { Scripts::Tool::GscTool, "t6", "pc", "c" },
@@ -263,13 +273,9 @@ namespace
                                      return BytesAt(PointerAt(Pos + 8), At<uint32_t>(Image(), Pos + 4), S.Bytes);
                                  } } });
             });
+            // Material: its techset, images and blend factors as JSON, its images by the image kind;
             // FxEffectDef (0x4c, elements 0x124) as JSON
-            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
-                const Treyarch::EffectZone Z{ &Image(), [this](uint64_t A) { return Off(A); }, [this](uint64_t A) { return StringAt(A); } };
-                ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
-                    return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::Bo2, Pos, N, J);
-                });
-            });
+            ExportsEffects(GameBlackOps2::ReadXMaterial, Treyarch::EffectLayout::Bo2);
         }
         ~Bo2Zone() override
         {
@@ -382,14 +388,7 @@ namespace
                 return nullptr;
             }
             if (W == 0 || H == 0 || Level > Size || Def + 0xc + (int64_t)Level > (int64_t)Z.size()) return nullptr;
-            auto Result = std::make_unique<XImageDDS>();
-            auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Level];
-            uint32_t Header = 0;
-            Image::WriteDDSHeaderToStream(Buffer, W, H, 1, Fmt, Header, false);
-            std::memcpy(Buffer + Header, Z.data() + Def + 0xc, (size_t)Level);
-            Result->DataBuffer = Buffer;
-            Result->DataSize = (uint32_t)(Header + Level);
-            return Result;
+            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0xc, Level);
         }
 
         // Every alias of every SndBank with an asset file: its data by asset id, in the bank files the
@@ -402,10 +401,8 @@ namespace
             const fs::path Root = C.KindDir(Kind::Sound);
             const std::string Format = ExportWriters::SoundFormatSetting();
             const auto File = [&](const std::string& Asset) -> std::string {
-                std::string Rel = Slashes(Asset);
+                const std::string Rel = WithoutRawRoot(ExportNaming::ForwardSlashes(Asset));
                 if (Rel.empty()) return Rel;
-                for (const char* Prefix : { "raw/", "devraw/" })
-                    if (Rel.rfind(Prefix, 0) == 0) Rel = Rel.substr(std::strlen(Prefix));
                 if (Format != "WAV") return Rel + ExportWriters::SoundExtension(Format);
                 std::error_code Ec;
                 return Rel + (fs::is_regular_file(Root / fs::path(Rel + ".flac"), Ec) ? ".flac" : ".wav");
@@ -438,7 +435,7 @@ namespace
                     {
                         const int64_t A = Head + (int64_t)K * AliasSize;
                         const uint32_t Id = At<uint32_t>(Z, A + AliasAssetId);
-                        const std::string F = Slashes(StringAt(PointerAt(A + AliasFile)));
+                        const std::string F = ExportNaming::ForwardSlashes(StringAt(PointerAt(A + AliasFile)));
                         if (Id != 0 && !F.empty()) Files.emplace(F, Id);
                     }
                 }
@@ -507,11 +504,8 @@ namespace
                 {
                     // a dry run: the entry as its bank's table says - PCM behind the WAV header
                     // written for it, or a FLAC file kept as it is under WAV
-                    std::string Rel = F;
-                    for (const char* Prefix : { "raw/", "devraw/" })
-                        if (Rel.rfind(Prefix, 0) == 0) Rel = Rel.substr(std::strlen(Prefix));
                     DiskGame::SoundHeader H;
-                    H.Name = Rel;
+                    H.Name = WithoutRawRoot(F);
                     H.KeptUnderWav = true;
                     H.Channels = S.Channels;
                     H.Rate = S.Rate < std::size(FrameRates) ? FrameRates[S.Rate] : 0;
@@ -542,9 +536,7 @@ namespace
                     continue;
                 }
                 // the asset file without its raw/ or devraw/ root, the format's extension added
-                std::string Rel = F;
-                for (const char* Prefix : { "raw/", "devraw/" })
-                    if (Rel.rfind(Prefix, 0) == 0) Rel = Rel.substr(std::strlen(Prefix));
+                const std::string Rel = WithoutRawRoot(F);
                 const std::string Own = S.Format == 8 ? ".flac" : ".wav";
                 const std::string Format = ExportWriters::SoundFormatSetting();
                 const fs::path Out = Root / fs::path(Rel + ExportWriters::SoundExtension(Format, Own, true)).make_preferred();

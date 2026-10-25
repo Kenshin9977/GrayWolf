@@ -5,6 +5,7 @@
 #include "ExportNaming.h"
 
 #include <cctype>
+#include <cstdlib>
 
 namespace IW12
 {
@@ -109,6 +110,10 @@ void ShaderScripts::Parse(const std::string& Text, bool& Ok)
         // the stage being read: its first bundle's map, environment mapping, blending
         std::string StageMap;
         bool StageEnv = false, StageBundle0 = true, StageAlphaTest = false;
+        // its animMap: the frames (on its line, or the map lines after it: AnimByLines), their rate
+        std::vector<std::string> StageFrames;
+        float StageRate = 0;
+        bool AnimByLines = false;
         std::string StageBlend;
         while (I < T.size() && Depth > 0)
         {
@@ -120,6 +125,9 @@ void ShaderScripts::Parse(const std::string& Text, bool& Ok)
                 StageEnv = StageAlphaTest = false;
                 StageBundle0 = true;
                 StageBlend.clear();
+                StageFrames.clear();
+                StageRate = 0;
+                AnimByLines = false;
                 continue;
             }
             if (K.Text == "}")
@@ -128,6 +136,11 @@ void ShaderScripts::Parse(const std::string& Text, bool& Ok)
                 {
                     ColorFound = true;
                     S.ColorMap = StageMap;
+                    if (StageFrames.size() > 1 && StageRate > 0)
+                    {
+                        S.Frames = StageFrames;
+                        S.FrameRate = StageRate;
+                    }
                     if (StageAlphaTest) S.Mode = Shader::Blend::Cutout;
                     else if (StageBlend == "blend" || StageBlend == "gl_src_alpha gl_one_minus_src_alpha") S.Mode = Shader::Blend::Blend;
                     else if (StageBlend == "add" || StageBlend == "gl_one gl_one") S.Mode = Shader::Blend::Add;
@@ -153,8 +166,20 @@ void ShaderScripts::Parse(const std::string& Text, bool& Ok)
             {
                 if (Key == "nextbundle") StageBundle0 = false;
                 else if (!StageBundle0) continue;
-                else if ((Key == "map" || Key == "clampmap") && !A.empty()) StageMap = A[0];
-                else if (Key == "animmap" && A.size() >= 2) StageMap = A[1];
+                else if ((Key == "map" || Key == "clampmap") && !A.empty())
+                {
+                    // "map clamp <image>": the image after the word
+                    const std::string& Image = A[0] == "clamp" && A.size() >= 2 ? A[1] : A[0];
+                    if (AnimByLines) StageFrames.push_back(Image);
+                    StageMap = AnimByLines ? StageFrames[0] : Image;
+                }
+                else if (Key == "animmap" && !A.empty())
+                {
+                    StageRate = std::strtof(A[0].c_str(), nullptr);
+                    StageFrames.assign(A.begin() + 1, A.end());
+                    AnimByLines = StageFrames.empty();
+                    if (!StageFrames.empty()) StageMap = StageFrames[0];
+                }
                 else if (Key == "tcgen" && !A.empty() && A[0] == "environment") StageEnv = true;
                 else if (Key == "alphafunc") StageAlphaTest = true;
                 else if (Key == "blendfunc")

@@ -109,6 +109,7 @@ namespace Materials
         float SpecularScale = 1.0f;
         Map Occlusion;
         Map Emissive;                   // sRGB colour
+        float EmissiveColor[3] = { 1, 1, 1 };   // the emission times this (linear)
         Backlight Transmission;         // empty: none
         Opacity AlphaMap;               // empty: the colour map's alpha
         AlphaMode Alpha = AlphaMode::Opaque;
@@ -131,6 +132,7 @@ namespace Materials
         std::string Name, Techset;
         std::vector<Image> Images;
         std::vector<std::vector<uint8_t>> Constants;   // the game's constant bytes, by its own block index
+        int SortKey = -1;                               // the game's sort key, -1 when unknown
         const Image* BySemantic(uint32_t Semantic) const;
     };
 
@@ -177,6 +179,11 @@ namespace Materials
     };
     Description DescribeBySemantic(const Source& Material, const std::vector<SemanticRole>& Table);
 
+    // What a format with a colour factor only (glTF's baseColorFactor) multiplies the colour map by:
+    // the colour tint whole, its mask left out (exact where the mask is 1, as on a white colour map),
+    // else white. Linear.
+    void BaseColorFactor(const Description& D, float Rgb[3]);
+
     struct Sidecar
     {
         std::string Game, Adapter;
@@ -184,6 +191,7 @@ namespace Materials
         std::vector<Source> Sources;    // the raw inputs, parallel to Materials
     };
     std::string SidecarPath(const std::string& ModelPath);  // <dir>/<stem>.materials.json
-    bool WriteSidecar(const std::string& Path, const Sidecar& S);
+    bool WriteSidecar(const std::string& Path, const Sidecar& S);   // a file already holding it is left alone
+    bool SidecarHolds(const std::string& Path, const Sidecar& S);   // the file holds exactly what WriteSidecar writes
     bool ReadSidecar(const std::string& Path, Sidecar& S);
 }

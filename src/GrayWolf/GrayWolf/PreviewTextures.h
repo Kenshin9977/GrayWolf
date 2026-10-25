@@ -43,8 +43,10 @@ bool ColorMapAlphaUsed(const std::string& Path, bool& Used);
 // Applies a coverage cutoff to an already prepared colour map (its alpha decided the cutout).
 void PreserveAlphaCoverage(PreviewImage& Img, float Cutoff);
 
-// A view of a prepared image. Device only (free threaded): a loader thread may call it.
-Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* Dev, const PreviewImage& Img, bool Srgb);
+// A view of a prepared image. Device only (free threaded): a loader thread may call it. MaxSize > 0
+// starts the texture at its first mip no larger than that (the whole image when none is).
+Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* Dev, const PreviewImage& Img, bool Srgb,
+                                                                   int MaxSize = 0);
 
 // A straight RGBA8 image (the .glb previews) with mips, for CreatePreviewSRV.
 PreviewImage PreviewImageFromRGBA(int W, int H, const std::vector<uint8_t>& Rgba);

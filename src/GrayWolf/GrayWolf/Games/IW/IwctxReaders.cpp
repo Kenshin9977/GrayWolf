@@ -108,28 +108,51 @@ std::unique_ptr<XImageDDS> IwctxReaders::LoadXImage(const XImage_t& Image, const
     return nullptr;
 }
 
+namespace
+{
+    // why this thread's last ReadXSound gave no sound, or what its frames failed at (ExportSounds' report)
+    thread_local std::string SoundWhy;
+}
+
 std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const SoundLayout& L)
 {
     const uint64_t At = Sound->AssetPointer;
     const SoundSource S = L.Where(Read<uint8_t>(At + L.Flags));
     const uint32_t Seek = Read<uint32_t>(At + SoundSeek), Loaded = Read<uint32_t>(At + SoundLoaded);
     const uint32_t Rate = Read<uint16_t>(At + L.Rate), Frames = Read<uint32_t>(At + SoundFrames);
+    SoundWhy = "rate 0";
     if (Rate == 0) return nullptr;
+    SoundWhy = "no data in the zone or the packages";
     std::unique_ptr<uint8_t[]> Data;
     const uint8_t* Opus = nullptr;
     size_t Size = 0, Held = 0;
-    // the .xsub object: its header (32 bytes {u64 0, u64 -4, u64 payload} when tagged), the seek
-    // table (u32 offsets), then the frames
-    if (S.Key >= 0 && CoDAssets::GamePackageCache != nullptr)
-    {
+    // the .xsub object: its header (32 bytes {u64 0, u64 -4, u64 payload} when tagged; an untagged
+    // object, as Black Ops 6's primed sounds' and every campaign one, has none), the seek table (u32
+    // offsets), then the frames
+    const auto FromKey = [&](int64_t KeyAt) {
+        if (KeyAt < 0 || CoDAssets::GamePackageCache == nullptr) return;
         uint32_t Got = 0;
-        Data = CoDAssets::GamePackageCache->ExtractPackageObject(Read<uint64_t>(At + S.Key), Got);
+        const uint64_t Key = Read<uint64_t>(At + KeyAt);
+        Data = CoDAssets::GamePackageCache->ExtractPackageObject(Key, Got);
+        if (Data == nullptr || Got == 0)
+        {
+            SoundWhy = std::format(".xsub object {:016x} not in the installed packages", Key);
+            return;
+        }
         uint64_t Tag = 0;
-        if (Data != nullptr && Got >= 16) std::memcpy(&Tag, Data.get() + 8, 8);
-        const size_t Skip = (Tag == 0xFFFFFFFFFFFFFFFCull ? 32 : L.Header) + (size_t)Seek;
-        if (Data != nullptr && Got >= Skip + 3)
+        if (Got >= 16) std::memcpy(&Tag, Data.get() + 8, 8);
+        const size_t Header = Tag == 0xFFFFFFFFFFFFFFFCull ? 32 : 0, Skip = Header + (size_t)Seek;
+        // a few objects hold no Opus but an "ADM3" stream (one frame, seek table 0; Black Ops 6's
+        // zombies' music, 3 of zm_t10_quartz's 1 979 sounds): no reader for it
+        if (Got >= Header + 4 && std::memcmp(Data.get() + Header, "ADM3", 4) == 0)
+        {
+            SoundWhy = std::format(".xsub object {:016x} is an ADM3 stream, not Opus: not read", Key);
+            return;
+        }
+        if (Got >= Skip + 3)
             Opus = Data.get() + Skip, Size = std::min<size_t>(Loaded != 0 ? Loaded : Got - Skip, Got - Skip), Held = Got - Skip;
-    }
+    };
+    FromKey(S.Key);
     // else the frames the zone keeps (primed, or loaded with it)
     if (Opus == nullptr && S.ZoneFrames >= 0 && Mapped(Read<uint64_t>(At + S.ZoneFrames)))
     {
@@ -138,7 +161,9 @@ std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const 
         if (CoDAssets::GameInstance->Read(Data.get(), Read<uint64_t>(At + S.ZoneFrames), Got) != Got) return nullptr;
         Opus = Data.get(), Size = L.ZoneCappedByLoaded ? std::min<size_t>(Loaded != 0 ? Loaded : Got, Got) : Got, Held = Got;
     }
+    if (Opus == nullptr && S.ZoneFrames >= 0 && Read<uint64_t>(At + S.ZoneFrames) == 0) FromKey(S.KeyElse);
     if (Opus == nullptr || Size < 3) return nullptr;
+    SoundWhy = "its Opus frames do not decode";
     // packets {u16 size, Opus packet}: the first one's TOC byte says mono or stereo
     const uint32_t Channels = (Opus[2] & 4) ? 2 : 1;
     return SABSupport::OpusPackets(Opus, Held, 0, Size, Rate, Channels, Frames, L.PreSkip);
@@ -168,9 +193,10 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
         std::error_code Ec;
         std::filesystem::create_directories(Dir, Ec);
         std::string Crash;
+        SoundWhy.clear();
         const int Code = ExportWriters::ExportSound(Sound, Dir, Extension, Crash);
         if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-        else T.Fail(Zone, Kind::Sound, E.Full, "code " + std::to_string(Code) + " " + Crash);
+        else T.Fail(Zone, Kind::Sound, E.Full, "code " + std::to_string(Code) + " " + (Crash.empty() ? SoundWhy : Crash));
     }
 }
 
@@ -400,6 +426,41 @@ std::string IwctxReaders::ScriptString32(uint32_t Hash)
     const auto It = Low.find(Hash);
     return It == Low.end() ? std::string() : It->second;
 }
+decltype(Treyarch::EffectZone::Material) IwctxReaders::SlotMaterials(const MaterialSlots& L, std::function<XMaterial_t(uint64_t Address)> Read,
+                                                                     std::function<const std::vector<uint8_t>&()> Zone,
+                                                                     std::function<int64_t(uint64_t Address)> Off,
+                                                                     std::function<std::string(uint64_t Hash)> Name)
+{
+    using ExportNaming::At;
+    auto Reader = Treyarch::MaterialReader(
+        [L, Read, Zone, Off, Name](uint64_t A) {
+            XMaterial_t M = Read(A);
+            const std::vector<uint8_t>& Image = Zone();
+            const auto In = [&Image](int64_t P, int64_t N) { return P >= 0 && (uint64_t)(P + N) <= Image.size(); };
+            const int64_t O = In(Off(A), L.Size) ? Off(A) : -1;
+            const int64_t Slots = O < 0 ? -1 : Off(At<uint64_t>(Image, O + L.Slots)), Images = O < 0 ? -1 : Off(At<uint64_t>(Image, O + L.Images));
+            const uint8_t SlotCount = O < 0 ? 0 : At<uint8_t>(Image, O + L.SlotCount), ImageCount = O < 0 ? 0 : At<uint8_t>(Image, O + L.ImageCount);
+            for (uint8_t K = 0; Slots >= 0 && Images >= 0 && K < SlotCount && In(Slots + K * 2, 2); K++)
+            {
+                const uint8_t Semantic = At<uint8_t>(Image, Slots + K * 2), Index = At<uint8_t>(Image, Slots + K * 2 + 1);
+                if (Index >= ImageCount || !In(Images + Index * 8, 8)) continue;
+                const uint64_t V = At<uint64_t>(Image, Images + Index * 8);
+                if (!(V >> 63) || Off(V) >= 0) continue;
+                const bool Colour = std::find(L.Colour.begin(), L.Colour.end(), Semantic) != L.Colour.end();
+                M.Images.emplace_back(Colour ? ImageUsageType::DiffuseMap : ImageUsageType::Unknown, Semantic, 0, Name(V));
+            }
+            return M;
+        },
+        Off);
+    return [L, Reader](uint64_t A, Treyarch::EffectZone::MaterialInfo& Out) {
+        if (!Reader(A, Out)) return false;
+        for (auto& I : Out.Images)
+            I.Usage = I.Semantic == L.Emissive ? "emissive" : I.Semantic == L.Opacity ? "opacity" : I.Semantic == L.Transmittance ? "transmittance"
+                    : I.Semantic == L.Ramp ? "ramp" : I.Usage;
+        return true;
+    };
+}
+
 // ---- xanim (IwctxReaders.h, XAnimLayout)
 namespace
 {

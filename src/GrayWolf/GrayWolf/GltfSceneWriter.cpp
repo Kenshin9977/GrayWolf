@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "GltfSceneWriter.h"
+#include "GLTFExport.h"
 
 #include <nlohmann/json.hpp>
 
@@ -95,7 +96,7 @@ int GltfSceneWriter::AddImageUri(const std::string& name, const std::string& uri
 {
     if (uri.empty())
         return -1;
-    m_images.push_back({name, -1, uri});
+    m_images.push_back({name, -1, GLTF::ImageUri(uri)});   // a URI: %-encoded
     return (int)m_images.size() - 1;
 }
 
@@ -107,9 +108,10 @@ int GltfSceneWriter::AddMaterial(const std::string& name, int baseColorImage, fl
 }
 
 int GltfSceneWriter::AddMesh(const std::string& name, const std::vector<Vertex>& verts,
-                             const std::vector<uint32_t>& indices, int material)
+                             const std::vector<uint32_t>& indices, int material,
+                             const std::vector<float>* moreUvs, uint32_t moreSets)
 {
-    return AddMesh(name, std::vector<Part>{ {&verts, &indices, material} });
+    return AddMesh(name, std::vector<Part>{ {&verts, &indices, material, moreUvs, moreSets} });
 }
 
 int GltfSceneWriter::AddMesh(const std::string& name, const std::vector<Part>& parts)
@@ -117,7 +119,24 @@ int GltfSceneWriter::AddMesh(const std::string& name, const std::vector<Part>& p
     Mesh m{name, {}};
     for (const Part& p : parts)
         if (!p.verts->empty() && !p.indices->empty())
+        {
             m.prims.push_back(AddPrimitive(*p.verts, *p.indices, p.material));
+            // TEXCOORD_1..: set k of every vertex, out of the moreSets pairs a vertex has in a row
+            if (p.moreUvs && p.moreSets && p.moreUvs->size() == p.verts->size() * p.moreSets * 2)
+                for (uint32_t k = 0; k < p.moreSets; k++)
+                {
+                    std::vector<float> uv;
+                    uv.reserve(p.verts->size() * 2);
+                    for (size_t v = 0; v < p.verts->size(); v++)
+                    {
+                        uv.push_back((*p.moreUvs)[(v * p.moreSets + k) * 2]);
+                        uv.push_back((*p.moreUvs)[(v * p.moreSets + k) * 2 + 1]);
+                    }
+                    const int view = PushView(uv.data(), uv.size() * sizeof(float), TARGET_ARRAY);
+                    m_accessors.push_back({view, GL_FLOAT, (int)p.verts->size(), "VEC2", false, {}, {}, false});
+                    m.prims.back().moreUvAcc.push_back((int)m_accessors.size() - 1);
+                }
+        }
     if (m.prims.empty())
         return -1;
     m_meshes.push_back(std::move(m));
@@ -289,6 +308,8 @@ bool GltfSceneWriter::WriteGlb(const std::string& Path)
         for (const Primitive& p : m.prims)
         {
             json attrs = {{"POSITION", p.posAcc}, {"NORMAL", p.normAcc}, {"TEXCOORD_0", p.uvAcc}, {"COLOR_0", p.colAcc}};
+            for (size_t k = 0; k < p.moreUvAcc.size(); k++)
+                attrs["TEXCOORD_" + std::to_string(k + 1)] = p.moreUvAcc[k];
             json prim = {{"attributes", attrs}, {"indices", p.idxAcc}, {"mode", 4}};
             if (p.material >= 0)
                 prim["material"] = p.material;

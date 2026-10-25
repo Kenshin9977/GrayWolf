@@ -80,6 +80,18 @@ namespace TreyarchPackages
         return Out;
     }
 
+    bool ExtractZones(CoDPackageCache* Packages, const std::string& Install, const std::vector<std::string>& Names,
+                      const std::string& CacheDir, std::vector<std::string>& Out, std::string& Error, const char* PatchExtension)
+    {
+        for (const auto& N : Names)
+        {
+            const auto Paths = ExtractFastFiles(Packages, N, CacheDir, Error, PatchExtension);
+            Out.insert(Out.end(), Paths.begin(), Paths.end());
+        }
+        if (Out.empty() && Error.empty()) Error = "no picked zone in " + Install;
+        return !Out.empty();
+    }
+
     CoDPackageCache* Open(const std::string& Install, const char* Format, Factory Make)
     {
         // kept as CoDAssets' package cache: the live model/image code reads streamed data from there

@@ -10,6 +10,7 @@
 #include "ExportWriters.h"
 #include "GameModernWarfare.h"
 #include "Games/IW3/IwdZone.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/OAT/OatWeapons.h"
 #include "SettingsManager.h"
 #include "Strings.h"
@@ -40,6 +41,9 @@ namespace
             // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
             Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, "Call of Duty 4: Modern Warfare"); });
+            // Material: its techset, images and blend factors as JSON, its images by the image kind;
+            // FxEffectDef (0x20, elements 0xfc) as JSON, Black Ops' layout's ancestor
+            ExportsEffects(GameModernWarfare::ReadXMaterial, Treyarch::EffectLayout::Iw3);
         }
 
     protected:

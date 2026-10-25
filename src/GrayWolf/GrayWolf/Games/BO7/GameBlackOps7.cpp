@@ -5,6 +5,8 @@
 #include "CoDAssets.h"
 #include "CoDRawImageTranslator.h"
 #include "DBGameGenerics.h"
+#include "ExportWriters.h"
+#include "GameReaders.h"
 #include "Games/Common/MeshDecode.h"
 #include "Games/IW/IwctxReaders.h"
 #include "MapLive.h"
@@ -143,7 +145,8 @@ namespace
         uint64_t TechsetPtr;
         uint64_t ImageIndexPtr;
         uint64_t ImageTablePtr;
-        uint8_t Pad38[0x68 - 0x38];
+        uint8_t Pad38[0x67 - 0x38];
+        uint8_t SortKey;                // Games/IW/IwMaterialAlpha.h
         uint8_t ImageIndexCount;
         uint8_t Pad69[4];
         uint8_t ImageCount;
@@ -271,17 +274,29 @@ std::unique_ptr<XModel_t> GameBlackOps7::ReadXModel(const CoDModel_t* Model)
     return Asset;
 }
 
+thread_local GameReaders::ImagesElsewhereFn GameBlackOps7::ImagesElsewhere;
+thread_local std::function<bool(const std::string&, std::string&, int&)> GameBlackOps7::DetailsElsewhere;
+
 const XMaterial_t GameBlackOps7::ReadXMaterial(uint64_t MaterialPointer)
 {
     if (MaterialPointer == 0 || !Mapped(MaterialPointer))
     {
+        // (a reference no zone served resolves: the material's hash, its images the zone
+        // defining it names)
         XMaterial_t None(0);
         None.MaterialName = HashName("xmaterial", MaterialPointer);
+        if (MaterialPointer != 0)
+        {
+            const std::string Hash = std::format("{:x}", MaterialPointer & 0x7FFFFFFFFFFFFFFFull);
+            GameReaders::AddImagesElsewhere(None, ImagesElsewhere, Hash, UsageOf);
+            if (DetailsElsewhere) DetailsElsewhere(Hash, None.TechsetName, None.SortKey);
+        }
         return None;
     }
     const auto Data = Read<BO7XMaterial>(MaterialPointer);
     XMaterial_t Result(Data.ImageIndexCount);
     Result.MaterialName = HashName("xmaterial", Data.Hash);
+    Result.SortKey = Data.SortKey;
     if (Data.TechsetPtr != 0 && Mapped(Data.TechsetPtr))
         Result.TechsetName = HashName("xtechset", Read<uint64_t>(Data.TechsetPtr));
     for (uint32_t K = 0; K < Data.ImageIndexCount && Data.ImageIndexPtr != 0 && Data.ImageTablePtr != 0; K++)
@@ -290,30 +305,34 @@ const XMaterial_t GameBlackOps7::ReadXMaterial(uint64_t MaterialPointer)
         const uint8_t Index = Read<uint8_t>(Data.ImageIndexPtr + K * 2 + 1);
         if (Index >= Data.ImageCount) continue;
         const uint64_t Image = Read<uint64_t>(Data.ImageTablePtr + (uint64_t)Index * 8);
-        if (Image == 0 || !Mapped(Image)) continue;
+        // (an image no zone served holds: its hash, named when the caller looks materials up
+        // elsewhere, as the zone holding it writes it)
+        const bool Elsewhere = Image >> 63 && !Mapped(Image) && ImagesElsewhere;
+        if (Image == 0 || (!Mapped(Image) && !Elsewhere)) continue;
         // the engine's fill-ins for a slot the material leaves empty ($black, $white,
         // $identitypackednog in code_post_gfx, as C2M skips them): not the material's own
         static const uint64_t Defaults[] = { HashIWAsset("$black"), HashIWAsset("$white"), HashIWAsset("$identitypackednog") };
-        const uint64_t Hash = Read<uint64_t>(Image) & 0x7FFFFFFFFFFFFFFFull;
+        const uint64_t Hash = (Elsewhere ? Image : Read<uint64_t>(Image)) & 0x7FFFFFFFFFFFFFFFull;
         if (std::find(std::begin(Defaults), std::end(Defaults), Hash) != std::end(Defaults)) continue;
-        const std::string Name = HashName("ximage", Read<uint64_t>(Image));
-        Result.Images.emplace_back(UsageOf(Semantic), Semantic, Image, Name);
+        const std::string Name = HashName("ximage", Hash);
+        Result.Images.emplace_back(UsageOf(Semantic), Semantic, Elsewhere ? ExportWriters::ImageElsewhere : Image, Name);
     }
     return Result;
 }
 
 // sndasset (0x40, loader 0x38924d0): flags u8 0x30 (bits 4-5 not 0: its frames in the .xsub object
-// whose key is at 8; else in the zone at 8, their size u32 0x10), rate u16 0x32
+// whose key is at 8; else in the zone at 8, their size u32 0x10, or, 8 null, in the .xsub object
+// whose key is at 0x10, as Black Ops 6's), rate u16 0x32
 std::unique_ptr<XSound> GameBlackOps7::ReadXSound(const CoDSound_t* Sound)
 {
     static const IwctxReaders::SoundLayout Layout{ SoundFlags, SoundRate,
                                                    [](uint8_t Flags) {
                                                        IwctxReaders::SoundSource S;
                                                        if ((Flags & 0x30) >= 0x10) S.Key = SoundKey;
-                                                       else S.ZoneFrames = SoundKey, S.ZoneSize = 0x10;
+                                                       else S.ZoneFrames = SoundKey, S.ZoneSize = 0x10, S.KeyElse = 0x10;
                                                        return S;
                                                    },
-                                                   0, true, SABSupport::OpusPreSkipLookAhead };
+                                                   true, SABSupport::OpusPreSkipLookAhead };
     return IwctxReaders::ReadXSound(Sound, Layout);
 }
 

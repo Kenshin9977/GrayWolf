@@ -19,6 +19,8 @@ concurrency: hash-packages
 jobs:
   packages:
     name: Rebuild hash packages
+    # not on the public snapshot, which has no releases (a schedule's payload has no repository visibility)
+    if: github.repository != 'Kenshin9977/GrayWolf'
     runs-on: windows-2022
     permissions:
       contents: write

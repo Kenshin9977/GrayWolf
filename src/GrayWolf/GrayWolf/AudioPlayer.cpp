@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <algorithm>
+#include <atomic>
 
 struct AudioPlayer::Impl
 {
@@ -54,9 +55,8 @@ void AudioPlayer::Unload()
 
 // Builds a mono min/max envelope from the interleaved PCM so the UI can draw a waveform.
 static void BuildPeaks(const std::vector<float>& Pcm, unsigned Channels, ma_uint64 Frames,
-                       std::vector<float>& OutMin, std::vector<float>& OutMax)
+                       std::vector<float>& OutMin, std::vector<float>& OutMax, int Columns = 720)
 {
-    const int Columns = 720;
     OutMin.assign(Columns, 0.0f);
     OutMax.assign(Columns, 0.0f);
     if (Frames == 0 || Channels == 0) return;
@@ -85,17 +85,19 @@ static void BuildPeaks(const std::vector<float>& Pcm, unsigned Channels, ma_uint
     }
 }
 
-bool AudioPlayer::Load(const std::string& path, const std::string& formatHint)
+// Decodes path to interleaved f32 PCM at its own rate and channel count. miniaudio decodes WAV
+// (incl. MS/IMA ADPCM), FLAC and MP3 natively; Opus has no backend, so it goes through a temp WAV
+// first (named per call: the asset grid's waveforms decode on workers while the player loads).
+static bool DecodePcm(const std::string& path, const std::string& formatHint, std::vector<float>& pcm,
+                      unsigned& channels, unsigned& rate, ma_uint64& framesRead)
 {
-    Unload();
-
-    // miniaudio decodes WAV (incl. MS/IMA ADPCM), FLAC and MP3 natively. Opus has no
-    // backend, so we decode it to a temp WAV first and hand that to the decoder.
     std::string decodePath = path;
     std::string tempFile;
     if (formatHint == "opus")
     {
-        tempFile = (std::filesystem::temp_directory_path() / "greyhound_ap_opus.wav").string();
+        static std::atomic<unsigned> Serial{ 0 };
+        tempFile = (std::filesystem::temp_directory_path() /
+                    ("greyhound_ap_opus_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(Serial++) + ".wav")).string();
         if (!Sound::DecodeOpusToWav(path, tempFile))
             return false;
         decodePath = tempFile;
@@ -110,14 +112,14 @@ bool AudioPlayer::Load(const std::string& path, const std::string& formatHint)
         return false;
     }
 
-    const unsigned channels = decoder.outputChannels;
-    const unsigned rate     = decoder.outputSampleRate;
+    channels = decoder.outputChannels;
+    rate     = decoder.outputSampleRate;
 
     ma_uint64 total = 0;
     ma_decoder_get_length_in_pcm_frames(&decoder, &total);
 
-    std::vector<float> pcm;
-    ma_uint64 framesRead = 0;
+    pcm.clear();
+    framesRead = 0;
     if (total > 0)
     {
         pcm.resize((size_t)total * channels);
@@ -142,6 +144,30 @@ bool AudioPlayer::Load(const std::string& path, const std::string& formatHint)
     if (framesRead == 0 || channels == 0)
         return false;
     pcm.resize((size_t)framesRead * channels);
+    return true;
+}
+
+bool AudioPlayer::ReadWaveform(const std::string& path, const std::string& formatHint, int columns,
+                               std::vector<float>& outMin, std::vector<float>& outMax, double* seconds)
+{
+    std::vector<float> pcm;
+    unsigned channels = 0, rate = 0;
+    ma_uint64 frames = 0;
+    if (!DecodePcm(path, formatHint, pcm, channels, rate, frames)) return false;
+    BuildPeaks(pcm, channels, frames, outMin, outMax, columns);
+    if (seconds) *seconds = rate ? (double)frames / rate : 0.0;
+    return true;
+}
+
+bool AudioPlayer::Load(const std::string& path, const std::string& formatHint)
+{
+    Unload();
+
+    std::vector<float> pcm;
+    unsigned channels = 0, rate = 0;
+    ma_uint64 framesRead = 0;
+    if (!DecodePcm(path, formatHint, pcm, channels, rate, framesRead))
+        return false;
 
     // Move the PCM into the impl so the audio buffer can reference it for the object's lifetime.
     m_impl->Pcm    = std::move(pcm);

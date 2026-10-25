@@ -21,4 +21,9 @@ public:
 
     // Image table, plus a blendMode setting derived from its GfxStateBits
     static const XMaterial_t ReadXMaterial(uint64_t MaterialPointer);
+
+    // The blendMode setting off a material's GfxStateBits table (Count entries; none when empty): the
+    // src/dst RGB blend factors, bits 0-3/4-7 of the first entry's loadBits (the base pass). Black
+    // Ops II's GfxStateBits starts as Black Ops'.
+    static void AddBlendMode(XMaterial_t& Material, uint64_t StateBits, uint32_t Count);
 };

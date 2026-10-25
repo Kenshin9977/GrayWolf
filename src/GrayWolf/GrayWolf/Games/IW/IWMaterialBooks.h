@@ -21,6 +21,14 @@ namespace IWMaterialBooks
 {
     using ImageList = std::vector<std::pair<uint32_t, std::string>>;
     using Book = std::unordered_map<std::string, ImageList>;
+    // what else a layout may read of a material: its flipbook grid, its techset's name, its sort key
+    struct Extra
+    {
+        uint8_t Rows = 0, Cols = 0;
+        std::string Techset;
+        int SortKey = -1;
+    };
+    using Extras = std::unordered_map<std::string, Extra>;
 
     // Where a game's Material keeps its images: a u8 count and a table of {u32 semantic, pad,
     // image*} slots; and where its GfxImage keeps its name.
@@ -32,10 +40,25 @@ namespace IWMaterialBooks
         // Only a material with image slots is booked, named without its ',' (otherwise every
         // material named in place is, with or without slots, and a ",name" header never)
         bool WithSlotsOnly = false;
+        bool Hashed = false;   // (below)
+        // its u8 atlas row and column counts, its techset pointer (the name at 0; a hashed title's
+        // hash) and its u8 sort key (-1: not read). A hashed title reads its sort key alone.
+        int64_t AtlasRows = -1, AtlasCols = -1, Techset = -1, SortKey = -1;
+        bool WithExtras() const { return (AtlasRows >= 0 && AtlasCols >= 0) || (Hashed && SortKey >= 0); }
+        // A hashed title's (Modern Warfare III, Black Ops 7): a material and its images named by the
+        // name hash at their 0 (under HashMask; the book keeps it in hex; all ones: no image), its
+        // slots {u8 semantic, u8 image} at the pointer at Slots (count u8 ImageCount) picking from
+        // the image pointers at Images (count u8 TableCount); an image pointer the zone leaves
+        // unresolved is the image's hash. A material without slots is not booked.
+        uint64_t HashMask = ~0ull;
+        int64_t Slots = -1, TableCount = -1;
     };
 
     // The fast file's book, nullptr when it does not read. CacheDir keeps the books across runs.
     std::shared_ptr<const Book> ZoneBook(const std::filesystem::path& FastFile, const std::string& CacheDir, const Layout& L);
+    // The same with its materials' extras (empty unless the layout reads them)
+    std::shared_ptr<const Book> ZoneBook(const std::filesystem::path& FastFile, const std::string& CacheDir, const Layout& L,
+                                         std::shared_ptr<const Extras>& More);
 
     // The fast files in Dir whose names match Pattern (case ignored), patch_ zones first: a
     // material the patch redefines is the patch's
@@ -54,6 +77,8 @@ namespace IWMaterialBooks
         Lookup(Layout L, std::string CacheDir, ZoneList Zones);
 
         bool Find(const std::string& Name, ImageList& Out);
+        // the material's atlas grid, techset and sort key, false when no book has them (Layout::WithExtras)
+        bool Details(const std::string& Name, Extra& Out);
         // How many headers a book filled (Filled) and how many none did (Unfilled)
         void Measure(DiskGame::Totals& T, const char* Filled, const char* Unfilled) const;
 
@@ -63,6 +88,8 @@ namespace IWMaterialBooks
         ZoneList Zones;
         bool Read = false;
         std::vector<std::shared_ptr<const Book>> Books;
+        std::vector<std::shared_ptr<const Extras>> More;
         std::set<std::string> Booked, NotBooked;
+        void Open();
     };
 }

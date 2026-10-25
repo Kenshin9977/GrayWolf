@@ -3,6 +3,7 @@
 #include "ExportWriters.h"
 
 #include "Games/IW3/IwdZone.h"
+#include "Games/IW3/LoadDefImage.h"
 
 #include "CoDIWITranslator.h"
 #include "Image.h"
@@ -223,30 +224,14 @@ namespace Iw3Family
         const uint32_t Format = At<uint32_t>(Z, Def + 8), Size = At<uint32_t>(Z, Def + 0xc);
         ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
         uint64_t Level = 0;
-        const uint64_t Blocks = (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4);
         bool Swap = false;
-        switch (Format)
+        if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
         {
-        case 0x31545844: Fmt = ImageFormat::DDS_BC1_UNORM; Level = Blocks * 8; break;    // DXT1
-        case 0x33545844: Fmt = ImageFormat::DDS_BC2_UNORM; Level = Blocks * 16; break;   // DXT3
-        case 0x35545844: Fmt = ImageFormat::DDS_BC3_UNORM; Level = Blocks * 16; break;   // DXT5
-        case 21: case 22: Fmt = ImageFormat::DDS_Standard_A8R8G8B8; Level = (uint64_t)W * H * 4; Swap = true; break;
-        case 50: Fmt = ImageFormat::DDS_Standard_A8_UNORM; Level = (uint64_t)W * H; break;   // L8
-        default:
             Counter("images_in_zone_unknown_format")++;
             return nullptr;
         }
         if (W == 0 || H == 0 || Level > Size || Def + 0x10 + (int64_t)Level > (int64_t)Z.size()) return nullptr;
-        auto Result = std::make_unique<XImageDDS>();
-        auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Level];
-        uint32_t Header = 0;
-        Image::WriteDDSHeaderToStream(Buffer, W, H, 1, Fmt, Header, false);
-        std::memcpy(Buffer + Header, Z.data() + Def + 0x10, (size_t)Level);
-        if (Swap)
-            for (uint64_t P = 0; P + 3 < Level; P += 4) std::swap(Buffer[Header + P], Buffer[Header + P + 2]);   // BGRA -> RGBA
-        Result->DataBuffer = Buffer;
-        Result->DataSize = (uint32_t)(Header + Level);
-        return Result;
+        return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0x10, Level, Swap);
     }
 
     // Loaded sounds (the title's), then the files of the .iwd archives' sound folder: streamed

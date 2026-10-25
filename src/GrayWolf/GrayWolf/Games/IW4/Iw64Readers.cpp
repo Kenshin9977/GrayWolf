@@ -22,6 +22,9 @@ namespace Iw64
                       { 0x78 + 0x68, 0x78 + 0x70, 0x78 + 0x98, 0x78 + 0xa0, 0x178, 0x180, 0x2b8,
                         0x58, 40, 52, 56, 0x188, 0x190, 0x78 } };
 
+    thread_local std::function<uint64_t(const std::string& Name)> MaterialDefinedAt;
+    thread_local std::function<bool(const std::string& Name, std::vector<std::pair<uint32_t, std::string>>& Images)> MaterialImagesElsewhere;
+
     namespace
     {
         template <class T>
@@ -43,6 +46,7 @@ namespace Iw64
             L.SurfBlend = 0x20, L.SurfVerts0 = 0x28, L.SurfVertListCount = 0x30, L.SurfVertList = 0x38;
             L.MaterialName = 0, L.MaterialTextureCount = G.MaterialTextureCount, L.MaterialTextureTable = G.MaterialTextureTable;
             L.TextureDefSize = 0x10, L.ImageName = ImageName;
+            L.MaterialByName = MaterialDefinedAt, L.MaterialImagesByName = MaterialImagesElsewhere;
             L.AnimFrames = 0x12, L.AnimFlags = 0x14, L.LoopMask = 1, L.AnimCounts = 0x15, L.AnimRate = 0x2c;
             L.AnimPointers = 0x38, L.AnimDelta = 0x80;
             return L;

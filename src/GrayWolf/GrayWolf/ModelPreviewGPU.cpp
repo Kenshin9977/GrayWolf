@@ -59,6 +59,7 @@ cbuffer Material : register(b1)
     float4 SpecularParams;   // x: the specular map's scale, y: 1 = pre-PBR (colour kept)
     float4 TransmissionColor, TransmissionMask;   // rgb linear, w: 1 = the map is a thickness
     float4 AlphaParams, AlphaMask;                // the alpha map's low, high, uv scale; its channel
+    float4 EmissiveColor;                         // rgb: the emission's colour (linear)
 };
 cbuffer Scene : register(b2)
 {
@@ -252,7 +253,7 @@ float4 PSMain(PSIn i, out uint Coverage : SV_Coverage) : SV_Target0
         if (NoSpecular > 0.5) { cDiff = albedo.rgb; cSpec = 0.04; }
         color = LightSurface(V, N, cDiff, cSpec, rough, ao);
     }
-    if (Flags & 64) color += EmissiveMap.Sample(Surface, uv).rgb;
+    if (Flags & 64) color += EmissiveMap.Sample(Surface, uv).rgb * EmissiveColor.rgb;
     // Transmission: the light reaching the far side (the lights behind the surface, the sky along
     // -N) comes through, times the colour and the transmission map.
     if (Flags & 16384)
@@ -401,13 +402,13 @@ namespace
 {
     void Mask(float (&M)[4], int Channel) { for (int c = 0; c < 4; c++) M[c] = (c == (Channel & 3)) ? 1.0f : 0.0f; }
 
-    PreviewGpuMaterial GpuMaterial(ID3D11Device* Dev, const PreviewMaterial& S)
+    PreviewGpuMaterial GpuMaterial(ID3D11Device* Dev, const PreviewMaterial& S, int MaxSize)
     {
         PreviewGpuMaterial M;
         const Materials::Description& D = S.Desc;
         auto Srv = [&](const PreviewImage& Img, bool Srgb, uint32_t Flag, ComPtr<ID3D11ShaderResourceView>& Out) {
             if (Img.Empty()) return;
-            Out = CreatePreviewSRV(Dev, Img, Srgb);
+            Out = CreatePreviewSRV(Dev, Img, Srgb, MaxSize);
             if (Out) M.C.Flags |= Flag;
         };
         Srv(S.Albedo, true, PreviewHasAlbedo, M.Albedo);
@@ -417,6 +418,7 @@ namespace
         Srv(S.Specular, true, PreviewHasSpecular, M.Specular);
         Srv(S.Occlusion, false, PreviewHasOcclusion, M.Occlusion);
         Srv(S.Emissive, true, PreviewHasEmissive, M.Emissive);
+        for (int c = 0; c < 3; c++) M.C.EmissiveColor[c] = D.EmissiveColor[c];
         Mask(M.C.RoughMask, D.Roughness.Channel);
         Mask(M.C.MetalMask, D.Metalness.Channel);
         Mask(M.C.OcclusionMask, D.Occlusion.Channel);
@@ -429,21 +431,21 @@ namespace
         M.C.Specular[1] = D.LegacySpecular ? 1.0f : 0.0f;
         if (D.NormalFlipY) M.C.Flags |= PreviewNormalFlipY;
         // the tint gradient: sampled as colour (sRGB), its offset map as data
-        if (!D.Tint.Empty() && (M.Tint = CreatePreviewSRV(Dev, S.Tint, true)))
+        if (!D.Tint.Empty() && (M.Tint = CreatePreviewSRV(Dev, S.Tint, true, MaxSize)))
         {
             M.C.Flags |= PreviewHasTint;
             for (int c = 0; c < 3; c++) M.C.TintColor[c] = D.Tint.Color[c];
             M.C.TintColor[3] = D.Tint.U;
             M.C.TintParams[1] = D.Tint.Rgb ? 1.0f : 0.0f;
             Mask(M.C.TintChannel, D.Tint.Image.Channel);
-            if (!D.Tint.Offset.Empty() && (M.TintOffset = CreatePreviewSRV(Dev, S.TintOffset, false)))
+            if (!D.Tint.Offset.Empty() && (M.TintOffset = CreatePreviewSRV(Dev, S.TintOffset, false, MaxSize)))
             {
                 M.C.Flags |= PreviewHasTintOffset;
                 M.C.TintParams[0] = D.Tint.OffsetScale;
                 Mask(M.C.OffsetChannel, D.Tint.Offset.Channel);
             }
         }
-        if (!D.Color.Empty() && (M.ColorMask = CreatePreviewSRV(Dev, S.ColorMask, false)))
+        if (!D.Color.Empty() && (M.ColorMask = CreatePreviewSRV(Dev, S.ColorMask, false, MaxSize)))
         {
             M.C.Flags |= PreviewHasColorTint;
             for (int c = 0; c < 3; c++) M.C.ColorTint[c] = D.Color.Color[c];
@@ -456,9 +458,9 @@ namespace
             for (int l = 0; l < 2; l++)
             {
                 const Materials::Layer& L = D.Layers[l];
-                M.LayerAlbedo[l] = CreatePreviewSRV(Dev, S.LayerAlbedo[l], true);
-                if (!S.LayerNormal[l].Empty()) M.LayerNormal[l] = CreatePreviewSRV(Dev, S.LayerNormal[l], false);
-                if (!S.LayerRoughness[l].Empty()) M.LayerRoughness[l] = CreatePreviewSRV(Dev, S.LayerRoughness[l], false);
+                M.LayerAlbedo[l] = CreatePreviewSRV(Dev, S.LayerAlbedo[l], true, MaxSize);
+                if (!S.LayerNormal[l].Empty()) M.LayerNormal[l] = CreatePreviewSRV(Dev, S.LayerNormal[l], false, MaxSize);
+                if (!S.LayerRoughness[l].Empty()) M.LayerRoughness[l] = CreatePreviewSRV(Dev, S.LayerRoughness[l], false, MaxSize);
                 M.C.Pad[l] = M.LayerRoughness[l] ? 1.0f : 0.0f;
                 const float Layer[4] = { L.UVScale[0], L.UVScale[1], L.UVRotation, M.LayerNormal[l] ? L.NormalScale : 0.0f };
                 std::memcpy(M.C.Layer[l], Layer, sizeof(Layer));
@@ -466,7 +468,7 @@ namespace
                 std::memcpy(M.C.LayerTint[l], Tint, sizeof(Tint));
             }
             const Materials::Layer& Top = D.Layers[1];
-            if (!S.LayerMask.Empty() && (M.LayerMask = CreatePreviewSRV(Dev, S.LayerMask, false)))
+            if (!S.LayerMask.Empty() && (M.LayerMask = CreatePreviewSRV(Dev, S.LayerMask, false, MaxSize)))
             {
                 M.C.Flags |= PreviewHasLayerMask;
                 Mask(M.C.MaskChannel, Top.Mask.Channel);
@@ -475,14 +477,14 @@ namespace
             }
         }
         // light through the surface: the map as data (sampled as a value, not a colour)
-        if (!D.Transmission.Empty() && (M.Transmission = CreatePreviewSRV(Dev, S.Transmission, false)))
+        if (!D.Transmission.Empty() && (M.Transmission = CreatePreviewSRV(Dev, S.Transmission, false, MaxSize)))
         {
             M.C.Flags |= PreviewHasTransmission;
             for (int c = 0; c < 3; c++) M.C.TransmissionColor[c] = D.Transmission.Color[c];
             M.C.TransmissionColor[3] = D.Transmission.Image.Invert ? 1.0f : 0.0f;
             Mask(M.C.TransmissionMask, D.Transmission.Image.Channel);
         }
-        if (!D.AlphaMap.Empty() && (M.AlphaMap = CreatePreviewSRV(Dev, S.AlphaMap, false)))
+        if (!D.AlphaMap.Empty() && (M.AlphaMap = CreatePreviewSRV(Dev, S.AlphaMap, false, MaxSize)))
         {
             M.C.Flags |= PreviewHasAlphaMap;
             const float Params[4] = { D.AlphaMap.Low, D.AlphaMap.High, D.AlphaMap.UVScale[0], D.AlphaMap.UVScale[1] };
@@ -495,7 +497,7 @@ namespace
     }
 }
 
-PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo)
+PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, int MaxTextureSize)
 {
     PreviewGpuMesh M;
     if (Geo.Pos.size() < 3 || Geo.Idx.empty()) return M;
@@ -530,13 +532,13 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo)
     for (int m = 0; m < MatCount; m++)
     {
         if (m < (int)Geo.MaterialMaps.size())
-            M.Mats[m] = GpuMaterial(Dev, Geo.MaterialMaps[m]);
+            M.Mats[m] = GpuMaterial(Dev, Geo.MaterialMaps[m], MaxTextureSize);
         else
         {
             const auto& T = Geo.Materials[m];
             PreviewMaterial Plain;
             Plain.Albedo = PreviewImageFromRGBA(T.Width, T.Height, T.Rgba);
-            M.Mats[m] = GpuMaterial(Dev, Plain);
+            M.Mats[m] = GpuMaterial(Dev, Plain, MaxTextureSize);
         }
         if (M.Mats[m].Albedo) M.TexCount++;
     }

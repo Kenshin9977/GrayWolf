@@ -4,6 +4,8 @@
 
 #include "MemoryReader.h"
 
+#include <functional>
+
 // We don't need the FLAC DLL exports, we're a LIB
 #define FLAC__NO_DLL 1
 
@@ -893,211 +895,105 @@ bool Sound::TranscodeWAVToOpus(int8_t* SoundBuffer, uint64_t SoundSize, const st
     return EncodePCMToOpus(Samples, ChannelsCount, SampleRate, OutputFile);
 }
 
+namespace
+{
+    // An Ogg Opus file as RFC 7845 lays it out: OpusHead (Channels, PreSkip; channel mapping
+    // families 0 and 1, family 0 past two channels refused when Strict), OpusTags, then audio
+    // packets decoded to 48 kHz PCM16, each given to Audio(Samples, Frames); Granule(position) for
+    // each page with one after the head. False when it is not one, holds no audio or no channel.
+    bool ReadOggOpus(const std::string& InputFile, bool Strict, uint32_t& Channels, uint32_t& PreSkip,
+                     const std::function<void(int64_t Position)>& Granule, const std::function<void(const int16_t* Samples, int Frames)>& Audio)
+    {
+        FILE* Input = nullptr;
+        fopen_s(&Input, InputFile.c_str(), "rb");
+        if (Input == nullptr) return false;
+
+        ogg_sync_state Sync; ogg_sync_init(&Sync);
+        ogg_stream_state Stream; bool StreamStarted = false, IsOk = true, SawAudio = false;
+        int64_t PacketIndex = 0;
+        OpusMSDecoder* Decoder = nullptr;
+        std::vector<int16_t> DecodeBuffer;
+
+        while (IsOk)
+        {
+            char* Buffer = ogg_sync_buffer(&Sync, 8192);
+            const auto Read = fread(Buffer, 1, 8192, Input);
+            if (Read == 0) break;
+            ogg_sync_wrote(&Sync, (long)Read);
+
+            ogg_page Page;
+            while (IsOk && ogg_sync_pageout(&Sync, &Page) == 1)
+            {
+                if (!StreamStarted) { if (ogg_stream_init(&Stream, ogg_page_serialno(&Page)) != 0) { IsOk = false; break; } StreamStarted = true; }
+                if (ogg_stream_pagein(&Stream, &Page) != 0) { IsOk = false; break; }
+                if (ogg_page_granulepos(&Page) >= 0 && PacketIndex >= 1) Granule(ogg_page_granulepos(&Page));
+
+                ogg_packet Packet;
+                while (IsOk && ogg_stream_packetout(&Stream, &Packet) == 1)
+                {
+                    if (PacketIndex == 0)
+                    {
+                        if (Packet.bytes < 19 || std::memcmp(Packet.packet, "OpusHead", 8) != 0) { IsOk = false; break; }
+                        Channels = Packet.packet[9];
+                        PreSkip = (uint32_t)Packet.packet[10] | ((uint32_t)Packet.packet[11] << 8);
+                        const uint8_t Family = Packet.packet[18];
+                        int Streams = 1, Coupled = Channels == 2 ? 1 : 0;
+                        unsigned char Mapping[255] = { 0, 1 };
+                        if (Family != 0)
+                        {
+                            if (Packet.bytes < 21 + (long)Channels) { IsOk = false; break; }
+                            Streams = Packet.packet[19];
+                            Coupled = Packet.packet[20];
+                            std::memcpy(Mapping, Packet.packet + 21, Channels);
+                        }
+                        else if (Strict && (Channels < 1 || Channels > 2)) { IsOk = false; break; }
+                        int Err = OPUS_OK;
+                        Decoder = opus_multistream_decoder_create(48000, (int)Channels, Streams, Coupled, Mapping, &Err);
+                        if (Decoder == nullptr || Err != OPUS_OK) { IsOk = false; break; }
+                        DecodeBuffer.resize(5760 * (size_t)Channels);
+                    }
+                    else if (PacketIndex == 1)
+                    {
+                        if (Packet.bytes < 8 || std::memcmp(Packet.packet, "OpusTags", 8) != 0) { IsOk = false; break; }
+                    }
+                    else
+                    {
+                        const auto Decoded = opus_multistream_decode(Decoder, Packet.packet, (opus_int32)Packet.bytes, DecodeBuffer.data(), 5760, 0);
+                        if (Decoded < 0) { IsOk = false; break; }
+                        Audio(DecodeBuffer.data(), Decoded);
+                        SawAudio = true;
+                    }
+                    PacketIndex++;
+                }
+            }
+        }
+
+        if (Decoder != nullptr) opus_multistream_decoder_destroy(Decoder);
+        if (StreamStarted) ogg_stream_clear(&Stream);
+        ogg_sync_clear(&Sync);
+        fclose(Input);
+        return IsOk && SawAudio && Channels > 0;
+    }
+}
+
 bool Sound::ValidateOpusFile(const std::string& InputFile, uint32_t& ChannelsOut, uint64_t& SamplesOut)
 {
     ChannelsOut = 0;
     SamplesOut = 0;
-
-    FILE* Input = nullptr;
-    fopen_s(&Input, InputFile.c_str(), "rb");
-
-    if (Input == nullptr)
-    {
-        return false;
-    }
-
-    ogg_sync_state Sync;
-    ogg_sync_init(&Sync);
-
-    ogg_stream_state Stream;
-    bool StreamStarted = false;
-    bool IsOk = true;
-    bool SawAudio = false;
-    int64_t PacketIndex = 0;
-
-    OpusMSDecoder* Decoder = nullptr;
-    std::vector<int16_t> DecodeBuffer(5760 * 2);
-
-    while (IsOk)
-    {
-        char* Buffer = ogg_sync_buffer(&Sync, 8192);
-        const auto Read = fread(Buffer, 1, 8192, Input);
-
-        if (Read == 0)
-        {
-            break;
-        }
-
-        ogg_sync_wrote(&Sync, (long)Read);
-
-        ogg_page Page;
-        while (IsOk && ogg_sync_pageout(&Sync, &Page) == 1)
-        {
-            if (!StreamStarted)
-            {
-                if (ogg_stream_init(&Stream, ogg_page_serialno(&Page)) != 0)
-                {
-                    IsOk = false;
-                    break;
-                }
-                StreamStarted = true;
-            }
-
-            if (ogg_stream_pagein(&Stream, &Page) != 0)
-            {
-                IsOk = false;
-                break;
-            }
-
-            ogg_packet Packet;
-            while (IsOk && ogg_stream_packetout(&Stream, &Packet) == 1)
-            {
-                if (PacketIndex == 0)
-                {
-                    if (Packet.bytes < 19 || std::memcmp(Packet.packet, "OpusHead", 8) != 0)
-                    {
-                        IsOk = false;
-                        break;
-                    }
-
-                    ChannelsOut = Packet.packet[9];
-
-                    // channel mapping family 0 (mono, stereo) or 1 (surround: streams, coupled, mapping)
-                    int Streams = 1, Coupled = ChannelsOut == 2 ? 1 : 0;
-                    unsigned char Mapping[255] = { 0, 1 };
-                    if (Packet.packet[18] != 0)
-                    {
-                        if (Packet.bytes < 21 + (long)ChannelsOut)
-                        {
-                            IsOk = false;
-                            break;
-                        }
-                        Streams = Packet.packet[19];
-                        Coupled = Packet.packet[20];
-                        std::memcpy(Mapping, Packet.packet + 21, ChannelsOut);
-                    }
-
-                    int DecoderError = OPUS_OK;
-                    Decoder = opus_multistream_decoder_create(48000, (int)ChannelsOut, Streams, Coupled, Mapping, &DecoderError);
-
-                    if (Decoder == nullptr || DecoderError != OPUS_OK)
-                    {
-                        IsOk = false;
-                        break;
-                    }
-
-                    DecodeBuffer.resize(5760 * ChannelsOut);
-                }
-                else if (PacketIndex == 1)
-                {
-                    if (Packet.bytes < 8 || std::memcmp(Packet.packet, "OpusTags", 8) != 0)
-                    {
-                        IsOk = false;
-                        break;
-                    }
-                }
-                else
-                {
-                    const auto Decoded = opus_multistream_decode(Decoder, Packet.packet, (opus_int32)Packet.bytes, DecodeBuffer.data(), 5760, 0);
-
-                    if (Decoded < 0)
-                    {
-                        IsOk = false;
-                        break;
-                    }
-
-                    SamplesOut += (uint64_t)Decoded;
-                    SawAudio = true;
-                }
-
-                PacketIndex++;
-            }
-        }
-    }
-
-    if (Decoder != nullptr) opus_multistream_decoder_destroy(Decoder);
-    if (StreamStarted) ogg_stream_clear(&Stream);
-    ogg_sync_clear(&Sync);
-    fclose(Input);
-
-    return IsOk && SawAudio && ChannelsOut > 0;
+    uint32_t PreSkip = 0;
+    return ReadOggOpus(InputFile, false, ChannelsOut, PreSkip, [](int64_t) {}, [&SamplesOut](const int16_t*, int Frames) { SamplesOut += (uint64_t)Frames; });
 }
 
 bool Sound::DecodeOpusToWav(const std::string& InputFile, const std::string& OutputWav)
 {
-    FILE* Input = nullptr;
-    fopen_s(&Input, InputFile.c_str(), "rb");
-    if (Input == nullptr) return false;
-
     // RFC 7845 as a player reads it: OpusHead's pre-skip dropped from the start, the last page's
-    // granule position ending the stream (end trimming), channel mapping families 0 and 1
-    ogg_sync_state Sync; ogg_sync_init(&Sync);
-    ogg_stream_state Stream; bool StreamStarted = false, IsOk = true, SawAudio = false;
-    int64_t PacketIndex = 0; uint32_t Channels = 0, PreSkip = 0;
+    // granule position ending the stream (end trimming)
+    uint32_t Channels = 0, PreSkip = 0;
     int64_t LastGranule = -1;
-    OpusMSDecoder* Decoder = nullptr;
-    std::vector<int16_t> DecodeBuffer;
     std::vector<int16_t> Pcm;
-
-    while (IsOk)
-    {
-        char* Buffer = ogg_sync_buffer(&Sync, 8192);
-        const auto Read = fread(Buffer, 1, 8192, Input);
-        if (Read == 0) break;
-        ogg_sync_wrote(&Sync, (long)Read);
-
-        ogg_page Page;
-        while (IsOk && ogg_sync_pageout(&Sync, &Page) == 1)
-        {
-            if (!StreamStarted) { if (ogg_stream_init(&Stream, ogg_page_serialno(&Page)) != 0) { IsOk = false; break; } StreamStarted = true; }
-            if (ogg_stream_pagein(&Stream, &Page) != 0) { IsOk = false; break; }
-            if (ogg_page_granulepos(&Page) >= 0 && PacketIndex >= 1) LastGranule = ogg_page_granulepos(&Page);
-
-            ogg_packet Packet;
-            while (IsOk && ogg_stream_packetout(&Stream, &Packet) == 1)
-            {
-                if (PacketIndex == 0)
-                {
-                    if (Packet.bytes < 19 || std::memcmp(Packet.packet, "OpusHead", 8) != 0) { IsOk = false; break; }
-                    Channels = Packet.packet[9];
-                    PreSkip = (uint32_t)Packet.packet[10] | ((uint32_t)Packet.packet[11] << 8);
-                    const uint8_t Family = Packet.packet[18];
-                    int Streams = 1, Coupled = Channels == 2 ? 1 : 0;
-                    unsigned char Mapping[255] = { 0, 1 };
-                    if (Family != 0)
-                    {
-                        if (Packet.bytes < 21 + (long)Channels) { IsOk = false; break; }
-                        Streams = Packet.packet[19];
-                        Coupled = Packet.packet[20];
-                        std::memcpy(Mapping, Packet.packet + 21, Channels);
-                    }
-                    else if (Channels < 1 || Channels > 2) { IsOk = false; break; }
-                    int Err = OPUS_OK;
-                    Decoder = opus_multistream_decoder_create(48000, (int)Channels, Streams, Coupled, Mapping, &Err);
-                    if (Decoder == nullptr || Err != OPUS_OK) { IsOk = false; break; }
-                    DecodeBuffer.resize(5760 * (size_t)Channels);
-                }
-                else if (PacketIndex == 1)
-                {
-                    if (Packet.bytes < 8 || std::memcmp(Packet.packet, "OpusTags", 8) != 0) { IsOk = false; break; }
-                }
-                else
-                {
-                    const auto Decoded = opus_multistream_decode(Decoder, Packet.packet, (opus_int32)Packet.bytes, DecodeBuffer.data(), 5760, 0);
-                    if (Decoded < 0) { IsOk = false; break; }
-                    Pcm.insert(Pcm.end(), DecodeBuffer.begin(), DecodeBuffer.begin() + (size_t)Decoded * Channels);
-                    SawAudio = true;
-                }
-                PacketIndex++;
-            }
-        }
-    }
-
-    if (Decoder != nullptr) opus_multistream_decoder_destroy(Decoder);
-    if (StreamStarted) ogg_stream_clear(&Stream);
-    ogg_sync_clear(&Sync);
-    fclose(Input);
-    if (!(IsOk && SawAudio && Channels > 0)) return false;
+    if (!ReadOggOpus(InputFile, true, Channels, PreSkip, [&LastGranule](int64_t Position) { LastGranule = Position; },
+                     [&](const int16_t* Samples, int Frames) { Pcm.insert(Pcm.end(), Samples, Samples + (size_t)Frames * Channels); }))
+        return false;
 
     // the samples the granule positions say the stream holds, after the pre-skip
     uint64_t Frames = Pcm.size() / Channels;

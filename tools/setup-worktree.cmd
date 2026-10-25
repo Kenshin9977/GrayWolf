@@ -1,6 +1,7 @@
 @echo off
 rem Prepares a git worktree of this repo to build and run like the main checkout:
-rem junctions to the main checkout's submodules and name indexes, and the Oodle DLL.
+rem junctions to the main checkout's submodules and name indexes, the Oodle DLLs and the
+rem profiles' local files (string cipher tables).
 rem Usage: tools\setup-worktree.cmd <worktree path>
 rem The main checkout is the one holding the worktree's common .git, whichever copy of this
 rem script runs. Its exe folder is src\GrayWolf\x64\Dev, or src\WraithXCOD\x64\Dev (the name
@@ -21,7 +22,9 @@ set "MAINDEV=%MAIN%\src\GrayWolf\x64\Dev"
 if not exist "%MAINDEV%\package_index\*" set "MAINDEV=%MAIN%\src\WraithXCOD\x64\Dev"
 if not exist "%WT%\src\GrayWolf\x64\Dev" mkdir "%WT%\src\GrayWolf\x64\Dev"
 call :link "%WT%\src\GrayWolf\x64\Dev\package_index" "%MAINDEV%\package_index"
-if not exist "%WT%\src\GrayWolf\x64\Dev\oo2core_6_win64.dll" copy /y "%MAINDEV%\oo2core_6_win64.dll" "%WT%\src\GrayWolf\x64\Dev\" >nul
+for %%D in (oo2core_6_win64.dll oo2core_8_win64.dll) do if exist "%MAINDEV%\%%D" if not exist "%WT%\src\GrayWolf\x64\Dev\%%D" copy /y "%MAINDEV%\%%D" "%WT%\src\GrayWolf\x64\Dev\" >nul
+rem the profiles' local, git-ignored files (string cipher tables, local settings): copied, never overwritten
+for /d %%P in ("%MAIN%\zonekit\profiles\*") do for %%F in (strings.cipher.txt profile.local.json) do if exist "%%P\%%F" if not exist "%WT%\zonekit\profiles\%%~nxP\%%F" copy /y "%%P\%%F" "%WT%\zonekit\profiles\%%~nxP\" >nul
 echo worktree ready: %WT% (main checkout %MAIN%, data from %MAINDEV%)
 exit /b 0
 

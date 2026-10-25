@@ -13,6 +13,8 @@
 
 #include "CliOptions.h"
 #include "CliCommands.h"
+
+#include <CLI/CLI.hpp>
 #include "CliSupport.h"
 
 #include "WraithX.h"
@@ -188,3 +190,24 @@ int RunSabProbe(const CliOptions& Options)
     return (Parsed && First != nullptr) ? 0 : 5;
 }
 
+// ---- the subcommands (CliCommands.h)
+
+void AddAudioCommands(CliCommandBuilders& B)
+{
+    B["verify-opus"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("verify-opus", "Decode an Opus file and report duration/rate/peaks");
+        Sub->add_option("file", Options.VerifyOpus, "Opus file to decode")->required()->check(CLI::ExistingFile);
+    };
+    B["audio-probe"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("audio-probe", "Decode via AudioPlayer and print duration/rate/peaks");
+        Sub->add_option("file", Options.AudioProbe, "Audio file to decode")->required()->check(CLI::ExistingFile);
+    };
+    B["decode-iwd"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("decode-iwd", "BO1 IWD sound -> PCM WAV (--audio-format opus for opus)");
+        Sub->add_option("file", Options.DecodeIwd, "IWD sound entry to decode")->required()->check(CLI::ExistingFile);
+    };
+    B["sab-probe"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("sab-probe", "Run SABSupport on a sound bank");
+        Sub->add_option("file", Options.SabProbe, "Sound bank (.sab) file, or a folder of .sabl banks")->required()->check(CLI::ExistingPath);
+    };
+}

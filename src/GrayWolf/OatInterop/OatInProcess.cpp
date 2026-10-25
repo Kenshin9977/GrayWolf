@@ -38,6 +38,7 @@
 
 #include "AssetPreview.h"   // ExtractIwiToPng (textures from the game's IWDs), ExtractIpakImagesByKey (T6)
 #include "Image.h"          // Image::ConvertImageMemory (DDS -> PNG, for T6 embedded-in-fastfile images)
+#include "ExportNaming.h"     // Lower, ForwardSlashes, SafeFileName
 #include "GltfSceneWriter.h" // vertex decode for the map export
 #include "MapGlbWriter.h"    // the map scene and its one .glb writer
 
@@ -86,6 +87,13 @@ namespace
 {
     // Clamp a 0..1 float channel to a 0..255 byte (shared by the SEModel + glTF vertex paths).
     inline uint8_t ToByte(float f) { f = f < 0 ? 0 : (f > 1 ? 1 : f); return (uint8_t)(f * 255.0f + 0.5f); }
+
+    // The describe and export commands' name filter: a name holding NeedleLower (lower case), case
+    // ignored; an empty filter takes every name
+    bool NameMatches(const std::string& Name, const std::string& NeedleLower)
+    {
+        return NeedleLower.empty() || ExportNaming::Lower(Name).find(NeedleLower) != std::string::npos;
+    }
 
     // Copies one OAT vertex's geometry channels (pos/normal/uv/color) into a glTF scene vertex.
     GltfSceneWriter::Vertex ToGltfVertex(const XModelVertex& Sv)
@@ -212,11 +220,7 @@ namespace
                 continue;
             }
 
-            std::string Name(Img->name);
-            for (auto& C : Name)
-                if (C == '\\' || C == '/' || C == ':' || C == '*' || C == '?' || C == '"' ||
-                    C == '<' || C == '>' || C == '|')
-                    C = '_';
+            const std::string Name = ExportNaming::SafeFileName(Img->name);
             if (!Seen.insert(Name).second)
                 continue;
 
@@ -256,7 +260,6 @@ namespace
             return Data && N >= 12 && B[0]=='R'&&B[1]=='I'&&B[2]=='F'&&B[3]=='F'
                                    && B[8]=='W'&&B[9]=='A'&&B[10]=='V'&&B[11]=='E';
         };
-        auto Slashes = [](std::string S) { for (auto& C : S) if (C == '\\') C = '/'; return S; };
         auto EnsureWav = [](std::string S) {
             if (S.size() < 4 || S.compare(S.size()-4, 4, ".wav") != 0) S += ".wav";
             return S;
@@ -289,7 +292,7 @@ namespace
                         if (!IsRiffWave(LS->sound.data, LS->sound.data_size))
                             continue; // only pass through complete RIFF/WAVE (matches OAT's T4 dumper)
 
-                        std::string Name = LS->name ? Slashes(LS->name) : (A.name ? Slashes(A.name) : std::string());
+                        std::string Name = LS->name ? ExportNaming::ForwardSlashes(LS->name) : (A.name ? ExportNaming::ForwardSlashes(A.name) : std::string());
                         if (Name.empty())
                             continue;
                         Name = EnsureWav(Name);
@@ -314,7 +317,7 @@ namespace
                         const T5::StreamedSound* SS = SF->u.streamSnd;
                         if (!SS->filename)
                             continue;
-                        std::string Entry = EnsureWav(Slashes(SS->filename));
+                        std::string Entry = EnsureWav(ExportNaming::ForwardSlashes(SS->filename));
                         if (Entry.empty())
                             continue;
                         if (!Seen.insert(Entry).second)
@@ -390,6 +393,26 @@ namespace
         return S.empty() ? "null" : ("\"" + JsonEscape(S) + "\"");
     }
 
+    // Every asset of a pool with a name (its own, at ->name) as <Dir>/<name>.json, written by
+    // Write(Out, Asset); the count written
+    template <typename TAsset, typename TWrite>
+    size_t ExportNamedPool(Zone& Z, AssetDumpingContext& Context, const std::string& Dir, TWrite&& Write)
+    {
+        size_t Written = 0;
+        for (auto* Info : Z.m_pools.template PoolAssets<TAsset>())
+        {
+            const auto* A = Info ? Info->Asset() : nullptr;
+            const std::string Name = A ? SafeCString(A->name) : "";
+            if (Name.empty())
+                continue;
+            const auto AssetFile = Context.OpenAssetFile(Dir + "/" + Name + ".json");
+            if (!AssetFile) continue;
+            Write(*AssetFile, A);
+            Written++;
+        }
+        return Written;
+    }
+
     // destructible_def (ASSET_TYPE_DESTRUCTIBLEDEF): OAT's generated loader is complete for this type
     // in both games, but neither game's ObjWriterT{5,6}.cpp has the REGISTER_DUMPER line uncommented
     // - DumpZone loads every one correctly and never writes one to disk. T5::DestructibleDef and
@@ -397,19 +420,7 @@ namespace
     template <typename TAssetDestructibleDef>
     size_t ExportDestructibleDefPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetDestructibleDef>())
-        {
-            const auto* Def = Info ? Info->Asset() : nullptr;
-            const std::string Name = Def ? SafeCString(Def->name) : "";
-            if (Name.empty())
-                continue;
-
-            const auto AssetFile = Context.OpenAssetFile("destructible_def/" + Name + ".json");
-            if (!AssetFile)
-                continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetDestructibleDef>(Z, Context, "destructible_def", [&](std::ostream& Out, const auto* Def) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(Def->name) << ",\n";
             Out << "  \"model\": " << NameJson(Def->model ? Def->model->name : nullptr) << ",\n";
@@ -476,9 +487,7 @@ namespace
 
             Out << "  ]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // Writes a fixed-size float vector (vec2_t/vec3_t/vec4_t - all unions with a ".v[N]" member in
@@ -506,17 +515,7 @@ namespace
     template <typename TAssetXGlobals>
     size_t ExportXGlobalsPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetXGlobals>())
-        {
-            const auto* X = Info ? Info->Asset() : nullptr;
-            const std::string Name = X ? SafeCString(X->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("xglobals/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetXGlobals>(Z, Context, "xglobals", [&](std::ostream& Out, const auto* X) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(X->name) << ",\n";
             Out << "  \"xanimStreamBufferSize\": " << X->xanimStreamBufferSize << ",\n";
@@ -545,9 +544,7 @@ namespace
                 Out << "\n";
             }
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // snd_driver_globals - field NAMES diverge between games (snapshotGroups vs duckGroups, plus two
@@ -555,17 +552,7 @@ namespace
     // templated one with heavy if-constexpr branching over different member names.
     size_t ExportSndDriverGlobalsPoolT5(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T5::AssetSoundDriverGlobals>())
-        {
-            const auto* S = Info ? Info->Asset() : nullptr;
-            const std::string Name = S ? SafeCString(S->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("snd_driver_globals/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T5::AssetSoundDriverGlobals>(Z, Context, "snd_driver_globals", [&](std::ostream& Out, const auto* S) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(S->name) << ",\n";
             Out << "  \"groupCount\": " << S->groupCount << ",\n";
@@ -584,24 +571,12 @@ namespace
             Out << "  \"contextCount\": " << S->contextCount << ",\n";
             Out << "  \"masterCount\": " << S->masterCount << "\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     size_t ExportSndDriverGlobalsPoolT6(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T6::AssetSoundDriverGlobals>())
-        {
-            const auto* S = Info ? Info->Asset() : nullptr;
-            const std::string Name = S ? SafeCString(S->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("snd_driver_globals/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T6::AssetSoundDriverGlobals>(Z, Context, "snd_driver_globals", [&](std::ostream& Out, const auto* S) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(S->name) << ",\n";
             Out << "  \"groupCount\": " << S->groupCount << ",\n";
@@ -622,9 +597,7 @@ namespace
             Out << "  \"voiceDuckCount\": " << S->voiceDuckCount << ",\n";
             Out << "  \"futzCount\": " << S->futzCount << "\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // glasses (+ nested GlassDef/Glass). Glasses::workMemory is a preallocated runtime scratch
@@ -634,17 +607,7 @@ namespace
     template <typename TAssetGlasses>
     size_t ExportGlassesPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetGlasses>())
-        {
-            const auto* G = Info ? Info->Asset() : nullptr;
-            const std::string Name = G ? SafeCString(G->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("glasses/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetGlasses>(Z, Context, "glasses", [&](std::ostream& Out, const auto* G) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(G->name) << ",\n";
             Out << "  \"numGlasses\": " << G->numGlasses << ",\n";
@@ -680,9 +643,7 @@ namespace
             }
             Out << "  ]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // emblem_set. T6 adds iconTypes/bgCategories tables and diverges EmblemIcon (drops
@@ -781,17 +742,7 @@ namespace
     // table of (hash, offset, size) triples, no asset pointers, no blobs.
     size_t ExportPackIndexPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T5::AssetPackIndex>())
-        {
-            const auto* P = Info ? Info->Asset() : nullptr;
-            const std::string Name = P ? SafeCString(P->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("pack_index/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T5::AssetPackIndex>(Z, Context, "pack_index", [&](std::ostream& Out, const auto* P) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(P->name) << ",\n";
             Out << "  \"header\": { \"magic\": " << P->header.magic << ", \"timestamp\": " << P->header.timestamp
@@ -803,9 +754,7 @@ namespace
                     << ", \"offset\": " << P->entries[i].offset << ", \"size\": " << P->entries[i].size << " }";
             Out << "]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // fx_impact_table. "table" is a pointer to a SINGLE FxImpactEntry (not an array) holding every
@@ -864,17 +813,7 @@ namespace
     // OAT's loader handles it completely.
     size_t ExportKeyValuePairsPoolT6(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T6::AssetKeyValuePairs>())
-        {
-            const auto* K = Info ? Info->Asset() : nullptr;
-            const std::string Name = K ? SafeCString(K->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("keyvaluepairs/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T6::AssetKeyValuePairs>(Z, Context, "keyvaluepairs", [&](std::ostream& Out, const auto* K) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(K->name) << ",\n";
             Out << "  \"numVariables\": " << K->numVariables << ",\n";
@@ -890,9 +829,7 @@ namespace
             }
             Out << "]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // ddl. The only recursion in the whole type is ddlDef_t::next - a singly-linked list of format
@@ -902,17 +839,7 @@ namespace
     template <typename TAssetDdl>
     size_t ExportDdlPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetDdl>())
-        {
-            const auto* R = Info ? Info->Asset() : nullptr;
-            const std::string Name = R ? SafeCString(R->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("ddl/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetDdl>(Z, Context, "ddl", [&](std::ostream& Out, const auto* R) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(R->name) << ",\n";
             Out << "  \"versions\": [\n";
@@ -963,9 +890,7 @@ namespace
             }
             Out << "  ]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // T5::SoundFile is a discriminated union (T5_Assets.h:1991-1996): u.loadSnd if type==SAT_LOADED,
@@ -993,17 +918,7 @@ namespace
     template <typename TAssetSoundPatch>
     size_t ExportSoundPatchPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetSoundPatch>())
-        {
-            const auto* P = Info ? Info->Asset() : nullptr;
-            const std::string Name = P ? SafeCString(P->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("sound_patch/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetSoundPatch>(Z, Context, "sound_patch", [&](std::ostream& Out, const auto* P) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(P->name) << ",\n";
             Out << "  \"elementCount\": " << P->elementCount << ",\n";
@@ -1021,9 +936,7 @@ namespace
             else
                 Out << "\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // sound_bank (T5). Fully flat except the alias table's SoundFile union (see SoundFileRefJson).
@@ -1031,17 +944,7 @@ namespace
     // every alias it indexes is already written in full via the alias/head arrays below.
     size_t ExportSoundBankPoolT5(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T5::AssetSoundBank>())
-        {
-            const auto* B = Info ? Info->Asset() : nullptr;
-            const std::string Name = B ? SafeCString(B->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("sound_bank/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T5::AssetSoundBank>(Z, Context, "sound_bank", [&](std::ostream& Out, const auto* B) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(B->name) << ",\n";
             Out << "  \"aliasCount\": " << B->aliasCount << ",\n";
@@ -1114,9 +1017,7 @@ namespace
             }
             Out << "]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // sound_bank (T6). Bitfield flags (SndAliasFlags, T6_Assets.h:6321-6353) decoded field-by-field,
@@ -1126,17 +1027,7 @@ namespace
     // state/streamRequestId/pendingIo/ioError/runtimeAssetLoad (runtime-only load state).
     size_t ExportSoundBankPoolT6(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.PoolAssets<T6::AssetSoundBank>())
-        {
-            const auto* B = Info ? Info->Asset() : nullptr;
-            const std::string Name = B ? SafeCString(B->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("sound_bank/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<T6::AssetSoundBank>(Z, Context, "sound_bank", [&](std::ostream& Out, const auto* B) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(B->name) << ",\n";
             Out << "  \"aliasCount\": " << B->aliasCount << ",\n";
@@ -1237,9 +1128,7 @@ namespace
                     << ", \"aliasId\": " << B->scriptIdLookups[i].aliasId << " }";
             Out << "]\n";
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // windowDef_t - shared layout/color struct embedded in both menuDef_t and itemDef_s. Identical
@@ -1276,17 +1165,7 @@ namespace
     template <typename TAssetMenuList>
     size_t ExportMenuListPool(Zone& Z, AssetDumpingContext& Context)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetMenuList>())
-        {
-            const auto* M = Info ? Info->Asset() : nullptr;
-            const std::string Name = M ? SafeCString(M->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile("menu_list/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetMenuList>(Z, Context, "menu_list", [&](std::ostream& Out, const auto* M) {
             Out << "{\n  \"name\": " << NameJson(M->name) << ",\n  \"menuCount\": " << M->menuCount
                 << ",\n  \"menus\": [";
             for (int i = 0; i < M->menuCount; i++)
@@ -1295,9 +1174,7 @@ namespace
                 Out << (i ? "," : "") << NameJson(Menu ? Menu->window.name : nullptr);
             }
             Out << "]\n}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 
     // menu_def (menuDef_t): full flat metadata + windowDef_t + itemDef_s array, deliberately skipping
@@ -1425,24 +1302,12 @@ namespace
     template <typename TAssetGameWorld>
     size_t ExportGameWorldPool(Zone& Z, AssetDumpingContext& Context, const char* SubDir)
     {
-        size_t Written = 0;
-        for (auto* Info : Z.m_pools.template PoolAssets<TAssetGameWorld>())
-        {
-            const auto* G = Info ? Info->Asset() : nullptr;
-            const std::string Name = G ? SafeCString(G->name) : "";
-            if (Name.empty())
-                continue;
-            const auto AssetFile = Context.OpenAssetFile(std::string(SubDir) + "/" + Name + ".json");
-            if (!AssetFile) continue;
-            auto& Out = *AssetFile;
-
+        return ExportNamedPool<TAssetGameWorld>(Z, Context, SubDir, [&](std::ostream& Out, const auto* G) {
             Out << "{\n";
             Out << "  \"name\": " << NameJson(G->name) << ",\n";
             WritePathData(Out, G->path);
             Out << "}\n";
-            Written++;
-        }
-        return Written;
+        });
     }
 }
 
@@ -1979,18 +1844,11 @@ bool OatDescribeFxInProcess(const std::string& FastFilePath, std::string& Report
 
 namespace
 {
-    // T6's FxFloatRange/FxIntRange are separate types from T5's but share the same base/amplitude
-    // shape (same situation as DescribeMaterialGeneric above) - templated so ExportFxPool<TAssetFx>
-    // can call these with either game's range type.
+    // T6's FxFloatRange/FxIntRange are separate types from T5's, float and int ranges alike, but
+    // share the same base/amplitude shape (same situation as DescribeMaterialGeneric above) -
+    // templated so ExportFxPool<TAssetFx> can call this with either game's range type.
     template <typename TRange>
-    void WriteFloatRange(std::ostream& Os, const char* Indent, const char* Key, const TRange& R, bool Comma = true)
-    {
-        Os << Indent << "\"" << Key << "\": { \"base\": " << R.base << ", \"amplitude\": " << R.amplitude << " }"
-           << (Comma ? "," : "") << "\n";
-    }
-
-    template <typename TRange>
-    void WriteIntRange(std::ostream& Os, const char* Indent, const char* Key, const TRange& R, bool Comma = true)
+    void WriteRange(std::ostream& Os, const char* Indent, const char* Key, const TRange& R, bool Comma = true)
     {
         Os << Indent << "\"" << Key << "\": { \"base\": " << R.base << ", \"amplitude\": " << R.amplitude << " }"
            << (Comma ? "," : "") << "\n";
@@ -2045,13 +1903,8 @@ namespace
             Seen++;
 
         const std::string Name = Fx->name;
-        if (!NeedleLower.empty())
-        {
-            std::string NameLower = Name;
-            for (auto& Ch : NameLower) Ch = (char)std::tolower((unsigned char)Ch);
-            if (NameLower.find(NeedleLower) == std::string::npos)
-                continue;
-        }
+        if (!NameMatches(Name, NeedleLower))
+            continue;
 
         fs::path OutPath = fs::path(OutDir) / (Name + ".json");
         fs::create_directories(OutPath.parent_path(), Ec);
@@ -2101,28 +1954,28 @@ namespace
                         << " } },\n";
                 }
 
-                WriteFloatRange(Out, "      ", "spawnRange", El.spawnRange);
-                WriteFloatRange(Out, "      ", "fadeInRange", El.fadeInRange);
-                WriteFloatRange(Out, "      ", "fadeOutRange", El.fadeOutRange);
+                WriteRange(Out, "      ", "spawnRange", El.spawnRange);
+                WriteRange(Out, "      ", "fadeInRange", El.fadeInRange);
+                WriteRange(Out, "      ", "fadeOutRange", El.fadeOutRange);
                 Out << "      \"spawnFrustumCullRadius\": " << El.spawnFrustumCullRadius << ",\n";
-                WriteIntRange(Out, "      ", "spawnDelayMsec", El.spawnDelayMsec);
-                WriteIntRange(Out, "      ", "lifeSpanMsec", El.lifeSpanMsec);
+                WriteRange(Out, "      ", "spawnDelayMsec", El.spawnDelayMsec);
+                WriteRange(Out, "      ", "lifeSpanMsec", El.lifeSpanMsec);
                 // {x,y,z}, each a range - an object (named keys), not an array.
                 Out << "      \"spawnOrigin\": {\n";
-                for (int a = 0; a < 3; a++) WriteFloatRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.spawnOrigin[a], a < 2);
+                for (int a = 0; a < 3; a++) WriteRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.spawnOrigin[a], a < 2);
                 Out << "      },\n";
-                WriteFloatRange(Out, "      ", "spawnOffsetRadius", El.spawnOffsetRadius);
-                WriteFloatRange(Out, "      ", "spawnOffsetHeight", El.spawnOffsetHeight);
+                WriteRange(Out, "      ", "spawnOffsetRadius", El.spawnOffsetRadius);
+                WriteRange(Out, "      ", "spawnOffsetHeight", El.spawnOffsetHeight);
                 Out << "      \"spawnAngles\": {\n";
-                for (int a = 0; a < 3; a++) WriteFloatRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.spawnAngles[a], a < 2);
+                for (int a = 0; a < 3; a++) WriteRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.spawnAngles[a], a < 2);
                 Out << "      },\n";
                 Out << "      \"angularVelocity\": {\n";
-                for (int a = 0; a < 3; a++) WriteFloatRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.angularVelocity[a], a < 2);
+                for (int a = 0; a < 3; a++) WriteRange(Out, "        ", a == 0 ? "x" : a == 1 ? "y" : "z", El.angularVelocity[a], a < 2);
                 Out << "      },\n";
-                WriteFloatRange(Out, "      ", "initialRotation", El.initialRotation);
+                WriteRange(Out, "      ", "initialRotation", El.initialRotation);
                 Out << "      \"rotationAxis\": " << El.rotationAxis << ",\n";
-                WriteFloatRange(Out, "      ", "gravity", El.gravity);
-                WriteFloatRange(Out, "      ", "reflectionFactor", El.reflectionFactor);
+                WriteRange(Out, "      ", "gravity", El.gravity);
+                WriteRange(Out, "      ", "reflectionFactor", El.reflectionFactor);
                 Out << "      \"atlas\": { \"behavior\": " << (int)El.atlas.behavior << ", \"index\": " << (int)El.atlas.index
                     << ", \"fps\": " << (int)El.atlas.fps << ", \"loopCount\": " << (int)El.atlas.loopCount
                     << ", \"colIndexBits\": " << (int)El.atlas.colIndexBits << ", \"rowIndexBits\": " << (int)El.atlas.rowIndexBits
@@ -2189,8 +2042,8 @@ namespace
                 Out << "      \"effectOnImpact\": " << (OnImpact.empty() ? "null" : ("\"" + JsonEscape(OnImpact) + "\"")) << ",\n";
                 Out << "      \"effectOnDeath\": " << (OnDeath.empty() ? "null" : ("\"" + JsonEscape(OnDeath) + "\"")) << ",\n";
                 Out << "      \"effectEmitted\": " << (Emitted.empty() ? "null" : ("\"" + JsonEscape(Emitted) + "\"")) << ",\n";
-                WriteFloatRange(Out, "      ", "emitDist", El.emitDist);
-                WriteFloatRange(Out, "      ", "emitDistVariance", El.emitDistVariance);
+                WriteRange(Out, "      ", "emitDist", El.emitDist);
+                WriteRange(Out, "      ", "emitDistVariance", El.emitDistVariance);
                 Out << "      \"effectAttached\": " << (Attached.empty() ? "null" : ("\"" + JsonEscape(Attached) + "\"")) << ",\n";
 
                 // Trail geometry, if this is a TRAIL element (0x5) with a trailDef - T5 only; T6's
@@ -2237,8 +2090,7 @@ bool OatExportFxInProcess(const std::string& FastFilePath, const std::string& Na
         return false;
     }
 
-    std::string NeedleLower = NameFilter;
-    for (auto& Ch : NeedleLower) Ch = (char)std::tolower((unsigned char)Ch);
+    const std::string NeedleLower = ExportNaming::Lower(NameFilter);
 
     std::error_code Ec;
     std::filesystem::create_directories(OutDir, Ec);
@@ -2333,8 +2185,7 @@ bool OatDescribeWeaponInProcess(const std::string& FastFilePath, const std::stri
         return false;
     }
 
-    std::string NeedleLower = NameFilter;
-    for (auto& Ch : NeedleLower) Ch = (char)std::tolower((unsigned char)Ch);
+    const std::string NeedleLower = ExportNaming::Lower(NameFilter);
 
     std::ostringstream Os;
     size_t WeaponCount = 0;
@@ -2346,12 +2197,7 @@ bool OatDescribeWeaponInProcess(const std::string& FastFilePath, const std::stri
             const T5::WeaponVariantDef* Variant = Info ? Info->Asset() : nullptr;
             if (!Variant || !Variant->weapDef) continue;
             const std::string Name = Info->m_name;
-            if (!NeedleLower.empty())
-            {
-                std::string NameLower = Name;
-                for (auto& Ch : NameLower) Ch = (char)std::tolower((unsigned char)Ch);
-                if (NameLower.find(NeedleLower) == std::string::npos) continue;
-            }
+            if (!NameMatches(Name, NeedleLower)) continue;
             WeaponCount++;
             const T5::WeaponDef* D = Variant->weapDef;
             Os << "weapon: " << Name << "\n";
@@ -2371,12 +2217,7 @@ bool OatDescribeWeaponInProcess(const std::string& FastFilePath, const std::stri
             const T6::WeaponVariantDef* Variant = Info ? Info->Asset() : nullptr;
             if (!Variant || !Variant->weapDef) continue;
             const std::string Name = Info->m_name;
-            if (!NeedleLower.empty())
-            {
-                std::string NameLower = Name;
-                for (auto& Ch : NameLower) Ch = (char)std::tolower((unsigned char)Ch);
-                if (NameLower.find(NeedleLower) == std::string::npos) continue;
-            }
+            if (!NameMatches(Name, NeedleLower)) continue;
             WeaponCount++;
             const T6::WeaponDef* D = Variant->weapDef;
             Os << "weapon: " << Name << "\n";
@@ -2415,13 +2256,8 @@ namespace
             Seen++;
 
             const std::string Name = Raw->name;
-            if (!NeedleLower.empty())
-            {
-                std::string NameLower = Name;
-                for (auto& Ch : NameLower) Ch = (char)std::tolower((unsigned char)Ch);
-                if (NameLower.find(NeedleLower) == std::string::npos)
-                    continue;
-            }
+            if (!NameMatches(Name, NeedleLower))
+                continue;
 
             const char* RawBuf = reinterpret_cast<const char*>(Raw->buffer); // both games: 1-byte
             std::vector<char> Content;
@@ -2508,8 +2344,7 @@ bool OatDumpRawfilesInProcess(const std::string& FastFilePath, const std::string
         return false;
     }
 
-    std::string NeedleLower = NameFilter;
-    for (auto& Ch : NeedleLower) Ch = (char)std::tolower((unsigned char)Ch);
+    const std::string NeedleLower = ExportNaming::Lower(NameFilter);
 
     std::error_code Ec;
     std::filesystem::create_directories(OutDir, Ec);
@@ -2662,6 +2497,138 @@ namespace
         return L;
     }
 
+    // One material's world triangles: its vertices once each (by key: T5's vertex number, T6's byte
+    // address into vd0; real maps fit in 32 bits) and its indices
+    struct WorldGroup
+    {
+        std::vector<GltfSceneWriter::Vertex> verts;
+        std::vector<uint32_t> idx;
+        std::unordered_map<uint32_t, uint32_t> remap;
+    };
+
+    // A surface's TriCount triangles from index Base of IB (IC indices) into G, a vertex by
+    // KeyOf(its index), decoded once by Decode(key, vertex) (false: the triangle is left out). The
+    // triangles added.
+    template <typename TKeyOf, typename TDecode>
+    size_t AddSurfaceTriangles(WorldGroup& G, const uint16_t* IB, int IC, int Base, unsigned TriCount, TKeyOf&& KeyOf, TDecode&& Decode)
+    {
+        size_t Tris = 0;
+        for (unsigned t = 0; t < TriCount; t++)
+        {
+            const int i0 = Base + (int)t * 3;
+            if (i0 < 0 || i0 + 2 >= IC) break;
+            static const int Order[3] = {0, 1, 2}; // the game's winding: the map writer reverses it
+            uint32_t Tri[3];
+            bool Ok = true;
+            for (int k = 0; k < 3; k++)
+            {
+                const uint32_t Key = KeyOf(IB[i0 + Order[k]]);
+                auto It = G.remap.find(Key);
+                if (It != G.remap.end()) { Tri[k] = It->second; continue; }
+                GltfSceneWriter::Vertex Ov;
+                if (!Decode(Key, Ov)) { Ok = false; break; }
+                const uint32_t Local = (uint32_t)G.verts.size();
+                G.verts.push_back(Ov);
+                G.remap.emplace(Key, Local);
+                Tri[k] = Local;
+            }
+            if (Ok) { G.idx.push_back(Tri[0]); G.idx.push_back(Tri[1]); G.idx.push_back(Tri[2]); Tris++; }
+        }
+        return Tris;
+    }
+
+    // A material's colorMap (nameHash 0xA0AB1041) image name, null without one. T6's
+    // MaterialTextureDef points at its GfxImage directly (`.image`), T5's through `.u.image`.
+    template <typename TMaterial>
+    const char* ColorMapName(const TMaterial* Mat)
+    {
+        if (!Mat || !Mat->textureTable) return nullptr;
+        for (unsigned i = 0; i < Mat->textureCount; i++)
+        {
+            const auto& Td = Mat->textureTable[i];
+            const auto* Img = [&] {
+                if constexpr (requires { Td.u.image; })
+                    return Td.u.image;
+                else
+                    return Td.image;
+            }();
+            if (Td.nameHash == 0xA0AB1041u && Img && Img->name)
+                return Img->name;
+        }
+        return nullptr;
+    }
+
+    // The world mesh: one surface per material group, in first-seen order, named by its material
+    // (surf_mat_<n> without one) and textured with its colour map through Texture (Textured counts
+    // those found); the surfaces made
+    template <typename TMaterial>
+    size_t AddWorldMesh(Maps::MapScene& Scene, FirstSeenMap<const TMaterial*, WorldGroup>& Groups,
+                        const std::function<bool(const std::string&)>& Texture, size_t& Textured)
+    {
+        Maps::Mesh World;
+        World.Name = "world";
+        int MatIdx = 0;
+        for (auto& [Mat, G] : Groups)
+        {
+            const int Fallback = MatIdx++;
+            if (G.verts.empty() || G.idx.empty()) continue;
+            const std::string Nm = (Mat && Mat->info.name) ? std::string(Mat->info.name)
+                                                            : ("surf_mat_" + std::to_string(Fallback));
+            const char* Cm = ColorMapName(Mat);
+            if (Texture(Cm ? Cm : std::string())) Textured++;
+            AddOatMaterial(Scene, Nm, Cm ? Cm : "");
+            World.Surfaces.push_back(OatSurface(Nm, G.verts, G.idx));
+        }
+        const size_t Meshes = World.Surfaces.size();
+        if (!World.Surfaces.empty()) Scene.Objects.push_back(std::move(World));
+        return Meshes;
+    }
+
+    // The static model props: each XModel converted once (OAT's converter, LOD 0) into a scene
+    // model textured through Texture, every placement an instance of it (prop_<n>, shared geometry)
+    struct PropCounts
+    {
+        size_t Instances = 0, Models = 0;
+    };
+    template <typename TAssetXModel, typename TDrawInst>
+    PropCounts AddStaticProps(Zone& Z, Maps::MapScene& Scene, xmodel::ToCommonConverter& Converter, const TDrawInst* Insts, unsigned Count,
+                              const std::function<bool(const std::string&)>& Texture)
+    {
+        std::unordered_map<const void*, const XAssetInfoGeneric*> ModelInfo;
+        for (auto* Info : Z.m_pools.template PoolAssets<TAssetXModel>())
+            if (Info && Info->Asset())
+                ModelInfo.emplace((const void*)Info->Asset(), Info);
+        std::unordered_map<const void*, std::string> ModelMeshCache; // XModel* -> scene model name
+        PropCounts N;
+        for (unsigned i = 0; i < Count; i++)
+        {
+            const auto& Inst = Insts[i];
+            if (!Inst.model)
+                continue;
+            const void* Key = Inst.model;
+            auto CacheIt = ModelMeshCache.find(Key);
+            if (CacheIt == ModelMeshCache.end())
+            {
+                std::string Name;
+                auto InfoIt = ModelInfo.find(Key);
+                if (InfoIt != ModelInfo.end())
+                {
+                    const auto Common = Converter.Convert(*InfoIt->second, 0);
+                    Name = OatModel(Scene, Common ? &*Common : nullptr, "prop_mat", Texture);
+                }
+                CacheIt = ModelMeshCache.emplace(Key, std::move(Name)).first;
+            }
+            if (CacheIt->second.empty())
+                continue;
+            const auto& Pl = Inst.placement;
+            Scene.StaticInstances.push_back(OatInstance("prop_" + std::to_string(i), CacheIt->second,
+                                                        AxisFloats9(Pl), Vec3Floats(Pl.origin), Pl.scale));
+            N.Instances++;
+        }
+        N.Models = ModelMeshCache.size();
+        return N;
+    }
+
     // T6 (BO2) map-texture extraction: a scoped image-only dump of an already-loaded zone, reusing the
     // same two halves OatDumpZoneInProcess uses for a full dump (OAT's writer for embedded images,
     // ExtractT6ZoneImages for IPAK-streamed ones) but restricted to AssetImage so a map's ~1800 images
@@ -2780,12 +2747,7 @@ namespace
             return true;
         };
 
-        struct Accum {
-            std::vector<GltfSceneWriter::Vertex> verts;
-            std::vector<uint32_t> idx;
-            std::unordered_map<uint32_t, uint32_t> remap; // key: byte address into vd0 (real maps fit in 32 bits)
-        };
-        FirstSeenMap<const T6::Material*, Accum> WorldGroups; // one glTF mesh per material, same as T5
+        FirstSeenMap<const T6::Material*, WorldGroup> WorldGroups; // one glTF mesh per material, same as T5
 
         size_t WorldTris = 0;
         if (WorldMeshOk)
@@ -2793,32 +2755,10 @@ namespace
             for (unsigned s = 0; s < Gw->surfaceCount; s++)
             {
                 const T6::GfxSurface& Sf = Gw->dpvs.surfaces[s];
-                Accum& G = WorldGroups[Sf.material];
-                const int Base = Sf.tris.baseIndex;
                 const uint32_t Vdo = (uint32_t)Sf.tris.vertexDataOffset0;
-
-                for (unsigned t = 0; t < Sf.tris.triCount; t++)
-                {
-                    const int i0 = Base + (int)t * 3;
-                    if (i0 < 0 || i0 + 2 >= IC) break;
-                    static const int Order[3] = {0, 1, 2}; // the game's winding: the map writer reverses it
-                    uint32_t Tri[3];
-                    bool Ok = true;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        const uint16_t LocalIdx = IB[i0 + Order[k]];
-                        const uint32_t ByteAddr = Vdo + (uint32_t)LocalIdx * VertexStride;
-                        auto It = G.remap.find(ByteAddr);
-                        if (It != G.remap.end()) { Tri[k] = It->second; continue; }
-                        GltfSceneWriter::Vertex Ov;
-                        if (!DecodeVertex(ByteAddr, Ov)) { Ok = false; break; }
-                        const uint32_t Local = (uint32_t)G.verts.size();
-                        G.verts.push_back(Ov);
-                        G.remap.emplace(ByteAddr, Local);
-                        Tri[k] = Local;
-                    }
-                    if (Ok) { G.idx.push_back(Tri[0]); G.idx.push_back(Tri[1]); G.idx.push_back(Tri[2]); WorldTris++; }
-                }
+                // a vertex by its byte address into vd0
+                WorldTris += AddSurfaceTriangles(WorldGroups[Sf.material], IB, IC, Sf.tris.baseIndex, Sf.tris.triCount,
+                                                 [&](uint16_t LocalIdx) { return Vdo + (uint32_t)LocalIdx * VertexStride; }, DecodeVertex);
             }
         }
 
@@ -2903,86 +2843,18 @@ namespace
             return Found;
         };
 
-        // T6's MaterialTextureDef points at its GfxImage directly (`.image`), no `.u` union wrapping it
-        // like T5's `.u.image`.
-        auto ColorMapName = [](const T6::Material* Mat) -> const char* {
-            if (!Mat || !Mat->textureTable) return nullptr;
-            for (unsigned i = 0; i < Mat->textureCount; i++)
-            {
-                const T6::MaterialTextureDef& Td = Mat->textureTable[i];
-                if (Td.nameHash == 0xA0AB1041u && Td.image && Td.image->name) // colorMap, same hash as T5
-                    return Td.image->name;
-            }
-            return nullptr;
-        };
-
         // --- world mesh: one surface per material from the decode above, same shape as T5's M1 ---
-        Maps::Mesh World;
-        World.Name = "world";
-        int WorldMatIdx = 0;
         size_t WorldTextured = 0;
-        for (auto& [Mat, G] : WorldGroups)
-        {
-            const int Fallback = WorldMatIdx++;
-            if (G.verts.empty() || G.idx.empty()) continue;
-            const std::string Nm = (Mat && Mat->info.name) ? std::string(Mat->info.name)
-                                                            : ("surf_mat_" + std::to_string(Fallback));
-            const char* Cm = ColorMapName(Mat);
-            if (ResolveTextureByName(Cm ? Cm : std::string())) WorldTextured++;
-            AddOatMaterial(Scene, Nm, Cm ? Cm : "");
-            World.Surfaces.push_back(OatSurface(Nm, G.verts, G.idx));
-        }
-        const size_t WorldMeshes = World.Surfaces.size();
-        if (!World.Surfaces.empty()) Scene.Objects.push_back(std::move(World));
+        const size_t WorldMeshes = AddWorldMesh(Scene, WorldGroups, ResolveTextureByName, WorldTextured);
 
         // --- props: instanced static models, same approach as T5's M3 ---
         xmodel::ToCommonConverter* Converter = xmodel::ToCommonConverter::GetForGame(GameId::T6);
-        std::unordered_map<const void*, const XAssetInfoGeneric*> ModelInfo;
-        for (auto* Info : Z.m_pools.PoolAssets<T6::AssetXModel>())
-            if (Info && Info->Asset())
-                ModelInfo.emplace((const void*)Info->Asset(), Info);
-
-        // Shared by props AND the skybox mesh below: one XModel (OAT's own converter, LOD 0) as a
-        // scene model, textured through ResolveTextureByName. The model's name, "" without geometry.
-        auto ConvertModel = [&](const XAssetInfoGeneric& Info, const char* FallbackMatName) -> std::string {
-            const auto Common = Converter->Convert(Info, 0);
-            return OatModel(Scene, Common ? &*Common : nullptr, FallbackMatName,
-                            [&](const std::string& N) { return ResolveTextureByName(N); });
-        };
-
-        std::unordered_map<const void*, std::string> ModelMeshCache;
-        size_t PropInstances = 0;
-
+        PropCounts Props;
         if (Converter && Gw->dpvs.smodelDrawInsts)
-        {
-            for (unsigned i = 0; i < Gw->dpvs.smodelCount; i++)
-            {
-                const T6::GfxStaticModelDrawInst& Inst = Gw->dpvs.smodelDrawInsts[i];
-                if (!Inst.model)
-                    continue;
-                const void* Key = Inst.model;
-
-                auto CacheIt = ModelMeshCache.find(Key);
-                if (CacheIt == ModelMeshCache.end())
-                {
-                    std::string Name;
-                    auto InfoIt = ModelInfo.find(Key);
-                    if (InfoIt != ModelInfo.end())
-                        Name = ConvertModel(*InfoIt->second, "prop_mat");
-                    CacheIt = ModelMeshCache.emplace(Key, std::move(Name)).first;
-                }
-
-                if (CacheIt->second.empty())
-                    continue;
-                const T6::GfxPackedPlacement& Pl = Inst.placement;
-                Scene.StaticInstances.push_back(OatInstance("prop_" + std::to_string(i), CacheIt->second,
-                                                            AxisFloats9(Pl), Vec3Floats(Pl.origin), Pl.scale));
-                PropInstances++;
-            }
-        }
+            Props = AddStaticProps<T6::AssetXModel>(Z, Scene, *Converter, Gw->dpvs.smodelDrawInsts, Gw->dpvs.smodelCount, ResolveTextureByName);
 
         // --- skybox: T6's sky is a real XModel (skyBoxModel), converted and placed at the origin,
-        //     same machinery as props - unlike T5's flat-texture-plus-Blender-script approach.
+        //     same machinery as props (OAT's converter, LOD 0) - unlike T5's flat-texture-plus-Blender-script approach.
         bool SkyFound = false;
         if (Converter && Gw->skyBoxModel && Gw->skyBoxModel[0])
         {
@@ -2995,7 +2867,8 @@ namespace
             if (SkyInfo)
             {
                 SkyFound = true;
-                Scene.Sky.Model = ConvertModel(*SkyInfo, "sky_mat");
+                const auto Common = Converter->Convert(*SkyInfo, 0);
+                Scene.Sky.Model = OatModel(Scene, Common ? &*Common : nullptr, "sky_mat", ResolveTextureByName);
             }
         }
 
@@ -3041,8 +2914,8 @@ namespace
                 Os << (i ? ", " : "") << CommonZonesTried[i];
             Os << "\n";
         }
-        Os << "prop_instances=" << PropInstances << "\n";
-        Os << "prop_unique_models=" << ModelMeshCache.size() << "\n";
+        Os << "prop_instances=" << Props.Instances << "\n";
+        Os << "prop_unique_models=" << Props.Models << "\n";
         Os << "prop_object_nodes=" << Stats.InstanceNodes << "\n";
         Os << "lights=" << Stats.Lights << "\n";
         Os << "skybox=" << (SkyFound ? (std::to_string(Stats.SkyMeshes) + " mesh(es) from '" +
@@ -3288,42 +3161,15 @@ bool OatExportMapGlb(const std::string& FastFilePath, const std::string& OutGlbP
         return true;
     };
 
-    struct Accum {
-        std::vector<GltfSceneWriter::Vertex> verts;
-        std::vector<uint32_t> idx;
-        std::unordered_map<unsigned, uint32_t> remap;
-    };
-    FirstSeenMap<const T5::Material*, Accum> Groups; // one glTF mesh per material
+    FirstSeenMap<const T5::Material*, WorldGroup> Groups; // one glTF mesh per material
 
     size_t Tris = 0;
     for (int s = 0; s < Gw->surfaceCount; s++)
     {
         const T5::GfxSurface& Sf = Gw->dpvs.surfaces[s];
-        Accum& G = Groups[Sf.material];
-        const int base = Sf.tris.baseIndex;
         const unsigned fv = (unsigned)Sf.tris.firstVertex;
-
-        for (unsigned t = 0; t < Sf.tris.triCount; t++)
-        {
-            const int i0 = base + (int)t * 3;
-            if (i0 < 0 || i0 + 2 >= IC) break;
-            static const int Order[3] = {0, 1, 2}; // the game's winding: the map writer reverses it
-            uint32_t tri[3];
-            bool ok = true;
-            for (int k = 0; k < 3; k++)
-            {
-                const unsigned gi = fv + IB[i0 + Order[k]];
-                auto it = G.remap.find(gi);
-                if (it != G.remap.end()) { tri[k] = it->second; continue; }
-                GltfSceneWriter::Vertex ov;
-                if (!Decode(gi, ov)) { ok = false; break; }
-                const uint32_t local = (uint32_t)G.verts.size();
-                G.verts.push_back(ov);
-                G.remap.emplace(gi, local);
-                tri[k] = local;
-            }
-            if (ok) { G.idx.push_back(tri[0]); G.idx.push_back(tri[1]); G.idx.push_back(tri[2]); Tris++; }
-        }
+        Tris += AddSurfaceTriangles(Groups[Sf.material], IB, IC, Sf.tris.baseIndex, Sf.tris.triCount,
+                                    [&](uint16_t Idx) { return fv + Idx; }, Decode);
     }
 
     // M2 - materials + textures. Resolve each world material's colorMap (nameHash 0xA0AB1041) to its
@@ -3339,16 +3185,6 @@ bool OatExportMapGlb(const std::string& FastFilePath, const std::string& OutGlbP
     Scene.Game = "bo1";
     std::unordered_map<std::string, bool> ImgCache; // image name -> has pixels (dedup)
 
-    auto ColorMapName = [](const T5::Material* Mat) -> const char* {
-        if (!Mat || !Mat->textureTable) return nullptr;
-        for (unsigned i = 0; i < Mat->textureCount; i++)
-        {
-            const T5::MaterialTextureDef& Td = Mat->textureTable[i];
-            if (Td.nameHash == 0xA0AB1041u && Td.u.image && Td.u.image->name) // colorMap
-                return Td.u.image->name;
-        }
-        return nullptr;
-    };
     auto ResolveTextureByName = [&](const std::string& ImgName) -> bool {
         if (!EmbedTextures || InstallDir.empty() || ImgName.empty() || ImgName[0] == '$') // $white etc.
             return false;
@@ -3362,66 +3198,15 @@ bool OatExportMapGlb(const std::string& FastFilePath, const std::string& OutGlbP
     };
 
     // --- world mesh: one surface per material ---
-    Maps::Mesh World;
-    World.Name = "world";
-    int matIdx = 0;
     size_t Textured = 0;
-    for (auto& [Mat, G] : Groups)
-    {
-        const int fallback = matIdx++;
-        if (G.verts.empty() || G.idx.empty()) continue;
-        const std::string Nm = (Mat && Mat->info.name) ? std::string(Mat->info.name)
-                                                        : ("surf_mat_" + std::to_string(fallback));
-        const char* Cm = ColorMapName(Mat);
-        if (ResolveTextureByName(Cm ? Cm : std::string())) Textured++;
-        AddOatMaterial(Scene, Nm, Cm ? Cm : "");
-        World.Surfaces.push_back(OatSurface(Nm, G.verts, G.idx));
-    }
-    const size_t Meshes = World.Surfaces.size();
-    if (!World.Surfaces.empty()) Scene.Objects.push_back(std::move(World));
+    const size_t Meshes = AddWorldMesh(Scene, Groups, ResolveTextureByName, Textured);
 
     // --- M3: static-model props, instanced. Each unique XModel is converted once (OAT's converter,
     //     LOD 0) into a scene model; every placement is an instance of it (shared geometry). ---
     xmodel::ToCommonConverter* Converter = xmodel::ToCommonConverter::GetForGame(GameId::T5);
-    std::unordered_map<const void*, const XAssetInfoGeneric*> ModelInfo;
-    for (auto* Info : Z->m_pools.PoolAssets<T5::AssetXModel>())
-        if (Info && Info->Asset())
-            ModelInfo.emplace((const void*)Info->Asset(), Info);
-
-    std::unordered_map<const void*, std::string> ModelMeshCache; // XModel* -> scene model name
-    size_t PropInstances = 0;
-
+    PropCounts Props;
     if (Converter && Gw->dpvs.smodelDrawInsts)
-    {
-        for (unsigned i = 0; i < Gw->dpvs.smodelCount; i++)
-        {
-            const T5::GfxStaticModelDrawInst& Inst = Gw->dpvs.smodelDrawInsts[i];
-            if (!Inst.model)
-                continue;
-            const void* Key = Inst.model;
-
-            auto CacheIt = ModelMeshCache.find(Key);
-            if (CacheIt == ModelMeshCache.end())
-            {
-                std::string Name;
-                auto InfoIt = ModelInfo.find(Key);
-                if (InfoIt != ModelInfo.end())
-                {
-                    const auto Common = Converter->Convert(*InfoIt->second, 0);
-                    Name = OatModel(Scene, Common ? &*Common : nullptr, "prop_mat",
-                                    [&](const std::string& N) { return ResolveTextureByName(N); });
-                }
-                CacheIt = ModelMeshCache.emplace(Key, std::move(Name)).first;
-            }
-
-            if (CacheIt->second.empty())
-                continue;
-            const T5::GfxPackedPlacement& Pl = Inst.placement;
-            Scene.StaticInstances.push_back(OatInstance("prop_" + std::to_string(i), CacheIt->second,
-                                                        &Pl.axis[0][0], Pl.origin, Pl.scale));
-            PropInstances++;
-        }
-    }
+        Props = AddStaticProps<T5::AssetXModel>(*Z, Scene, *Converter, Gw->dpvs.smodelDrawInsts, Gw->dpvs.smodelCount, ResolveTextureByName);
 
     // --- M4: lights. GfxWorld carries only the sun; the full point/spot array is in ComWorld. ---
     const T5::ComWorld* Cw = nullptr;
@@ -3462,8 +3247,8 @@ bool OatExportMapGlb(const std::string& FastFilePath, const std::string& OutGlbP
     Os << "textures_embedded=" << ImgCache.size() << "\n";
     Os << "surfaces_textured=" << Textured << "\n";
     Os << "triangles=" << Tris << "\n";
-    Os << "prop_instances=" << PropInstances << "\n";
-    Os << "prop_unique_models=" << ModelMeshCache.size() << "\n";
+    Os << "prop_instances=" << Props.Instances << "\n";
+    Os << "prop_unique_models=" << Props.Models << "\n";
     Os << "prop_object_nodes=" << Stats.InstanceNodes << "\n";
     Os << "lights=" << Stats.Lights << "\n";
     Os << "skybox=" << (SkyPng ? (Stem + "_sky.png") : std::string("none")) << "\n";

@@ -25,7 +25,7 @@ namespace DiskGame
 {
     // The asset kinds, one row each in Kinds below. A new kind is a row there (and here) plus its
     // exporter in the readers that support it: --type, the report and the GUI read the table.
-    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons, WeaponStats, MapInfo, Scriptables, MapEnts, AiTypes };
+    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons, WeaponStats, MapInfo, Scriptables, MapEnts, AiTypes, Material };
 
     struct KindInfo
     {
@@ -90,6 +90,10 @@ namespace DiskGame
         // each AI type's settings as JSON, its key/value tree as the bundles kind writes it (Black Ops
         // 7's aitype: the AI's settings bundle, its shared functions' settings...); by name only
         { Kind::AiTypes, "aitypes", "aitypes", "AI types (JSON)", false, true },
+        // each material as JSON (its techset, images and blend factors) and its images: what an
+        // effect draws with, pulled from the zone that defines it (ZonekitZone::ExportMaterials,
+        // FxPreview reads them); by name only
+        { Kind::Material, "material", "materials", "Materials (JSON + images)", false, true },
     };
     constexpr bool KindsInOrder()
     {
@@ -195,10 +199,21 @@ namespace DiskGame
     // map_content: everything, or the terrain alone (its meshes "terrain*" and their materials: a
     // quick look at a terrain, and the regress's terrain witnesses)
     extern const Setting MapContent;
-    // decompile: compiled scripts also decompiled (acts or gsc-tool, by the game's VM), else
-    // written as bytecode (ScriptExport.h)
+    // decompile: compiled scripts also decompiled (acts or gsc-tool, by the game's VM), and the
+    // compiled Lua files (LuaExport.h), else written as bytecode (ScriptExport.h)
     extern const Setting ScriptDecompile;
     const std::vector<Setting>& CommonSettings();
+
+    // A material's images as its zone's reader reads them (XImage_t's usage as a number, the
+    // semantic's hash, the image's name), by the material's name as the install index lists it
+    struct MaterialImage
+    {
+        uint8_t Usage = 0;
+        uint32_t Hash = 0;
+        std::string Image;
+    };
+    using MaterialBook = std::map<std::string, std::vector<MaterialImage>>;
+    class IDiskZone;
 
     // What a run writes, the same for every game.
     struct Context
@@ -230,6 +245,11 @@ namespace DiskGame
         // Only these assets when set, whatever NameFilter says: the dependencies a run pulls from
         // the zone that defines them, or the assets a user picked.
         std::shared_ptr<const Selection> Only;
+        // --limit: at most this many assets of each kind, the first ones Wants accepts in the run
+        // (all its zones); 0 for all. Not applied to Only (the dependencies those assets pull).
+        size_t Limit = 0;
+        struct Limited;
+        std::shared_ptr<Limited> LimitSeen;   // Wants' count, shared by the run's copies (Export)
         // False: what the exported assets need from other zones is not pulled (Export's last
         // phase): a run measuring a sample of a zone's own assets (DiskGameSizes.h).
         bool PullDependencies = true;
@@ -238,8 +258,15 @@ namespace DiskGame
         // the counter "sound_headers" (DiskGameSizes.h); one that cannot exports as usual.
         std::function<void(const SoundHeader&)> OnSoundHeader;
         // The run's settings (ExportOptions::Settings, set by Export): Setting::Of reads them. The
-        // tools given in ExportOptions too, as acts_exe and gsc_tool_exe.
+        // tools given in ExportOptions too, as acts_exe and gsc_tool_exe; a decompiler not given there
+        // as graywolf.json names it (acts_exe, gsc_tool_exe, cod_luajit_decompiler_exe, cod_lua_decompiler_exe, ffmpeg_exe).
         std::map<std::string, std::string> Settings;
+        // One of Settings by its key, "" when unset
+        std::string Setting(const char* Key) const
+        {
+            const auto It = Settings.find(Key);
+            return It == Settings.end() ? std::string() : It->second;
+        }
         // What a reader asks of every asset it may export: in Only when set, else NameFilter.
         bool Wants(Kind K, const std::string& Name) const;
         // An asset this zone cannot give whole (a name-only reference, a texture whose pixels are
@@ -255,6 +282,10 @@ namespace DiskGame
         // Export's own: what Wants accepted and what Needs asked, zone by zone; the After work.
         std::function<void(const AssetId&)> OnWanted, OnNeeds;
         std::function<void(std::function<void()>)> OnAfter;
+        // The materials a zone names only (a model's name-only material headers), as the zones the
+        // install index says define them read them (IDiskZone::MaterialImages), into Out by name:
+        // Export's own, the asking zone parked meanwhile; unset, none is looked up.
+        std::function<void(IDiskZone& Asking, const std::set<std::string>& Names, MaterialBook& Out)> MaterialsElsewhere;
     };
 
     struct KindTotals
@@ -278,6 +309,7 @@ namespace DiskGame
         std::map<Kind, size_t> Pulled;
         std::map<Kind, std::set<std::string>> PulledFrom;
         std::vector<std::string> Unresolved;       // "<kind> <name>: <why>", a dependency not pulled
+        std::vector<std::string> IndexRenamed;     // the install index built by the run: ZoneIndex::Renamed
         bool Cancelled = false;
         // where the time went (time_<phase>_ms, rate_<kind>..., slowest_<n>), as the run log sums it
         std::vector<std::pair<std::string, std::string>> Timing;
@@ -337,6 +369,9 @@ namespace DiskGame
         // then closed). Only one zone is in use at a time.
         virtual bool Park() { return false; }
         virtual void Resume() {}
+        // The images of every material it defines whole, by name, as its reader reads them; false
+        // when its reader reads none (Context::MaterialsElsewhere)
+        virtual bool MaterialImages(MaterialBook&) { return false; }
 
         // The one dispatch: K's exporter, false when this reader has none ("not supported").
         bool Export(Kind K, const Context& C, Totals& T) const;
@@ -500,6 +535,8 @@ namespace DiskGame
     // <game>_<install hash><Extension>
     std::string KeptFile(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
                          const char* Extension);
+    // The installs of Game an index was kept for (each one's folder is written beside it, <...>.install)
+    std::vector<std::string> KeptInstalls(const IDiskGame& Game, const ExportOptions& Options);
 
     // Where each asset of an install is defined (IDiskZone::Defines of every zone ListZones
     // gives), built once and kept in a file keyed by the game, the install, the zone list and the
@@ -531,6 +568,9 @@ namespace DiskGame
         std::vector<size_t> PartIn(const std::string& Type, uint64_t Hash) const;
         std::string File;                  // where it is kept
         bool Built = false;                // built by this call, not read from File
+        // built now: "<zone>: <kind> <its bytes> -> <name>", each name a reader gave that was not
+        // text (control bytes, not UTF-8), kept under a fallback name (DiskGame.Index.cpp)
+        std::vector<std::string> Renamed;
         double Seconds = 0;                // how long building or reading it took
         size_t Entries = 0;
 

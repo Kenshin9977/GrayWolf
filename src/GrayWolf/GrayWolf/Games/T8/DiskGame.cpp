@@ -10,6 +10,7 @@
 #include "DiskGame.h"
 #include "FileSystems.h"
 #include "GameBlackOps4.h"
+#include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchLevelNames.h"
 #include "Games/Treyarch/TreyarchMaps.h"
 #include "Games/Treyarch/TreyarchPackages.h"
@@ -71,7 +72,18 @@ namespace
             using namespace DiskGame;
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
-            Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+            // without --install, the models whose mesh is in the packages are left out (Unwritable),
+            // told once rather than as one runtime_error per model
+            Exports(Kind::Model, [this](const Context& C, Totals& T) {
+                const size_t Before = Pkg ? 0 : Counter(NeedInstall);
+                ExportLive(Kind::Model, ModelType(), C, T);
+                if (!Pkg) TellNeedInstall(Kind::Model, Counter(NeedInstall) - Before, T);
+            });
+            Exports(Kind::Map, [this](const Context& C, Totals& T) {
+                const size_t Before = Pkg ? 0 : Counter(NeedInstall);
+                ExportMap(C, T);
+                if (!Pkg) TellNeedInstall(Kind::Map, Counter(NeedInstall) - Before, T);
+            });
             // scriptparsetree {XHash name, buffer 0x10, i32 len 0x18}: a GSCOBJ of the T8 VM, decompiled by acts
             Exports(Kind::Script, [this](const Context& C, Totals& T) {
                 ExportScripts(C, T, Scripts::Acts, { { "scriptparsetree", [this](int64_t Pos, Scripts::Script& S) {
@@ -81,6 +93,30 @@ namespace
             });
             ExportsGdt();
             ExportsAssetRefs();
+            // Material: its techset (a hash), images and constants as JSON, its images by the image
+            // kind. A header takes them from the common zone's book (ImagesElsewhere), so no
+            // material is another zone's and the install index needs not list them.
+            ExportsMaterials("material", Treyarch::MaterialKind(Treyarch::MaterialReader([](uint64_t A) { return GameBlackOps4::ReadXMaterial(A); },
+                                                                                        [this](uint64_t A) { return Off(A); })),
+                             false);
+            // fx (0xa0, elements 0x280) as JSON, Black Ops III's shape; with the images, each
+            // material's (common zones' through their books) and those images
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                auto Z = EffectView();
+                Z.Hashed = [](uint64_t H, const char* Prefix) { return Bo4DiskExport::LiveName(H & HashMask, Prefix); };
+                std::set<std::string> Images;
+                auto Read = Treyarch::MaterialReader([](uint64_t A) { return GameBlackOps4::ReadXMaterial(A); }, [this](uint64_t A) { return Off(A); });
+                if (C.Kinds.count(Kind::Image))
+                    Z.Material = [&Images, Read](uint64_t A, Treyarch::EffectZone::MaterialInfo& M) {
+                        if (!Read(A, M)) return false;
+                        for (const auto& I : M.Images) Images.insert(I.Name);
+                        return true;
+                    };
+                ExportEffects(C, T, "fx", [&](int64_t Pos, const std::string& N, std::string& J) {
+                    return Treyarch::ReadEffect(Z, Treyarch::EffectLayout::Bo4, Pos, N, J);
+                });
+                ExportMaterialImages(Images, C, T);
+            });
             // the weapon assets as struct dumps: weapon (WeaponDef 0x1550, its name hash at 0), its
             // tunables (0x1218, the name hash at 0x40, acts' bo4_unlinker_weapon_tunables), attachments;
             // their fields named by the gdt weapon layouts
@@ -173,6 +209,31 @@ namespace
             Counter("images_from_packages") += S.FromPackages;
             if (S.Missing + S.Failed)
                 T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(S.Missing) + " without pixels, " + std::to_string(S.Failed) + " not written");
+        }
+
+        // A model one of whose LODs has its mesh outside the zone (its mesh info's status, u8 0, not
+        // 8: GameBlackOps4::LoadXModel) is read from the install's packages
+        static constexpr const char* NeedInstall = "models_need_install";
+        bool MeshInPackages(int64_t Pos) const
+        {
+            const uint32_t Lods = std::min<uint32_t>(At<uint32_t>(Image(), Pos + offsetof(BO4XModel, NumLods)), 8);
+            for (uint32_t I = 0; I < Lods; I++)
+            {
+                // a LOD or mesh info outside the zone is not loaded either
+                const int64_t Lod = Off(At<uint64_t>(Image(), Pos + offsetof(BO4XModel, ModelLodPtrs) + 8 * I));
+                const int64_t Mesh = Lod < 0 ? -1 : Off(At<uint64_t>(Image(), Lod + offsetof(BO4XModelLod, XModelMeshPtr)));
+                if (Mesh < 0 || (At<uint8_t>(Image(), Mesh) & 0x3f) != 8) return true;
+            }
+            return false;
+        }
+        const char* Unwritable(DiskGame::Kind K, int64_t Pos) const override
+        {
+            return K == DiskGame::Kind::Model && Pkg == nullptr && MeshInPackages(Pos) ? NeedInstall : nullptr;
+        }
+        void TellNeedInstall(DiskGame::Kind K, size_t Models, DiskGame::Totals& T) const
+        {
+            if (Models > 0)
+                T.Fail(Name(), K, "", std::to_string(Models) + " models not written: their mesh is in the install's packages, add --install <Black Ops 4 folder>");
         }
 
         // not in the zone: the install's banks named after it (zm_red.all.sabl, zm_red.fr.sabs...)
@@ -283,6 +344,8 @@ namespace
             if (K == DiskGame::Kind::Anim)
                 return Bo4DiskExport::LiveName(At<uint64_t>(Zone(), Pos + offsetof(BO4XAnim, NamePtr)) & HashMask, "xanim");
             if (K == DiskGame::Kind::Script) return HashedName(At<uint64_t>(Zone(), Pos) & HashMask, "script");
+            if (K == DiskGame::Kind::Fx) return Bo4DiskExport::LiveName(At<uint64_t>(Zone(), Pos) & HashMask, "fx");
+            if (K == DiskGame::Kind::Material) return Bo4DiskExport::LiveName(At<uint64_t>(Zone(), Pos) & HashMask, "xmaterial");
             if (K == DiskGame::Kind::Rawfile || K == DiskGame::Kind::Data)
             {
                 // a path, with its extension, by the package index's names and strings
@@ -300,6 +363,12 @@ namespace
             if (K == DiskGame::Kind::Rawfile) return At<int32_t>(Image(), Pos + 0x10) > 0 && Off(PointerAt(Pos + 0x18)) < 0;
             if (K == DiskGame::Kind::Data)
                 return At<int32_t>(Image(), Pos + 0x10) > 0 && At<int32_t>(Image(), Pos + 0x14) > 0 && Off(PointerAt(Pos + 0x28)) < 0;
+            // a material header is completed from the common zones' books (ReadXMaterial)
+            if (K == DiskGame::Kind::Material) return false;
+            // an effect without elements here (fx 0xa0: counts at 0x24, elements at 0x30)
+            if (K == DiskGame::Kind::Fx)
+                return At<uint16_t>(Image(), Pos + 0x24) + At<uint16_t>(Image(), Pos + 0x26) + At<uint16_t>(Image(), Pos + 0x28) == 0 ||
+                       Off(PointerAt(Pos + 0x30)) < 0;
             if (K == DiskGame::Kind::Anim)
                 return At<uint16_t>(Zone(), Pos + offsetof(BO4XAnim, NumFrames)) == 0 &&
                        At<uint64_t>(Zone(), Pos + offsetof(BO4XAnim, BoneIDsPtr)) == 0;
@@ -520,6 +589,21 @@ namespace
                     for (int J = 0; J < 3; J++) Scene.Sky.Sun[J] = -Forward[J];
                     break;
                 }
+        // without --install, a placed model whose mesh is in the packages is not read (ExportMap's
+        // map_models_unread, counted under models_need_install too)
+        if (Pkg == nullptr)
+            for (auto It = Models.begin(); It != Models.end();)
+            {
+                const int64_t Pos = Off(It->second);
+                if (Pos < 0 || IsReference(DiskGame::Kind::Model, AssetName(DiskGame::Kind::Model, Pos), Pos) || !MeshInPackages(Pos))
+                {
+                    ++It;
+                    continue;
+                }
+                Counter(NeedInstall)++;
+                Counter("map_models_unread")++;
+                It = Models.erase(It);
+            }
         return true;
     }
 
@@ -592,14 +676,7 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XPAKCache>(Install);
-            for (const auto& N : Names)
-            {
-                const auto Paths = TreyarchPackages::ExtractFastFiles(P, N, CacheDir(Options, "greyhound_bo4ff"), Error);
-                Out.insert(Out.end(), Paths.begin(), Paths.end());
-            }
-            if (Out.empty() && Error.empty()) Error = "no picked zone in " + Install;
-            return !Out.empty();
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install), Install, Names, CacheDir(Options, "greyhound_bo4ff"), Out, Error);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options,

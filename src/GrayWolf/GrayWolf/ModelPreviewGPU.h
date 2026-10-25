@@ -41,6 +41,7 @@ struct PreviewGpuMaterial
         float TransmissionMask[4] = { 1, 0, 0, 0 };
         float AlphaParams[4] = { 0, 1, 1, 1 };   // the alpha map's low, high, uv scale
         float AlphaMask[4] = { 1, 0, 0, 0 };
+        float EmissiveColor[4] = { 1, 1, 1, 0 };   // rgb: the emission's colour (linear)
     } C;
     int Blend = 0;                              // 0 opaque, 1 cutout, 2 blend
 };
@@ -71,7 +72,8 @@ struct PreviewGpuMesh
     bool Valid = false;
 };
 // Only the device is used (it is free threaded): a loader thread may build the mesh.
-PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo);
+// MaxTextureSize > 0 uploads each map from its first mip that fits (the asset grid's thumbnails).
+PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, int MaxTextureSize = 0);
 // Pos/Nrm (3 floats per vertex) and UV (2) as the vertex buffer's pos3, nrm3, uv2 records.
 std::vector<float> InterleavePreviewVertices(const std::vector<float>& Pos, const std::vector<float>& Nrm,
                                              const std::vector<float>& UV);

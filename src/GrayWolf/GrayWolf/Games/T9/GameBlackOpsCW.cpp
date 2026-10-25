@@ -66,6 +66,56 @@ struct BOCWStreamInfo
 #pragma pack(pop)
 
 static_assert(sizeof(BOCWXAssetPoolData) == 0x20, "Invalid Pool Data Size (Expected 0x20)");
+static_assert(sizeof(BOCWXAnim) == 0x120 && offsetof(BOCWXAnim, StreamKeyPtr) == 0xa8 && offsetof(BOCWXAnim, DataIntCount) == 0xd8 &&
+                  offsetof(BOCWXAnim, TotalBoneCount) == 0xfe && offsetof(BOCWXAnim, HasBoneMask) == 0x10b,
+              "BOCWXAnim layout");
+
+namespace
+{
+    // A streamed anim's block, read from the .xsub packages, served here while it is translated
+    // (the live readers read and translate one anim at a time, under the session's lock)
+    constexpr uintptr_t StreamedAnimBase = 0x200000000000ull;
+    std::vector<uint8_t> StreamedAnim;
+
+    // An anim whose data arrays are one block behind its streamkey (0x38: package key u64 at 8,
+    // the block's address at 0x20 when the zone holds it, flag 2 at 0x37, size u32 at 0x30): the
+    // arrays' addresses in it, in the zone's order (bytes, shorts, ints, random shorts, random
+    // bytes), each aligned to its element size. 440/440 of mp_common's add up to the block's size.
+    void ReadStreamedAnim(XAnim_t& Anim, const BOCWXAnim& Data)
+    {
+        const uint64_t Key = CoDAssets::GameInstance->Read<uint64_t>(Data.StreamKeyPtr + 8);
+        const uint64_t InZone = CoDAssets::GameInstance->Read<uint64_t>(Data.StreamKeyPtr + 0x20);
+        const uint32_t Size = CoDAssets::GameInstance->Read<uint32_t>(Data.StreamKeyPtr + 0x30);
+        const uint8_t Flags = CoDAssets::GameInstance->Read<uint8_t>(Data.StreamKeyPtr + 0x37);
+
+        uint64_t Block = 0;
+        if ((Flags & 2) != 0 && InZone != 0 && InZone != ~0ull)
+            Block = InZone;
+        else if (Key != 0 && CoDAssets::GamePackageCache != nullptr)
+        {
+            uint32_t Read = 0;
+            auto Bytes = CoDAssets::GamePackageCache->ExtractPackageObject(Key, Read);
+            if (Bytes == nullptr || Read < Size) return;
+            StreamedAnim.assign(Bytes.get(), Bytes.get() + Read);
+            CoDAssets::GameInstance->SetVirtual(StreamedAnim.data(), StreamedAnim.size(), StreamedAnimBase);
+            Block = StreamedAnimBase;
+        }
+        if (Block == 0) return;
+
+        uint64_t At = 0;
+        const auto Next = [&](uint64_t Bytes, uint64_t Align) {
+            At = (At + Align - 1) / Align * Align;
+            const uint64_t Start = Block + At;
+            At += Bytes;
+            return Start;
+        };
+        Anim.DataBytesPtr = Next(Data.DataByteCount, 1);
+        Anim.DataShortsPtr = Next((uint64_t)Data.DataShortCount * 2, 2);
+        Anim.DataIntsPtr = Next((uint64_t)Data.DataIntCount * 4, 4);
+        Anim.RandomDataShortsPtr = Next((uint64_t)Data.RandomDataShortCount * 2, 2);
+        Anim.RandomDataBytesPtr = Next(Data.RandomDataByteCount, 1);
+    }
+}
 
 std::unique_ptr<XAnim_t> GameBlackOpsCW::ReadXAnim(const CoDAnim_t* Animation)
 {
@@ -77,6 +127,9 @@ std::unique_ptr<XAnim_t> GameBlackOpsCW::ReadXAnim(const CoDAnim_t* Animation)
     Anim->AnimationName = Animation->AssetName;
 
     GameReaders::CopyAnimHeader(*Anim, AnimData);
+    if (AnimData.StreamKeyPtr != 0) ReadStreamedAnim(*Anim, AnimData);
+    // the bone mask some anims open their data ints with (a bit per bone) is not a key
+    if (AnimData.HasBoneMask != 0) Anim->DataIntsPtr += ((uint64_t)AnimData.TotalBoneCount + 31) / 32 * 4;
     Anim->BoneIndexSize = 4;
     GameReaders::CopyDeltaParts(*Anim, CoDAssets::GameInstance->Read<BO4XAnimDeltaParts>(AnimData.DeltaPartsPtr));
     Anim->BlendShapeNamesPtr = AnimData.UnknownPtr;
@@ -239,36 +292,15 @@ const XMaterial_t GameBlackOpsCW::ReadXMaterial(uint64_t MaterialPointer)
     if (AssetNameCache.NameDatabase.find(MaterialData.NamePtr) != AssetNameCache.NameDatabase.end())
         Result.MaterialName = FileSystems::GetFileNamePurgeExtensions(AssetNameCache.NameDatabase[MaterialData.NamePtr]);
 
-    for (uint32_t m = 0; m < MaterialData.ImageCount; m++)
-    {
-        auto ImageInfo = CoDAssets::GameInstance->Read<BOCWXMaterialImage>(MaterialData.ImageTablePtr);
-
-        // Get Hash and mask it (some bits are used for other stuffs)
-        auto ImageHash = CoDAssets::GameInstance->Read<uint64_t>(ImageInfo.ImagePtr) & 0xFFFFFFFFFFFFFFF;
-
-        auto ImageName = std::format("ximage_{:x}", ImageHash);
-
-        if (AssetNameCache.NameDatabase.find(ImageHash) != AssetNameCache.NameDatabase.end())
-            ImageName = AssetNameCache.NameDatabase[ImageHash];
-
-        auto DefaultUsage = ImageUsageType::Unknown;
-        switch (ImageInfo.SemanticHash)
-        {
-        case 0xA0AB1041:
-            DefaultUsage = ImageUsageType::DiffuseMap;
-            break;
-        case 0x59D30D0F:
-            DefaultUsage = ImageUsageType::NormalMap;
-            break;
-        case 0xEC443804:
-            DefaultUsage = ImageUsageType::SpecularMap;
-            break;
-        }
-
-        Result.Images.emplace_back(DefaultUsage, ImageInfo.SemanticHash, ImageInfo.ImagePtr, ImageName);
-
-        MaterialData.ImageTablePtr += sizeof(BOCWXMaterialImage);
-    }
+    // an image named by its hash (masked: some bits are used for other stuffs)
+    GameReaders::AddMaterialImages<BOCWXMaterialImage>(
+        Result, MaterialData.ImageTablePtr, MaterialData.ImageCount,
+        [](uint64_t ImagePtr) {
+            const auto ImageHash = CoDAssets::GameInstance->Read<uint64_t>(ImagePtr) & 0xFFFFFFFFFFFFFFF;
+            const auto Found = AssetNameCache.NameDatabase.find(ImageHash);
+            return Found != AssetNameCache.NameDatabase.end() ? Found->second : std::format("ximage_{:x}", ImageHash);
+        },
+        GameReaders::TreyarchSemanticUsage);
 
     // Grab the pixel shader for this pass (most useful reflection info); which pass index
     // discriminates deferred vs. forward materials is easiest to tell by pointer.
