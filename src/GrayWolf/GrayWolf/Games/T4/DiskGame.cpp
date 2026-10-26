@@ -11,6 +11,7 @@
 
 #include "DiskGame.h"
 #include "GameWorldAtWar.h"
+#include "WawAnimOwners.h"
 #include "Games/IW3/IwdZone.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/OAT/OatWeapons.h"
@@ -42,6 +43,21 @@ namespace
             // Material: its techset, images and blend factors as JSON, its images by the image kind;
             // FxEffectDef (0x24, elements 0x100) as JSON, CoD4's with a wind influence
             ExportsEffects(GameWorldAtWar::ReadXMaterial, Treyarch::EffectLayout::T4);
+        }
+
+        // its string tables, then its rawfiles as text (the scripts, AI types, characters and
+        // animtrees the anim owners are read from: WawAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            for (const auto& I : Walk().Instances)
+            {
+                if (I.Parent >= 0 || !OwnerIs(I, "rawfile")) continue;
+                const std::string Nm = AssetName(Kind::Rawfile, I.Pos);
+                std::vector<uint8_t> Bytes;
+                if (!IsReference(Kind::Rawfile, Nm, I.Pos) && RawBytes(I.Pos, { 4, 8 }, Bytes))
+                    Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
+            }
         }
 
     protected:
@@ -166,6 +182,13 @@ namespace
                                                { "nazi_zombie_*", { "PATCH_LEVEL_ZOMBIE_{REST}", "MENU_LEVEL_ZOMBIE_{REST}" } },
                                                { "*", { "MENU_LEVEL_{NAME}" } } } };
             return &Naming;
+        }
+
+        // the anims' AI types and characters, from the zones' scripts and animtrees (WawAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return WawAnimOwners::Documents(); }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            WawAnimOwners::Fill(*this, Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override

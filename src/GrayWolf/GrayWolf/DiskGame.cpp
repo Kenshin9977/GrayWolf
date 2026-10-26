@@ -4,6 +4,7 @@
 
 #include "DiskGame.h"
 
+#include "AnimOwners.h"
 #include "DiskGame.Materials.h"
 #include "DiskGame.Monitor.h"
 #include "ExportNaming.h"
@@ -244,6 +245,11 @@ void Totals::Fail(const std::string& Zone, Kind K, const std::string& Name, cons
     Failures.push_back(Zone + ": " + KindName(K) + " " + Name + (Why.empty() ? "" : " " + Why));
 }
 
+void Totals::Lacks(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why)
+{
+    Absent.push_back(Zone + ": " + KindName(K) + " " + Name + (Why.empty() ? "" : " " + Why));
+}
+
 bool IDiskGame::Zones(const std::string& Input, const ExportOptions&, std::vector<std::string>& Out, std::string& Error) const
 {
     const fs::path In(Input);
@@ -378,6 +384,8 @@ std::string Report(const Totals& T)
     if (const auto It = T.Counters.find(WmaSounds::NoFfmpegCounter); It != T.Counters.end()) Os << "warning " << WmaSounds::NoFfmpegMessage(It->second) << "\n";
     Os << "failures=" << T.Failures.size() << "\n";
     for (const auto& F : T.Failures) Os << "failure " << F << "\n";
+    if (!T.Absent.empty()) Os << "absent_from_install=" << T.Absent.size() << "\n";
+    for (const auto& A : T.Absent) Os << "absent " << A << "\n";
     if (!T.Unresolved.empty()) Os << "deps_unresolved=" << T.Unresolved.size() << "\n";
     for (const auto& U : T.Unresolved) Os << "unresolved " << U << "\n";
     if (!T.IndexRenamed.empty()) Os << "index_renamed=" << T.IndexRenamed.size() << "\n";
@@ -653,6 +661,7 @@ namespace
         for (const auto& [K, V] : Deps.Kinds)
             if (V.Written) T.Pulled[K] += V.Written;
         T.Failures.insert(T.Failures.end(), Deps.Failures.begin(), Deps.Failures.end());
+        T.Absent.insert(T.Absent.end(), Deps.Absent.begin(), Deps.Absent.end());
     }
 
     // "~3 min left" - rounded, never claiming more precision than a rough estimate has.
@@ -836,6 +845,66 @@ namespace
         }
         return ExportWriters::WriteBytes(File, (const uint8_t*)Out.data(), Out.size());
     }
+
+    // Name fits Pattern, '*' any run of characters, without case
+    bool Fits(const char* Name, const char* Pattern)
+    {
+        if (*Pattern == 0) return *Name == 0;
+        if (*Pattern == '*') return Fits(Name, Pattern + 1) || (*Name && Fits(Name + 1, Pattern));
+        return *Name && tolower((unsigned char)*Name) == tolower((unsigned char)*Pattern) && Fits(Name + 1, Pattern + 1);
+    }
+
+    // What a zone that wrote anims gives the game's AnimOwners hook (IDiskGame::AnimZone), taken
+    // while it is open: the anims it exported (met, not asked of it as a dependency), then those it
+    // asked for (another zone's, pulled later: BO3's mp_common names 4 000 of core_common's, its robots
+    // and weapons own them), its documents the game reads
+    void NoteAnimZone(const IDiskGame& Game, IDiskZone& Zone, const std::string& Path, const Selection& Met,
+                      const Selection& Asked, std::vector<IDiskGame::AnimZone>& Out)
+    {
+        IDiskGame::AnimZone Az;
+        Az.Zone = Path;
+        for (const auto& A : Met)
+            if (A.K == Kind::Anim && !Asked.count(A)) Az.Anims.push_back(A.Name);
+        for (const auto& A : Asked)
+            if (A.K == Kind::Anim) Az.Anims.push_back(A.Name);
+        if (Az.Anims.empty()) return;
+        if (const auto Patterns = Game.AnimOwnerDocuments(); !Patterns.empty())
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Zone.Documents(Docs);
+            for (auto& D : Docs)
+                for (const auto& P : Patterns)
+                    if (Fits(D.first.c_str(), P.c_str()))
+                    {
+                        Az.Documents.push_back(std::move(D));
+                        break;
+                    }
+        }
+        Out.push_back(std::move(Az));
+    }
+
+    // The game's anim owners for the run's anims (its zones' and the dependencies it pulled), merged
+    // into <out>/<game>/anims/anim_owners.json
+    void WriteAnimOwners(const IDiskGame& Game, const ExportOptions& Options, const std::vector<IDiskGame::AnimZone>& Zones,
+                         const Selection& Written, const Context& C, Totals& T, RunMonitor& Mon)
+    {
+        AnimOwners::Book Book;
+        Game.AnimOwners(Options, Zones, Book);
+        std::vector<std::string> Exported;
+        for (const auto& A : Written)
+            if (A.K == Kind::Anim) Exported.push_back(A.Name);
+        Book.KeepOnly(Exported);
+        if (Book.Empty()) return;
+        std::string Why;
+        if (!AnimOwners::Merge(C.KindDir(Kind::Anim), Game.Id(), Book, &Why))
+        {
+            T.Fail("", Kind::Anim, "anim_owners.json", Why);
+            return;
+        }
+        T.Counters["anim_owners"] += Book.Anims.size();
+        Mon.Log("anim owners: " + std::to_string(Book.Anims.size()) + " of " + std::to_string(Exported.size()) + " anims, " +
+                std::to_string(Book.Owners.size()) + " owners (anim_owners.json)");
+    }
 }
 
 Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::vector<std::string>& Zones,
@@ -910,6 +979,9 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         if (Declared.count(K)) Any = true;
         else T.Unsupported.insert(K);
     const auto Cancelled = [&] { return T.Cancelled = T.Cancelled || Run.Cancelled(); };
+    // the zones that wrote anims, for the game's anim owners (IDiskGame::AnimOwners)
+    const bool OwnAnims = C.Kinds.count(Kind::Anim) && Declared.count(Kind::Anim);
+    std::vector<IDiskGame::AnimZone> AnimZones;
     for (size_t I = 0; Any && I < Zones.size() && !Cancelled(); I++)
     {
         const auto& Path = Zones[I];
@@ -954,6 +1026,7 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
             Mon.Log("  " + P.ZoneName + " " + KindName(K) + ": " + S.Describe());
         }
         Zone->Measures(T);   // after the exports, which measure too
+        if (OwnAnims && !T.Cancelled) NoteAnimZone(Game, *Zone, Path, L.Met, L.Asked, AnimZones);
         const auto Closing = std::chrono::steady_clock::now();
         Zone.reset();        // one zone open at a time
         Mon.AddTime("close", Seconds(Closing));
@@ -994,6 +1067,13 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
             }
         }
         Mon.AddTime("after", Seconds(Start));
+    }
+    // which models the anims play on, as the game says, once per run (no zone open)
+    if (!AnimZones.empty() && !T.Cancelled)
+    {
+        const auto Start = std::chrono::steady_clock::now();
+        WriteAnimOwners(Game, Options, AnimZones, L.Exported, Run, T, Mon);
+        Mon.AddTime("anim_owners", Seconds(Start));
     }
     // the asset index, once per run, of what the data kinds wrote
     if (!T.Indexed.empty() && !WriteIndex(C.OutRoot, T.Indexed)) T.Fail("", T.Indexed.front().K, "asset_index.csv", "write failed");

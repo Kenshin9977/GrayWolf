@@ -18,6 +18,7 @@
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwWeaponDefs.h"
+#include "Games/IW/IwZoneAnimOwners.h"
 #include "Games/IW7/EntityKeys.h"
 #include "Games/IW7/HavokShapes.h"
 #include "Games/IW7/VfxLayout.h"
@@ -98,7 +99,9 @@ namespace
         {
         case 71: case 72: case 80: case 81: return Blocks * 8;
         case 74: case 75: case 77: case 78: case 83: case 84: case 95: case 96: case 98: case 99: return Blocks * 16;
-        case 24: case 28: case 29: return (uint64_t)Width * Height * 4;
+        case 2: return (uint64_t)Width * Height * 16;   // R32G32B32A32_FLOAT (mp_rivet's mtl_ind_light_led_worklight_e)
+        case 10: return (uint64_t)Width * Height * 8;   // R16G16B16A16_FLOAT
+        case 24: case 28: case 29: case 34: return (uint64_t)Width * Height * 4;
         case 61: case 62: return (uint64_t)Width * Height;
         default: return 0;
         }
@@ -248,6 +251,30 @@ namespace
     }
 
 
+    // The anim owners (IwZoneAnimOwners.h): the weapon's view model at 8 in its WeaponDef (behind 8),
+    // its hands at 0x70, its anim packages (the weapons' struct dumps); the player's body and head
+    // (multiplayer, the player anim sets), Stryker's of the install's player zones (mp_body_stryker_1_tr,
+    // mp_head_stryker_6_tr); the zombie's, the outfit cp_zmb's script gives it (setup_model_func); the
+    // zones a zone loads with it
+    const IwZoneAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwZoneAnimOwners::Layout L = [] {
+            IwZoneAnimOwners::Layout L;
+            L.AnimType = "xanimparts";
+            L.Gun = { 8, 8 }, L.Hands = { 8, 0x70 };
+            L.Trees["multiplayer"] = { { "mp_stryker_body_1_1", "mp_stryker_head_6_1" },
+                                       "the install's player zones mp_body_stryker_1_tr, mp_head_stryker_6_tr" };
+            L.Trees["zombie"] = { { "zombie_male_outfit_1" }, "cp_zmb's zombie outfit (its script's setup_model_func)" };
+            L.SharedMp = { "patch_common_mp", "common_mp", "patch_common_core_mp", "common_core_mp", "patch_global_mp", "global_mp",
+                           "patch_global_core_mp", "global_core_mp", "patch_global", "global" };
+            L.SharedSp = { "patch_common", "common", "patch_global", "global" };
+            L.LevelTrees = { "generic_human" };
+            L.SharedWhen = { { "cp_", { "patch_common_cp", "common_cp", "patch_global_cp", "global_cp" } } };
+            return L;
+        }();
+        return L;
+    }
+
     class IW7Zone final : public IWZone
     {
     public:
@@ -331,6 +358,20 @@ namespace
         }
         void Defines(std::vector<DiskGame::AssetId>& Out) const override;   // with the images
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
+                                                             [this](int64_t F) { return TextAt(F); },
+                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
+                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                                                             },
+                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
+                                        Out);
+        }
         void ReadCollision(Maps::MapScene& Scene);   // Havok's shapes as brushes and triangles
         // A model whose name pointer, a back reference into block 8, lands on no text: a few of a
         // level's (mp_flip: 9 of 251) once its block 8 is rebased; left out, counted
@@ -860,6 +901,13 @@ namespace
                                                { "shipcrib_*", { "MENU_SP_{NAME}_TITLE", "PRESENCE_SP_SC_{REST}" } },
                                                { "*", { "PRESENCE_SP_{NAME}", "MENU_SP_{NAME}_TITLE" } } } };
             return &Naming;
+        }
+
+        // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwZoneAnimOwners::Fill(*this, AnimOwnerLayout(), Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override

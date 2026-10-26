@@ -428,6 +428,11 @@ ExportStats ExportImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Ass
         Defined.insert(Img.Name);
         const std::string Path = (fs::path(OutDir) / (SafeFileName(Img.Name) + Ext)).string();
         if (Sink.LinkIfKnown(ContentKey(Zone, Img, Ext), Path, Index)) continue;
+        if (FilledAtRuntime(Img))
+        {
+            S.Runtime++;
+            continue;
+        }
         bool FromPackages = false;
         auto Dds = BuildDds(Zone, Img, Packages, FromPackages);
         if (FromPackages) S.FromPackages++;

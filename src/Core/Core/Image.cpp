@@ -417,11 +417,11 @@ void Image::PatchAlphaChannel(std::unique_ptr<DirectX::ScratchImage>& Image)
     TransformPixels(Image, [](DirectX::XMVECTOR scanline) { return DirectX::XMVectorSetW(scanline, 1.0); });
 }
 
-void Image::WriteDDSHeaderToStream(int8_t* Buffer, uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap)
+void Image::WriteDDSHeaderToStream(int8_t* Buffer, uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap, uint32_t Depth)
 {
     ResultSize = 0;
 
-    auto HeaderBuffer = BuildDDSHeader(Width, Height, MipLevels, Format, ResultSize, isCubemap);
+    auto HeaderBuffer = BuildDDSHeader(Width, Height, MipLevels, Format, ResultSize, isCubemap, Depth);
 
     if (HeaderBuffer != nullptr && ResultSize > 0)
     {
@@ -429,7 +429,7 @@ void Image::WriteDDSHeaderToStream(int8_t* Buffer, uint32_t Width, uint32_t Heig
     }
 }
 
-std::unique_ptr<int8_t[]> Image::BuildDDSHeader(uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap)
+std::unique_ptr<int8_t[]> Image::BuildDDSHeader(uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap, uint32_t Depth)
 {
     uint32_t MaximumSize = GX_DDS_MAX_HEADER;
     auto HeaderBuffer = std::make_unique<int8_t[]>(MaximumSize);
@@ -515,6 +515,7 @@ std::unique_ptr<int8_t[]> Image::BuildDDSHeader(uint32_t Width, uint32_t Height,
     case ImageFormat::DDS_Standard_A8_UNORM: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_A8_UNORM; break;
     case ImageFormat::DDS_Standard_R8_UNORM: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R8_UNORM; break;
     case ImageFormat::DDS_Standard_R8_UINT: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R8_UINT; break;
+    case ImageFormat::DDS_Standard_R16G16_FLOAT: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R16G16_FLOAT; break;
 
     default:
         Metadata.format = DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM;
@@ -528,19 +529,22 @@ std::unique_ptr<int8_t[]> Image::BuildDDSHeader(uint32_t Width, uint32_t Height,
 
     auto* Hdr = reinterpret_cast<GxDdsHeader*>(P + sizeof(uint32_t));
     Hdr->size = sizeof(GxDdsHeader);                          // 124
-    Hdr->flags = 0x1007u | (MipLevels > 1 ? 0x20000u : 0u);   // CAPS|HEIGHT|WIDTH|PIXELFORMAT [|MIPMAPCOUNT]
+    // a volume (Depth > 1: a 3D lookup table) is one texture of Depth slices, never a cube
+    const bool Volume = Depth > 1 && !isCubemap;
+    Hdr->flags = 0x1007u | (MipLevels > 1 ? 0x20000u : 0u) | (Volume ? 0x800000u : 0u);   // CAPS|HEIGHT|WIDTH|PIXELFORMAT [|MIPMAPCOUNT] [|DEPTH]
     Hdr->height = Height;
     Hdr->width = Width;
+    Hdr->depth = Volume ? Depth : 0u;
     Hdr->mipMapCount = MipLevels;
     Hdr->ddspf.size = sizeof(GxDdsPixelFormat);               // 32
     Hdr->ddspf.flags = 0x4u;                                  // DDPF_FOURCC
     Hdr->ddspf.fourCC = GX_DDS_FOURCC_DX10;
-    Hdr->caps = 0x1000u | (MipLevels > 1 ? 0x400008u : 0u) | (isCubemap ? 0x8u : 0u); // TEXTURE [|MIPMAP|COMPLEX]
-    Hdr->caps2 = isCubemap ? 0xFE00u : 0u;                    // DDS_CUBEMAP_ALLFACES
+    Hdr->caps = 0x1000u | (MipLevels > 1 ? 0x400008u : 0u) | (isCubemap || Volume ? 0x8u : 0u); // TEXTURE [|MIPMAP|COMPLEX]
+    Hdr->caps2 = isCubemap ? 0xFE00u : (Volume ? 0x200000u : 0u);   // DDS_CUBEMAP_ALLFACES, DDSCAPS2_VOLUME
 
     auto* Dx10 = reinterpret_cast<GxDdsHeaderDxt10*>(P + sizeof(uint32_t) + sizeof(GxDdsHeader));
     Dx10->dxgiFormat = (uint32_t)Metadata.format;
-    Dx10->resourceDimension = 3u;                             // TEXTURE2D
+    Dx10->resourceDimension = Volume ? 4u : 3u;               // TEXTURE3D, TEXTURE2D
     Dx10->miscFlag = isCubemap ? 0x4u : 0u;                   // TEXTURECUBE
     Dx10->arraySize = 1u;
     Dx10->miscFlags2 = 0u;

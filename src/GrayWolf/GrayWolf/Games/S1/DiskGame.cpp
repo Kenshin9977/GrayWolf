@@ -16,6 +16,7 @@
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
+#include "Games/IW/IwZoneAnimOwners.h"
 #include "Games/S1/EntityKeys.h"
 #include "MapLive.h"
 
@@ -95,6 +96,30 @@ namespace
         return L;
     }
 
+    // The anim owners (IwZoneAnimOwners.h): the weapon's view model, the first of its models array at
+    // 0x18, its hands at 0x20 (the weapons' struct dumps); the multiplayer bodies, the compiled mptype
+    // characters (mp_body_*, a head), else the maps' allies'; the zombies', mp_zombie_lab's zombie
+    // characters; the zones a zone loads with it
+    const IwZoneAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwZoneAnimOwners::Layout L = [] {
+            IwZoneAnimOwners::Layout L;
+            L.Gun = { 0x18, 0 }, L.Hands = { 0x20 };
+            L.CharacterBodies = { "mp_body_" };
+            L.Trees["multiplayer"] = { { "mp_body_ally_ghillie_urban_sniper", "head_ally_delta_sniper" },
+                                       "character/mp_character_ally_ghillie_urban, the mptype of the maps' allies (mp_blackbox)" };
+            L.Trees["zombie_mp"] = { { "zom_civ_ruban_male_torso_slice", "zom_civ_urban_male_head_slice" },
+                                     "the zombie character of mp_zombie_lab (its body and head)" };
+            L.SharedMp = { "patch_common_mp", "common_mp", "patch_common_core_mp", "common_core_mp" };
+            L.SharedSp = { "patch_common", "common" };
+            L.LevelTrees = { "generic_human" };
+            L.SharedWhen = { { "zombie", { "patch_common_zombie_mp", "common_zombie_mp", "patch_common_zm_mp", "common_zm_mp" } },
+                             { "zm", { "patch_common_zm_mp", "common_zm_mp", "patch_common_core_zm_mp", "common_core_zm_mp" } } };
+            return L;
+        }();
+        return L;
+    }
+
     class AwZone final : public IWZone
     {
     public:
@@ -149,6 +174,20 @@ namespace
             DefineStreamed(Out, ImageNameAt, Resident);
         }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
+                                                             [this](int64_t F) { return TextAt(F); },
+                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
+                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                                                             },
+                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
+                                        Out);
+        }
 
     private:
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image);
@@ -312,6 +351,13 @@ namespace
                                              { { "mp_*", { "MPUI_{REST}", "PRESENCE_{NAME}" } },
                                                { "*", { "PRESENCE_SP_{NAME}", "LUA_MENU_MAPNAME_{NAME}" } } } };
             return &Naming;
+        }
+
+        // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwZoneAnimOwners::Fill(*this, AnimOwnerLayout(), Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override

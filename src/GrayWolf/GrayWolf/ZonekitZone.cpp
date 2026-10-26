@@ -694,6 +694,8 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             Code = ExportWriters::ExportAnim(Anim, C.KindDir(K), Crash);
         }
         if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+        else if (K == DiskGame::Kind::Model && Code == static_cast<int>(ExportGameResult::Placeholder))
+            Counter("models_without_lods")++;   // the game's own model has no geometry: nothing to write
         else T.Fail(ZoneName, K, Name, "code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
     }
     C.Advance(Assets.size(), Assets.size());
@@ -720,6 +722,7 @@ void ZonekitZone::ExportTextures(const std::set<std::string>& Names, const DiskG
     Counter("textures") += Names.size();
     Counter("textures_written") += Img.Written + Img.Linked + Img.Known;
     T.Failures.insert(T.Failures.end(), Own.Failures.begin(), Own.Failures.end());
+    T.Absent.insert(T.Absent.end(), Own.Absent.begin(), Own.Absent.end());
     // not in this zone at all: the zone that defines it gives it
     for (const auto& N : Names)
         if (!Met.count({ Kind::Image, N })) C.Needs(Kind::Image, N);
@@ -859,6 +862,27 @@ void ZonekitZone::ExportMap(const DiskGame::Context& C, DiskGame::Totals& T)
         if (Code < 0) T.Fail(ZoneName, Kind::Map, Name, "model " + Crash);
     }
     C.Advance(Models.size(), Models.size());
+
+    // a material the level names only (",name": no image slot) gets the images of the material it
+    // stands for, this zone's or another's, as a model's do (HeaderFiller)
+    if (ExporterOf(Kind::Image) != nullptr)
+        if (const auto Fill = HeaderFiller(C))
+        {
+            std::vector<XMaterial_t> Filled;
+            for (const auto& [MatName, Mat] : Scene.Materials)
+            {
+                if (!Mat.Textures.empty()) continue;
+                XMaterial_t X(0);
+                X.MaterialName = MatName, X.TechsetName = Mat.Techset, X.Constants = Mat.Constants, X.SortKey = Mat.SortKey;
+                Fill(X);
+                if (!X.Images.empty()) Filled.push_back(std::move(X));
+            }
+            for (const auto& X : Filled)
+            {
+                Scene.Materials.erase(X.MaterialName);
+                Maps::AddMaterial(Scene, X);
+            }
+        }
 
     // the textures as the image kind names them (",name" is name), written by it
     std::map<std::string, std::string> Renamed;

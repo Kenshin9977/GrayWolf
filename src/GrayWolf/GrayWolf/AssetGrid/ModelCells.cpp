@@ -32,7 +32,7 @@ namespace
     constexpr size_t MaxMeshes = 192;             // models kept on the GPU, the least recently seen go first
     constexpr size_t MaxCells = 4096;
     constexpr size_t MaxRigs = 24;               // anim rigs kept loaded
-    constexpr float Framing = 1.0f;               // FrameForTurn's distance (0.82 of the viewer's for the rig)
+    constexpr float Framing = 1.0f;               // FramePreviewForTurn's distance (0.82 of the viewer's for the rig)
     const float Background[4] = { 0.135f, 0.14f, 0.155f, 1.0f };
 
     // The last LOD exported beside a model's file (name_LOD0 -> name_LOD3 when that one is there).
@@ -77,70 +77,6 @@ namespace
         for (const int b : Bones)
             for (int c = 0; c < 3; c++) Sum[c] += Pos[b * Stride + c];
         for (int c = 0; c < 3; c++) Out[c] = Bones.empty() ? 0.0f : (float)(Sum[c] / Bones.size());
-    }
-
-    // The view a turning cell needs: the box of the triangles drawn, without the outer 1% of their
-    // area on each axis (a few small stray pieces far off made the rest tiny), and the distance at
-    // which that box stays whole at every yaw of the turn at Pitch.
-    void FrameForTurn(const PreviewGeometry& Geo, float Pitch, PreviewGpuMesh& M)
-    {
-        const size_t N = Geo.Pos.size() / 3, Tris = Geo.Idx.size() / 3;
-        if (N == 0 || Tris == 0) return;
-        const size_t Step = std::max<size_t>(1, Tris / 200000);
-        struct Tri { float C[3]; float Area; };
-        std::vector<Tri> T;
-        double Total = 0;
-        for (size_t t = 0; t < Tris; t += Step)
-        {
-            const uint32_t I[3] = { Geo.Idx[t * 3], Geo.Idx[t * 3 + 1], Geo.Idx[t * 3 + 2] };
-            if (I[0] >= N || I[1] >= N || I[2] >= N) continue;
-            const float* A = &Geo.Pos[I[0] * 3]; const float* B = &Geo.Pos[I[1] * 3]; const float* C = &Geo.Pos[I[2] * 3];
-            const float U[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, V[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
-            const float X[3] = { U[1] * V[2] - U[2] * V[1], U[2] * V[0] - U[0] * V[2], U[0] * V[1] - U[1] * V[0] };
-            Tri E{ { (A[0] + B[0] + C[0]) / 3, (A[1] + B[1] + C[1]) / 3, (A[2] + B[2] + C[2]) / 3 },
-                   0.5f * std::sqrt(X[0] * X[0] + X[1] * X[1] + X[2] * X[2]) + 1e-9f };
-            Total += E.Area;
-            T.push_back(E);
-        }
-        if (T.empty()) return;
-        float Lo[3], Hi[3];
-        for (int c = 0; c < 3; c++)
-        {
-            std::sort(T.begin(), T.end(), [c](const Tri& X, const Tri& Y) { return X.C[c] < Y.C[c]; });
-            double Acc = 0;
-            size_t i = 0;
-            for (; i + 1 < T.size() && (Acc += T[i].Area) < Total * 0.01; i++) {}
-            Lo[c] = T[i].C[c];
-            Acc = 0;
-            size_t j = T.size() - 1;
-            for (; j > i && (Acc += T[j].Area) < Total * 0.01; j--) {}
-            Hi[c] = T[j].C[c];
-        }
-        // the centroids' box is a little inside the surfaces' own: half a typical triangle more
-        const float Pad = std::sqrt((float)(Total / T.size())) * 0.5f;
-        for (int c = 0; c < 3; c++) { Lo[c] -= Pad; Hi[c] += Pad; }
-        const float Half[3] = { (Hi[0] - Lo[0]) * 0.5f, (Hi[1] - Lo[1]) * 0.5f, (Hi[2] - Lo[2]) * 0.5f };
-        const float Radius = std::max(1e-3f, std::sqrt(Half[0] * Half[0] + Half[1] * Half[1] + Half[2] * Half[2]));
-        const float Tan = std::tan(DirectX::XMConvertToRadians(35.0f) * 0.5f);
-        const float Cp = std::cos(Pitch), Sp = std::sin(Pitch);
-        float Need = 0;
-        for (int k = 0; k < 24; k++)
-        {
-            const float Y = k * DirectX::XM_2PI / 24;
-            const float D[3] = { Cp * std::cos(Y), Cp * std::sin(Y), Sp };                 // centre to camera
-            const float R[3] = { -std::sin(Y), std::cos(Y), 0 };                           // right
-            const float U[3] = { -Sp * std::cos(Y), -Sp * std::sin(Y), Cp };              // up
-            for (int Corner = 0; Corner < 8; Corner++)
-            {
-                const float P[3] = { (Corner & 1) ? Half[0] : -Half[0], (Corner & 2) ? Half[1] : -Half[1], (Corner & 4) ? Half[2] : -Half[2] };
-                const float Depth = P[0] * D[0] + P[1] * D[1] + P[2] * D[2];
-                const float X = std::abs(P[0] * R[0] + P[1] * R[1]), Yv = std::abs(P[0] * U[0] + P[1] * U[1] + P[2] * U[2]);
-                Need = std::max(Need, Depth + std::max(X, Yv) / Tan);
-            }
-        }
-        M.Center = DirectX::XMVectorSet((Lo[0] + Hi[0]) * 0.5f, (Lo[1] + Hi[1]) * 0.5f, (Lo[2] + Hi[2]) * 0.5f, 0);
-        M.Radius = Radius;
-        M.FrameDist = std::max(Need * 1.06f, Radius * 0.5f);
     }
 }
 
@@ -247,13 +183,15 @@ struct ModelCellRenderer::Impl
         X.Services.Jobs.Want((Map ? "map|" : "model|") + Path, Map ? 2 : 1, Map, [this, S, Path, Map] {
             return [this, S, Path, Map](const GridJobs::StaleFn& Stale) {
                 PreviewGeometry Geo;
-                const bool Ok = Map ? LoadPreviewGeometryGlb(Path, Geo) : LoadPreviewGeometry({ LowestLod(Path) }, Geo, Stale);
+                GlbPreviewOptions Thumb = GlbThumbnailOptions();
+                Thumb.Cancelled = Stale;
+                const bool Ok = Map ? LoadPreviewGeometryGlb(Path, Geo, Thumb) : LoadPreviewGeometry({ LowestLod(Path) }, Geo, Stale);
                 if (Stale()) return;   // scrolled past: asked again when seen
                 std::shared_ptr<PreviewGpuMesh> Mesh;
                 if (Ok)
                 {
-                    Mesh = std::make_shared<PreviewGpuMesh>(UploadPreviewMesh(S->Dev, Geo, ThumbTextureSize));
-                    FrameForTurn(Geo, Map ? MapPitch : ModelPitch, *Mesh);
+                    Mesh = std::make_shared<PreviewGpuMesh>(UploadPreviewMesh(S->Dev, Geo, Map ? Thumb.MaxTexture : ThumbTextureSize));
+                    FramePreviewForTurn(Geo, Map ? MapPitch : ModelPitch, *Mesh, Map);
                 }
                 const bool Valid = Mesh && Mesh->Valid;
                 S->Jobs.PostUi([this, Path, Mesh, Valid] {
@@ -290,7 +228,7 @@ struct ModelCellRenderer::Impl
                 {
                     R->Gpu = UploadPreviewMesh(S->Dev, R->Bind, ThumbTextureSize);
                     R->Skin = GpuSkinning::Upload(S->Dev, R->Bind);
-                    FrameForTurn(R->Bind, ModelPitch, R->Gpu);
+                    FramePreviewForTurn(R->Bind, ModelPitch, R->Gpu);
                     R->Gpu.FrameDist *= 1.15f;   // an anim reaches past its bind pose
                     std::vector<char> Used(R->Bind.Bones.size(), 0);
                     for (size_t k = 0; k < R->Bind.VtxBoneIdx.size() && k < R->Bind.VtxBoneWeight.size(); k++)

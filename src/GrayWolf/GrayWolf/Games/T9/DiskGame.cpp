@@ -8,6 +8,7 @@
 
 #include "DiskGame.h"
 #include "FileSystems.h"
+#include "Games/Treyarch/TreyarchAnimOwners.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "GameBlackOpsCW.h"
 #include "Games/Treyarch/TreyarchLevelNames.h"
@@ -166,6 +167,46 @@ namespace
                 }
             }
             return true;
+        }
+
+        // with its anim owners' facts (TreyarchAnimOwners.h): aitype (0x12f8: its name a string at
+        // 8, characters 0x798, animmappingtables 0x800), character (bodies and heads at 0x60-0x78),
+        // xmodelalias (models from 8), animmappingtable {hash, aliases 8, lists 0x10, count 0x18} of
+        // lists {u32 count, XAnim* array 8}, weapon (view model 0xaf8, szXAnims 0x4d0,
+        // its 128 attachmentuniques 0x628 with theirs at 0x508)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            TreyarchAnimOwners::Layout L;
+            L.AiText = 8, L.Characters = 0x798, L.AnimMaps = 0x800;
+            L.Body = 0x60, L.BodyAlias = 0x68, L.Head = 0x70, L.HeadAlias = 0x78;
+            L.AliasModels = 8, L.AliasSlots = 50;
+            L.EntrySize = 0x10, L.EntryAnims = 8, L.EntryCount = 0;
+            L.GunModel = 0xaf8, L.WeaponAnims = { { 0x4d0, 404 } };
+            L.UniqueType = "attachmentunique", L.Uniques = 0x628, L.UniqueSlots = 128, L.UniqueAnims = { { 0x508, 404 } };
+            TreyarchAnimOwners::ZoneView V;
+            V.Image = &Image();
+            V.Off = [this](uint64_t A) { return Off(A); };
+            V.Assets = [this](const char* Type) {
+                std::vector<int64_t> P;
+                for (const auto& I : Walk().Instances)
+                    if (I.Parent < 0 && OwnerIs(I, Type)) P.push_back(I.Pos);
+                return P;
+            };
+            V.Model = [this](int64_t P) { return AssetName(Kind::Model, P); };
+            V.Anim = [this](int64_t P) { return AssetName(Kind::Anim, P); };
+            V.Hashed = [this](uint64_t H, const char* Prefix) {
+                const std::string N = HashName(H);
+                return N.empty() ? std::format("{}_{:x}", Prefix, (unsigned long long)H) : N;
+            };
+            V.Text = [this](uint64_t A) {
+                std::string Error, Text;
+                const std::string Raw = StringAt(A);
+                return CipherTable(Error) && ColdWar::DecryptString(Raw, Text) ? Text : Raw;
+            };
+            V.HashMask = HashMask;
+            V.Key = IndexKey();
+            Out.emplace_back(TreyarchAnimOwners::DocumentName, TreyarchAnimOwners::Text(TreyarchAnimOwners::Read(V, L)));
         }
 
     protected:
@@ -679,6 +720,19 @@ namespace
             auto Zone = std::make_unique<ColdWarZone>(Path);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the AI types, characters, anim maps and weapons of the zone, then of the zones loaded with
+        // it (zm_common holds the zombies' AI types; core_common the weapons)
+        std::vector<std::string> AnimOwnerDocuments() const override { return { TreyarchAnimOwners::DocumentName }; }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            static const TreyarchAnimOwners::Family Shared = { { "zm_*", { "zm_common", "core_common" } },
+                                                               { "mp_*", { "mp_common", "core_common" } },
+                                                               { "wz_*", { "wz_common", "core_common" } },
+                                                               { "cp_*", { "cp_common", "core_common" } },
+                                                               { "core_*", { "core_common" } } };
+            TreyarchAnimOwners::Fill(*this, Options, Shared, Zones, Out);
         }
 
     private:

@@ -20,6 +20,7 @@
 #include "MapLive.h"
 
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwAnimOwners.h"
 #include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwEntityKeys.h"
@@ -30,12 +31,15 @@
 #include "WraithNameIndex.h"
 #include "XSUBCache.h"
 
+#include <charconv>
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -69,17 +73,12 @@ namespace
             if (const auto* Models = ExporterOf(Kind::Model))
                 Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
                     LoadMeshesBeside();
-                    BookMaterialsElsewhere();
-                    // named as the image kind names them
-                    GameModernWarfare6::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
-                        return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return CoDAssets::GetHashedName("ximage", H); });
-                    };
-                    Read(C, T);
-                    GameModernWarfare6::ImagesElsewhere = nullptr;
+                    WithMaterialsElsewhere([&] { Read(C, T); });
                 });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
-            Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+            // the level's materials and its placed models' as a model's are read
+            Exports(Kind::Map, [this](const Context& C, Totals& T) { WithMaterialsElsewhere([&] { ExportMap(C, T); }); });
             // gscobj {hash, u32 len 8, bytes 0x10}: a GSCOBJ acts decompiles, its string literals
             // decrypted with the dumped exe
             Exports(Kind::Script, [this](const Context& C, Totals& T) {
@@ -123,6 +122,29 @@ namespace
                                      { "suit" } },
                                    Decrypt);
             }
+            // vfx (ParticleSystemDef) as the vfx core's JSON (Games/IW/Vfx.h); the assets its modules
+            // link named by their hashes as their kinds name them (a model, a material, an effect). The
+            // campaign's vfx tables are the multiplayer's (functions aside) but for the inline material,
+            // which the live reader reads by the build (MW6XMaterialSP)
+            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
+                std::unordered_map<int64_t, Kind> Kinds;
+                for (const auto& I : Walk().Instances)
+                    if (OwnerIs(I, "xmodel")) Kinds[I.Pos] = Kind::Model;
+                    else if (OwnerIs(I, "material")) Kinds[I.Pos] = Kind::Material;
+                auto Z = EffectView();
+                Z.AssetName = [this, &Kinds](int64_t Pos) {
+                    const auto It = Kinds.find(Pos);
+                    return AssetName(It != Kinds.end() ? It->second : Kind::Fx, Pos);
+                };
+                Z.ReadMaterials(C, Materials());
+                Vfx::Counts N;
+                ExportEffects(C, T, "vfx", [&](int64_t Pos, const std::string& Name, std::string& J) {
+                    return Vfx::ReadSystem(Z, MWIII::VfxLayout(), Pos, Name, J, &N);
+                });
+                // their materials' images, the others needed from the zones holding them
+                if (C.Kinds.count(Kind::Image) && !N.Images.empty()) ExportTextures(N.Images, C, T);
+                for (const auto& [K, V] : N.Named()) Counter(K) += V;
+            });
             if (Campaign) return;
             // the weapon stats table: this zone's facts, then the table rebuilt from every zone's
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) {
@@ -175,28 +197,17 @@ namespace
             ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
                 Vfx::AddAtlas(J, MWIII::VfxLayout(), Image(), Off(A));
             }));
-            // vfx (ParticleSystemDef) as the vfx core's JSON (Games/IW/Vfx.h); the assets its modules
-            // link named by their hashes as their kinds name them (a model, a material, an effect)
-            Exports(Kind::Fx, [this](const Context& C, Totals& T) {
-                std::unordered_map<int64_t, Kind> Kinds;
-                for (const auto& I : Walk().Instances)
-                    if (OwnerIs(I, "xmodel")) Kinds[I.Pos] = Kind::Model;
-                    else if (OwnerIs(I, "material")) Kinds[I.Pos] = Kind::Material;
-                auto Z = EffectView();
-                Z.AssetName = [this, &Kinds](int64_t Pos) {
-                    const auto It = Kinds.find(Pos);
-                    return AssetName(It != Kinds.end() ? It->second : Kind::Fx, Pos);
-                };
-                Z.ReadMaterials(C, Materials());
-                Vfx::Counts N;
-                ExportEffects(C, T, "vfx", [&](int64_t Pos, const std::string& Name, std::string& J) {
-                    return Vfx::ReadSystem(Z, MWIII::VfxLayout(), Pos, Name, J, &N);
-                });
-                // their materials' images, the others needed from the zones holding them
-                if (C.Kinds.count(Kind::Image) && !N.Images.empty()) ExportTextures(N.Images, C, T);
-                for (const auto& [K, V] : N.Named()) Counter(K) += V;
-            });
         }
+
+        // its string tables, and its anim sets and characters for the anim owners (Games/IW/IwAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            if (Campaign) return;
+            const IwAnimOwners::Facts F = AnimOwnerFacts();
+            if (!F.Empty()) Out.emplace_back(IwAnimOwners::DocumentName, IwAnimOwners::Write(F));
+        }
+        IwAnimOwners::Facts AnimOwnerFacts() const;
 
         // the weapon stats' layout (Games/IW/IwWeaponStats.h)
         static const IwWeaponStats::Layout& StatsLayout();
@@ -246,8 +257,8 @@ namespace
             if (K == Kind::Model)
                 return PointerAt(Pos + (Campaign ? SpModelBones : ModelPacked)) == 0 && PointerAt(Pos + (Campaign ? SpModelLods : ModelLods)) == 0;
             if (K == Kind::Image) return At<uint8_t>(Image(), Pos + ImageMipCount) == 0 && PointerAt(Pos + ImagePixels) == 0;
-            // a material (0x78) with neither images (u8 0x18) nor techset (0x20)
-            if (K == Kind::Material) return At<uint8_t>(Image(), Pos + 0x18) == 0 && PointerAt(Pos + 0x20) == 0;
+            // a material (0x78) with neither images (u8 0x18) nor techset (0x20; the campaign's 0x28)
+            if (K == Kind::Material) return At<uint8_t>(Image(), Pos + 0x18) == 0 && PointerAt(Pos + (Campaign ? 0x28 : 0x20)) == 0;
             return false;
         }
         // (a transient zone is indexed for its parts only: a reference is not pulled from one, as an
@@ -256,14 +267,16 @@ namespace
         {
             if (ExportNaming::Lower(Name()).ends_with("_tr")) return;
             ZonekitZone::Defines(Out);
+            std::set<std::string> Materials;   // the campaign's (its material kind is not read: no MaterialType)
             for (const auto& I : Walk().Instances)
-                if (OwnerIs(I, "image"))
+                if (OwnerIs(I, "image") || (Campaign && OwnerIs(I, "material")))
                 {
-                    const std::string N = AssetName(Kind::Image, I.Pos);
-                    if (!IsReference(Kind::Image, N, I.Pos)) Out.push_back({ Kind::Image, N });
+                    const Kind K = OwnerIs(I, "image") ? Kind::Image : Kind::Material;
+                    const std::string N = AssetName(K, I.Pos);
+                    if (!IsReference(K, N, I.Pos) && (K == Kind::Image || Materials.insert(N).second)) Out.push_back({ K, N });
                 }
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1" : "_images1+parts2+materials1"); }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1+materials1" : "_images1+parts2+materials1"); }
         // what other zones' LODs name and this one holds (the install index's parts): its
         // xmodelsurfs with surfaces, by name hash (multiplayer)
         void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
@@ -300,23 +313,38 @@ namespace
 
         // The material headers (IsReference) no material of this zone stands for: the zones the
         // install index says define them, the fewest first, booked by their name hashes
-        // (IWZone::BookMaterialsElsewhere). Once, before the models are read. Multiplayer only (a
-        // campaign transient zone's materials and meshes are in other transient zones, which the
-        // index leaves out).
+        // (IWZone::BookMaterialsElsewhere). Once, before the models are read. The campaign's from its
+        // global zones (cp_bd_body_c_jup_sp_hero_farah_desert_lod0_tr's from global_stream_mp_cp_jup):
+        // a transient zone the index leaves out.
         void BookMaterialsElsewhere()
         {
-            if (BooksTried || Campaign) return;
+            if (BooksTried) return;
             BooksTried = true;
             // Material (0x78): slots {u8 semantic, u8 image} 0x28 (count u8 0x18), image pointers
-            // 0x30 (count u8 0x1b)
+            // 0x30 (count u8 0x1b); the campaign's (MW6XMaterialSP): records {u32 semantic, image* 8}
+            // of 0x10 at 0x30 (count u8 0x18)
             IWMaterialBooks::Layout L;
-            L.Profile = "mwiii";
+            L.Profile = Profile();
             L.Hashed = true, L.HashMask = HashMask;
-            L.ImageCount = 0x18, L.Slots = 0x28, L.Images = 0x30, L.TableCount = 0x1b;
+            L.ImageCount = 0x18, L.Images = 0x30;
+            if (Campaign) L.Slots = -1, L.SlotSize = 0x10, L.SlotImage = 8;
+            else L.Slots = 0x28, L.TableCount = 0x1b;
             const auto Headers = MaterialHeaders();
             IWZone::BookMaterialsElsewhere(
                 Headers.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.DefinedIn({ Kind::Material, Headers[K] }); },
                 false, L);
+        }
+
+        // Work (the model kind's reader, the map's) with the material headers read as the zones
+        // defining them have them, their images named as the image kind names them
+        void WithMaterialsElsewhere(const std::function<void()>& Work)
+        {
+            BookMaterialsElsewhere();
+            GameModernWarfare6::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
+                return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return CoDAssets::GetHashedName("ximage", H); });
+            };
+            Work();
+            GameModernWarfare6::ImagesElsewhere = nullptr;
         }
 
         // the live material reader (MW6XMaterialMP 0x78: its images by their slots), the usages its
@@ -910,6 +938,72 @@ namespace
         return true;
     }
 
+    // ---- the anim owners' facts (Games/IW/IwAnimOwners.h), keyed by the names' hashes ("#<hex>")
+    std::string AnimKey(uint64_t Hash) { return std::format("#{:x}", Hash & HashMask); }
+
+    // aianimset (0x68): the hash of the archetype it animates at 0, its states at 0x20 (u32 count
+    // 0x28) of 0x78 {entries at 8 (u32 count 0x10) of 0x68 {the anims' hashes at 8 (u32 count
+    // 0x10), u64 each}}. character (0x58): its hash at 0, then zone script string slots (u32): the
+    // body at 0xc or 0x10, the head at 0x14 or 0x18, the archetype at 0x24 (the animtree at 0x50),
+    // their text encrypted; a byte the cipher table does not know is put right against the zone's
+    // set and model hashes (IwAnimOwners::Repaired)
+    IwAnimOwners::Facts MWIIIZone::AnimOwnerFacts() const
+    {
+        IwAnimOwners::Facts F;
+        const auto& Img = Image();
+        const int64_t Size = (int64_t)Img.size();
+        const auto Inside = [Size](int64_t Pos, uint64_t Count, int64_t Stride) {
+            return Pos >= 0 && Count < (1u << 20) && Pos + (int64_t)Count * Stride <= Size;
+        };
+        std::unordered_set<uint64_t> SetHashes, ModelHashes;
+        for (const auto& I : Walk().Instances)
+        {
+            if (I.Parent >= 0) continue;
+            if (OwnerIs(I, "xmodel")) ModelHashes.insert(At<uint64_t>(Img, I.Pos) & HashMask);
+            if (!OwnerIs(I, "aianimset")) continue;
+            const uint64_t Hash = At<uint64_t>(Img, I.Pos) & HashMask;
+            SetHashes.insert(Hash);
+            IwAnimOwners::Set S{ AnimKey(Hash), "aianimset " + CoDAssets::GetHashedName("aianimset", Hash), {} };
+            const int64_t States = Off(PointerAt(I.Pos + 0x20));
+            const uint32_t StateCount = At<uint32_t>(Img, I.Pos + 0x28);
+            for (uint32_t K = 0; Inside(States, StateCount, 0x78) && K < StateCount; K++)
+            {
+                const int64_t State = States + (int64_t)K * 0x78, Entries = Off(PointerAt(State + 8));
+                const uint32_t EntryCount = At<uint32_t>(Img, State + 0x10);
+                for (uint32_t E = 0; Inside(Entries, EntryCount, 0x68) && E < EntryCount; E++)
+                {
+                    const int64_t Entry = Entries + (int64_t)E * 0x68, Hashes = Off(PointerAt(Entry + 8));
+                    const uint32_t Count = At<uint32_t>(Img, Entry + 0x10);
+                    for (uint32_t A = 0; Inside(Hashes, Count, 8) && A < Count; A++)
+                        if (const uint64_t H = At<uint64_t>(Img, Hashes + (int64_t)A * 8) & HashMask) S.Anims.push_back(AnimKey(H));
+                }
+            }
+            if (!S.Anims.empty()) F.Sets.push_back(std::move(S));
+        }
+        const auto Text = [this](uint32_t Slot) { return Slot > 0 && Slot < Slots.size() ? Decrypted(Slots[Slot]) : std::string(); };
+        const auto IsSet = [&](const std::string& N) { return SetHashes.count(IwctxReaders::AssetHash(N) & HashMask) != 0; };
+        const auto IsModel = [&](const std::string& N) { return ModelHashes.count(IwctxReaders::AssetHash(N) & HashMask) != 0; };
+        for (const auto& I : Walk().Instances)
+        {
+            if (I.Parent >= 0 || !OwnerIs(I, "character")) continue;
+            IwAnimOwners::Character C;
+            C.Name = IwAnimOwners::Repaired(Text(At<uint32_t>(Img, I.Pos + 0x24)), IsSet);
+            if (!IwAnimOwners::Plain(C.Name)) continue;
+            C.Archetype = AnimKey(IwctxReaders::AssetHash(C.Name));
+            C.Source = "character " + CoDAssets::GetHashedName("character", At<uint64_t>(Img, I.Pos));
+            for (const int64_t At2 : { 0xc, 0x14 })
+            {
+                std::string M = Text(At<uint32_t>(Img, I.Pos + At2));
+                if (M.empty()) M = Text(At<uint32_t>(Img, I.Pos + At2 + 4));
+                M = IwAnimOwners::Repaired(M, IsModel);
+                if (!IwAnimOwners::Plain(M) || M == "tag_origin") break;   // no body: none of it
+                if (std::find(C.Models.begin(), C.Models.end(), M) == C.Models.end()) C.Models.push_back(Strings::Replace(M, "::", "_"));
+            }
+            if (!C.Models.empty()) F.Characters.push_back(std::move(C));
+        }
+        return F;
+    }
+
     // "mwiii" the multiplayer zones (cod23\*.ff), "mwiii_sp" the campaign's (sp23\*.ff: another
     // build, the mwiii_sp profile). A zone under sp23\ reads as the campaign's whichever is asked;
     // the game picks the install index (each indexes its own folder).
@@ -953,6 +1047,25 @@ namespace
         // its zones open on the index's workers: their decompression and walk share nothing, its
         // handlers and fixups run under the session lock, ResolveZones is serialized
         bool IndexInParallel() const override { return true; }
+
+        // the anims' archetypes (aianimset) and the characters playing them (multiplayer only), every
+        // zone of the run's joined: an anim is named by its hash's key whatever name it got
+        std::vector<std::string> AnimOwnerDocuments() const override
+        {
+            return Campaign ? std::vector<std::string>{} : std::vector<std::string>{ IwAnimOwners::DocumentName };
+        }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            const auto Key = [](const std::string& Anim) {
+                uint64_t H = 0;
+                const std::string Lower = Strings::ToLower(Anim);
+                if (Lower.rfind("xanim_", 0) == 0 && Lower.size() > 6 &&
+                    std::from_chars(Lower.data() + 6, Lower.data() + Lower.size(), H, 16).ptr == Lower.data() + Lower.size())
+                    return AnimKey(H);
+                return AnimKey(IwctxReaders::AssetHash(Anim));
+            };
+            IwAnimOwners::Fill(*this, Options, Zones, nullptr, Key, Out);
+        }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override

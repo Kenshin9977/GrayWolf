@@ -113,6 +113,8 @@ void EvaluateSkeletonPose(const PreviewGeometry& Bind, const SeAnimClip& Clip, f
         const auto It = TrackByName.find(Bind.Bones[i].Name);
         if (It == TrackByName.end()) continue; // not animated - keep bind pose
         const SeAnimBoneTrack& Tr = Clip.Bones[It->second];
+        // rotations are the bone's local rotation, but an additive one's, which is a change added to
+        // the pose beneath (here the bind pose): taken whole, a near-identity delta folded every bone
         const SeAnimBoneType EffType = Tr.HasTypeOverride ? Tr.TypeOverride : Clip.Type;
         const bool IsRoot = (Bind.Bones[i].Parent < 0);
 
@@ -121,8 +123,9 @@ void EvaluateSkeletonPose(const PreviewGeometry& Bind, const SeAnimClip& Clip, f
             size_t i0, i1; float a;
             FindBracket(Tr.RotKeys, FrameTime, i0, i1, a);
             const Q4 R0 = QNorm({ Tr.RotKeys[i0].Value.x, Tr.RotKeys[i0].Value.y, Tr.RotKeys[i0].Value.z, Tr.RotKeys[i0].Value.w });
-            LocalRot[i] = (i0 == i1) ? R0 :
+            const Q4 Keyed = (i0 == i1) ? R0 :
                 QSlerp(R0, QNorm({ Tr.RotKeys[i1].Value.x, Tr.RotKeys[i1].Value.y, Tr.RotKeys[i1].Value.z, Tr.RotKeys[i1].Value.w }), a);
+            LocalRot[i] = EffType == SeAnimBoneType::Additive ? QNorm(QMul(BindLocalRot[i], Keyed)) : Keyed;
         }
         if (!Tr.PosKeys.empty())
         {
@@ -205,4 +208,27 @@ void SkinPreviewGeometry(const PreviewGeometry& Bind, const std::vector<Skeleton
         }
         // else: bind-pose pass-through already sits in OutPos/OutNrm from the copy above.
     }
+}
+
+float PoseStretch(const PreviewGeometry& Bind, const std::vector<float>& Posed)
+{
+    const size_t N = Bind.Pos.size() / 3, Tris = Bind.Idx.size() / 3;
+    if (Posed.size() != Bind.Pos.size() || Tris == 0) return 0.0f;
+    const auto Len2 = [](const float* P, uint32_t A, uint32_t B) {
+        const float X = P[A * 3] - P[B * 3], Y = P[A * 3 + 1] - P[B * 3 + 1], Z = P[A * 3 + 2] - P[B * 3 + 2];
+        return X * X + Y * Y + Z * Z;
+    };
+    const size_t Step = std::max<size_t>(1, Tris / 50000);
+    size_t Edges = 0, Torn = 0;
+    for (size_t t = 0; t < Tris; t += Step)
+        for (int e = 0; e < 3; e++)
+        {
+            const uint32_t A = Bind.Idx[t * 3 + e], B = Bind.Idx[t * 3 + (e + 1) % 3];
+            if (A >= N || B >= N) continue;
+            const float Before = Len2(Bind.Pos.data(), A, B);
+            if (Before < 1e-6f) continue;
+            Edges++;
+            Torn += Len2(Posed.data(), A, B) > 9.0f * Before;
+        }
+    return Edges ? (float)Torn / (float)Edges : 0.0f;
 }

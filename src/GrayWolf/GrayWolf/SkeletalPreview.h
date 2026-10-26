@@ -22,9 +22,10 @@ struct SkeletonPoseBone
 // import_seanim.py, from the format's own author, the closest thing to a normative behaviour:
 //  - Per bone, the effective type is that bone's modifier override (SeAnimBoneTrack::TypeOverride) if
 //    it has one, else the clip's global Type.
-//  - ROTATION is always the bone's absolute local-to-parent rotation when a rotKey track exists - it
-//    is never blended with the bind pose, regardless of declared type. No track: keep the bind pose's
-//    local rotation.
+//  - ROTATION is the bone's absolute local-to-parent rotation when a rotKey track exists, but for an
+//    Additive bone (which the importer leaves "unknown"): its key is a change applied on top of the
+//    bind pose's local rotation (bind * key), as the game adds it to the pose beneath. No track: keep
+//    the bind pose's local rotation.
 //  - TRANSLATION: Absolute replaces the local-to-parent translation outright. Relative/Additive/Delta
 //    add the keyed value on top of the bind pose's local translation. A root bone (no parent) always
 //    takes the additive path regardless of declared type - it has no parent to be "absolute" against.
@@ -41,3 +42,8 @@ void EvaluateSkeletonPose(const PreviewGeometry& Bind, const SeAnimClip& Clip, f
 // zero weights) passes through unchanged. OutPos/OutNrm are resized to match Bind.Pos/Bind.Nrm.
 void SkinPreviewGeometry(const PreviewGeometry& Bind, const std::vector<SkeletonPoseBone>& WorldPose,
                           std::vector<float>& OutPos, std::vector<float>& OutNrm);
+
+// How torn a skinned mesh is: the share of Bind's triangle edges that Posed (skinned positions, as
+// SkinPreviewGeometry gives them) makes more than 3 times longer (an anim played on a skeleton it was
+// not made for pulls vertices out into spikes; a coherent pose stretches next to none).
+float PoseStretch(const PreviewGeometry& Bind, const std::vector<float>& Posed);

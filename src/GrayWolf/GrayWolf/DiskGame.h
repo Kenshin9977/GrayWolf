@@ -21,6 +21,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
+namespace AnimOwners { struct Book; }
+
 namespace DiskGame
 {
     // The asset kinds, one row each in Kinds below. A new kind is a row there (and here) plus its
@@ -286,6 +290,10 @@ namespace DiskGame
         // install index says define them read them (IDiskZone::MaterialImages), into Out by name:
         // Export's own, the asking zone parked meanwhile; unset, none is looked up.
         std::function<void(IDiskZone& Asking, const std::set<std::string>& Names, MaterialBook& Out)> MaterialsElsewhere;
+        // Set: a JSON tree kind (script bundles, AI types: ZonekitZone::ExportsBundleTrees) hands
+        // each asset's tree here, (file stem, tree), and writes nothing: a game's anim owners read
+        // the trees of a zone it holds open
+        std::function<void(const std::string& Stem, nlohmann::ordered_json& Tree)> OnTree;
     };
 
     struct KindTotals
@@ -314,6 +322,10 @@ namespace DiskGame
         // where the time went (time_<phase>_ms, rate_<kind>..., slowest_<n>), as the run log sums it
         std::vector<std::pair<std::string, std::string>> Timing;
         void Fail(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why);
+        // "<zone>: <kind> <name> <why>": an asset the zone names whose file no archive or folder of
+        // the install holds (the game ships without it). Reported, not a failure.
+        std::vector<std::string> Absent;
+        void Lacks(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why);
         // the run's asset index: one row per file a data kind wrote (bundles, mapinfo, struct dumps,
         // mapents), written once after the run as <out>/asset_index.csv (Export)
         struct IndexRow
@@ -471,6 +483,26 @@ namespace DiskGame
         };
         // none by default: the game's zones are shown by file name only
         virtual const LevelNaming* LevelNames() const { return nullptr; }
+
+        // Which models the anims a run exported play on, as the game's own data says (AnimOwners.h):
+        // the run writes <out>/<game>/anims/anim_owners.json from it, merged with an earlier run's.
+        // A zone that wrote anims, its documents (IDiskZone::Documents) whose name fits one of
+        // AnimOwnerDocuments' patterns ('*' any run, no case) kept while it was open.
+        struct AnimZone
+        {
+            std::string Zone;                                              // as Open took it
+            // as exported: the zone's own, then those it named that another zone defines (its
+            // dependencies, pulled later: the facts of the zone naming an anim own it)
+            std::vector<std::string> Anims;
+            std::vector<std::pair<std::string, std::string>> Documents;    // (name, text)
+        };
+        // the documents AnimOwners reads; none by default (no zone's documents are listed)
+        virtual std::vector<std::string> AnimOwnerDocuments() const { return {}; }
+        // Called once per run that wrote anims, after its zones, none open (the game may Open others:
+        // its shared zones). Out: owners and the run's anims they play (others, and a dependency
+        // the run could not pull, are left out). Nothing
+        // by default: the preview then guesses by bones.
+        virtual void AnimOwners(const ExportOptions&, const std::vector<AnimZone>&, ::AnimOwners::Book&) const {}
     };
 
     struct Registration

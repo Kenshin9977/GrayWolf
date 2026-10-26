@@ -49,7 +49,9 @@ namespace IWMaterialBooks
         // name hash at their 0 (under HashMask; the book keeps it in hex; all ones: no image), its
         // slots {u8 semantic, u8 image} at the pointer at Slots (count u8 ImageCount) picking from
         // the image pointers at Images (count u8 TableCount); an image pointer the zone leaves
-        // unresolved is the image's hash. A material without slots is not booked.
+        // unresolved is the image's hash. A material without slots is not booked. Slots < 0: its
+        // images are SlotSize-byte records {u32 semantic, image* SlotImage} at Images instead
+        // (Modern Warfare III's campaign build).
         uint64_t HashMask = ~0ull;
         int64_t Slots = -1, TableCount = -1;
     };

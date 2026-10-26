@@ -59,7 +59,8 @@ enum class ImageFormat
     DDS_Standard_D16_UNORM,
     DDS_Standard_A8_UNORM,
     DDS_Standard_R8_UNORM,
-    DDS_Standard_R8_UINT
+    DDS_Standard_R8_UINT,
+    DDS_Standard_R16G16_FLOAT
 };
 
 enum class ImagePatch
@@ -94,7 +95,7 @@ public:
     static void PatchAlphaChannel(std::unique_ptr<DirectX::ScratchImage>& Image);
 
 
-    static void WriteDDSHeaderToStream(int8_t* Buffer, uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap = false);
+    static void WriteDDSHeaderToStream(int8_t* Buffer, uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap = false, uint32_t Depth = 1);
 
     static const uint32_t GetMaximumDDSHeaderSize();
 
@@ -108,5 +109,5 @@ public:
 
 private:
 
-    static std::unique_ptr<int8_t[]> BuildDDSHeader(uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap = false);
+    static std::unique_ptr<int8_t[]> BuildDDSHeader(uint32_t Width, uint32_t Height, uint32_t MipLevels, ImageFormat Format, uint32_t& ResultSize, bool isCubemap = false, uint32_t Depth = 1);
 };

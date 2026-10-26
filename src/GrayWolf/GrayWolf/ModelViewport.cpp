@@ -63,7 +63,7 @@ namespace
                 }
                 else
                 {
-                    V->Yaw   += (X - V->LastX) * 0.01f;
+                    V->Yaw   -= (X - V->LastX) * 0.01f;   // the model follows the mouse
                     V->Pitch += (Y - V->LastY) * 0.01f;
                     V->Pitch = std::max(-1.50f, std::min(1.50f, V->Pitch));
                 }

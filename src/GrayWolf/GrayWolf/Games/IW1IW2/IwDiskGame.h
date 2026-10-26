@@ -41,6 +41,8 @@ namespace IW12
                        std::string& Error) const override;
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Zone, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override;
+        // the anims' weapons, AI and player types, from the install's files (Games/IwClassic/IwClassicAnimOwners.h)
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override;
 
     private:
         GameRow Row;

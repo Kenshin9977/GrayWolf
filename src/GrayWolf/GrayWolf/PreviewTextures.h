@@ -30,9 +30,10 @@ enum class PreviewTexUse
 
 // Reads and prepares Path. Cutoff >= 0 makes the alpha mips keep the top level's coverage at that
 // alpha. OutAlphaUsed (colour maps) tells whether the alpha channel masks anything. False when the
-// file is missing or does not decode.
+// file is missing or does not decode. MaxTexture > 0 keeps the image within that size, and reads
+// only the levels within it of a mipped block-compressed DDS (a map's hundreds of textures).
 bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutoff, PreviewImage& Out,
-                         bool* OutAlphaUsed = nullptr);
+                         bool* OutAlphaUsed = nullptr, int MaxTexture = 0);
 
 // Whether a colour map's alpha masks anything (what Auto alpha means, see OutAlphaUsed above),
 // judged on at most 256x256 texels: a block-compressed image on a grid of its blocks, never

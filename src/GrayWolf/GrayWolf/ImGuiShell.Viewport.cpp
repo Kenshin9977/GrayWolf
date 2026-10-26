@@ -213,9 +213,13 @@ namespace ShellUi
             auto& Models = S.Catalog.Models;
             ViewportState& V = S.Viewport;
             const Item& A = Models[S.Selected];
+            // the clip's own numbers (a folder still being read has the item's at 0)
+            const uint32_t Frames = V.AnimClipOk ? V.AnimClip.FrameCount : A.Frames;
+            const float Rate = V.AnimClipOk ? V.AnimClip.FrameRate : A.FrameRate;
+            const bool Looping = V.AnimClipOk ? V.AnimClip.Looping : A.Looping;
             ImGui::Text("%u frames  \xC2\xB7  %.1f fps  \xC2\xB7  %.2fs  \xC2\xB7  %u bones  \xC2\xB7  %s",
-                A.Frames, A.FrameRate, A.FrameRate > 0.0f ? (float)A.Frames / A.FrameRate : 0.0f, A.Bones,
-                A.Looping ? "looping" : "one-shot");
+                Frames, Rate, Rate > 0.0f ? (float)Frames / Rate : 0.0f, V.AnimClipOk ? (uint32_t)V.AnimClip.Bones.size() : A.Bones,
+                Looping ? "looping" : "one-shot");
             if (!V.AnimClipOk) ImGui::TextDisabled("could not parse this animation");
             else
             {
@@ -230,6 +234,10 @@ namespace ShellUi
                 else if (Pick.Paths.empty()) ImGui::TextDisabled("no listed model has its bones");
                 else ImGui::Text("Plays on %s  \xC2\xB7  %.0f%% of its bones%s%s", V.AnimRigLabel.c_str(), V.AnimRigScore * 100.0f,
                                  V.AnimRigManual ? "  \xC2\xB7  your choice" : "", Pick.Reference ? "  \xC2\xB7  the game's reference model" : "");
+                // the bones it moves that no model has: the model it was made for is not here
+                if (Known && !Pick.Paths.empty() && !V.AnimRigLoading && Pick.OwnModelAbsent)
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Its own model is not here: %.0f%% of its bones are in no model",
+                                       Pick.Unmodelled * 100.0f);
 
                 ImGui::TextUnformatted("Preview on model:");
                 ImGui::SetNextItemWidth(-1);
@@ -263,25 +271,25 @@ namespace ShellUi
                 }
 
                 const bool Loaded = !V.AnimRigPaths.empty() && !V.AnimRigLoading;
-                if (Loaded && !V.AnimBindOk) ImGui::TextDisabled("could not load that model");
+                if (Loaded && !V.AnimBindOk) ImGui::TextDisabled("that model could not be read, or has no mesh to show");
                 else if (Loaded && V.AnimBind.Bones.empty()) ImGui::TextDisabled("that model has no skeleton - nothing to animate");
                 else if (Loaded && V.AnimBind.VtxBoneIdx.empty()) ImGui::TextDisabled("that model has no skin weights - it will show but won't move");
 
-                if (Loaded && V.AnimBindOk && A.Frames > 0)
+                if (Loaded && V.AnimBindOk && Frames > 0)
                 {
                     ImGui::Spacing();
                     if (ImGui::Button(V.AnimPlaying ? "Pause" : "Play", ImVec2(90, 0))) V.AnimPlaying = !V.AnimPlaying;
                     ImGui::SameLine();
-                    const float MaxFrame = std::max(0.0f, (float)A.Frames - 1.0f);
+                    const float MaxFrame = std::max(0.0f, (float)Frames - 1.0f);
                     ImGui::SetNextItemWidth(-1);
                     if (ImGui::SliderFloat("##animframe", &V.AnimFrame, 0.0f, MaxFrame, "frame %.1f")) V.AnimPlaying = false;
 
-                    if (V.AnimPlaying && A.FrameRate > 0.0f)
+                    if (V.AnimPlaying && Rate > 0.0f)
                     {
-                        V.AnimFrame += ImGui::GetIO().DeltaTime * A.FrameRate;
+                        V.AnimFrame += ImGui::GetIO().DeltaTime * Rate;
                         if (V.AnimFrame > MaxFrame)
                         {
-                            if (A.Looping) V.AnimFrame = std::fmod(V.AnimFrame, MaxFrame + 1.0f);
+                            if (Looping) V.AnimFrame = std::fmod(V.AnimFrame, MaxFrame + 1.0f);
                             else { V.AnimFrame = MaxFrame; V.AnimPlaying = false; }
                         }
                     }
@@ -329,7 +337,7 @@ namespace ShellUi
                     if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
                     {
                         ImVec2 D = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
-                        V.Yaw += D.x * 0.01f; V.Pitch += D.y * 0.01f;
+                        V.Yaw -= D.x * 0.01f; V.Pitch += D.y * 0.01f;   // the model follows the mouse
                         V.Pitch = std::max(-1.5f, std::min(1.5f, V.Pitch));
                         ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
                     }
@@ -417,9 +425,19 @@ namespace ShellUi
         {
             ComPtr<ID3D11Device> D = S.Dev;
             const std::string Path = Sel.Path;
-            RequestMesh(V, "map|" + Path, [D, Path](const std::function<bool()>&) {
+            RequestMesh(V, "map|" + Path, [D, Path](const std::function<bool()>& Cancelled) {
                 PreviewGeometry Geo;
-                return LoadPreviewGeometryGlb(Path, Geo) ? BuildGpuMesh(D.Get(), Geo) : GpuMesh{};
+                GlbPreviewOptions Options;
+                Options.Cancelled = Cancelled;
+                GlbPreviewStats St;
+                const bool Ok = LoadPreviewGeometryGlb(Path, Geo, Options, &St);
+                AppLog::Log().info("map preview {}: read {:.0f} ms, parse {:.0f} ms, geometry {:.0f} ms, textures {:.0f} ms ({} of {} read, {} missing), "
+                                   "{} of {} triangles", Path, St.ReadMs, St.ParseMs, St.GeometryMs, St.TexturesMs, St.ImagesRead, St.Images,
+                                   St.ImagesMissing, St.TrianglesKept, St.Triangles);
+                if (!Ok) return GpuMesh{};
+                GpuMesh Mesh = BuildGpuMesh(D.Get(), Geo);
+                FramePreviewForTurn(Geo, 0.32f, Mesh, true);   // the play area (ResetCamera's pitch), not the vistas around it
+                return Mesh;
             });
         }
     }

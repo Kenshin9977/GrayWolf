@@ -14,6 +14,7 @@
 #include "AssetGrid/AssetGrid.h" // the Assets tab's grid view
 #include "AssetGrid/GridShot.h" // ui-grid-shot
 #include "AssetGrid/AnimRigs.h" // the model each anim plays on
+#include "UiRecord.h"          // ui-record
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -40,8 +41,10 @@ namespace ShellUi
 
     // Kind: 0 model · 1 image · 2 audio · 3 anim · 4 map · 5 fx.
     // Root: the listed folder the file was found under; Written: its last write time (the newer of two
-    // copies of one asset is the one shown)
-    struct Item { std::string Path, Name, Format, Root; int Kind=0; uint32_t Bones=0, Meshes=0, Mats=0; int ImgW=0, ImgH=0; long long SizeBytes=0; long long Written=0; bool ModelTexture=false; uint32_t Frames=0; float FrameRate=0.0f; bool Looping=false; uint32_t Verts=0, Tris=0; uint64_t Id=0; };
+    // copies of one asset is the one shown); Game: the export's game folder (<out>/<game>/models/..., GameOfPath),
+    // empty when the path has none
+    // (the sidecar's "game" names the material adapter, not the game: legacy-specular for WaW and BO1)
+    struct Item { std::string Path, Name, Format, Root, Game; int Kind=0; uint32_t Bones=0, Meshes=0, Mats=0; int ImgW=0, ImgH=0; long long SizeBytes=0; long long Written=0; bool ModelTexture=false; uint32_t Frames=0; float FrameRate=0.0f; bool Looping=false; uint32_t Verts=0, Tris=0; uint64_t Id=0; };
 
     // The listed assets: the folders' walks, one row per asset, the header reads behind them.
     class AssetCatalog
@@ -137,6 +140,12 @@ namespace ShellUi
         // Numeric filters (0 = unbounded on that side).
         int fMinBones=0, fMaxBones=0, fMinMeshes=0, fMaxMeshes=0, fMinMats=0, fMaxMats=0, fMinKB=0, fMaxKB=0;
         int TypeFilter = 0; // 0 all · 1 models · 2 images · 3 audio · 4 anims · 5 maps · 6 fx (driven by the tabs)
+        // The game shown (empty: every game) and the rows grouped by game (sorted by it first). Games:
+        // the games listed, rebuilt when Models changes.
+        std::string GameFilter;
+        bool GroupByGame = false;
+        std::vector<std::string> Games;
+        uint64_t GamesVersion = ~0ull;
         bool HideModelTextures = false;
         // The list or the grid (AssetGrid, made on first use); anims' cells play on their rig (ShellState::Rigs),
         // or on GridRig when set (ui-grid-shot --rig).
@@ -201,6 +210,30 @@ namespace ShellUi
         PreviewLighting Lighting;
     };
 
+    struct ShellState;
+
+    // ui-record's script played on the shell (ImGuiShell.Record.cpp)
+    class UiRecorder
+    {
+    public:
+        UiRecorder(const UiRecordOptions& Options, ID3D11Device* Dev, ID3D11DeviceContext* Ctx);
+        ~UiRecorder();
+        UiRecorder(const UiRecorder&) = delete;
+        UiRecorder& operator=(const UiRecorder&) = delete;
+        // After the backends' NewFrame: the frame's time step, the script's steps due
+        void FrameBegin(ShellState& S);
+        // After the frame is drawn: written, or held while the selection loads; true once the script is done
+        bool FrameEnd(ShellState& S, IDXGISwapChain* Swap);
+        // The frames written, audio.wav, timeline.txt and record.txt (the summary) beside them
+        void Finish();
+        bool Ok() const;
+        std::string Summary() const;
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> P;
+    };
+
     // Everything the shell's panels share.
     struct ShellState
     {
@@ -213,12 +246,14 @@ namespace ShellUi
 
         AssetCatalog Catalog;
         bool SelectFirstModel = true;   // the startup folder's first model is shown once listed
+        size_t ShotSelected = 0; int ShotSelectWait = 0;   // ui-grid-shot --select: the names selected so far, frames left before the next
         int Selected = -1;
         bool ScrollToSelected = false; // set on keyboard nav so the table scrolls the new row into view
         std::set<int> MultiSel; // Ctrl+click picks (into Models), independent of Selected - "Merge" target
         AssetsTab Assets;
         ViewportState Viewport;
         std::unique_ptr<GridShot> Shot;
+        std::unique_ptr<UiRecorder> Recorder;   // ui-record, else null
         // the model each anim plays on (grid cells and Viewport), given the listed models once a walk ends
         std::shared_ptr<AnimRigs::Index> Rigs = std::make_shared<AnimRigs::Index>();
         uint64_t RigModelsVersion = 0;
@@ -232,6 +267,9 @@ namespace ShellUi
     // Merges what the folder walks handed back; once the startup folder is listed whole, shows
     // its first model.
     void PollListing(ShellState& S);
+    // The game of an asset at Path, listed from Dir: the folder holding its kind folder
+    // (<out>/<game>/models/...), empty for none.
+    std::string GameOfPath(const std::string& Dir, const std::string& Path);
 
     // ImGuiShell.Assets.cpp
     bool NameMatches(const std::string& Query, const std::string& Name);

@@ -10,6 +10,7 @@
 #include "DiskGame.h"
 #include "FileSystems.h"
 #include "GameBlackOps4.h"
+#include "Games/Treyarch/TreyarchAnimOwners.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchLevelNames.h"
 #include "Games/Treyarch/TreyarchMaps.h"
@@ -185,6 +186,40 @@ namespace
             if (!NotBooked.empty()) T.Counters["materials_in_no_common_zone"] += NotBooked.size();
         }
 
+        // with its anim owners' facts (TreyarchAnimOwners.h): aitype (0xf00: its name a string at 0x10,
+        // characters 0xa08, animmappingtables 0xa70), character (bodies and heads at 0x68-0x80),
+        // xmodelalias (models from 0x10), animmappingtable {XHash, entries 0x10, count 0x18} of entries
+        // 0x20 {alias XHash, xanim XHash[] 0x10, count 0x18}, weapon (view models' list 0xa70, szXAnims
+        // 0x8b8, its 128 attachment_uniques 0xa48 with theirs at 0x490)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            TreyarchAnimOwners::Layout L;
+            L.AiText = 0x10, L.Characters = 0xa08, L.AnimMaps = 0xa70;
+            L.Body = 0x68, L.BodyAlias = 0x70, L.Head = 0x78, L.HeadAlias = 0x80;
+            L.AliasModels = 0x10, L.AliasSlots = 50;
+            L.EntrySize = 0x20, L.EntryAnims = 0x10, L.EntryCount = 0x18, L.AnimsHashed = true, L.AnimStride = 16;
+            L.GunModel = 0xa70, L.WeaponAnims = { { 0x8b8, 340 } };
+            L.Uniques = 0xa48, L.UniqueSlots = 128, L.UniqueAnims = { { 0x490, 340 } };
+            TreyarchAnimOwners::ZoneView V;
+            V.Image = &Image();
+            V.Off = [this](uint64_t A) { return Off(A); };
+            V.Assets = [this](const char* Type) {
+                std::vector<int64_t> P;
+                for (const auto& I : Walk().Instances)
+                    if (I.Parent < 0 && OwnerIs(I, Type)) P.push_back(I.Pos);
+                return P;
+            };
+            V.Model = [this](int64_t P) { return AssetName(DiskGame::Kind::Model, P); };
+            V.Anim = [this](int64_t P) { return AssetName(DiskGame::Kind::Anim, P); };
+            V.AnimHash = [](uint64_t H) { return Bo4DiskExport::LiveName(H, "xanim"); };
+            V.Hashed = [](uint64_t H, const char* Prefix) { return Bo4DiskExport::LiveName(H, Prefix); };
+            V.Text = [this](uint64_t A) { return StringAt(A); };
+            V.HashMask = HashMask;
+            V.Key = IndexKey();
+            Out.emplace_back(TreyarchAnimOwners::DocumentName, TreyarchAnimOwners::Text(TreyarchAnimOwners::Read(V, L)));
+        }
+
         // with the images that are not name-only headers
         void Defines(std::vector<DiskGame::AssetId>& Out) const override
         {
@@ -207,8 +242,10 @@ namespace
             Kt.Linked += S.Linked;
             Kt.References += S.References;
             Counter("images_from_packages") += S.FromPackages;
+            if (S.Runtime) Counter("images_filled_at_runtime") += S.Runtime;   // nothing on disk to write
             if (S.Missing + S.Failed)
                 T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(S.Missing) + " without pixels, " + std::to_string(S.Failed) + " not written");
+            for (const auto& M : S.MissingSamples) T.Fail(Name(), DiskGame::Kind::Image, M, "without pixels");
         }
 
         // A model one of whose LODs has its mesh outside the zone (its mesh info's status, u8 0, not
@@ -689,6 +726,19 @@ namespace
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the AI types, characters, anim maps and weapons of the zone, then of the zones loaded with
+        // it: zm_common holds the zombies' anims, the maps their AI types (one in zm_common)
+        std::vector<std::string> AnimOwnerDocuments() const override { return { TreyarchAnimOwners::DocumentName }; }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            static const TreyarchAnimOwners::Family Shared = {
+                { "zm_*", { "zm_common", "zm_*", "core_common", "!*_all", "!*_script", "!*_patch" } },
+                { "mp_*", { "mp_common", "core_common" } },
+                { "wz_*", { "wz_common", "core_common" } },
+                { "core_*", { "core_common" } } };
+            TreyarchAnimOwners::Fill(*this, Options, Shared, Zones, Out);
         }
     };
 

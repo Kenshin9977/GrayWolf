@@ -127,10 +127,10 @@ namespace ShellUi
             const std::string Key = std::to_string(A.TypeFilter) + "|" + std::to_string(A.HideModelTextures) + "|" + std::to_string(A.SortCol) + "|" +
                 std::to_string(A.SortAsc) + "|" + std::to_string(A.fMinBones) + "," + std::to_string(A.fMaxBones) + "," + std::to_string(A.fMinMeshes) + "," +
                 std::to_string(A.fMaxMeshes) + "," + std::to_string(A.fMinMats) + "," + std::to_string(A.fMaxMats) + "," + std::to_string(A.fMinKB) + "," +
-                std::to_string(A.fMaxKB) + "|" + A.Filter;
+                std::to_string(A.fMaxKB) + "|" + std::to_string(A.GroupByGame) + "|" + A.GameFilter + "|" + A.Filter;
             // Models in another order (a merge, a replace) invalidates View's indices: built at once;
             // header fields filled in only move rows: a few times a second
-            const bool HeadersMatter = (A.SortCol >= 2 && A.SortCol <= 5) || A.fMinBones || A.fMaxBones || A.fMinMeshes || A.fMaxMeshes || A.fMinMats || A.fMaxMats;
+            const bool HeadersMatter = (A.SortCol >= 3 && A.SortCol <= 6) || A.fMinBones || A.fMaxBones || A.fMinMeshes || A.fMaxMeshes || A.fMinMats || A.fMaxMats;
             if (Key == A.ViewKey && A.ViewVersion == S.Catalog.ModelsVersion &&
                 (!HeadersMatter || A.ViewHeaders == S.Catalog.HeaderVersion || ImGui::GetTime() - A.ViewBuiltAt < 0.3)) return;
             AppLog::Timer Build("build the asset view");
@@ -149,6 +149,7 @@ namespace ShellUi
                 if (A.TypeFilter == 5 && M.Kind != 4) continue;
                 if (A.TypeFilter == 6 && M.Kind != 5) continue;
                 if (A.HideModelTextures && M.Kind == 1 && M.ModelTexture) continue;
+                if (!A.GameFilter.empty() && M.Game != A.GameFilter) continue;
                 if (A.Filter[0] && !NameMatches(A.Filter, M.Name)) continue;
                 if ((A.fMinBones  > 0 && (int)M.Bones  < A.fMinBones)  || (A.fMaxBones  > 0 && (int)M.Bones  > A.fMaxBones))  continue;
                 if ((A.fMinMeshes > 0 && (int)M.Meshes < A.fMinMeshes) || (A.fMaxMeshes > 0 && (int)M.Meshes > A.fMaxMeshes)) continue;
@@ -158,21 +159,60 @@ namespace ShellUi
                 A.View.push_back(i);
             }
             // Models is kept sorted by name: that order needs no sort
-            if (A.SortCol == 0) { if (!A.SortAsc) std::reverse(A.View.begin(), A.View.end()); return; }
-            std::sort(A.View.begin(), A.View.end(), [&](int a, int b) {
+            if (A.SortCol == 0) { if (!A.SortAsc) std::reverse(A.View.begin(), A.View.end()); }
+            else std::sort(A.View.begin(), A.View.end(), [&](int a, int b) {
                 const Item& L = Models[a]; const Item& R = Models[b]; bool lt;
                 switch (A.SortCol) {
-                    case 1: lt = L.Kind   < R.Kind;   break;
-                    case 2: lt = L.Bones  < R.Bones;  break;
-                    case 3: lt = L.Meshes < R.Meshes; break;
-                    case 4: lt = L.Mats   < R.Mats;   break;
-                    case 5: lt = (long long)L.ImgW * L.ImgH < (long long)R.ImgW * R.ImgH; break;
-                    case 6: lt = L.Format < R.Format; break;
-                    case 7: lt = L.SizeBytes < R.SizeBytes; break;
+                    case 1: lt = L.Game   < R.Game;   break;
+                    case 2: lt = L.Kind   < R.Kind;   break;
+                    case 3: lt = L.Bones  < R.Bones;  break;
+                    case 4: lt = L.Meshes < R.Meshes; break;
+                    case 5: lt = L.Mats   < R.Mats;   break;
+                    case 6: lt = (long long)L.ImgW * L.ImgH < (long long)R.ImgW * R.ImgH; break;
+                    case 7: lt = L.Format < R.Format; break;
+                    case 8: lt = L.SizeBytes < R.SizeBytes; break;
                     default: lt = L.Name  < R.Name;   break;
                 }
                 return A.SortAsc ? lt : !lt;
             });
+            // grouped: each game's rows together, in the order above
+            if (A.GroupByGame)
+                std::stable_sort(A.View.begin(), A.View.end(), [&](int a, int b) { return Models[a].Game < Models[b].Game; });
+        }
+
+        // The games listed (each once, sorted), again only when Models changed.
+        void RefreshGames(ShellState& S)
+        {
+            AssetsTab& A = S.Assets;
+            if (A.GamesVersion == S.Catalog.ModelsVersion) return;
+            A.GamesVersion = S.Catalog.ModelsVersion;
+            A.Games.clear();
+            for (const Item& M : S.Catalog.Models)
+                if (!M.Game.empty() && std::find(A.Games.begin(), A.Games.end(), M.Game) == A.Games.end()) A.Games.push_back(M.Game);
+            std::sort(A.Games.begin(), A.Games.end());
+        }
+
+        // Which game's assets are shown, and the rows grouped by game: only when more than one game is listed.
+        void DrawGameFilter(ShellState& S)
+        {
+            AssetsTab& A = S.Assets;
+            RefreshGames(S);
+            if (A.Games.size() < 2 && A.GameFilter.empty()) return;
+            const float Em = ImGui::GetFontSize();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Game");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(Em * 9.0f);
+            if (ImGui::BeginCombo("##game", A.GameFilter.empty() ? "All games" : A.GameFilter.c_str()))
+            {
+                if (ImGui::Selectable("All games", A.GameFilter.empty())) A.GameFilter.clear();
+                for (const auto& G : A.Games)
+                    if (ImGui::Selectable(G.c_str(), A.GameFilter == G)) A.GameFilter = G;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::Checkbox("Group by game", &A.GroupByGame);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each game's assets together (the same asset from two games side by side otherwise)");
         }
 
         // Any folder of exported assets, in place of the current list or added to it, and what is listed.
@@ -440,6 +480,7 @@ namespace ShellUi
                     const Item& M = Models[View[Row]];
                     AssetGridItem It;
                     It.Path = &M.Path; It.Name = &M.Name; It.Format = &M.Format; It.Kind = M.Kind;
+                    if (A.Games.size() > 1) It.Game = &M.Game;   // one game listed: no need to say which
                     It.SizeBytes = M.SizeBytes; It.Written = M.Written; It.Id = View[Row];
                     return It;
                 },
@@ -462,8 +503,9 @@ namespace ShellUi
             const ImGuiTableFlags TFlags = ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg
                 | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit
                 | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable;
-            if (!ImGui::BeginTable("assets", 8, TFlags, ImVec2(0.0f, 0.0f), 0.0f)) return;
+            if (!ImGui::BeginTable("assets", 9, TFlags, ImVec2(0.0f, 0.0f), 0.0f)) return;
             ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, Em * 12.0f);
+            ImGui::TableSetupColumn("Game",   ImGuiTableColumnFlags_WidthFixed, Em * 4.5f);
             ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, Em * 3.4f);
             ImGui::TableSetupColumn("Bones",  ImGuiTableColumnFlags_WidthFixed, Em * 3.6f);
             ImGui::TableSetupColumn("Meshes", ImGuiTableColumnFlags_WidthFixed, Em * 3.6f);
@@ -476,10 +518,12 @@ namespace ShellUi
             // (bone count an anim drives), Meshes to models AND maps (mesh count either way), Mats
             // only to models, Dim shows image WxH or map verts/tris. On the mixed "All" tab, leave
             // everything visible.
-            ImGui::TableSetColumnEnabled(2, A.TypeFilter == 0 || A.TypeFilter == 1 || A.TypeFilter == 4); // Bones
-            ImGui::TableSetColumnEnabled(3, A.TypeFilter == 0 || A.TypeFilter == 1 || A.TypeFilter == 5); // Meshes
-            ImGui::TableSetColumnEnabled(4, A.TypeFilter == 0 || A.TypeFilter == 1); // Mats
-            ImGui::TableSetColumnEnabled(5, A.TypeFilter == 0 || A.TypeFilter == 2 || A.TypeFilter == 5); // Dim
+            // Game: only with assets of more than one game listed.
+            ImGui::TableSetColumnEnabled(1, A.Games.size() > 1);                                          // Game
+            ImGui::TableSetColumnEnabled(3, A.TypeFilter == 0 || A.TypeFilter == 1 || A.TypeFilter == 4); // Bones
+            ImGui::TableSetColumnEnabled(4, A.TypeFilter == 0 || A.TypeFilter == 1 || A.TypeFilter == 5); // Meshes
+            ImGui::TableSetColumnEnabled(5, A.TypeFilter == 0 || A.TypeFilter == 1); // Mats
+            ImGui::TableSetColumnEnabled(6, A.TypeFilter == 0 || A.TypeFilter == 2 || A.TypeFilter == 5); // Dim
             ImGui::TableHeadersRow();
 
             if (ImGuiTableSortSpecs* Ss = ImGui::TableGetSortSpecs())
@@ -506,15 +550,16 @@ namespace ShellUi
                 if (ImGui::Selectable(M.Name.c_str(), S.Selected == idx || S.MultiSel.count(idx) != 0, ImGuiSelectableFlags_SpanAllColumns))
                     ClickAsset(S, idx);
                 AssetContextMenu(S, idx);
-                ImGui::TableSetColumnIndex(1); ImGui::TextDisabled("%s", Ty);
-                ImGui::TableSetColumnIndex(2); if (M.Kind == 0 || M.Kind == 3) ImGui::Text("%u", M.Bones);
-                ImGui::TableSetColumnIndex(3); if (M.Kind == 0 || M.Kind == 4) ImGui::Text("%u", M.Meshes);
-                ImGui::TableSetColumnIndex(4); if (M.Kind == 0) ImGui::Text("%u", M.Mats);
-                ImGui::TableSetColumnIndex(5);
+                ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(M.Game.c_str());
+                ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("%s", Ty);
+                ImGui::TableSetColumnIndex(3); if (M.Kind == 0 || M.Kind == 3) ImGui::Text("%u", M.Bones);
+                ImGui::TableSetColumnIndex(4); if (M.Kind == 0 || M.Kind == 4) ImGui::Text("%u", M.Meshes);
+                ImGui::TableSetColumnIndex(5); if (M.Kind == 0) ImGui::Text("%u", M.Mats);
+                ImGui::TableSetColumnIndex(6);
                 if (M.Kind == 1 && M.ImgW > 0) ImGui::Text("%dx%d", M.ImgW, M.ImgH);
                 else if (M.Kind == 4) ImGui::Text("%uv / %ut", M.Verts, M.Tris);
-                ImGui::TableSetColumnIndex(6); ImGui::TextDisabled("%s", M.Format.c_str());
-                ImGui::TableSetColumnIndex(7);
+                ImGui::TableSetColumnIndex(7); ImGui::TextDisabled("%s", M.Format.c_str());
+                ImGui::TableSetColumnIndex(8);
                 { std::string Sz = FormatSize(M.SizeBytes);
                   float Tw = ImGui::CalcTextSize(Sz.c_str()).x;
                   float Av = ImGui::GetContentRegionAvail().x;
@@ -536,6 +581,7 @@ namespace ShellUi
         DrawFolderBar(S);
         DrawSearchBox(A, OpenHelp);
         DrawTypeTabs(A);
+        DrawGameFilter(S);
         if (A.TypeFilter == 0 || A.TypeFilter == 2)
             ImGui::Checkbox("Hide model textures (the _images of 3D models)", &A.HideModelTextures);
         DrawNumericFilters(A);

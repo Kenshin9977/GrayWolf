@@ -184,7 +184,7 @@ std::unique_ptr<XModel_t> GameWorldWar2::ReadXModel(const CoDModel_t* Model)
 // An image whose pixels are resident (not in a .pak) is laid out differently from the running
 // game's, so WWIIGfxImage and the live reader above don't apply:
 // +0 name, +32 pixels (resident), +72 format (WWII enum, not DXGI), +76 width, +78 height,
-// +84 size (whole mip chain), +88 mapType (3=2D/4=3D/5=cube), +92 levelCount.
+// +80 depth (u16), +84 size (whole mip chain), +88 mapType (3=2D/4=3D/5=cube), +92 levelCount.
 namespace
 {
     // WWII format enum -> DXGI. Format 2 is uncompressed RGBA (size/(width*height) == 4). Unknown
@@ -206,8 +206,11 @@ namespace
         case 16: return 95;   // BC6
         case 18:
         case 19: return 98;   // BC7
-        // 25 is deliberately absent: it is a 3D colour lookup table at 256 bytes per texel
-        // (hdrclut_clut_identity, 32x32 for 262144 bytes), not a 2D image at all.
+        // the game's own table (s2_mp64_ship's u32 array from 0 28 29 65 61 49 51 71 72 ...)
+        // for the lookup tables: 25 is R16G16B16A16_FLOAT (hdrclut_clut_*, 32x32x32 volumes of
+        // 262144 bytes), 27 R16G16_FLOAT (~envbrdflut_ggx_18*-rg, 64x64 or 32x32x8)
+        case 25: return 10;
+        case 27: return 34;
         default: return 0;
         }
     }
@@ -235,6 +238,7 @@ std::unique_ptr<XImageDDS> GameWorldWar2::LoadResidentXImage(const XImage_t& Ima
     const auto Height = CoDAssets::GameInstance->Read<uint16_t>(Image.ImagePtr + 78);
     const auto Format = CoDAssets::GameInstance->Read<uint8_t>(Image.ImagePtr + 72);
     const auto MapType = CoDAssets::GameInstance->Read<uint8_t>(Image.ImagePtr + 88);
+    const auto Depth = CoDAssets::GameInstance->Read<uint16_t>(Image.ImagePtr + 80);
 
     // Traced to GH_WW2TRACE when set, so the formats that fail can be counted rather than guessed.
     const auto Trace = [&](const char* Outcome)
@@ -292,9 +296,10 @@ std::unique_ptr<XImageDDS> GameWorldWar2::LoadResidentXImage(const XImage_t& Ima
         return nullptr;
     }
 
-    // Level count 1: the buffer holds the whole mip chain, only the top one is wanted.
+    // Level count 1: the buffer holds the whole mip chain, only the top one is wanted. A 3D map
+    // (4) keeps its slices.
     auto Result = CoDRawImageTranslator::TranslateBC(
-        ImageData, Size, Width, Height, Dxgi, 1, MapType == 5);
+        ImageData, Size, Width, Height, Dxgi, 1, MapType == 5, MapType == 4 ? std::max<uint32_t>(1, Depth) : 1);
 
     Trace(Result ? "ok" : "translate_null");
 

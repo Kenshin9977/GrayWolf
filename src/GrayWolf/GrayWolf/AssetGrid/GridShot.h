@@ -18,10 +18,12 @@ struct GridShotOptions
     float Cell = 0;              // cell size in pixels (0: the setting)
     int Type = 1;                // the type tab: 0 all, 1 models, 2 images, 3 audio, 4 anims, 5 maps, 6 fx
     bool List = false;           // the list instead of the grid
+    std::string Search;          // the search box's text (--name-filter)
     std::string AnimRig;         // the model anims play on
     float Scroll = 0;            // pixels a second the grid scrolls while timed (loading while scrolling)
     bool Still = false;          // model cells hold their first angle (the viewport's) instead of turning
     double SettleTimeout = 120;  // seconds to wait for the cells before timing anyway
+    std::vector<std::string> Select;   // assets selected one after the other by name (the viewport's own state carried over), the last kept
 };
 
 // Times frames honestly: each frame waits for the GPU at its end (CPU and GPU then add up), with

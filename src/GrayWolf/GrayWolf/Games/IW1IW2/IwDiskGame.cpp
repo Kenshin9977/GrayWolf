@@ -14,6 +14,7 @@
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/Common/WeaponFiles.h"
+#include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "MapSceneExport.h"
 #include "MaterialDescription.h"
 #include "ScriptExport.h"
@@ -1696,4 +1697,47 @@ std::unique_ptr<DiskGame::IDiskZone> ArchiveGame::Open(const std::string& Zone, 
     }
     return std::make_unique<ArchiveZone>(Row, std::move(I), A, Language.Of(Options));
 }
+}
+
+// The install's files the game reads (each path's winning copy) that say an anim's owner: the weapon
+// files, the AI and player types, characters, xmodelaliases and animtrees; read once per install
+void IW12::ArchiveGame::AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const
+{
+    static std::mutex Lock;
+    static std::map<std::string, std::shared_ptr<const IwClassicAnimOwners::Facts>> Read;   // by install folder and language
+    const auto Wanted = [](const std::string& Path) {
+        Kind K;
+        std::string Name;
+        if (AssetOf(Path, K, Name) && K == Kind::Weapons) return true;
+        const std::string Ext = Extension(Path);
+        if (Path.compare(0, 10, "animtrees/") == 0) return Ext == ".atr";
+        for (const char* Folder : { "aitype/", "character/", "mptype/", "xmodelalias/" })
+            if (Path.compare(0, std::strlen(Folder), Folder) == 0) return Ext == ".gsc";
+        return false;
+    };
+    for (const auto& Z : Zones)
+    {
+        std::string Error;
+        const auto I = InstallOf(Row, Z.Zone, Options, Error);
+        if (!I) continue;
+        const std::string Key = I->Folder() + "|" + Language.Of(Options);
+        std::shared_ptr<const IwClassicAnimOwners::Facts> F;
+        {
+            std::lock_guard<std::mutex> G(Lock);
+            if (const auto It = Read.find(Key); It != Read.end()) F = It->second;
+        }
+        if (!F)
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            for (const auto& [Path, A] : I->Files())
+            {
+                std::vector<uint8_t> Bytes;
+                if (Wanted(Path) && I->Read(Path, Bytes)) Docs.emplace_back(Path, std::string(Bytes.begin(), Bytes.end()));
+            }
+            F = std::make_shared<const IwClassicAnimOwners::Facts>(IwClassicAnimOwners::Parse(Docs));
+            std::lock_guard<std::mutex> G(Lock);
+            Read[Key] = F;
+        }
+        IwClassicAnimOwners::Own({ F.get() }, Z.Anims, Out);
+    }
 }

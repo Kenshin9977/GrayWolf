@@ -15,6 +15,7 @@
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
+#include "Games/IW/IwZoneAnimOwners.h"
 #include "Games/H1/EntityKeys.h"
 #include "MapLive.h"
 #include "PAKCache.h"
@@ -120,6 +121,25 @@ namespace
         return L;
     }
 
+    // The anim owners (IwZoneAnimOwners.h): the weapon's view model, the first of its models array at
+    // 0x18, its hands at 0x20 (the weapons' struct dumps); the multiplayer body and head, a player's of
+    // the install (mp_shirt_003_tr, mp_head_003_tr: the Marines' SMG body and head); the zones a
+    // zone loads with it
+    const IwZoneAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwZoneAnimOwners::Layout L = [] {
+            IwZoneAnimOwners::Layout L;
+            L.Gun = { 0x18, 0 }, L.Hands = { 0x20 };
+            L.Trees["multiplayer"] = { { "body_usmc_desert_smg_mp", "head_usmc_desert_smg_mp" },
+                                       "the install's player zones mp_shirt_003_tr, mp_head_003_tr" };
+            L.SharedMp = { "patch_common_mp", "common_mp", "patch_common_core_mp", "common_core_mp" };
+            L.SharedSp = { "patch_common", "common" };
+            L.LevelTrees = { "generic_human" };
+            return L;
+        }();
+        return L;
+    }
+
     class MwrZone final : public IWZone
     {
     public:
@@ -166,6 +186,20 @@ namespace
         // a stream entry's word: {u16 locale, u16 pak index, u32 checksum}
         uint64_t PakOf(const PakEntry& E) const override { return (E.Pak >> 16) & 0xffff; }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
+                                                             [this](int64_t F) { return TextAt(F); },
+                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
+                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                                                             },
+                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
+                                        Out);
+        }
         // what Defines lists beyond the profile's walk: images, names by reference, model headers
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images_names1"; }
         // a model with no LOD and no bone, named in place (a weapon's view model): another zone
@@ -348,6 +382,13 @@ namespace
                                              { { "mp_*", { "MPUI_{REST}", "PRESENCE_{NAME}" } },
                                                { "*", { "PRESENCE_SP_{NAME}", "LUA_MENU_MAPNAME_{NAME}" } } } };
             return &Naming;
+        }
+
+        // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwZoneAnimOwners::Fill(*this, AnimOwnerLayout(), Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override

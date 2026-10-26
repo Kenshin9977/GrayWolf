@@ -25,6 +25,9 @@ namespace
 
 bool ReadSeAnim(const std::string& Path, SeAnimClip& Out)
 {
+    // a clip read before into Out (the viewport's, from the previous selection) is let go whole: its
+    // tracks resized in place kept their keys, the new ones appended after them
+    Out = SeAnimClip{};
     std::ifstream In(Path, std::ios::binary);
     if (!In) return false;
     std::vector<uint8_t> Bytes((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());

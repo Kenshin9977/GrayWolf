@@ -191,6 +191,7 @@
     <ClCompile Include="GameCommand.cpp" />
     <ClCompile Include="ExportWriters.cpp" />
     <ClCompile Include="ExportWriters.Sound.cpp" />
+    <ClCompile Include="AnimOwners.cpp" />
     <ClCompile Include="DiskGame.cpp" />
     <ClCompile Include="DiskGame.Cli.cpp" />
     <ClCompile Include="DiskGame.Index.cpp" />
@@ -322,6 +323,7 @@
     <ClInclude Include="CoDCDNDownloader.h" />
     <ClInclude Include="GameCommand.h" />
     <ClInclude Include="ExportWriters.h" />
+    <ClInclude Include="AnimOwners.h" />
     <ClInclude Include="DiskGame.h" />
     <ClInclude Include="DiskGame.Materials.h" />
     <ClInclude Include="DiskGame.Monitor.h" />

@@ -19,18 +19,24 @@
 #include "Games/IW8/EntityKeys.h"
 #include "Games/IW8/VfxLayout.h"
 #include "Games/IW/IWMaterialBooks.h"
+#include "Games/IW/IwAnimOwners.h"
 #include "Games/IW/IwWeaponStats.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwBesideZones.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "XPAKCache.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <functional>
+#include <map>
+#include <set>
 #include <unordered_map>
 
+#include <miniz/miniz.h>
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -264,6 +270,13 @@ namespace
                 if (C.Kinds.count(Kind::Image) && !N.Images.empty()) ExportTextures(N.Images, C, T);
                 for (const auto& [K, V] : N.Named()) Counter(K) += V;
             });
+            // a model's LODs may be another zone's xmodelsurfs (common_mp's viewhands_base_iw8, its
+            // mesh in global_stream_mp): those zones are loaded beside first
+            if (const auto* Models = ExporterOf(Kind::Model))
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    LoadMeshesBeside(C);
+                    Read(C, T);
+                });
         }
 
         // an effect's materials with their atlas grid and techset, which their name-only headers here
@@ -315,6 +328,16 @@ namespace
             if (IsServed()) GameModernWarfare4::ImagesElsewhere = nullptr;
         }
 
+        // its string tables, and its anim sets, character scripts and weapons for the anim owners
+        // (Games/IW/IwAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            const IwAnimOwners::Facts F = AnimOwnerFacts();
+            if (!F.Empty()) Out.emplace_back(IwAnimOwners::DocumentName, IwAnimOwners::Write(F));
+        }
+        IwAnimOwners::Facts AnimOwnerFacts() const;
+
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
 
         // the material headers the techsets_ zones' books filled, and those they did not
@@ -341,14 +364,25 @@ namespace
             ZonekitZone::Defines(Out);
             DefineImages(Out);
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1+parts1"; }
+        // what other zones' LODs name only (",name") and this one holds (the install index's parts):
+        // its xmodelsurfs with surfaces, by the FNV-1a of their lower-case name
+        void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
+        {
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "xmodelsurfs") && Off(PointerAt(I.Pos + ModelLods().ModelSurfsSurfs)) >= 0)
+                    if (const std::string N = StringAt(PointerAt(I.Pos)); !N.empty() && N[0] != ',') Out.emplace_back("xmodelsurfs", SurfsKey(N));
+        }
         void Served(bool On) override
         {
             GameModernWarfare4::ImagesElsewhere = nullptr;
             if (On)
+            {
                 GameModernWarfare4::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
                     return Books.Find(Name, Out);
                 };
+                Beside.Serve();
+            }
         }
         // localize (0x10): the key at 0, the text at 8 encrypted with the string cipher
         // (strings.cipher.txt, DecryptString 0x2642700); a text the table cannot decrypt is left empty
@@ -471,8 +505,223 @@ namespace
             ExportImageList(C, T, L);
         }
 
+        // an xmodelsurfs' key in the install index's parts: the FNV-1a of its lower-case name
+        static uint64_t SurfsKey(const std::string& Name) { return ExportNaming::Fnv1a(ExportNaming::Lower(Name)); }
+
+        // The LODs of the models the run wants whose xmodelsurfs is a name-only header here
+        // (",name": the game finds the surfaces by name in the zone defining them, common_mp's
+        // viewhands_base_iw8 in global_stream_mp). The zones the install index's parts say hold them
+        // are loaded beside (Games/IW/IwBesideZones.h, the zone giving the most first), and each such
+        // LOD pointed at the xmodelsurfs there and its surfaces, as the game's load-time fixup would
+        // (lod.surfs = modelSurfs->surfs). Once per zone, before the models are read.
+        void LoadMeshesBeside(const DiskGame::Context& C)
+        {
+            if (BesideTried) return;
+            BesideTried = true;
+            const IWZone::LodLayout L = ModelLods();
+            std::vector<std::pair<int64_t, uint64_t>> Lods;   // a LOD's offset, its xmodelsurfs' key
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, L.Owner) || !C.Wants(DiskGame::Kind::Model, AssetName(DiskGame::Kind::Model, I.Pos))) continue;
+                const int64_t N = std::min<int64_t>(At<uint8_t>(Image(), I.Pos + L.LodCount), L.MaxLods);
+                for (int64_t Lod = 0; Lod < N; Lod++)
+                {
+                    const int64_t Base = I.Pos + L.Lods + Lod * L.LodSize;
+                    const uint64_t ModelSurfs = PointerAt(Base + L.LodModelSurfs);
+                    if (!Live().Contains(ModelSurfs) || Live().Contains(PointerAt(Base + L.LodSurfs))) continue;
+                    if (const std::string Name = StringAt(PointerAt(Off(ModelSurfs))); Name.size() > 1 && Name[0] == ',')
+                        Lods.emplace_back(Base, SurfsKey(Name.substr(1)));
+                }
+            }
+            Counter("model_lods_elsewhere") += Lods.size();
+            if (Lods.empty()) return;
+            std::set<uint64_t> Wanted;
+            for (const auto& Lod : Lods) Wanted.insert(Lod.second);
+            const std::vector<uint64_t> Keys(Wanted.begin(), Wanted.end());
+            std::vector<std::string> Paths;
+            size_t NotIndexed = 0;
+            if (!ZonesHolding(Keys.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.PartIn("xmodelsurfs", Keys[K]); }, false, Paths,
+                              NotIndexed))
+            {
+                Counter("model_lods_no_index")++;
+                return;
+            }
+            Counter("model_meshes_not_indexed") += NotIndexed;
+            std::string ProfileError;
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), ProfileError);
+            if (Loaded == nullptr || Paths.empty()) return;
+            std::map<std::string, size_t> Counts;
+            Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+            for (const auto& [K, N] : Counts) Counter(K) += N;
+            // each xmodelsurfs with surfaces in the zones loaded beside, by key: its served address and its surfaces'
+            const auto Text = [this](uint64_t Address) {
+                std::string S;
+                for (const uint8_t* P; S.size() < 1024 && (P = Beside.Locate(Address + S.size(), 1)) != nullptr && *P != 0;) S.push_back((char)*P);
+                return S;
+            };
+            std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> Meshes;
+            for (const auto& Z : Beside.All())
+                for (const auto& I : Z->R.Instances)
+                    if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "xmodelsurfs" &&
+                        (uint64_t)I.Pos + L.ModelSurfsSurfs + 8 <= Z->Bytes.size())
+                        if (const uint64_t Surfs = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos + L.ModelSurfsSurfs); Beside.Locate(Surfs, 1) != nullptr)
+                            if (const std::string Name = Text(ExportNaming::At<uint64_t>(Z->Bytes, I.Pos)); !Name.empty() && Name[0] != ',')
+                                Meshes.try_emplace(SurfsKey(Name), Z->Base + (uint64_t)I.Pos, Surfs);
+            for (const auto& [Base, Key] : Lods)
+            {
+                const auto It = Meshes.find(Key);
+                if (It == Meshes.end()) continue;
+                Live().Poke((uint64_t)(Base + L.LodModelSurfs), It->second.first);
+                Live().Poke((uint64_t)(Base + L.LodSurfs), It->second.second);
+                Counter("model_lods_beside")++;
+            }
+            Beside.Serve();
+        }
+
         IWMaterialBooks::Lookup Books;
+        IwBeside::Set Beside;   // the zones holding the xmodelsurfs this one names only (LoadMeshesBeside)
+        bool BesideTried = false;
     };
+
+    // ---- the anim owners' facts (Games/IW/IwAnimOwners.h), names as keys (lower case)
+    // A character script's first function (main): its string literals in the stack's order, the
+    // order of its code (gsc-tool's disassembler reads one per string operand): self setmodel(body),
+    // self attach(head, "", 1) (arguments pushed last first: "" then head), self.headmodel = head,
+    // self.animtree = tree, self.animationarchetype = archetype, ... The stack: per function u32
+    // size, u32 name token (its name follows when 0), then the literals; the first literal that is
+    // neither empty nor plain text is the next function's header.
+    std::vector<std::string> FirstFunctionLiterals(const std::vector<uint8_t>& GscBin, const std::function<std::string(const std::string&)>& Decrypt)
+    {
+        std::vector<std::string> Out;
+        if (GscBin.size() < 16) return Out;
+        const uint32_t Packed = ExportNaming::At<uint32_t>(GscBin, 4), Len = ExportNaming::At<uint32_t>(GscBin, 8);
+        if (Len < 8 || Len > (1u << 24) || 16 + (uint64_t)Packed > GscBin.size()) return Out;
+        std::vector<uint8_t> Stack(Len);
+        mz_ulong Got = Len;
+        if (mz_uncompress(Stack.data(), &Got, GscBin.data() + 16, Packed) != MZ_OK || Got != Len) return Out;
+        size_t P = 8;
+        const auto Next = [&](std::string& S) {
+            const auto End = std::find(Stack.begin() + (std::ptrdiff_t)P, Stack.end(), 0);
+            if (End == Stack.end()) return false;
+            S.assign(Stack.begin() + (std::ptrdiff_t)P, End);
+            P = (size_t)(End - Stack.begin()) + 1;
+            return true;
+        };
+        std::string S;
+        if (ExportNaming::At<uint32_t>(Stack, 4) == 0 && !Next(S)) return Out;
+        while (Out.size() < 32 && Next(S))
+        {
+            if (!S.empty() && (uint8_t)S[0] >= 0x80) S = Decrypt(S);
+            if (!S.empty() && !std::all_of(S.begin(), S.end(), [](char Ch) { return Ch >= 0x20 && Ch < 0x7f; })) break;
+            Out.push_back(S);
+        }
+        return Out;
+    }
+
+    // aianimset (0x40): its name at 0, the archetype it animates (script string slot u32 8), its
+    // animtree (0xc), its states at 0x10 (u32 count 0x18) of 0x68 {its entries at 0x20 (u32 count
+    // 0x10) of 0x40 {anims at 0x10 (u32 count 8) of 0x18 {the anim's slot u32 0, its weight f32 4}}}.
+    // A character script (FirstFunctionLiterals): every literal after the first two may be its
+    // archetype, the one before it its tree, the ones before those its models; only a set's name
+    // makes one of these characters. weapon (0x290): its definition behind 8 (0x1740): the gun's view
+    // model 0x10, the view hands 0x90, animation packages 0x98, 0xa0, 0xa8; animpkg (0x40): its name
+    // at 0, 652 xanim pointers behind 8 (name-only headers, ",name")
+    IwAnimOwners::Facts IW8Zone::AnimOwnerFacts() const
+    {
+        constexpr int64_t PkgAnims = 652;
+        IwAnimOwners::Facts F;
+        const auto& Img = Image();
+        const int64_t Size = (int64_t)Img.size();
+        const auto Inside = [Size](int64_t Pos, uint64_t Count, int64_t Stride) {
+            return Pos >= 0 && Count < (1u << 20) && Pos + (int64_t)Count * Stride <= Size;
+        };
+        const auto Text = [this](uint32_t Slot) {
+            return ExportNaming::Lower(Slot > 0 && Slot < Slots.size() ? Decrypted(Slots[Slot]) : std::string());
+        };
+        const auto Named = [](std::string N) { return ExportNaming::Lower(!N.empty() && N[0] == ',' ? N.substr(1) : N); };
+        // by animation package and gun model: the first weapon of the pair
+        std::map<std::pair<std::string, std::string>, IwAnimOwners::Direct> Packages;
+        const auto WeaponAnims = [&](int64_t Weapon) {
+            const int64_t Def = Off(PointerAt(Weapon + 8));
+            if (Def < 0 || Def + 0xb0 > Size) return;
+            const std::string Gun = Named(ModelAt(PointerAt(Def + 0x10))), Hands = Named(ModelAt(PointerAt(Def + 0x90)));
+            if (Gun.empty()) return;
+            for (const int64_t At2 : { 0x98, 0xa0, 0xa8 })
+            {
+                const int64_t Pkg = Off(PointerAt(Def + At2)), List = Pkg < 0 ? -1 : Off(PointerAt(Pkg + 8));
+                if (!Inside(List, PkgAnims, 8)) continue;
+                const std::string PkgName = Named(StringAt(PointerAt(Pkg)));
+                auto [It, New] = Packages.try_emplace({ PkgName, Gun });
+                auto& D = It->second;
+                if (!New) continue;
+                const std::string W = Named(StringAt(PointerAt(Weapon)));
+                D.Id = "weapon:" + W, D.Source = "weapon " + W + " (animpkg " + PkgName + ")";
+                D.Models.push_back(Gun);
+                if (!Hands.empty()) D.Models.push_back(Hands);
+                for (int64_t A = 0; A < PkgAnims; A++)
+                    if (const int64_t X = Off(PointerAt(List + A * 8)); X >= 0)
+                        if (const std::string N = Named(StringAt(PointerAt(X))); !N.empty()) D.Anims.push_back(N);
+            }
+        };
+        for (const auto& I : Walk().Instances)
+        {
+            if (I.Parent >= 0) continue;
+            if (OwnerIs(I, "aianimset"))
+            {
+                IwAnimOwners::Set S{ Text(At<uint32_t>(Img, I.Pos + 8)), std::string(), {} };
+                if (!IwAnimOwners::Plain(S.Key)) continue;
+                S.Source = "aianimset " + S.Key;
+                const int64_t States = Off(PointerAt(I.Pos + 0x10));
+                const uint32_t StateCount = At<uint32_t>(Img, I.Pos + 0x18);
+                for (uint32_t K = 0; Inside(States, StateCount, 0x68) && K < StateCount; K++)
+                {
+                    const int64_t State = States + (int64_t)K * 0x68, Entries = Off(PointerAt(State + 0x20));
+                    const uint32_t EntryCount = At<uint32_t>(Img, State + 0x10);
+                    for (uint32_t E = 0; Inside(Entries, EntryCount, 0x40) && E < EntryCount; E++)
+                    {
+                        const int64_t Entry = Entries + (int64_t)E * 0x40, Anims = Off(PointerAt(Entry + 0x10));
+                        const uint32_t Count = At<uint32_t>(Img, Entry + 8);
+                        for (uint32_t A = 0; Inside(Anims, Count, 0x18) && A < Count; A++)
+                            if (const std::string N = Text(At<uint32_t>(Img, Anims + (int64_t)A * 0x18)); !N.empty()) S.Anims.push_back(N);
+                    }
+                }
+                if (!S.Anims.empty()) F.Sets.push_back(std::move(S));
+            }
+            else if (OwnerIs(I, "weapon"))
+                WeaponAnims(I.Pos);
+            else if (OwnerIs(I, "scriptfile"))
+            {
+                Scripts::Script Script;
+                if (!ReadScriptFile(I.Pos, Script)) continue;
+                const auto L = FirstFunctionLiterals(Script.Bytes, [this](const std::string& Raw) { return Decrypted(Raw); });
+                const std::string Name = StringAt(PointerAt(I.Pos));
+                for (size_t A = 2; A < L.size(); A++)
+                {
+                    // the tree given again later (self useanimtree(#animtree))
+                    if (!IwAnimOwners::Plain(ExportNaming::Lower(L[A])) || !IwAnimOwners::Plain(ExportNaming::Lower(L[A - 1])) ||
+                        std::find(L.begin() + (std::ptrdiff_t)A + 1, L.end(), L[A - 1]) == L.end())
+                        continue;
+                    // the models: a literal after "" an attach's (a head), another setmodel's (the body)
+                    IwAnimOwners::Character C{ ExportNaming::Lower(L[A]), ExportNaming::Lower(L[A]), "character script " + Name, {} };
+                    std::vector<std::string> Heads;
+                    for (size_t M = 0; M + 1 < A; M++)
+                    {
+                        const std::string Model = ExportNaming::Lower(L[M]);
+                        if (!IwAnimOwners::Plain(Model)) continue;
+                        auto& To = M > 0 && L[M - 1].empty() ? Heads : C.Models;
+                        if (C.Models.empty() || &To == &Heads) To.push_back(Model);
+                    }
+                    if (C.Models.empty()) continue;
+                    for (const auto& H : Heads)
+                        if (std::find(C.Models.begin(), C.Models.end(), H) == C.Models.end()) C.Models.push_back(H);
+                    F.Characters.push_back(std::move(C));
+                }
+            }
+        }
+        for (auto& [Key, D] : Packages)
+            if (!D.Anims.empty()) F.Directs.push_back(std::move(D));
+        return F;
+    }
 
     // ---- the level (C2M's ModernWarfare4.cs, checked against the gfx_map loader's table)
     // GfxWorld (gfx_map, 0x4610): its base name at 8; GfxWorldDraw inline at 0xc8 (surface count u32
@@ -722,6 +971,24 @@ namespace
         // handlers and fixups run under the session lock, ResolveZones is serialized
         bool IndexInParallel() const override { return true; }
 
+        // the anims' archetypes (aianimset), the character scripts playing them and the weapons'
+        // animation packages, every zone of the run's joined; global_stream_mp's (the guns and their
+        // packages) for an anim left without an owner: beside the run's zones, else pulled from the install
+        std::vector<std::string> AnimOwnerDocuments() const override { return { IwAnimOwners::DocumentName }; }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            if (Zones.empty()) return;
+            const auto Shared = [&]() -> std::vector<std::string> {
+                const fs::path Beside = fs::path(Zones[0].Zone).parent_path() / "global_stream_mp.ff";
+                std::error_code Ec;
+                if (fs::exists(Beside, Ec)) return { Beside.string() };
+                std::string Error;
+                CoDPackageCache* P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
+                return P == nullptr ? std::vector<std::string>{} : TreyarchPackages::ExtractFastFiles(P, "global_stream_mp.ff", FastFileDir(Options), Error, ".fp");
+            };
+            IwAnimOwners::Fill(*this, Options, Zones, Shared, [](const std::string& Anim) { return ExportNaming::Lower(Anim); }, Out);
+        }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override
         {
@@ -733,6 +1000,7 @@ namespace
                 return nullptr;
             }
             auto Zone = std::make_unique<IW8Zone>(Path, (fs::path(FastFileDir(Options)) / "iw8_materials").string());
+            Zone->SetInstall(this, Options, Options.Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

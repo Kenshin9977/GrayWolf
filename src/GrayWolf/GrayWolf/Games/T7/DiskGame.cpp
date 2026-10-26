@@ -8,6 +8,7 @@
 // .xpak packages beside the zone (XPAKCache, Bo3DescribeZoneImage), and sounds from the zone's
 // snd/<locale> banks (Bo3ExportZoneSounds, zm_genesis' Salsa20 bank included).
 
+#include "Bo3AnimOwners.h"
 #include "Bo3SlotStrings.h"
 #include "Bo3SoundAliases.h"
 #include "Bo3SoundNames.h"
@@ -126,6 +127,13 @@ namespace
             Key = Text(Pos + 8);
             const int64_t P = Key.empty() ? -1 : Landed(Pos);
             Value = P < 0 ? std::string() : ZoneStr(P);
+        }
+
+        // its string tables, and the facts its anims' owners are read from (Bo3AnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            Out.push_back(Bo3AnimOwners::ZoneFacts(*this));
         }
 
         // a sound alias by its hash: the zone's sound banks (Sound 10: AliasCount 0x20, the
@@ -866,6 +874,13 @@ namespace
                   { "zm_*", { "DLC5_{REST}", "DLC4_{REST}", "DLC3_{REST}", "DLC2_{REST}", "DLC1_{REST}", "ZMUI_{REST}",
                               "MPUI_{REST}", "DLC5_PRESENCE_{NAME}", "PLAYLIST_CATEGORY_{NAME}" } } } };
             return &Naming;
+        }
+
+        // the anims' AI types, scenes, barriers, weapons and player bodies (Bo3AnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return Bo3AnimOwners::Documents(); }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            Bo3AnimOwners::Fill(*this, Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,

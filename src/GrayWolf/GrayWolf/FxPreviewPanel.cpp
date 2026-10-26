@@ -3,6 +3,7 @@
 #include "FxPreviewPanel.h"
 
 #include "FxPreviewRender.h"
+#include "AppLog.h"
 
 #include "imgui.h"
 
@@ -38,7 +39,12 @@ struct FxPreviewPanel::Impl
     size_t Particles = 0, Effects = 0;
     bool Capped = false;
 
-    Impl(ID3D11Device* D, ID3D11DeviceContext* C) : Dev(D), Ctx(C), Renderer(D) {}
+    // the viewport's images start at their first mip within this, and are decoded no larger
+    static constexpr int TextureLimit = 1024;
+    // times of a run whose images are read with the effect, on the worker (not when first drawn)
+    static constexpr int PrepareSamples = 12;
+
+    Impl(ID3D11Device* D, ID3D11DeviceContext* C) : Dev(D), Ctx(C), Renderer(D) { Renderer.SetTextureLimit(TextureLimit); }
 
     void Restart()
     {
@@ -105,10 +111,24 @@ bool FxPreviewPanel::Load(const std::string& JsonPath)
     FxPreview::SimOptions O;
     O.Seed = P->Seed;
     O.ForwardUp = P->ForwardUp;
-    P->Pending.emplace_back(Id, std::async(std::launch::async, [JsonPath, O] {
+    FxPreview::Renderer* Rd = &P->Renderer;   // outlives the load: the destructor waits for it
+    P->Pending.emplace_back(Id, std::async(std::launch::async, [JsonPath, O, Rd] {
+        AppLog::Timer T("fx load " + JsonPath, spdlog::level::info, 500);
         Impl::Loaded L;
         auto S = std::make_shared<FxPreview::Scene>();
-        if (S->Load(JsonPath, {}, L.Error, O)) L.Scene = std::move(S);
+        if (!S->Load(JsonPath, {}, L.Error, O)) return L;
+        // the images a run draws, read now: the first frames then draw without stopping on them
+        if (S->Textures && S->Sim)
+        {
+            FxPreview::Frame F;
+            const double Duration = std::max(1.0, S->DurationMsec);
+            for (int K = 0; K <= Impl::PrepareSamples; K++)
+            {
+                S->Sim->Evaluate(Duration * K / Impl::PrepareSamples, F);
+                Rd->Prepare(F, *S->Textures);
+            }
+        }
+        L.Scene = std::move(S);
         return L;
     }));
     return true;
@@ -247,7 +267,7 @@ void FxPreviewPanel::Draw()
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
         {
             const ImVec2 D = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
-            I.Yaw += D.x * 0.01f;
+            I.Yaw -= D.x * 0.01f;   // the effect follows the mouse, as in the model viewport
             I.Pitch = std::clamp(I.Pitch + D.y * 0.01f, -1.5f, 1.5f);
             ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
         }

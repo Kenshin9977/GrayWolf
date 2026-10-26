@@ -5,10 +5,14 @@
 #include <string>
 #include <vector>
 
-// Which model an anim plays on (its grid cell, the Viewport), chosen by bone names: the listed model
-// holding most of the anim's bones, completed by a second one when short (hands + weapon, joined by
-// LoadRigGeometry). Each game's reference hands and body (zonekit/profiles/preview_rigs.json) are
-// exported once from its install into %TEMP%\greyhound_rigs\<game>\ so an anim always has a model.
+// Which model an anim plays on (its grid cell, the Viewport), chosen by bone names: the rig holding
+// most of the anim's bones, a listed model completed by a second one when short (hands + weapon, a
+// body + its head, joined by LoadRigGeometry), each model scored with what completes it. Each game's reference hands and body (zonekit/profiles/preview_rigs.json) are
+// exported once from its install into %TEMP%\greyhound_rigs\<game>\ so an anim always has a model;
+// an anim its name says is of a kind (a zombie's, a dog's: the table's "kinds") plays on a model of
+// that kind, the game's reference of it ("zombie": body + head) or a listed one. Before any of
+// that, an anim its game's export gave owners (anims/anim_owners.json, AnimOwners.h) plays on its
+// first owner's models found in the browser's models, else exported from the install like a reference.
 namespace AnimRigs
 {
     // What an anim plays on: one model, or several joined (Paths[0] the skeleton the others join; a
@@ -16,10 +20,13 @@ namespace AnimRigs
     struct Pick
     {
         std::vector<std::string> Paths;   // empty: nothing fits
-        float Score = 0;                  // the anim's bones the rig has, 0..1 (of those some model of its game has)
+        float Score = 0;                  // the anim's bones the rig has, 0..1 (of those some model of its game has, and those none has it shapes)
+        float Unmodelled = 0;             // of those, the share no model has (the anim shapes them: Index)
+        bool OwnModelAbsent = false;      // Unmodelled so high the anim was made for a model not here (its references are asked for)
         bool Manual = false;              // the user's choice (SetManual)
         bool Reference = false;           // a game's reference model is part of it
         std::string Label;                // "hands + weapon"
+        std::string Owner;                // the owner the game's data gives it (anim_owners.json: "aitype:zombie_dog"), "" when scored
     };
 
     // One model as a single rig for an anim, for the user's choice
@@ -35,9 +42,14 @@ namespace AnimRigs
         std::string Path, Name;   // the file, its name without extension
     };
 
-    // Score: the anim's bones the model has / the anim's bones some model of its game has (a bone
-    // no listed or reference model of the game has, like a sleeve's helper joints, is not counted). Ties: the anim's own game, the kind
-    // its name says (vm_, viewmodel: hands; pb_, mp_, body: a body), common words, fewer bones left still.
+    // Score: the anim's bones the rig has / the anim's bones some model of its game has (a bone
+    // no listed or reference model of the game has costs every rig alike when the anim moves it, unless
+    // it is optional: the table's optional_joints (a tag, a sleeve's helpers), or a joint of a variant of
+    // the rig's skeleton, another game's model of it); a
+    // rig of two models pays the 4% the second has to add. Ties: the anim's own game, the kind
+    // its name says (vm_, viewmodel: hands; pb_, mp_, body: a body), the bind pose (of the rigs left
+    // tied, the one whose body binds the anim's first frame is nearest, by more than 30 degrees), common
+    // words, fewer bones left still.
     class Index
     {
     public:

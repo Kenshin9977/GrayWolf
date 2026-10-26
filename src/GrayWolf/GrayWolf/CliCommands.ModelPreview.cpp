@@ -31,6 +31,7 @@
 #include "CastExport.h"
 #include "ModelViewport.h"
 #include "AssetGrid/GridShot.h"   // ui-grid-shot
+#include "UiRecord.h"             // ui-record
 #include "ImGuiShell.h"
 #include "ModelPreviewGPU.h"
 #include "CerberusCrypto.h"
@@ -361,8 +362,16 @@ int RunRenderAnimModel(const CliOptions& Options)
         CliReport(Options, "result=error\nreason=usage: --render-anim <model_path>;<anim_path>;<frame>\n");
         return 5;
     }
+    // the model, or the rig the browser plays the anim on: its models joined with '|' (LoadRigGeometry)
+    std::vector<std::string> Rig;
+    for (size_t From = 0; From <= Parts[0].size();)
+    {
+        const size_t Bar = std::min(Parts[0].find('|', From), Parts[0].size());
+        if (Bar > From) Rig.push_back(Parts[0].substr(From, Bar - From));
+        From = Bar + 1;
+    }
     PreviewGeometry Bind;
-    const bool ModelOk = LoadPreviewGeometry({ Parts[0] }, Bind);
+    const bool ModelOk = LoadRigGeometry(Rig, Bind);
     SeAnimClip Clip;
     const bool AnimOk = ModelOk && ReadAnimClip(Parts[1], Clip);
     std::string Report = std::format("model={}\nanim={}\nframe={}\nmodel_load={}\nanim_load={}\nbones={} weighted_verts={}\n",
@@ -376,6 +385,18 @@ int RunRenderAnimModel(const CliOptions& Options)
         EvaluateSkeletonPose(Bind, Clip, Frame, Pose);
         std::vector<float> SkPos, SkNrm;
         SkinPreviewGeometry(Bind, Pose, SkPos, SkNrm);
+        // how torn the pose is at this frame, and the worst of five frames across the clip
+        float Worst = 0;
+        for (int k = 0; k < 5; k++)
+        {
+            std::vector<SkeletonPoseBone> At;
+            std::vector<float> AtPos, AtNrm;
+            EvaluateSkeletonPose(Bind, Clip, (float)std::max(1u, Clip.FrameCount) * k / 5.0f, At);
+            SkinPreviewGeometry(Bind, At, AtPos, AtNrm);
+            Worst = std::max(Worst, PoseStretch(Bind, AtPos));
+        }
+        Report += std::format("stretch={:.4f}\nstretch_worst={:.4f}\nanim_type={}\nframes={}\n", PoseStretch(Bind, SkPos), Worst,
+                              (int)Clip.Type, Clip.FrameCount);
         PreviewGeometry Animated = Bind; Animated.Pos = SkPos; Animated.Nrm = SkNrm;
         const std::string OutPath = Options.Out.empty() ? "anim_frame.png" : Options.Out;
         Ok = RenderPreviewGeometryToPNG(Animated, OutPath, 512);
@@ -649,11 +670,30 @@ int RunDumpModel(const CliOptions& Options)
 // (LoadPreviewGeometryGlb), to tell a real read bug apart from a rendering/framing bug.
 int RunDumpGlb(const CliOptions& Options)
 {
+    WraithX::InitializeAPI(); // WIC
     PreviewGeometry Geo;
-    const bool Ok = LoadPreviewGeometryGlb(Options.DumpGlb, Geo);
+    GlbPreviewStats St;
+    const GlbPreviewOptions Budget = Options.DumpGlbThumb ? GlbThumbnailOptions() : GlbPreviewOptions{};
+    const auto T0 = std::chrono::steady_clock::now();
+    const bool Ok = LoadPreviewGeometryGlb(Options.DumpGlb, Geo, Budget, &St);
+    const double LoadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - T0).count();
     std::string Report = std::format("== {} ==\nresult={}\n", Options.DumpGlb.c_str(), Ok ? "ok" : "error");
+    Report += std::format("load_ms={:.0f} read_ms={:.0f} parse_ms={:.0f} geometry_ms={:.0f} textures_ms={:.0f} (textures on their own threads)\n"
+                          "images={} read={} missing={} pieces={} kept={} triangles={} kept={}\n",
+                          LoadMs, St.ReadMs, St.ParseMs, St.GeometryMs, St.TexturesMs, St.Images, St.ImagesRead, St.ImagesMissing,
+                          St.Pieces, St.PiecesKept, St.Triangles, St.TrianglesKept);
     if (Ok)
     {
+        // the GPU upload the viewport does next (vertex and index buffers, every texture)
+        Microsoft::WRL::ComPtr<ID3D11Device> Dev;
+        const D3D_FEATURE_LEVEL Want[] = { D3D_FEATURE_LEVEL_11_0 };
+        if (SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, Want, 1, D3D11_SDK_VERSION, &Dev, nullptr, nullptr)))
+        {
+            const auto U0 = std::chrono::steady_clock::now();
+            const PreviewGpuMesh Mesh = UploadPreviewMesh(Dev.Get(), Geo, Budget.MaxTexture);
+            Report += std::format("upload_ms={:.0f} gpu_textures={} valid={}\n",
+                                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - U0).count(), Mesh.TexCount, Mesh.Valid);
+        }
         const size_t VertCount = Geo.Pos.size() / 3;
         float Mn[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, Mx[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
         for (size_t v = 0; v < VertCount; v++)
@@ -665,7 +705,12 @@ int RunDumpGlb(const CliOptions& Options)
         size_t UntexturedVerts = 0;
         for (int32_t M : Geo.VtxMat) if (M < 0) UntexturedVerts++;
         size_t DecodedTex = 0, EmptyTex = 0;
-        for (auto& T : Geo.Materials) { if (T.Width > 0 && T.Height > 0 && !T.Rgba.empty()) DecodedTex++; else EmptyTex++; }
+        for (size_t m = 0; m < Geo.Materials.size(); m++)
+        {
+            const auto& T = Geo.Materials[m];
+            if ((T.Width > 0 && T.Height > 0 && !T.Rgba.empty()) || (m < Geo.MaterialMaps.size() && !Geo.MaterialMaps[m].Albedo.Empty())) DecodedTex++;
+            else EmptyTex++;
+        }
 
         Report += std::format(
             "verts={} tris={} materials={} (decoded={} empty={})\n"
@@ -738,9 +783,15 @@ int RunUiGridShot(const CliOptions& Options)
     Shot.Frames = std::max(1, Options.UiGridFrames);
     Shot.Cell = Options.UiGridCell;
     Shot.List = Options.UiGridList;
+    Shot.Search = Options.NameFilter;
     Shot.AnimRig = Options.UiGridRig;
     Shot.Scroll = Options.UiGridScroll;
     Shot.Still = Options.UiGridStill;
+    {
+        std::stringstream Ss(Options.UiGridSelect);
+        std::string Name;
+        while (std::getline(Ss, Name, ',')) if (!Name.empty()) Shot.Select.push_back(Name);
+    }
     if (sscanf_s(Options.UiGridSize.c_str(), "%dx%d", &Shot.Width, &Shot.Height) != 2 || Shot.Width < 320 || Shot.Height < 240)
     {
         CliReport(Options, "result=error\nerror=--size is WxH\n");
@@ -756,6 +807,32 @@ int RunUiGridShot(const CliOptions& Options)
         Txt.replace_extension(".txt");
         std::ifstream In(Txt);
         Numbers.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
+    CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Numbers));
+    return Ok ? 0 : 5;
+}
+
+
+// The shell hidden on a folder, --script's steps played on it one fixed time step a frame, the
+// frames and the audio written to --out (UiRecord.h).
+int RunUiRecord(const CliOptions& Options)
+{
+    WraithX::InitializeAPI(); // WIC, for texture decode and the PNGs
+    UiRecordOptions Record;
+    Record.Script = Options.UiRecordScript;
+    Record.OutDir = Options.Out.empty() ? "ui-record" : Options.Out;
+    Record.Fps = std::clamp(Options.UiRecordFps, 1, 120);
+    if (sscanf_s(Options.UiGridSize.c_str(), "%dx%d", &Record.Width, &Record.Height) != 2 || Record.Width < 320 || Record.Height < 240)
+    {
+        CliReport(Options, "result=error\nerror=--size is WxH\n");
+        return 2;
+    }
+    const bool Ok = RunImGuiShell(Options.UiRecord, nullptr, &Record);
+    std::string Numbers;
+    for (const char* Name : { "record.txt", "timeline.txt" })
+    {
+        std::ifstream In(std::filesystem::path(Record.OutDir) / Name);
+        Numbers += std::string(Name) + ":\n" + std::string(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
     }
     CliReport(Options, std::format("result={}\n{}", Ok ? "ok" : "error", Numbers));
     return Ok ? 0 : 5;
@@ -863,6 +940,7 @@ void AddModelPreviewCommands(CliCommandBuilders& B)
     B["dump-glb"] = [](CLI::App& App, CliOptions& Options) {
         auto* Sub = App.add_subcommand("dump-glb", "Print a .glb's PreviewGeometry stats");
         Sub->add_option("file", Options.DumpGlb, ".glb file")->required()->check(CLI::ExistingFile);
+        Sub->add_flag("--thumb", Options.DumpGlbThumb, "The asset grid's budget (textures, triangles) instead of the viewport's");
     };
     B["render-glb-png"] = [](CLI::App& App, CliOptions& Options) {
         auto* Sub = App.add_subcommand("render-glb-png", "Headless PNG render of a .glb (--out sets the path)");
@@ -882,6 +960,14 @@ void AddModelPreviewCommands(CliCommandBuilders& B)
         Sub->add_option("--rig", Options.UiGridRig, "Model the anim cells play on");
         Sub->add_option("--scroll", Options.UiGridScroll, "Pixels a second the grid scrolls while timed");
         Sub->add_flag("--still", Options.UiGridStill, "Model cells hold the viewport's angle instead of turning (to compare the two)");
+        Sub->add_option("--select", Options.UiGridSelect, "Assets selected one after the other by name, a second apart (a,b,c: the last stays)");
+    };
+    B["ui-record"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("ui-record", "Open the asset browser hidden on a folder, play a script on it and write every frame and the audio played (--out <dir>)");
+        Sub->add_option("dir", Options.UiRecord, "Folder of exported assets")->required()->check(CLI::ExistingDirectory);
+        Sub->add_option("--script", Options.UiRecordScript, "JSON steps: label, type, filter, view, select (+game), merge, rig, camera, orbit, seek, play, wait")->required()->check(CLI::ExistingFile);
+        Sub->add_option("--size", Options.UiGridSize, "Window size WxH (default 1920x1080)");
+        Sub->add_option("--fps", Options.UiRecordFps, "Frames a second, each one that step of time (default 30)");
     };
     B["anim-rigs"] = [](CLI::App& App, CliOptions& Options) {
         auto* Sub = App.add_subcommand("anim-rigs", "Each anim of a folder with the model the browser plays it on and its score (AnimRigs.h)");

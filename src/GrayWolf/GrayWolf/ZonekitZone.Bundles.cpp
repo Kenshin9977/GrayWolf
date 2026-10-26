@@ -158,7 +158,7 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
             }
             return Out;
         };
-        const fs::path Dir = fs::path(C.KindDir(K)) / ExportNaming::SafeFileName(ZoneName);
+        const fs::path Dir = (C.OnTree ? fs::path(C.OutRoot) / DiskGame::KindFolder(K) : fs::path(C.KindDir(K))) / ExportNaming::SafeFileName(ZoneName);
         std::set<uint64_t> Done;
         // the zone's bundles, written once their settings types are named (from all their texts)
         struct Pending
@@ -265,6 +265,12 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
         {
             if (P.TypeHash != 0)
                 if (const auto It = TypeNames.find(P.TypeHash); It != TypeNames.end()) P.B["type_name"] = It->second, TypesNamed++;
+            if (C.OnTree)
+            {
+                // read in memory (a game's anim owners): no file, no index entry
+                C.OnTree(P.File.stem().string(), P.B);
+                continue;
+            }
             const std::string S = P.B.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
             const std::string What = P.Name.empty() ? P.Id : P.Name;
             if (!ExportWriters::WriteBytes(P.File, (const uint8_t*)S.data(), S.size()))
@@ -277,6 +283,7 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
             T.Index(K, P.Id, P.Type, P.TypeHash == 0 ? P.AssetType : It != TypeNames.end() ? It->second : std::string(), ZoneName, P.Name,
                     P.File.string());
         }
+        if (C.OnTree) return;
         Counter("bundle_types_named") += TypesNamed;
         Counter("bundle_fields") += Fields;
         Counter("bundle_keys_named") += KeysNamed;

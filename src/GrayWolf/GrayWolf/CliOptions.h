@@ -55,6 +55,7 @@ struct CliOptions
     bool FxForwardUp = false;
     std::string DumpModel;   // --dump-model: print a .semodel's bones/bbox
     std::string DumpGlb;     // --dump-glb: print a .glb's PreviewGeometry stats (LoadPreviewGeometryGlb)
+    bool DumpGlbThumb = false;   // dump-glb --thumb: the asset grid's budget instead of the viewport's
     std::string RenderGlbPng; // --render-glb-png <in.glb>: headless PNG render, --out sets the path
     std::string AudioFormat; // "wav" (default), "flac" or "opus" (setting exportsnd, ExportWriters::WriteSound)
     std::string ModelFormat; // --model-format: cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, comma list
@@ -84,6 +85,10 @@ struct CliOptions
     std::string UiGridRig;     // --rig <model>: what anims play on
     float UiGridScroll = 0;    // --scroll: pixels a second the grid scrolls while timed
     bool UiGridStill = false;  // --still: model cells hold the viewport's angle (no turn)
+    std::string UiGridSelect;  // --select a,b: the assets selected one after the other (the last one stays)
+    std::string UiRecord;      // ui-record <dir>: the shell hidden, a script played, its frames + audio written (UiRecord.h)
+    std::string UiRecordScript; // --script <json>: the steps
+    int UiRecordFps = 30;      // --fps: frames a second
     std::string AnimRigs;      // anim-rigs <dir>: each anim's rig as the browser picks it (AnimRigs.h)
     bool AnimRigsNoFetch = false;   // --no-fetch: no reference model exported
     std::string AudioProbe;    // --audio-probe <file>: decode via AudioPlayer and print duration/rate/peaks

@@ -97,6 +97,7 @@ int RunDumpGlb(const CliOptions& Options);
 int RunRenderGlbPng(const CliOptions& Options);
 int RunUiMode(const CliOptions& Options);
 int RunUiGridShot(const CliOptions& Options);
+int RunUiRecord(const CliOptions& Options);
 int RunPreviewWindow(const CliOptions& Options);
 int RunRenderModelCli(const CliOptions& Options);
 int RunRenderFxCli(const CliOptions& Options);   // FxPreviewCli.cpp

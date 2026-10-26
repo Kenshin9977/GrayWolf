@@ -29,6 +29,8 @@
 #include <thread>
 #include <atomic>
 #include <set>
+#include <chrono>
+#include <cfloat>
 
 // Turns an already-loaded DirectXTex image into row-tight RGBA8 - decompressing BC1-BC7 or
 // converting any other non-RGBA8 format first; shared with the asset browser's image preview.
@@ -724,9 +726,10 @@ namespace
 
         void Sample(float u, float v, float& r, float& g, float& b) const
         {
-            // Wrap, and flip V (exported UVs are top-left origin vs. our bottom-left math).
+            // Wrap. The loaded UVs have a top-left origin, as the image rows and the GPU preview's
+            // (a flip here showed every texture upside down: decal text mirrored)
             float fu = u - std::floor(u);
-            float fv = 1.0f - (v - std::floor(v));
+            float fv = v - std::floor(v);
             float fx = fu * (W - 1), fy = fv * (H - 1);
             int x0 = (int)fx, y0 = (int)fy;
             int x1 = std::min(x0 + 1, W - 1), y1 = std::min(y0 + 1, H - 1);
@@ -1517,13 +1520,14 @@ bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGe
 
 bool LoadRigGeometry(const std::vector<std::string>& Paths, PreviewGeometry& Out, const std::function<bool()>& Cancelled)
 {
-    return LoadGeometry(Paths, Out, Cancelled, true);
+    // a placeholder's triangle or two (MW2's angel_flare_rig) shows nothing an anim could move: no rig
+    return LoadGeometry(Paths, Out, Cancelled, true) && Out.Idx.size() / 3 >= 4;
 }
 
 namespace
 {
-    // A map .glb names thousands of 4K textures: each is decoded, then kept at 512 texels at most
-    // (box filter), which is all a preview needs and what fits in memory.
+    // An image embedded in a .glb (another writer's PNG/JPEG; ours never embeds) is decoded by
+    // stb_image, then kept at 512 texels at most (box filter), which is all a preview needs.
     bool DecodeGlbImage(tinygltf::Image* Image, const int Index, std::string* Err, std::string* Warn, int ReqW, int ReqH,
                       const unsigned char* Bytes, int Size, void*)
     {
@@ -1546,96 +1550,134 @@ namespace
         }
         return true;
     }
+
+    // A glTF image's file: the smaller copy the map export wrote under textures/ beside the .glb
+    // (the map_textures setting) when there is one, else the file its URI names. Empty: neither.
+    std::string GlbImageFile(const std::filesystem::path& Dir, const std::string& Uri)
+    {
+        std::string Decoded;
+        if (!tinygltf::URIDecode(Uri, &Decoded, nullptr)) Decoded = Uri;
+        const std::filesystem::path Rel(Strings::ToUnicodeString(Decoded));
+        if (Rel.empty()) return {};
+        std::error_code Ec;
+        const std::filesystem::path Copy = Dir / L"textures" / Rel.filename();
+        if (std::filesystem::is_regular_file(Copy, Ec)) return Strings::ToNormalString(Copy.wstring());
+        const std::filesystem::path File = (Dir / Rel).lexically_normal();
+        if (std::filesystem::is_regular_file(File, Ec)) return Strings::ToNormalString(File.wstring());
+        return {};
+    }
+
+    // Runs Fn(i) for i in [0, Count) on Threads threads (the caller's one of them).
+    void ParallelFor(size_t Count, size_t Threads, const std::function<void(size_t)>& Fn, const std::function<bool()>& Stop)
+    {
+        std::atomic<size_t> Next{ 0 };
+        auto Work = [&] { for (size_t k; (k = Next++) < Count && !(Stop && Stop());) Fn(k); };
+        Threads = std::max<size_t>(1, std::min(Threads, Count));
+        std::vector<std::thread> Pool;
+        for (size_t t = 1; t < Threads; t++) Pool.emplace_back(Work);
+        Work();
+        for (auto& T : Pool) T.join();
+    }
 }
 
-bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out)
+bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out, const GlbPreviewOptions& O, GlbPreviewStats* Stats)
 {
+    using Clock = std::chrono::steady_clock;
+    const auto Since = [](Clock::time_point T) { return std::chrono::duration<double, std::milli>(Clock::now() - T).count(); };
+    GlbPreviewStats Own;
+    GlbPreviewStats& St = Stats ? *Stats : Own;
+    St = {};
+    const auto Cancelled = [&] { return O.Cancelled && O.Cancelled(); };
+
+    auto T0 = Clock::now();
+    std::vector<uint8_t> Bytes;
+    if (!ReadFileBulk(GlbPath, Bytes) || Bytes.empty() || Bytes.size() > 0xFFFFFFFFull) return false;
+    St.ReadMs = Since(T0);
+    if (Cancelled()) return false;
+
+    // tinygltf reads no image file: the maps are DDS (MSFT_texture_dds), which it cannot decode, and
+    // read below, each once, through DirectXTex - only the levels the preview uses.
+    T0 = Clock::now();
     tinygltf::TinyGLTF Loader;
+    tinygltf::URICallbacks Uris{ nullptr, [](const std::string& In, std::string* Decoded, void*) {
+        const std::string Ext = ExportNaming::Lower(std::filesystem::path(In).extension().string());
+        return Ext == ".bin" && tinygltf::URIDecode(In, Decoded, nullptr);
+    }, nullptr };
+    Loader.SetURICallbacks(Uris);
     Loader.SetImageLoader(&DecodeGlbImage, nullptr);
     tinygltf::Model Gltf;
     std::string Err, Warn;
-    if (!Loader.LoadBinaryFromFile(&Gltf, &Err, &Warn, GlbPath)) return false;
+    const std::filesystem::path Dir = std::filesystem::path(GlbPath).parent_path();
+    if (!Loader.LoadBinaryFromMemory(&Gltf, &Err, &Warn, Bytes.data(), (unsigned int)Bytes.size(), Dir.string())) return false;
+    std::vector<uint8_t>().swap(Bytes);
+    St.ParseMs = Since(T0);
+    if (Cancelled()) return false;
 
-    // One decoded RGBA8 texture per glTF image (tinygltf already ran stb_image on any embedded
-    // PNG/JPEG - see STB_IMAGE_IMPLEMENTATION in GLTFExport.cpp), indexed the same as Gltf.images.
-    std::vector<PreviewTexture> Textures(Gltf.images.size());
-    for (size_t i = 0; i < Gltf.images.size(); i++)
-    {
-        const auto& Img = Gltf.images[i];
-        if (Img.width <= 0 || Img.height <= 0 || Img.image.empty()) continue;
-        PreviewTexture T; T.Width = Img.width; T.Height = Img.height;
-        T.Rgba.assign((size_t)T.Width * T.Height * 4, 255);
-        const int Comp = std::max(1, Img.component);
-        const size_t PixelCount = (size_t)T.Width * T.Height;
-        for (size_t p = 0; p < PixelCount && (p * Comp + Comp) <= Img.image.size(); p++)
-            for (int c = 0; c < std::min(4, Comp); c++)
-                T.Rgba[p * 4 + c] = Img.image[p * Comp + c];
-        Textures[i] = std::move(T);
-    }
-
-    // material index -> image index (via material.pbrMetallicRoughness.baseColorTexture ->
-    // texture.source), so Out.VtxMat can point straight at Out.Materials like the .semodel path does.
-    std::vector<int32_t> MatToImg(Gltf.materials.size(), -1);
-    for (size_t m = 0; m < Gltf.materials.size(); m++)
-    {
-        const int TexIdx = Gltf.materials[m].pbrMetallicRoughness.baseColorTexture.index;
-        if (TexIdx < 0 || TexIdx >= (int)Gltf.textures.size()) continue;
-        const int ImgIdx = Gltf.textures[TexIdx].source;
-        if (ImgIdx >= 0 && ImgIdx < (int)Textures.size()) MatToImg[m] = ImgIdx;
-    }
-
-    auto ReadFloats = [&](int AccessorIdx, int Components, std::vector<float>& Dst) -> bool {
-        if (AccessorIdx < 0 || AccessorIdx >= (int)Gltf.accessors.size()) return false;
-        const auto& Acc = Gltf.accessors[AccessorIdx];
-        if (Acc.bufferView < 0 || Acc.bufferView >= (int)Gltf.bufferViews.size()) return false;
-        const auto& Bv = Gltf.bufferViews[Acc.bufferView];
-        if (Bv.buffer < 0 || Bv.buffer >= (int)Gltf.buffers.size()) return false;
-        const auto& Buf = Gltf.buffers[Bv.buffer];
-        const int Stride = Acc.ByteStride(Bv);
-        if (Stride <= 0 || Acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return false;
-        if (Bv.byteOffset + Acc.byteOffset + (size_t)Stride * Acc.count > Buf.data.size()) return false;
-        const uint8_t* Base = Buf.data.data() + Bv.byteOffset + Acc.byteOffset;
-        Dst.resize(Acc.count * (size_t)Components);
-        for (size_t v = 0; v < Acc.count; v++)
-        {
-            float Src[4] = {};
-            std::memcpy(Src, Base + v * Stride, sizeof(float) * (size_t)Components);
-            for (int c = 0; c < Components; c++) Dst[v * Components + c] = Src[c];
-        }
-        return true;
+    // ---- materials: one preview material per (base colour image, alpha mode)
+    const auto ImageOf = [&](int TexIdx) -> int {
+        if (TexIdx < 0 || TexIdx >= (int)Gltf.textures.size()) return -1;
+        const tinygltf::Texture& T = Gltf.textures[(size_t)TexIdx];
+        int Src = T.source;
+        if (Src < 0)
+            if (const auto It = T.extensions.find("MSFT_texture_dds"); It != T.extensions.end() && It->second.Has("source"))
+                Src = It->second.Get("source").GetNumberAsInt();
+        return Src >= 0 && Src < (int)Gltf.images.size() ? Src : -1;
     };
-    auto ReadIndices = [&](int AccessorIdx, std::vector<uint32_t>& Dst) -> bool {
-        if (AccessorIdx < 0 || AccessorIdx >= (int)Gltf.accessors.size()) return false;
-        const auto& Acc = Gltf.accessors[AccessorIdx];
-        if (Acc.bufferView < 0 || Acc.bufferView >= (int)Gltf.bufferViews.size()) return false;
-        const auto& Bv = Gltf.bufferViews[Acc.bufferView];
-        if (Bv.buffer < 0 || Bv.buffer >= (int)Gltf.buffers.size()) return false;
-        const auto& Buf = Gltf.buffers[Bv.buffer];
-        const int Stride = Acc.ByteStride(Bv);
-        if (Stride <= 0) return false;
-        if (Bv.byteOffset + Acc.byteOffset + (size_t)Stride * Acc.count > Buf.data.size()) return false;
-        const uint8_t* Base = Buf.data.data() + Bv.byteOffset + Acc.byteOffset;
-        Dst.resize(Acc.count);
-        for (size_t i = 0; i < Acc.count; i++)
+    struct Slot { int Image; Materials::AlphaMode Alpha; float Cutoff; };
+    std::vector<Slot> Slots;
+    std::map<std::pair<int, int>, int> SlotOf;
+    std::vector<int32_t> MatSlot(Gltf.materials.size(), -1);
+    if (O.MaxTexture > 0)
+        for (size_t m = 0; m < Gltf.materials.size(); m++)
         {
-            const uint8_t* Src = Base + i * Stride;
-            uint32_t V = 0;
-            if (Acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) V = Src[0];
-            else if (Acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) { uint16_t V16 = 0; std::memcpy(&V16, Src, 2); V = V16; }
-            else if (Acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) std::memcpy(&V, Src, 4);
-            else return false;
-            Dst[i] = V;
+            const tinygltf::Material& Mat = Gltf.materials[m];
+            const int Img = ImageOf(Mat.pbrMetallicRoughness.baseColorTexture.index);
+            if (Img < 0) continue;
+            const Materials::AlphaMode Alpha = Mat.alphaMode == "MASK" ? Materials::AlphaMode::Cutout
+                                             : Mat.alphaMode == "BLEND" ? Materials::AlphaMode::Blend : Materials::AlphaMode::Opaque;
+            const auto [It, New] = SlotOf.emplace(std::make_pair(Img, (int)Alpha), (int)Slots.size());
+            if (New) Slots.push_back({ Img, Alpha, (float)Mat.alphaCutoff });
+            MatSlot[m] = It->second;
         }
-        return true;
+
+    // ---- geometry
+    T0 = Clock::now();
+    // An accessor's elements in the .glb's buffer (null when out of bounds)
+    const auto View = [&](int AccessorIdx, int& Stride, size_t& Count) -> const uint8_t* {
+        if (AccessorIdx < 0 || AccessorIdx >= (int)Gltf.accessors.size()) return nullptr;
+        const auto& Acc = Gltf.accessors[AccessorIdx];
+        if (Acc.bufferView < 0 || Acc.bufferView >= (int)Gltf.bufferViews.size()) return nullptr;
+        const auto& Bv = Gltf.bufferViews[Acc.bufferView];
+        if (Bv.buffer < 0 || Bv.buffer >= (int)Gltf.buffers.size()) return nullptr;
+        const auto& Buf = Gltf.buffers[Bv.buffer];
+        Stride = Acc.ByteStride(Bv);
+        Count = Acc.count;
+        if (Stride <= 0 || Bv.byteOffset + Acc.byteOffset + (size_t)Stride * Acc.count > Buf.data.size()) return nullptr;
+        return Buf.data.data() + Bv.byteOffset + Acc.byteOffset;
+    };
+    // Floats read in place when packed (our writer's), else copied into Own
+    const auto Floats = [&](int AccessorIdx, int Components, size_t Want, std::vector<float>& Own) -> const float* {
+        int Stride = 0;
+        size_t Count = 0;
+        const uint8_t* Base = View(AccessorIdx, Stride, Count);
+        if (!Base || Gltf.accessors[(size_t)AccessorIdx].componentType != TINYGLTF_COMPONENT_TYPE_FLOAT || (Want && Count != Want)) return nullptr;
+        if (Stride == (int)sizeof(float) * Components) return reinterpret_cast<const float*>(Base);
+        Own.resize(Count * (size_t)Components);
+        for (size_t v = 0; v < Count; v++) std::memcpy(Own.data() + v * Components, Base + v * Stride, sizeof(float) * (size_t)Components);
+        return Own.data();
     };
 
     // A map's skybox mesh often spans the whole scene: even the outlier-robust framing does not escape
     // it once the camera ends up inside that dome, so anything sky-named is skipped.
     struct Prim
     {
-        std::vector<float> Pos, Nrm, UV;
-        std::vector<uint32_t> Idx;
+        const float *Pos = nullptr, *Nrm = nullptr, *UV = nullptr;   // in the .glb's buffer, or in the Own copies
+        const uint32_t* Idx = nullptr;   // whole triangles, every index within the vertices
+        size_t VtxCount = 0, IdxCount = 0;
+        std::vector<float> OwnPos, OwnNrm, OwnUV;
+        std::vector<uint32_t> OwnIdx;
         int32_t Mat = -1;
+        float Lo[3] = { 0, 0, 0 }, Hi[3] = { 0, 0, 0 };
     };
     std::map<int, std::vector<Prim>> Meshes;   // read once, placed by every node that uses it
     const auto MeshPrims = [&](int MeshIdx) -> const std::vector<Prim>& {
@@ -1647,19 +1689,73 @@ bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out)
             {
                 if (P.mode != TINYGLTF_MODE_TRIANGLES && P.mode != -1) continue;
                 const auto PosIt = P.attributes.find("POSITION");
-                Prim Pr;
-                if (PosIt == P.attributes.end() || !ReadFloats(PosIt->second, 3, Pr.Pos) || Pr.Pos.empty()) continue;
-                const size_t VtxCount = Pr.Pos.size() / 3;
-                const auto NrmIt = P.attributes.find("NORMAL");
-                if (NrmIt == P.attributes.end() || !ReadFloats(NrmIt->second, 3, Pr.Nrm) || Pr.Nrm.size() != Pr.Pos.size())
-                    Pr.Nrm.assign(VtxCount * 3, 0.0f);
-                const auto UvIt = P.attributes.find("TEXCOORD_0");
-                if (UvIt == P.attributes.end() || !ReadFloats(UvIt->second, 2, Pr.UV) || Pr.UV.size() != VtxCount * 2)
-                    Pr.UV.assign(VtxCount * 2, 0.0f);
-                Pr.Mat = (P.material >= 0 && P.material < (int)MatToImg.size()) ? MatToImg[P.material] : -1;
-                if (!(P.indices >= 0 && ReadIndices(P.indices, Pr.Idx)))
-                    for (uint32_t v = 0; v < (uint32_t)VtxCount; v++) Pr.Idx.push_back(v);   // unindexed triangle list
-                List.push_back(std::move(Pr));
+                if (PosIt == P.attributes.end()) continue;
+                List.emplace_back();
+                Prim& Pr = List.back();
+                Pr.Pos = Floats(PosIt->second, 3, 0, Pr.OwnPos);
+                Pr.VtxCount = Pr.Pos ? Gltf.accessors[(size_t)PosIt->second].count : 0;
+                if (!Pr.Pos || !Pr.VtxCount) { List.pop_back(); continue; }
+                if (const auto It = P.attributes.find("NORMAL"); It != P.attributes.end()) Pr.Nrm = Floats(It->second, 3, Pr.VtxCount, Pr.OwnNrm);
+                if (const auto It = P.attributes.find("TEXCOORD_0"); It != P.attributes.end()) Pr.UV = Floats(It->second, 2, Pr.VtxCount, Pr.OwnUV);
+                Pr.Mat = (P.material >= 0 && P.material < (int)MatSlot.size()) ? MatSlot[(size_t)P.material] : -1;
+
+                // indices: in place when 32-bit and every one is within the vertices
+                int Stride = 0;
+                size_t Count = 0;
+                const uint8_t* Base = P.indices >= 0 ? View(P.indices, Stride, Count) : nullptr;
+                const int Type = Base ? Gltf.accessors[(size_t)P.indices].componentType : 0;
+                const uint32_t Max = (uint32_t)Pr.VtxCount;
+                bool Valid = false;
+                if (Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT && Stride == 4)
+                {
+                    const uint32_t* I = reinterpret_cast<const uint32_t*>(Base);
+                    const uint32_t* const End = I + Count / 3 * 3;
+                    Valid = true;
+                    for (const uint32_t* At = I; At != End; ++At) if (*At >= Max) { Valid = false; break; }
+                    if (Valid) { Pr.Idx = I; Pr.IdxCount = Count / 3 * 3; }
+                }
+                if (!Valid)
+                {
+                    std::vector<uint32_t> All;
+                    if (Base && (Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT || Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT ||
+                                 Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE))
+                    {
+                        All.resize(Count);
+                        for (size_t i = 0; i < Count; i++)
+                        {
+                            const uint8_t* Src = Base + i * Stride;
+                            uint32_t V = 0;
+                            if (Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) V = Src[0];
+                            else if (Type == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) { uint16_t V16 = 0; std::memcpy(&V16, Src, 2); V = V16; }
+                            else std::memcpy(&V, Src, 4);
+                            All[i] = V;
+                        }
+                    }
+                    else if (!Base)
+                    {
+                        All.resize(Pr.VtxCount);   // unindexed triangle list
+                        for (uint32_t v = 0; v < Max; v++) All[v] = v;
+                    }
+                    Pr.OwnIdx.reserve(All.size());
+                    for (size_t t = 0; t + 2 < All.size(); t += 3)
+                        if (All[t] < Max && All[t + 1] < Max && All[t + 2] < Max)
+                            Pr.OwnIdx.insert(Pr.OwnIdx.end(), { All[t], All[t + 1], All[t + 2] });
+                    Pr.Idx = Pr.OwnIdx.data();
+                    Pr.IdxCount = Pr.OwnIdx.size();
+                }
+                if (!Pr.IdxCount) { List.pop_back(); continue; }
+
+                // its box: the accessor's (glTF asks for it), else read
+                const auto& PosAcc = Gltf.accessors[(size_t)PosIt->second];
+                if (PosAcc.minValues.size() == 3 && PosAcc.maxValues.size() == 3)
+                    for (int c = 0; c < 3; c++) { Pr.Lo[c] = (float)PosAcc.minValues[c]; Pr.Hi[c] = (float)PosAcc.maxValues[c]; }
+                else
+                {
+                    for (int c = 0; c < 3; c++) { Pr.Lo[c] = FLT_MAX; Pr.Hi[c] = -FLT_MAX; }
+                    const float* V = Pr.Pos;
+                    for (size_t v = 0; v < Pr.VtxCount; v++, V += 3)
+                        for (int c = 0; c < 3; c++) { if (V[c] < Pr.Lo[c]) Pr.Lo[c] = V[c]; if (V[c] > Pr.Hi[c]) Pr.Hi[c] = V[c]; }
+                }
             }
         return Meshes.emplace(MeshIdx, std::move(List)).first->second;
     };
@@ -1695,24 +1791,10 @@ bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out)
         }
         return Mul(T, Mul(Rm, S));
     };
-    const auto Place = [&](const Prim& Pr, const Mat4& M) {
-        const uint32_t VtxBase = (uint32_t)(Out.Pos.size() / 3);
-        const size_t VtxCount = Pr.Pos.size() / 3;
-        for (size_t v = 0; v < VtxCount; v++)
-        {
-            const double x = Pr.Pos[v * 3], y = Pr.Pos[v * 3 + 1], z = Pr.Pos[v * 3 + 2];
-            for (int r = 0; r < 3; r++) Out.Pos.push_back((float)(M[r] * x + M[4 + r] * y + M[8 + r] * z + M[12 + r]));
-            const double nx = Pr.Nrm[v * 3], ny = Pr.Nrm[v * 3 + 1], nz = Pr.Nrm[v * 3 + 2];
-            double n[3];
-            for (int r = 0; r < 3; r++) n[r] = M[r] * nx + M[4 + r] * ny + M[8 + r] * nz;
-            const double L = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-            for (int r = 0; r < 3; r++) Out.Nrm.push_back(L > 1e-12 ? (float)(n[r] / L) : 0.0f);
-        }
-        Out.UV.insert(Out.UV.end(), Pr.UV.begin(), Pr.UV.end());
-        Out.VtxMat.insert(Out.VtxMat.end(), VtxCount, Pr.Mat);
-        for (uint32_t Ix : Pr.Idx)
-            if (Ix < VtxCount) Out.Idx.push_back(VtxBase + Ix);
-    };
+
+    // Every placed piece, its size in the scene (the diagonal of its placed box)
+    struct Piece { const Prim* Pr; Mat4 World; double Size; size_t Vtx = 0, Idx = 0; };
+    std::vector<Piece> Pieces;
     std::vector<std::pair<int, Mat4>> Stack;
     const int SceneIdx = Gltf.defaultScene >= 0 ? Gltf.defaultScene : 0;
     if (SceneIdx < (int)Gltf.scenes.size())
@@ -1727,11 +1809,145 @@ bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out)
         const auto& N = Gltf.nodes[(size_t)NodeIdx];
         const Mat4 World = Mul(Parent, Local(N));
         if (N.mesh >= 0 && N.mesh < (int)Gltf.meshes.size())
-            for (const Prim& Pr : MeshPrims(N.mesh)) Place(Pr, World);
+            for (const Prim& Pr : MeshPrims(N.mesh))
+            {
+                double Lo[3] = { DBL_MAX, DBL_MAX, DBL_MAX }, Hi[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
+                for (int k = 0; k < 8; k++)
+                {
+                    const double P[3] = { (k & 1) ? Pr.Hi[0] : Pr.Lo[0], (k & 2) ? Pr.Hi[1] : Pr.Lo[1], (k & 4) ? Pr.Hi[2] : Pr.Lo[2] };
+                    for (int r = 0; r < 3; r++)
+                    {
+                        const double W = World[r] * P[0] + World[4 + r] * P[1] + World[8 + r] * P[2] + World[12 + r];
+                        Lo[r] = std::min(Lo[r], W); Hi[r] = std::max(Hi[r], W);
+                    }
+                }
+                const double D[3] = { Hi[0] - Lo[0], Hi[1] - Lo[1], Hi[2] - Lo[2] };
+                Pieces.push_back({ &Pr, World, std::sqrt(D[0] * D[0] + D[1] * D[1] + D[2] * D[2]) });
+            }
         for (int C : N.children) Stack.emplace_back(C, World);
+        if (Cancelled()) return false;
     }
+    St.Pieces = Pieces.size();
+    for (const Piece& P : Pieces) St.Triangles += P.Pr->IdxCount / 3;
 
-    Out.Materials = std::move(Textures);
+    // Over the budget, the pieces that cover the most for their triangles are kept (size squared
+    // over triangles): the ground, the walls and the vistas before the dense props, a tank's
+    // 30 000 triangles in a few metres
+    if (O.MaxTriangles > 0 && St.Triangles > O.MaxTriangles)
+    {
+        const auto Worth = [](const Piece& P) { return P.Size * P.Size / (double)std::max<size_t>(1, P.Pr->IdxCount / 3); };
+        std::stable_sort(Pieces.begin(), Pieces.end(), [&](const Piece& A, const Piece& B) { return Worth(A) > Worth(B); });
+        std::vector<Piece> Kept;
+        size_t Tris = 0;
+        for (Piece& P : Pieces)
+        {
+            const size_t T = P.Pr->IdxCount / 3;
+            if (Tris + T > O.MaxTriangles) continue;
+            Tris += T;
+            Kept.push_back(P);
+        }
+        Pieces = std::move(Kept);
+    }
+    St.PiecesKept = Pieces.size();
+
+    // ---- the textures of the pieces kept, on a few threads while the pieces are placed
+    std::vector<int> Wanted;
+    for (const Piece& P : Pieces)
+        if (P.Pr->Mat >= 0) Wanted.push_back(Slots[(size_t)P.Pr->Mat].Image);
+    std::sort(Wanted.begin(), Wanted.end());
+    Wanted.erase(std::unique(Wanted.begin(), Wanted.end()), Wanted.end());
+    std::vector<PreviewImage> Images(Gltf.images.size());
+    std::atomic<size_t> Read{ 0 }, Missing{ 0 };
+    double TexturesMs = 0;
+    std::thread Textures([&] {
+        const auto TT = Clock::now();
+        const size_t Threads = std::min<size_t>(16, std::max(2u, std::thread::hardware_concurrency() * 2 / 3));
+        ParallelFor(Wanted.size(), Threads, [&](size_t k) {
+            const HRESULT Com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);   // WIC decodes PNGs
+            const int i = Wanted[k];
+            const tinygltf::Image& Img = Gltf.images[(size_t)i];
+            if (!Img.image.empty() && Img.width > 0 && Img.height > 0)   // embedded, already decoded
+            {
+                const int Comp = std::max(1, Img.component);
+                std::vector<uint8_t> Rgba((size_t)Img.width * Img.height * 4, 255);
+                for (size_t p = 0; p < (size_t)Img.width * Img.height && (p * Comp + Comp) <= Img.image.size(); p++)
+                    for (int c = 0; c < std::min(4, Comp); c++) Rgba[p * 4 + c] = Img.image[p * Comp + c];
+                Images[(size_t)i] = PreviewImageFromRGBA(Img.width, Img.height, Rgba);
+            }
+            else if (const std::string File = Img.uri.empty() ? std::string() : GlbImageFile(Dir, Img.uri); File.empty())
+                Missing++;
+            else if (PreparePreviewImage(File, PreviewTexUse::Color, -1.0f, Images[(size_t)i], nullptr, O.MaxTexture))
+                Read++;
+            else
+                AppLog::Log().info("map preview: {} did not decode", File);
+            if (SUCCEEDED(Com)) CoUninitialize();
+        }, Cancelled);
+        TexturesMs = Since(TT);
+    });
+    struct JoinTextures { std::thread& T; ~JoinTextures() { if (T.joinable()) T.join(); } } Joiner{ Textures };
+
+    // Each piece written at its own place in the arrays, on a few threads
+    size_t Vtx = 0, Idx = 0;
+    for (Piece& P : Pieces) { P.Vtx = Vtx; P.Idx = Idx; Vtx += P.Pr->VtxCount; Idx += P.Pr->IdxCount; }
+    St.TrianglesKept = Idx / 3;
+    Out.Pos.resize(Vtx * 3); Out.Nrm.resize(Vtx * 3); Out.UV.resize(Vtx * 2); Out.VtxMat.resize(Vtx); Out.Idx.resize(Idx);
+    float* const OutPos = Out.Pos.data();
+    float* const OutNrm = Out.Nrm.data();
+    float* const OutUV = Out.UV.data();
+    int32_t* const OutMat = Out.VtxMat.data();
+    uint32_t* const OutIdx = Out.Idx.data();
+    ParallelFor(Pieces.size(), std::max(2u, std::thread::hardware_concurrency()), [&](size_t k) {
+        const Piece& P = Pieces[k];
+        const Prim& Pr = *P.Pr;
+        double M[16];
+        std::memcpy(M, P.World.data(), sizeof(M));
+        const size_t N = Pr.VtxCount;
+        float* Pos = OutPos + P.Vtx * 3;
+        const float* In = Pr.Pos;
+        for (size_t v = 0; v < N; v++, In += 3, Pos += 3)
+        {
+            const double x = In[0], y = In[1], z = In[2];
+            Pos[0] = (float)(M[0] * x + M[4] * y + M[8] * z + M[12]);
+            Pos[1] = (float)(M[1] * x + M[5] * y + M[9] * z + M[13]);
+            Pos[2] = (float)(M[2] * x + M[6] * y + M[10] * z + M[14]);
+        }
+        if (Pr.Nrm)
+        {
+            float* Nrm = OutNrm + P.Vtx * 3;
+            const float* Nin = Pr.Nrm;
+            for (size_t v = 0; v < N; v++, Nin += 3, Nrm += 3)
+            {
+                const double nx = Nin[0], ny = Nin[1], nz = Nin[2];
+                const double a = M[0] * nx + M[4] * ny + M[8] * nz, b = M[1] * nx + M[5] * ny + M[9] * nz, c = M[2] * nx + M[6] * ny + M[10] * nz;
+                const double L = std::sqrt(a * a + b * b + c * c);
+                const double K = L > 1e-12 ? 1.0 / L : 0.0;
+                Nrm[0] = (float)(a * K); Nrm[1] = (float)(b * K); Nrm[2] = (float)(c * K);
+            }
+        }
+        if (Pr.UV) std::memcpy(OutUV + P.Vtx * 2, Pr.UV, N * 2 * sizeof(float));
+        int32_t* Mat = OutMat + P.Vtx;
+        for (size_t v = 0; v < N; v++) Mat[v] = Pr.Mat;
+        uint32_t* I = OutIdx + P.Idx;
+        const uint32_t Base = (uint32_t)P.Vtx;
+        for (size_t i = 0; i < Pr.IdxCount; i++) I[i] = Base + Pr.Idx[i];
+    }, Cancelled);
+    St.GeometryMs = Since(T0);
+
+    Textures.join();
+    St.TexturesMs = TexturesMs;
+    St.Images = Wanted.size(); St.ImagesRead = Read; St.ImagesMissing = Missing;
+    if (Cancelled()) return false;
+
+    // the materials, parallel to the slots (Materials only sizes them: their maps are the textures)
+    Out.Materials.assign(Slots.size(), PreviewTexture{});
+    Out.MaterialMaps.resize(Slots.size());
+    for (size_t s = 0; s < Slots.size(); s++)
+    {
+        PreviewMaterial& M = Out.MaterialMaps[s];
+        M.Albedo = Images[(size_t)Slots[s].Image];
+        M.Alpha = M.Desc.Alpha = Slots[s].Alpha;
+        M.Desc.AlphaCutoff = Slots[s].Cutoff;
+    }
     return !Out.Idx.empty();
 }
 
@@ -1765,6 +1981,8 @@ bool RenderGlbToPNG(const std::string& GlbPath, const std::string& OutPngPath, i
     {
         Textures[i].W = P.Materials[i].Width; Textures[i].H = P.Materials[i].Height;
         Textures[i].Rgba = P.Materials[i].Rgba;
+        if (Textures[i].Rgba.empty() && i < P.MaterialMaps.size())
+            PreviewImageToRGBA8(P.MaterialMaps[i].Albedo, Textures[i].W, Textures[i].H, Textures[i].Rgba);
     }
 
     if (!RasterizeAndSave(G, Textures, OutPngPath, Size)) return false;

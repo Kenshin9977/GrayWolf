@@ -4,10 +4,14 @@
 
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Games/Common/StringCipher.h"
 #include "OatBridge.h"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <sstream>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
@@ -42,6 +46,52 @@ namespace
     {
         const std::string Ext = ExportNaming::Lower(fs::path(Name).extension().string());
         return Ext == ".gsc" || Ext == ".csc" ? Name.substr(0, Name.size() - 4) : Name;
+    }
+
+    // gsc-tool writes a string literal the game encrypts as _encstr_<its bytes in hex> (IW titles:
+    // Modern Warfare 2019 and later). Each one the string cipher of the zonekit profile named as
+    // gsc-tool's game (strings.cipher.txt, Games/Common/StringCipher.h) decrypts to printable text
+    // is replaced by it, escaped for a string literal; the others are left. Counts both.
+    void DecryptLiterals(const char* Game, std::vector<uint8_t>& Source, size_t& Decrypted, size_t& Left)
+    {
+        static constexpr std::string_view Marker = "_encstr_";
+        std::string Text(Source.begin(), Source.end());
+        if (Text.find(Marker) == std::string::npos) return;
+        std::string Error;
+        const auto* Profile = ExportWriters::ZoneProfile(Game, Error);
+        const auto* Cipher = Profile != nullptr ? StringCipher::Load(Profile->Profile.Dir, Error) : nullptr;
+        if (Cipher == nullptr) return;
+        const auto Hex = [](char Ch) { return std::isxdigit((unsigned char)Ch) != 0; };
+        std::string Out;
+        size_t At = 0;
+        for (size_t Found; (Found = Text.find(Marker, At)) != std::string::npos;)
+        {
+            size_t End = Found + Marker.size();
+            while (End < Text.size() && Hex(Text[End])) End++;
+            Out.append(Text, At, End - At);
+            At = End;
+            const size_t Digits = End - Found - Marker.size();
+            if (Digits < 6 || Digits % 2) continue;
+            std::string Raw, Plain;
+            for (size_t K = Found + Marker.size(); K < End; K += 2) Raw.push_back((char)std::stoi(Text.substr(K, 2), nullptr, 16));
+            if (!StringCipher::Decrypt(Cipher, Raw, Plain) || Plain == Raw ||
+                !std::all_of(Plain.begin(), Plain.end(), [](char Ch) { return Ch >= 0x20 && Ch < 0x7f; }))
+            {
+                Left++;
+                continue;
+            }
+            std::string Escaped;
+            for (const char Ch : Plain)
+            {
+                if (Ch == '"' || Ch == '\\') Escaped += '\\';
+                Escaped += Ch;
+            }
+            Out.resize(Out.size() - (End - Found));
+            Out += Escaped;
+            Decrypted++;
+        }
+        Out.append(Text, At, std::string::npos);
+        Source.assign(Out.begin(), Out.end());
     }
 }
 
@@ -219,6 +269,13 @@ void Sink::Decompile()
             T.Counters["scripts_decompile_failed"]++;
             WriteBytecode(P.Name, P.Bytes);
             continue;
+        }
+        if (V.Decompiler == Tool::GscTool)
+        {
+            size_t Decrypted = 0, Left = 0;
+            DecryptLiterals(V.Game, Source, Decrypted, Left);
+            if (Decrypted) T.Counters["scripts_literals_decrypted"] += Decrypted;
+            if (Left) T.Counters["scripts_literals_encrypted"] += Left;
         }
         const std::string File = Stem(P.Name) + ScriptExtension(P.Name);
         if (ExportWriters::WriteBytes(fs::path(Dir) / fs::path(File).make_preferred(), Source.data(), Source.size()))

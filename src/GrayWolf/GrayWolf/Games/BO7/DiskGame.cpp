@@ -21,6 +21,7 @@
 #include "Games/Common/MeshDecode.h"
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
+#include "Games/IW/IwctxAnimOwners.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwLanguageNames.h"
 #include "Games/IW/IwTerrain.h"
@@ -47,6 +48,22 @@ namespace
     // xmodelsurfs at 0, the surfaces the game copies from it at 8); XModelSurfs keeps them at 8
     constexpr int64_t ModelName = 8, ModelLodCount = 0x12, ModelLods = 0x90, LodSize = 0x48, LodSurfs = 8, ModelSurfsSurfs = 8;
 
+    // Anim owners (Games/IW/IwctxAnimOwners.h): xanimset (its states and aliases name the xanims);
+    // character (0xe8) {body script string 0x68, head 0x70, archetype 0x88} (their hashes' low u32)
+    const IwctxAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwctxAnimOwners::Layout L = [] {
+            IwctxAnimOwners::Layout L;
+            L.Sets = { "xanimset" };
+            L.Nodes = { "xanimsetstate", "xanimsetalias" };
+            L.CharBody = 0x68, L.CharHead = 0x70, L.CharArchetype = 0x88;
+            L.AnimName = [](uint64_t H) { return GameBlackOps7::HashName("xanim", H); };
+            L.AssetName = [](const char* T, uint64_t H) { return GameBlackOps7::HashName(T, H); };
+            return L;
+        }();
+        return L;
+    }
+
     class BO7Zone final : public IWZone
     {
     public:
@@ -71,10 +88,12 @@ namespace
             // count 0x34}, an entry 0x30 with its sndasset at 0x20
             ExportsSoundLinks({ 0x20, 0x34, 0x48, 0x18, 0x10, 0x34, 0x30, 0x20 });
             ExportsTechsets(BO7::TechsetFormat());
-            // a model's materials another zone defines (a weapon part's base materials): their images
-            // as the zones the install index names have them
+            // a model's LODs another zone holds (the hands' base) loaded beside first; its materials
+            // another zone defines (a weapon part's base materials): their images as the zones the
+            // install index names have them
             if (const auto* Models = ExporterOf(Kind::Model))
                 Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    LoadMeshesBeside(C);
                     BookMaterialsElsewhere();
                     GameBlackOps7::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
                         return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return GameBlackOps7::HashName("ximage", H); });
@@ -231,6 +250,15 @@ namespace
         // map_ents keeps as records (spawn points, scriptable instances)
         void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
         void MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const;
+
+        // its string tables, and the anim owners' facts of the zone and of the zones served beside
+        // it (a level's global zones: "beside" then set), its scene bundles, AI types and entities
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            Out.emplace_back(IwctxAnimOwners::DocumentName, AnimOwnerFacts());
+        }
+        std::string AnimOwnerFacts() const;
 
         // ---- the weapon fields named in the weapons kind's dumps. Each is proven by the game's code
         // (the GSC builtin reading it, from its table at 0xcbf78a0 of the decrypted exe, names by their
@@ -710,7 +738,43 @@ namespace
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+parts1"; }
 
     private:
-        bool BooksTried = false;
+        bool BooksTried = false, MeshesTried = false;
+
+        // The LODs of the models the run wants whose xmodelsurfs no zone loaded holds, outside a map
+        // (whose global and transient zones LoadBeside loads): global_stream_mp's viewhands_base_iw8
+        // names its surfaces by hash, global holds them. The zones the install index's parts say
+        // hold them are loaded beside (LoadIndexed, the zone giving the most first), every reference
+        // linked across them, and the LODs linked again. Once per zone, before the models are read.
+        void LoadMeshesBeside(const DiskGame::Context& C)
+        {
+            if (MeshesTried || Indexing || Options.ZoneAlone || Root("gfx_map") >= 0) return;
+            MeshesTried = true;
+            std::set<std::pair<std::string, uint64_t>> Wanted;
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "xmodel") || !C.Wants(DiskGame::Kind::Model, AssetName(DiskGame::Kind::Model, I.Pos))) continue;
+                const uint64_t Model = Live().Addr((uint64_t)I.Pos), Lods = Get<uint64_t>(Model + ModelLods);
+                if (Locate(Lods, LodSize) == nullptr) continue;
+                const int64_t N = Get<uint8_t>(Model + ModelLodCount);
+                for (int64_t L = 0; L < N; L++)
+                    if (const uint64_t Surfs = Get<uint64_t>(Lods + (uint64_t)(L * LodSize)); Surfs != 0 && Locate(Surfs, 0x48) == nullptr)
+                        Wanted.emplace("xmodelsurfs", Surfs & Rules().AssetHashMask);
+            }
+            Counter("model_meshes_elsewhere") += Wanted.size();
+            if (Wanted.empty()) return;
+            std::string Error;
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), Error);
+            if (Loaded == nullptr) return;
+            std::map<std::string, size_t> Counts;
+            LoadIndexed(Wanted, *Loaded, Live().Origin() + Image().size(), Counts);
+            if (!Beside.Empty())
+            {
+                Beside.Link(Walk(), Live().Origin(), Zone(), Rules(), [this](uint64_t Field, uint64_t Value) { Put(Field, Value); }, Counts);
+                Served(true);
+                Counts["model_lods_unlinked_beside"] += LinkLods();
+            }
+            for (const auto& [K, N] : Counts) Counter(K) += N;
+        }
 
         // The materials this zone's models name by hash and no zone loaded holds (a transient zone
         // alone: a weapon part's base materials): the zones the install index's parts say hold them,
@@ -718,7 +782,7 @@ namespace
         void BookMaterialsElsewhere()
         {
             // (a map's zones beside resolve its references already)
-            if (BooksTried || Indexing || !Beside.Empty()) return;
+            if (BooksTried || Indexing || (Root("gfx_map") >= 0 && !Beside.Empty())) return;
             BooksTried = true;
             std::set<uint64_t> Wanted;
             const auto& R = Walk();
@@ -1395,6 +1459,37 @@ namespace
         }
     }
 
+    std::string BO7Zone::AnimOwnerFacts() const
+    {
+        using IwctxAnimOwners::Json;
+        std::vector<IwctxAnimOwners::Served> All{ { Name(), &Image(), Live().Origin(), &Walk() } };
+        // the zones served beside, their script strings registered (a character's names)
+        std::string Error;
+        const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
+        for (const auto& S : Beside.All())
+        {
+            All.push_back({ S->Name, &S->Bytes, S->Base, &S->R });
+            if (Tables != nullptr) IwctxReaders::RegisterScriptStrings(IwctxReaders::ZoneStrings(S->Bytes, Tables->Profile.Dir));
+        }
+        const IwctxAnimOwners::Zones Zones(std::move(All), AnimOwnerLayout());
+        Json F = Zones.Facts();
+        F["reader_key"] = IndexKey();   // (the shared zones' facts kept on disk under it)
+        F["beside"] = std::any_of(Beside.All().begin(), Beside.All().end(), [](const auto& S) { return S->Before; });
+        std::vector<std::pair<std::string, Json>> Read;
+        if (const auto* E = ExporterOf(DiskGame::Kind::ScriptBundles); E != nullptr && !IwctxAnimOwners::ReadingShared())
+            IwctxAnimOwners::ReadExported(*E, DiskGame::Kind::ScriptBundles, Read);
+        for (const auto& [Stem, B] : Read)
+            IwctxAnimOwners::AddScenes(F, B, B.value("name", std::string()).empty() ? Stem : B.value("name", std::string()),
+                                       [&Zones](const std::string& N) { return Zones.CompositeModels(N); });
+        Read.clear();
+        if (const auto* E = ExporterOf(DiskGame::Kind::AiTypes)) IwctxAnimOwners::ReadExported(*E, DiskGame::Kind::AiTypes, Read);
+        for (const auto& [Stem, A] : Read) IwctxAnimOwners::AddCharacterNames(F, A);
+        std::vector<IwctxReaders::MapEntity> Ents;
+        EntityStrings(Ents);
+        MapEntities(Ents);
+        IwctxAnimOwners::AddMapEntities(F, Ents);
+        return F.dump();
+    }
 
     class BlackOps7Game final : public DiskGame::IDiskGame
     {
@@ -1426,6 +1521,18 @@ namespace
             Zone->Indexing = Options.Indexing;
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the anims' sets, characters, scenes and entities (Games/IW/IwctxAnimOwners.h): a zone's own
+        // facts, then those of the mode's shared zones when it did not serve them beside itself (a
+        // level serves its global zones)
+        std::vector<std::string> AnimOwnerDocuments() const override { return { IwctxAnimOwners::DocumentName }; }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwctxAnimOwners::Fill(*this, Options, Zones, Out, [&Options](const std::string& Zone, const IwctxAnimOwners::Json& Facts) {
+                return Facts.value("beside", false) ? std::vector<std::string>() : IwctxAnimOwners::SharedZones(Zone, Options.Install, "cod25", { "global_shared_mp", "ingame_shared_mp", "ingame_zm" },
+                                                                                  { "global_shared_mp", "ingame_shared_mp", "ingame_mp" });
+            });
         }
     };
 

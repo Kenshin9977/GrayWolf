@@ -52,16 +52,31 @@ namespace IWMaterialBooks
                 if (I.Owner >= R.OwnerNames.size() || R.OwnerNames[I.Owner] != "material") continue;
                 if (L.Hashed)
                 {
-                    const int64_t Slots = Ptr(I.Pos + L.Slots), Table = Ptr(I.Pos + L.Images);
-                    const uint8_t Count = ExportNaming::At<uint8_t>(Z, I.Pos + L.ImageCount), Pointers = ExportNaming::At<uint8_t>(Z, I.Pos + L.TableCount);
+                    const bool Indexed = L.Slots >= 0;   // else records {u32 semantic, image* SlotImage} at Images
+                    const int64_t Slots = Indexed ? Ptr(I.Pos + L.Slots) : -1, Table = Ptr(I.Pos + L.Images);
+                    const uint8_t Count = ExportNaming::At<uint8_t>(Z, I.Pos + L.ImageCount);
+                    const uint8_t Pointers = Indexed ? ExportNaming::At<uint8_t>(Z, I.Pos + L.TableCount) : 0;
                     std::string Name = Hex(I.Pos);
-                    if (Count == 0 || Slots < 0 || Table < 0 || Out.count(Name)) continue;
+                    if (Count == 0 || (Indexed && Slots < 0) || Table < 0 || Out.count(Name)) continue;
                     ImageList Images;
-                    for (int64_t K = 0; K < Count && Slots + K * 2 + 2 <= (int64_t)Z.size(); K++)
+                    for (int64_t K = 0; K < Count; K++)
                     {
-                        const uint8_t Semantic = Z[(size_t)(Slots + K * 2)], Index = Z[(size_t)(Slots + K * 2 + 1)];
-                        const int64_t Field = Table + Index * 8;
-                        if (Index >= Pointers || Field + 8 > (int64_t)Z.size()) continue;
+                        uint32_t Semantic = 0;
+                        int64_t Field = -1;
+                        if (Indexed)
+                        {
+                            if (Slots + K * 2 + 2 > (int64_t)Z.size()) break;
+                            const uint8_t Index = Z[(size_t)(Slots + K * 2 + 1)];
+                            if (Index >= Pointers) continue;
+                            Semantic = Z[(size_t)(Slots + K * 2)], Field = Table + Index * 8;
+                        }
+                        else
+                        {
+                            const int64_t Slot = Table + K * L.SlotSize;
+                            if (Slot + L.SlotSize > (int64_t)Z.size()) break;
+                            Semantic = ExportNaming::At<uint32_t>(Z, Slot), Field = Slot + L.SlotImage;
+                        }
+                        if (Field + 8 > (int64_t)Z.size()) continue;
                         // the image's hash (a pointer the zone leaves unresolved: the value), all ones for none
                         const int64_t Img = Ptr(Field);
                         const uint64_t V = ExportNaming::At<uint64_t>(Z, Img >= 0 ? Img : Field);

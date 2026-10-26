@@ -27,6 +27,8 @@ struct AudioPlayer::Impl
     ma_uint64          Frames = 0; // frames per channel
 };
 
+static std::atomic<unsigned> OfflineRate{ 0 };   // UseOfflineClock: 0 plays on the device
+
 AudioPlayer::AudioPlayer() : m_impl(new Impl()) {}
 
 AudioPlayer::~AudioPlayer()
@@ -183,7 +185,14 @@ bool AudioPlayer::Load(const std::string& path, const std::string& formatHint)
     }
     m_impl->BufferInit = true;
 
-    if (ma_engine_init(nullptr, &m_impl->Engine) != MA_SUCCESS)
+    ma_engine_config ecfg = ma_engine_config_init();
+    if (const unsigned Offline = OfflineRate.load())
+    {
+        ecfg.noDevice = MA_TRUE;
+        ecfg.channels = 2;
+        ecfg.sampleRate = Offline;
+    }
+    if (ma_engine_init(&ecfg, &m_impl->Engine) != MA_SUCCESS)
     {
         ma_audio_buffer_uninit(&m_impl->Buffer); m_impl->BufferInit = false;
         m_impl->Pcm.clear();
@@ -252,6 +261,19 @@ void AudioPlayer::TogglePlay()
 {
     if (IsPlaying()) Pause();
     else             Play();
+}
+
+void AudioPlayer::UseOfflineClock(unsigned rate)
+{
+    OfflineRate = rate;
+}
+
+void AudioPlayer::ReadOffline(float* out, unsigned long long frames)
+{
+    ma_uint64 Read = 0;
+    if (m_loaded && m_impl->EngineInit && OfflineRate.load())
+        ma_engine_read_pcm_frames(&m_impl->Engine, out, frames, &Read);
+    std::fill(out + Read * 2, out + frames * 2, 0.0f);
 }
 
 void AudioPlayer::Seek(double seconds)

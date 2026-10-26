@@ -6,6 +6,7 @@
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/IW/IWSoundAliases.h"
+#include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "IWDCache.h"
 #include <miniz/miniz.h>
@@ -534,10 +535,24 @@ namespace Iw64
         ZonekitZone::Documents(Out);
         for (const auto& I : Walk().Instances)
         {
-            if (I.Parent >= 0 || !OwnerIs(I, "rawfile")) continue;
-            const std::string Nm = StringAt(At<uint64_t>(Image(), I.Pos));
+            if (I.Parent >= 0) continue;
+            const bool Script = OwnerIs(I, "scriptfile");
+            if (!Script && !OwnerIs(I, "rawfile")) continue;
+            const std::string Nm = StringAt(At<uint64_t>(Image(), I.Pos)), L = ExportNaming::Lower(Nm);
             std::vector<uint8_t> Bytes;
-            if (Nm.size() > 6 && ExportNaming::Lower(Nm).compare(Nm.size() - 6, 6, ".arena") == 0 && RawfileBytes(I.Pos, Bytes))
+            if (Script)
+            {
+                // MW3's compiled script: its strings (the buffer the rawfile kind writes as <name>.gscsource)
+                const uint32_t Packed = At<uint32_t>(Image(), I.Pos + 8), Len = At<uint32_t>(Image(), I.Pos + 0xc);
+                if (Packed != 0 && !IsReference(DiskGame::Kind::Rawfile, Nm, I.Pos) &&
+                    Payload(At<uint64_t>(Image(), I.Pos + 0x18), Packed, true, Len, Bytes))
+                    Out.emplace_back(Nm + ".gscsource", std::string(Bytes.begin(), Bytes.end()));
+                continue;
+            }
+            // the map list (.arena), the GSC source and animtrees the anim owners are read from
+            // (Games/IwClassic/IwClassicAnimOwners.h)
+            const bool Wanted = L.ends_with(".arena") || L.ends_with(".gsc") || L.ends_with(".csc") || L.ends_with(".atr");
+            if (Wanted && !IsReference(DiskGame::Kind::Rawfile, Nm, I.Pos) && RawfileBytes(I.Pos, Bytes))
                 Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
         }
     }
@@ -643,5 +658,15 @@ namespace Iw64
         Zone->SetInstall(this, Options, !Options.Install.empty() ? Options.Install : InstallOfZone(Path));
         if (!Zone->Open(Error)) return nullptr;
         return Zone;
+    }
+
+    std::vector<std::string> IwDiskGame::AnimOwnerDocuments() const
+    {
+        return IwClassicAnimOwners::Documents();
+    }
+
+    void IwDiskGame::AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const
+    {
+        IwClassicAnimOwners::Fill(*this, Options, Zones, Out);
     }
 }

@@ -17,6 +17,7 @@
 #include <wrl/client.h>
 
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -389,11 +390,13 @@ std::vector<float> InterleavePreviewVertices(const std::vector<float>& Pos, cons
 {
     const size_t VertexCount = Pos.size() / 3;
     std::vector<float> Vtx(VertexCount * 8);
-    for (size_t i = 0; i < VertexCount; i++)
+    float* To = Vtx.data();
+    const float *P = Pos.data(), *N = Nrm.data(), *T = UV.data();
+    for (size_t i = 0; i < VertexCount; i++, To += 8, P += 3, N += 3, T += 2)
     {
-        Vtx[i * 8 + 0] = Pos[i * 3 + 0]; Vtx[i * 8 + 1] = Pos[i * 3 + 1]; Vtx[i * 8 + 2] = Pos[i * 3 + 2];
-        Vtx[i * 8 + 3] = Nrm[i * 3 + 0]; Vtx[i * 8 + 4] = Nrm[i * 3 + 1]; Vtx[i * 8 + 5] = Nrm[i * 3 + 2];
-        Vtx[i * 8 + 6] = UV[i * 2 + 0];  Vtx[i * 8 + 7] = UV[i * 2 + 1];
+        To[0] = P[0]; To[1] = P[1]; To[2] = P[2];
+        To[3] = N[0]; To[4] = N[1]; To[5] = N[2];
+        To[6] = T[0]; To[7] = T[1];
     }
     return Vtx;
 }
@@ -497,6 +500,61 @@ namespace
     }
 }
 
+// Each triangle's layer: 0, or one more than the highest layer an earlier material has on its plane
+// (same facing, within Radius * 1e-4), up to MaxLayer. A decal or a blend layer lies on the surface it
+// covers (BO4's xmodel_f8983b06e342392: a rust blend surface on the painted hull, a drip decal on the
+// rust, triangle for triangle): drawn at one depth they z-fight. ByMat: the triangles of each material,
+// untextured first, in draw order.
+static std::vector<uint8_t> OverlayLayers(const PreviewGeometry& Geo, const std::vector<std::vector<uint32_t>>& ByMat, float Radius)
+{
+    const size_t TriCount = Geo.Idx.size() / 3;
+    std::vector<uint8_t> Layers(TriCount, 0);
+    size_t Used = 0;
+    for (const auto& Tris : ByMat) Used += !Tris.empty();
+    if (Used < 2) return Layers;
+
+    const size_t VertexCount = Geo.Pos.size() / 3;
+    const double Step = std::max(1e-6, (double)Radius * 1e-4);
+    // the plane's key: its normal (11 bits a component) and its distance (31 bits) quantised
+    const auto PlaneOf = [&](uint32_t t, int64_t& Nx, int64_t& Ny, int64_t& Nz, int64_t& D) {
+        uint32_t V[3];
+        for (int k = 0; k < 3; k++) { V[k] = Geo.Idx[t * 3 + k]; if (V[k] >= VertexCount) return false; }
+        const float* A = &Geo.Pos[V[0] * 3]; const float* B = &Geo.Pos[V[1] * 3]; const float* C = &Geo.Pos[V[2] * 3];
+        const double U[3] = { (double)B[0] - A[0], (double)B[1] - A[1], (double)B[2] - A[2] };
+        const double W[3] = { (double)C[0] - A[0], (double)C[1] - A[1], (double)C[2] - A[2] };
+        double N[3] = { U[1] * W[2] - U[2] * W[1], U[2] * W[0] - U[0] * W[2], U[0] * W[1] - U[1] * W[0] };
+        const double L = std::sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
+        if (L < 1e-12) return false;
+        for (double& c : N) c /= L;
+        Nx = std::llround(N[0] * 512.0); Ny = std::llround(N[1] * 512.0); Nz = std::llround(N[2] * 512.0);
+        D = std::llround((N[0] * A[0] + N[1] * A[1] + N[2] * A[2]) / Step);
+        return true;
+    };
+    const auto Key = [](int64_t Nx, int64_t Ny, int64_t Nz, int64_t D) {
+        return ((uint64_t)(Nx & 0x7FF) << 53) | ((uint64_t)(Ny & 0x7FF) << 42) | ((uint64_t)(Nz & 0x7FF) << 31) | ((uint64_t)D & 0x7FFFFFFFull);
+    };
+    std::unordered_map<uint64_t, uint8_t> Planes;   // a plane's highest layer so far
+    std::vector<uint64_t> Mine;
+    for (const auto& Tris : ByMat)
+    {
+        Mine.clear();
+        for (const uint32_t t : Tris)
+        {
+            int64_t Nx, Ny, Nz, D;
+            if (!PlaneOf(t, Nx, Ny, Nz, D)) { Mine.push_back(~0ull); continue; }
+            int Top = -1;
+            for (int64_t Dd = -1; Dd <= 1 && !Planes.empty(); Dd++)
+                if (const auto It = Planes.find(Key(Nx, Ny, Nz, D + Dd)); It != Planes.end()) Top = std::max(Top, (int)It->second);
+            Layers[t] = (uint8_t)std::min(Top + 1, PreviewGpuMesh::MaxLayer);
+            Mine.push_back(Key(Nx, Ny, Nz, D));
+        }
+        // the material's planes join after it is done: its own triangles side by side are no overlay
+        for (size_t i = 0; i < Tris.size(); i++)
+            if (Mine[i] != ~0ull) { uint8_t& L = Planes[Mine[i]]; L = std::max(L, Layers[Tris[i]]); }
+    }
+    return Layers;
+}
+
 PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, int MaxTextureSize)
 {
     PreviewGpuMesh M;
@@ -509,23 +567,44 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, 
     const std::vector<float> Vtx = InterleavePreviewVertices(Geo.Pos, Geo.Nrm, Geo.UV);
     M.VB = MakeBuffer(Vtx.data(), (UINT)(Vtx.size() * sizeof(float)), D3D11_BIND_VERTEX_BUFFER);
 
-    // Triangles grouped by material, so each draw binds one material
+    PreviewBoundingSphere(Geo, M.Center, M.Radius);
+
+    // Triangles grouped by material, so each draw binds one material, and within one by layer
+    // (OverlayLayers): counted per (material, layer), then placed (one pass each, a map has a
+    // thousand materials and millions of triangles)
     const int MatCount = (int)Geo.Materials.size();
-    std::vector<uint32_t> SortedIdx;
-    SortedIdx.reserve(Geo.Idx.size());
-    const size_t TriCount = Geo.Idx.size() / 3;
-    for (int m = -1; m < MatCount; m++)
+    const size_t TriCount = Geo.Idx.size() / 3, VtxMats = Geo.VtxMat.size();
+    const uint32_t* const Idx = Geo.Idx.data();
+    const int32_t* const VtxMat = Geo.VtxMat.data();
+    std::vector<std::vector<uint32_t>> ByMat(MatCount + 1);   // 0: no material, m + 1: material m
+    for (size_t t = 0; t < TriCount; t++)
     {
-        const UINT Start = (UINT)SortedIdx.size();
-        for (size_t t = 0; t < TriCount; t++)
-        {
-            const uint32_t a = Geo.Idx[t * 3];
-            const int TriMat = a < Geo.VtxMat.size() ? Geo.VtxMat[a] : -1;
-            if (TriMat == m) { SortedIdx.push_back(Geo.Idx[t * 3]); SortedIdx.push_back(Geo.Idx[t * 3 + 1]); SortedIdx.push_back(Geo.Idx[t * 3 + 2]); }
-        }
-        const UINT Count = (UINT)SortedIdx.size() - Start;
-        if (Count) M.Ranges.push_back({ m, Start, Count });
+        const uint32_t a = Idx[t * 3];
+        const int TriMat = a < VtxMats ? VtxMat[a] : -1;
+        ByMat[TriMat >= 0 && TriMat < MatCount ? TriMat + 1 : 0].push_back((uint32_t)t);
     }
+    const std::vector<uint8_t> Layers = OverlayLayers(Geo, ByMat, M.Radius);
+    constexpr int LayerCount = PreviewGpuMesh::MaxLayer + 1;
+    std::vector<size_t> Bucket((size_t)(MatCount + 1) * LayerCount + 1, 0);   // (m + 1) * LayerCount + layer
+    for (int b = 0; b <= MatCount; b++)
+        for (const uint32_t t : ByMat[b]) Bucket[(size_t)b * LayerCount + Layers[t] + 1] += 3;
+    for (size_t b = 1; b < Bucket.size(); b++) Bucket[b] += Bucket[b - 1];
+    for (int m = -1; m < MatCount; m++)
+        for (int Layer = 0; Layer < LayerCount; Layer++)
+        {
+            const size_t B = (size_t)(m + 1) * LayerCount + Layer;
+            if (const size_t Count = Bucket[B + 1] - Bucket[B])
+                M.Ranges.push_back({ m, (UINT)Bucket[B], (UINT)Count, Layer });
+        }
+    std::vector<uint32_t> SortedIdx(TriCount * 3);
+    uint32_t* const Sorted = SortedIdx.data();
+    for (int b = 0; b <= MatCount; b++)
+        for (const uint32_t t : ByMat[b])
+        {
+            size_t& To = Bucket[(size_t)b * LayerCount + Layers[t]];
+            Sorted[To] = Idx[t * 3]; Sorted[To + 1] = Idx[t * 3 + 1]; Sorted[To + 2] = Idx[t * 3 + 2];
+            To += 3;
+        }
     M.IB = MakeBuffer(SortedIdx.data(), (UINT)(SortedIdx.size() * sizeof(uint32_t)), D3D11_BIND_INDEX_BUFFER);
 
     M.Mats.resize(MatCount);
@@ -543,7 +622,6 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, 
         if (M.Mats[m].Albedo) M.TexCount++;
     }
 
-    PreviewBoundingSphere(Geo, M.Center, M.Radius);
     M.FrameDist = (M.Radius / std::tan(XMConvertToRadians(35.0f) * 0.5f)) * 1.15f;
     M.VertexCount = (UINT)(Geo.Pos.size() / 3);
     M.TriCount = (UINT)(Geo.Idx.size() / 3);
@@ -554,19 +632,86 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, 
 void PreviewBoundingSphere(const PreviewGeometry& Geo, XMVECTOR& Center, float& Radius)
 {
     const size_t VertexCount = Geo.Pos.size() / 3;
-    XMVECTOR Mn = XMVectorSet(Geo.Pos[0], Geo.Pos[1], Geo.Pos[2], 0), Mx = Mn;
-    for (size_t i = 0; i < VertexCount; i++)
+    const float* P = Geo.Pos.data();
+    float Mn[3] = { P[0], P[1], P[2] }, Mx[3] = { P[0], P[1], P[2] };
+    for (size_t i = 0; i < VertexCount; i++, P += 3)
+        for (int c = 0; c < 3; c++) { if (P[c] < Mn[c]) Mn[c] = P[c]; if (P[c] > Mx[c]) Mx[c] = P[c]; }
+    const float C[3] = { (Mn[0] + Mx[0]) * 0.5f, (Mn[1] + Mx[1]) * 0.5f, (Mn[2] + Mx[2]) * 0.5f };
+    Center = XMVectorSet(C[0], C[1], C[2], 0);
+    float R2 = 1e-8f;
+    P = Geo.Pos.data();
+    for (size_t i = 0; i < VertexCount; i++, P += 3)
     {
-        XMVECTOR P = XMVectorSet(Geo.Pos[i * 3], Geo.Pos[i * 3 + 1], Geo.Pos[i * 3 + 2], 0);
-        Mn = XMVectorMin(Mn, P); Mx = XMVectorMax(Mx, P);
+        const float dx = P[0] - C[0], dy = P[1] - C[1], dz = P[2] - C[2];
+        const float D2 = dx * dx + dy * dy + dz * dz;
+        if (D2 > R2) R2 = D2;
     }
-    Center = XMVectorScale(XMVectorAdd(Mn, Mx), 0.5f);
-    Radius = 1e-4f;
-    for (size_t i = 0; i < VertexCount; i++)
+    Radius = std::sqrt(R2);
+}
+
+void FramePreviewForTurn(const PreviewGeometry& Geo, float Pitch, PreviewGpuMesh& M, bool ByCount)
+{
+    const size_t N = Geo.Pos.size() / 3, Tris = Geo.Idx.size() / 3;
+    if (N == 0 || Tris == 0) return;
+    const size_t Step = std::max<size_t>(1, Tris / 200000);
+    struct Tri { float C[3]; float Area; };
+    std::vector<Tri> T;
+    std::vector<float> Areas;   // ByCount: the triangles' own, for the pad below
+    double Total = 0;
+    for (size_t t = 0; t < Tris; t += Step)
     {
-        XMVECTOR P = XMVectorSet(Geo.Pos[i * 3], Geo.Pos[i * 3 + 1], Geo.Pos[i * 3 + 2], 0);
-        Radius = std::max(Radius, XMVectorGetX(XMVector3Length(XMVectorSubtract(P, Center))));
+        const uint32_t I[3] = { Geo.Idx[t * 3], Geo.Idx[t * 3 + 1], Geo.Idx[t * 3 + 2] };
+        if (I[0] >= N || I[1] >= N || I[2] >= N) continue;
+        const float* A = &Geo.Pos[I[0] * 3]; const float* B = &Geo.Pos[I[1] * 3]; const float* C = &Geo.Pos[I[2] * 3];
+        const float U[3] = { B[0] - A[0], B[1] - A[1], B[2] - A[2] }, V[3] = { C[0] - A[0], C[1] - A[1], C[2] - A[2] };
+        const float X[3] = { U[1] * V[2] - U[2] * V[1], U[2] * V[0] - U[0] * V[2], U[0] * V[1] - U[1] * V[0] };
+        const float Area = 0.5f * std::sqrt(X[0] * X[0] + X[1] * X[1] + X[2] * X[2]) + 1e-9f;
+        Tri E{ { (A[0] + B[0] + C[0]) / 3, (A[1] + B[1] + C[1]) / 3, (A[2] + B[2] + C[2]) / 3 }, ByCount ? 1.0f : Area };
+        Total += E.Area;
+        if (ByCount) Areas.push_back(Area);
+        T.push_back(E);
     }
+    if (T.empty()) return;
+    float Lo[3], Hi[3];
+    for (int c = 0; c < 3; c++)
+    {
+        std::sort(T.begin(), T.end(), [c](const Tri& X, const Tri& Y) { return X.C[c] < Y.C[c]; });
+        double Acc = 0;
+        size_t i = 0;
+        for (; i + 1 < T.size() && (Acc += T[i].Area) < Total * 0.01; i++) {}
+        Lo[c] = T[i].C[c];
+        Acc = 0;
+        size_t j = T.size() - 1;
+        for (; j > i && (Acc += T[j].Area) < Total * 0.01; j--) {}
+        Hi[c] = T[j].C[c];
+    }
+    // the centroids' box is a little inside the surfaces' own: half a typical triangle more (by
+    // count, the median one: a few vista planes would make the mean huge)
+    if (ByCount) std::nth_element(Areas.begin(), Areas.begin() + Areas.size() / 2, Areas.end());
+    const float Pad = std::sqrt(ByCount ? Areas[Areas.size() / 2] : (float)(Total / T.size())) * 0.5f;
+    for (int c = 0; c < 3; c++) { Lo[c] -= Pad; Hi[c] += Pad; }
+    const float Half[3] = { (Hi[0] - Lo[0]) * 0.5f, (Hi[1] - Lo[1]) * 0.5f, (Hi[2] - Lo[2]) * 0.5f };
+    const float Radius = std::max(1e-3f, std::sqrt(Half[0] * Half[0] + Half[1] * Half[1] + Half[2] * Half[2]));
+    const float Tan = std::tan(XMConvertToRadians(35.0f) * 0.5f);
+    const float Cp = std::cos(Pitch), Sp = std::sin(Pitch);
+    float Need = 0;
+    for (int k = 0; k < 24; k++)
+    {
+        const float Y = k * XM_2PI / 24;
+        const float D[3] = { Cp * std::cos(Y), Cp * std::sin(Y), Sp };                 // centre to camera
+        const float R[3] = { -std::sin(Y), std::cos(Y), 0 };                           // right
+        const float U[3] = { -Sp * std::cos(Y), -Sp * std::sin(Y), Cp };              // up
+        for (int Corner = 0; Corner < 8; Corner++)
+        {
+            const float P[3] = { (Corner & 1) ? Half[0] : -Half[0], (Corner & 2) ? Half[1] : -Half[1], (Corner & 4) ? Half[2] : -Half[2] };
+            const float Depth = P[0] * D[0] + P[1] * D[1] + P[2] * D[2];
+            const float X = std::abs(P[0] * R[0] + P[1] * R[1]), Yv = std::abs(P[0] * U[0] + P[1] * U[1] + P[2] * U[2]);
+            Need = std::max(Need, Depth + std::max(X, Yv) / Tan);
+        }
+    }
+    M.Center = XMVectorSet((Lo[0] + Hi[0]) * 0.5f, (Lo[1] + Hi[1]) * 0.5f, (Lo[2] + Hi[2]) * 0.5f, 0);
+    M.Radius = Radius;
+    M.FrameDist = std::max(Need * 1.06f, Radius * 0.5f);
 }
 
 PreviewCamera OrbitPreviewCamera(const PreviewGpuMesh& Mesh, float Yaw, float Pitch, float DistScale, XMFLOAT3 Pan)
@@ -643,6 +788,8 @@ struct PreviewRenderer::Impl
     ComPtr<ID3D11VertexShader> FullscreenVS;
     ComPtr<ID3D11Buffer> MaterialCB, SceneCB;
     ComPtr<ID3D11ShaderResourceView> Radiance, Irradiance;
+    // no culling, pulled toward the camera by layer (PreviewGpuMesh::Range::Layer; [0] unused)
+    ComPtr<ID3D11RasterizerState> Overlay[PreviewGpuMesh::MaxLayer + 1];
     int RadianceMips = 1;
     PreviewLighting Lighting;
     bool Ok = false;
@@ -681,6 +828,12 @@ struct PreviewRenderer::Impl
         };
         if (!Cb(sizeof(PreviewGpuMaterial::Constants), MaterialCB) || !Cb(sizeof(SceneConstants), SceneCB)) return;
 
+        for (int Layer = 1; Layer <= PreviewGpuMesh::MaxLayer; Layer++)
+        {
+            // a D32_FLOAT depth near 1: a bias unit is 2^-24; slope-scaled for the surfaces seen edge on
+            CD3D11_RASTERIZER_DESC R(D3D11_FILL_SOLID, D3D11_CULL_NONE, FALSE, -64 * Layer, 0.0f, -1.0f * Layer, TRUE, FALSE, TRUE, FALSE);
+            if (FAILED(D->CreateRasterizerState(&R, &Overlay[Layer]))) return;
+        }
         if (!StudioEnvironment(D, Radiance, RadianceMips, Irradiance)) return;
         Effect->SetIBLTextures(Radiance.Get(), RadianceMips, Irradiance.Get());
         ToneMap->SetOperator(ToneMapPostProcess::ACESFilmic);
@@ -712,13 +865,15 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
     if (Mesh && Mesh->Valid)
     {
         const XMVECTOR Eye = XMLoadFloat3(&Cam.Eye), At = XMLoadFloat3(&Cam.Target), Up = XMLoadFloat3(&Cam.Up);
-        P->Effect->SetMatrices(XMMatrixIdentity(), XMMatrixLookAtLH(Eye, At, Up),
-                               XMMatrixPerspectiveFovLH(Cam.Fov, (float)T.W / (float)T.H, Cam.Near, Cam.Far));
+        // CoD's world is right-handed (X forward, Y left, Z up): a right-handed view and projection,
+        // as the FX preview's. A left-handed pair here showed every model and map mirrored.
+        P->Effect->SetMatrices(XMMatrixIdentity(), XMMatrixLookAtRH(Eye, At, Up),
+                               XMMatrixPerspectiveFovRH(Cam.Fov, (float)T.W / (float)T.H, Cam.Near, Cam.Far));
         // Three-point light riding with the camera: a warm key above-left, a cool fill low right,
         // a rim from behind. Each is a direction the light travels (from its position to the model).
         const XMVECTOR Fwd = XMVector3Normalize(XMVectorSubtract(At, Eye));
-        const XMVECTOR Right = XMVector3Normalize(XMVector3Cross(Up, Fwd));
-        const XMVECTOR CamUp = XMVector3Cross(Fwd, Right);
+        const XMVECTOR Right = XMVector3Normalize(XMVector3Cross(Fwd, Up));   // the screen's right
+        const XMVECTOR CamUp = XMVector3Cross(Right, Fwd);
         auto From = [&](float F, float R, float U) {
             return XMVector3Normalize(XMVectorNegate(XMVectorAdd(XMVectorAdd(XMVectorScale(Fwd, F), XMVectorScale(Right, R)), XMVectorScale(CamUp, U))));
         };
@@ -758,10 +913,16 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
         {
             if (Pass == 0) { Ctx->OMSetBlendState(P->States->Opaque(), nullptr, 0xFFFFFFFF); Ctx->OMSetDepthStencilState(P->States->DepthDefault(), 0); }
             if (Pass == 2) { Ctx->OMSetBlendState(P->States->NonPremultiplied(), nullptr, 0xFFFFFFFF); Ctx->OMSetDepthStencilState(P->States->DepthRead(), 0); }
+            int Layer = 0;
             for (const auto& R : Mesh->Ranges)
             {
                 const PreviewGpuMaterial& M = (R.Mat >= 0 && R.Mat < (int)Mesh->Mats.size()) ? Mesh->Mats[R.Mat] : Untextured;
                 if (M.Blend != Pass) continue;
+                if (R.Layer != Layer)
+                {
+                    Layer = std::clamp(R.Layer, 0, PreviewGpuMesh::MaxLayer);
+                    Ctx->RSSetState(Layer ? P->Overlay[Layer].Get() : P->States->CullNone());
+                }
                 Ctx->UpdateSubresource(P->MaterialCB.Get(), 0, nullptr, &M.C, 0, 0);
                 ID3D11ShaderResourceView* Maps[] = { M.Albedo.Get(), M.Normal.Get(), M.Roughness.Get(), M.Emissive.Get() };
                 Ctx->PSSetShaderResources(0, 4, Maps);
@@ -772,6 +933,7 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
                 Ctx->PSSetShaderResources(6, 15, More);
                 Ctx->DrawIndexed(R.Count, R.Start, 0);
             }
+            if (Layer) Ctx->RSSetState(P->States->CullNone());
         }
     }
 

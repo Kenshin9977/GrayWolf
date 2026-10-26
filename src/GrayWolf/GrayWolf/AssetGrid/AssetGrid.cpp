@@ -172,6 +172,7 @@ void AssetGrid::Draw(int Count, const std::function<AssetGridItem(int)>& Item, c
         ImDrawList* DL = ImGui::GetWindowDrawList();
         const ImU32 ColSel = ImGui::GetColorU32(ImGuiCol_Header), ColHover = ImGui::GetColorU32(ImGuiCol_HeaderHovered, 0.45f);
         const ImU32 ColCell = IM_COL32(255, 255, 255, 8), ColName = ImGui::GetColorU32(ImGuiCol_Text), ColKind = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        const ImU32 ColGame = IM_COL32(120, 175, 235, 255);
         int Visible = 0;
         ImGuiListClipper Clipper;
         Clipper.Begin(Rows, CellH + Gap);
@@ -205,14 +206,28 @@ void AssetGrid::Draw(int Count, const std::function<AssetGridItem(int)>& Item, c
                     const float NameY = TMax.y + Pad * 0.6f;
                     const char* Name = A.Name ? A.Name->c_str() : "";
                     ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY), ImVec2(TextX1, NameY + TextH), TextX1, Name, nullptr, nullptr);
+                    // the game first (one asset of two games is two cells alike otherwise), then the kind
+                    float KindX = TextX0;
+                    if (A.Game && !A.Game->empty())
+                    {
+                        const std::string GameText = *A.Game + "  \xC2\xB7  ";
+                        ImGui::PushStyleColor(ImGuiCol_Text, ColGame);
+                        ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, GameText.c_str(), nullptr, nullptr);
+                        ImGui::PopStyleColor();
+                        KindX = std::min(TextX1, TextX0 + ImGui::CalcTextSize(GameText.c_str()).x);
+                    }
                     std::string KindText = AssetKindName(A.Kind);
                     if (A.Format && !A.Format->empty()) KindText += "  \xC2\xB7  " + *A.Format;
                     ImGui::PushStyleColor(ImGuiCol_Text, ColKind);
-                    ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, KindText.c_str(), nullptr, nullptr);
+                    if (KindX < TextX1)
+                        ImGui::RenderTextEllipsis(DL, ImVec2(KindX, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, KindText.c_str(), nullptr, nullptr);
                     ImGui::PopStyleColor();
                     (void)ColName;
                     if (Hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay))
-                        ImGui::SetTooltip("%s", Name);
+                    {
+                        if (A.Game && !A.Game->empty()) ImGui::SetTooltip("%s\n%s", Name, A.Game->c_str());
+                        else ImGui::SetTooltip("%s", Name);
+                    }
                     OnItem(i);
                     ImGui::PopID();
                 }

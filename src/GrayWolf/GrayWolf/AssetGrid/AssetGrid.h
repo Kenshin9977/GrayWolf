@@ -28,6 +28,7 @@ struct AssetGridItem
     const std::string* Path = nullptr;
     const std::string* Name = nullptr;
     const std::string* Format = nullptr;
+    const std::string* Game = nullptr;   // the game it was exported from, when worth saying (several listed)
     int Kind = 0;
     long long SizeBytes = 0, Written = 0;
     int Id = 0;   // the shell's index: the cell's ImGui id

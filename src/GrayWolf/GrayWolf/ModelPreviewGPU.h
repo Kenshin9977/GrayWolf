@@ -61,7 +61,10 @@ enum PreviewMaterialFlags : uint32_t
 struct PreviewGpuMesh
 {
     Microsoft::WRL::ComPtr<ID3D11Buffer> VB, IB;
-    struct Range { int Mat; UINT Start, Count; };
+    // Layer > 0: triangles lying on a surface of an earlier material (a decal, a blend layer over the
+    // base, CoD's way): drawn pulled toward the camera, one step per layer, so they do not z-fight.
+    struct Range { int Mat; UINT Start, Count; int Layer = 0; };
+    static constexpr int MaxLayer = 3;
     std::vector<Range> Ranges;
     std::vector<PreviewGpuMaterial> Mats;
 
@@ -79,6 +82,12 @@ std::vector<float> InterleavePreviewVertices(const std::vector<float>& Pos, cons
                                              const std::vector<float>& UV);
 // The bounding box's center and the largest vertex distance from it (at least 1e-4).
 void PreviewBoundingSphere(const PreviewGeometry& Geo, DirectX::XMVECTOR& Center, float& Radius);
+// The view a turning model needs: the box of the triangles drawn, without the outer 1% of their
+// area on each axis (a few small stray pieces far off made the rest tiny), and the distance at
+// which that box stays whole at every yaw of a turn at Pitch. ByCount (a map) weighs each triangle
+// alike instead of by its area: the play area, not the vista planes around it, a thousand times
+// larger and few triangles.
+void FramePreviewForTurn(const PreviewGeometry& Geo, float Pitch, PreviewGpuMesh& M, bool ByCount = false);
 
 struct PreviewCamera
 {

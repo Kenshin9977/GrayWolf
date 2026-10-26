@@ -10,6 +10,7 @@
 #include "DiskGame.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Games/CODOL/CodolAnimOwners.h"
 #include "Games/CODOL/CodolReaders.h"
 #include "Games/CODOL/CodolWeapons.h"
 #include "Games/CODOL/FileCrypt.h"
@@ -26,6 +27,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -213,6 +215,54 @@ namespace
             return StringAt(PointerAt(K == Kind::Image ? Pos + Codol::ImageName : K == Kind::Material ? Pos + 0x10 : Pos));
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "|codol images 1"; }
+
+        // The string tables, the animtrees (rawfiles *.atr), and as "0x<field> <text>" lines the
+        // weapons' anim fields ("weapon/<w>") and the weaponattach string overrides of those fields
+        // ("weaponattach/<a>", type 0: "<from> <to>", or the anim): what the anim owners read
+        // (CodolAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            const auto& Z = Image();
+            for (const auto& I : Walk().Instances)
+            {
+                if (I.Parent >= 0) continue;
+                if (OwnerIs(I, "rawfile"))
+                {
+                    const std::string Nm = TextAt(I.Pos);
+                    std::vector<uint8_t> Bytes;
+                    if (Nm.size() > 4 && ExportNaming::Lower(Nm).compare(Nm.size() - 4, 4, ".atr") == 0 && RawBytes(I.Pos, { 8, 0xc, 4 }, Bytes))
+                        Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
+                    continue;
+                }
+                const bool Weapon = OwnerIs(I, "weapon");
+                if (!Weapon && !OwnerIs(I, "weaponattach")) continue;
+                const std::string Nm = TextAt(I.Pos);
+                if (Nm.empty() || Nm[0] == ',') continue;
+                std::string Text;
+                const auto Line = [&](int64_t Field, const std::string& S) {
+                    if (!S.empty()) Text += std::format("0x{:x} {}\n", Field, S);
+                };
+                if (Weapon)
+                {
+                    if (I.Pos + 0x364 > (int64_t)Z.size()) continue;
+                    for (int64_t F = 0x80; F <= 0x360; F += 4)
+                        if (CodolAnimOwners::AnimField(F)) Line(F, TextAt(I.Pos + F));
+                    Out.emplace_back("weapon/" + Nm, std::move(Text));
+                    continue;
+                }
+                // weaponattach (0xc): count u32 4, 12-byte overrides at 8 {u8 type, u8 op, u16, u16 field 4, value 8}
+                const uint32_t Count = At<uint32_t>(Z, I.Pos + 4);
+                const int64_t E = Off(PointerAt(I.Pos + 8));
+                for (uint32_t K = 0; E >= 0 && K < Count && K < 4096 && E + 12 * (int64_t)(K + 1) <= (int64_t)Z.size(); K++)
+                {
+                    const int64_t P = E + 12 * (int64_t)K;
+                    const int64_t Field = At<uint16_t>(Z, P + 4);
+                    if (At<uint8_t>(Z, P) == 0 && CodolAnimOwners::AnimField(Field)) Line(Field, TextAt(P + 8));
+                }
+                if (!Text.empty()) Out.emplace_back("weaponattach/" + Nm, std::move(Text));
+            }
+        }
 
         // The level (the codol tables, MW2's 32-bit shapes): GfxWorld (0x64c) surface count 0x10,
         // skies 0x18 (GfxSky 0x10, its image at 8), GfxWorldDraw at 0x54 (vertexCount +0x34, 44-byte
@@ -551,10 +601,19 @@ namespace
                 Kt.Seen++;
                 const auto* L = Archives ? Archives->Find(F) : nullptr;
                 std::vector<uint8_t> Data;
+                if (Archives && L == nullptr)
+                {
+                    // no archive of the install holds the file, under any extension or folder, nor
+                    // lists it in its manifest (common_mp's 22: amb_mp_invasion_sh_ext/int, 20
+                    // gen_*_death_fall_* and gen_jw_pain_*): the game ships without it
+                    Counter("sounds_streamed_absent")++;
+                    T.Lacks(Name(), Kind::Sound, Rel, "in no archive of the install");
+                    continue;
+                }
                 if (L == nullptr || !Archives->Read(*L, Data, Error))
                 {
                     Counter("sounds_streamed_missing")++;
-                    T.Fail(Name(), Kind::Sound, Rel, "not in the archives");
+                    T.Fail(Name(), Kind::Sound, Rel, Archives ? "unread from the archives: " + Error : "archives not opened: " + Error);
                     continue;
                 }
                 Codol::UnwrapFile(F, Data);
@@ -649,6 +708,15 @@ namespace
             return !Names.empty();
         }
 
+        // a zone's dependencies (materials, images, models of other zones) come from the install
+        // its archives are in (<install>/client_shipretail/chinese/<zone>.ff, as Zones names an
+        // archive's zones), without --install too
+        std::string InstallOfZone(const std::string& Zone) const override
+        {
+            const std::string Root = InstallFromZone(Zone, "");
+            return !Root.empty() && IsInstall(Root) ? Root : IDiskGame::InstallOfZone(Zone);
+        }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<CodolZone>(Path, InstallFromZone(Path, Options.Install));
@@ -657,6 +725,14 @@ namespace
         }
 
         const char* DefaultImageFormat() const override { return "dds"; }
+
+        // the anims' weapons and characters, from the weapons, the marketplace tables and the animtrees
+        // (CodolAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return CodolAnimOwners::Documents(); }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            CodolAnimOwners::Fill(*this, Options, Zones, Out);
+        }
     };
 
     const CodolGame Game;

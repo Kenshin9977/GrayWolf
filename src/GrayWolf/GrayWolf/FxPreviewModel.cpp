@@ -13,6 +13,7 @@
 #include <climits>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 
 namespace fs = std::filesystem;
 
@@ -680,46 +681,75 @@ void TextureIndex::AddFolder(const std::string& Dir)
     std::error_code Ec;
     const fs::path Root = PathOf(Dir);
     if (!fs::is_directory(Root, Ec)) return;
-    for (auto It = fs::recursive_directory_iterator(Root, Ec); !Ec && It != fs::recursive_directory_iterator(); It.increment(Ec))
-    {
-        if (!It->is_regular_file(Ec)) continue;
-        const std::string Ext = Lower(Text(It->path().extension()));
-        if (Ext == ".json")
+    // Walked with FindFirstFileEx (a game's export is tens of thousands of files; a name is only
+    // converted when it is kept), in the order recursive_directory_iterator walks: a folder's
+    // entries in turn, each subfolder entered when met.
+    const auto IsExt = [](const wchar_t* Dot, const wchar_t* Ext) { return Dot && _wcsicmp(Dot, Ext) == 0; };
+    std::function<void(const std::wstring&, int)> Walk = [&](const std::wstring& Folder, int Depth) {
+        WIN32_FIND_DATAW Fd{};
+        const HANDLE Find = FindFirstFileExW((Folder + L"\\*").c_str(), FindExInfoBasic, &Fd, FindExSearchNameMatch, nullptr,
+                                             FIND_FIRST_EX_LARGE_FETCH);
+        if (Find == INVALID_HANDLE_VALUE) return;
+        do
         {
-            // <game>/materials/...: the material kind's files, by the name each holds
-            if (Lower(Text(It->path())).find("materials") == std::string::npos) continue;
-            std::ifstream In(It->path(), std::ios::binary);
-            Json J;
-            try { J = Json::parse(In); }
-            catch (const std::exception&) { continue; }
-            if (!J.is_object() || !J.contains("images") || !J.contains("name")) continue;
-            Material M;
-            M.Name = Str(J, "name");
-            try { ReadMaterialFields(J, M); }
-            catch (const std::exception&) { continue; }
-            if (!M.Name.empty()) MaterialFiles.emplace(Lower(M.Name), std::move(M));
-            continue;
-        }
-        if (Ext == ".semodel" || Ext == ".cast" || Ext == ".xmodel_export")
-        {
-            // models/<name>/<name>_LOD0.<ext>: the model's first LOD, by its name
-            std::string Stem = Lower(Text(It->path().stem()));
-            const size_t Lod = Stem.rfind("_lod");
-            if (Lod != std::string::npos && Lod + 5 == Stem.size() && std::isdigit((unsigned char)Stem.back()))
+            const wchar_t* Name = Fd.cFileName;
+            if (Fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
-                if (Stem.back() != '0') continue;
-                Stem.erase(Lod);
+                if (std::wcscmp(Name, L".") == 0 || std::wcscmp(Name, L"..") == 0 || (Fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                    continue;
+                // an export's anims and sounds hold nothing an effect draws: not walked
+                if (Depth == 0 && (_wcsicmp(Name, L"anims") == 0 || _wcsicmp(Name, L"sounds") == 0)) continue;
+                Walk(Folder + L"\\" + Name, Depth + 1);
+                continue;
             }
-            if (!Stem.empty()) ModelFiles.emplace(Stem, Text(It->path()));
-            continue;
-        }
-        if (Ext != ".dds" && Ext != ".png" && Ext != ".tga" && Ext != ".tiff" && Ext != ".tif") continue;
-        const std::string Stem = Lower(Text(It->path().stem())), Path = Text(It->path());
-        if (Stem.empty() || Path.empty()) continue;
-        // a DDS (mips, block compressed) before the others; the first copy found otherwise
-        const auto Old = Files.find(Stem);
-        if (Old == Files.end() || (Ext == ".dds" && Lower(Text(PathOf(Old->second).extension())) != ".dds")) Files[Stem] = Path;
-    }
+            const wchar_t* Dot = std::wcsrchr(Name, L'.');
+            if (!Dot) continue;
+            const bool Dds = IsExt(Dot, L".dds");
+            const bool Image = Dds || IsExt(Dot, L".png") || IsExt(Dot, L".tga") || IsExt(Dot, L".tiff") || IsExt(Dot, L".tif");
+            const bool Model = !Image && (IsExt(Dot, L".semodel") || IsExt(Dot, L".cast") || IsExt(Dot, L".xmodel_export"));
+            const bool JsonFile = !Image && !Model && IsExt(Dot, L".json");
+            if (!Image && !Model && !JsonFile) continue;
+            const fs::path File = fs::path(Folder) / Name;
+            if (JsonFile)
+            {
+                // <game>/materials/...: the material kind's files, by the name each holds (not the
+                // models' <model>.materials.json sidecars, a thousand of them in a game)
+                if (Lower(Text(fs::path(Folder))).find("materials") == std::string::npos) continue;
+                std::ifstream In(File, std::ios::binary);
+                Json J;
+                try { J = Json::parse(In); }
+                catch (const std::exception&) { continue; }
+                if (!J.is_object() || !J.contains("images") || !J.contains("name")) continue;
+                Material M;
+                M.Name = Str(J, "name");
+                try { ReadMaterialFields(J, M); }
+                catch (const std::exception&) { continue; }
+                if (!M.Name.empty()) MaterialFiles.emplace(Lower(M.Name), std::move(M));
+                continue;
+            }
+            std::string Stem = Lower(Strings::ToNormalString(std::wstring(Name, Dot)));
+            if (Model)
+            {
+                // models/<name>/<name>_LOD0.<ext>: the model's first LOD, by its name
+                const size_t Lod = Stem.rfind("_lod");
+                if (Lod != std::string::npos && Lod + 5 == Stem.size() && std::isdigit((unsigned char)Stem.back()))
+                {
+                    if (Stem.back() != '0') continue;
+                    Stem.erase(Lod);
+                }
+                if (!Stem.empty()) ModelFiles.emplace(Stem, Text(File));
+                continue;
+            }
+            if (Stem.empty()) continue;
+            // a DDS (mips, block compressed) before the others; the first copy found otherwise
+            const auto Old = Files.find(Stem);
+            const auto IsDdsPath = [](const std::string& P) { return P.size() >= 4 && Lower(P.substr(P.size() - 4)) == ".dds"; };
+            if (Old == Files.end()) Files.emplace(std::move(Stem), Text(File));
+            else if (Dds && !IsDdsPath(Old->second)) Old->second = Text(File);
+        } while (FindNextFileW(Find, &Fd));
+        FindClose(Find);
+    };
+    Walk(Root.wstring(), 0);
 }
 
 const Material* TextureIndex::FindMaterial(const std::string& Name) const

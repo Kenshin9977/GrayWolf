@@ -11,6 +11,7 @@
 #include "Games/Treyarch/TreyarchSoundAliases.h"
 #include "DiskGame.h"
 #include "Games/Treyarch/TreyarchEffects.h"
+#include "Games/Treyarch/TreyarchGscOwners.h"
 #include "Games/Treyarch/TreyarchLevel.h"
 #include "ExportWriters.h"
 #include "GameBlackOps2.h"
@@ -280,6 +281,31 @@ namespace
         ~Bo2Zone() override
         {
             Serve(false);
+        }
+
+        // its string tables, its rawfiles (the animtrees inflated), its compiled scripts (AI types,
+        // characters, player bodies, levels: GSCOBJ, read by GscAnimOwners) and its weapons' models
+        // and xanims, for the anim owners (TreyarchGscOwners.h). WeaponVariantDef (0x2cc): WeaponDef
+        // at 8, szXAnims at 0x20 (88); WeaponDef: gunXModel 4 (16), handXModel 8;
+        // WeaponAttachmentUnique (0x1a8): szXAnims at 0xe8 (88)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            for (const auto& I : Walk().Instances)
+            {
+                if (I.Parent >= 0) continue;
+                const bool Raw = OwnerIs(I, "rawfile");
+                if (!Raw && !OwnerIs(I, "scriptparsetree")) continue;
+                const std::string Nm = AssetName(Kind::Rawfile, I.Pos);
+                if (IsReference(Kind::Rawfile, Nm, I.Pos)) continue;
+                std::vector<uint8_t> Bytes;
+                bool Inflated = false;
+                if (Raw ? RawfileData(I.Pos, Nm, Bytes, Inflated) : BytesAt(PointerAt(I.Pos + 8), At<uint32_t>(Image(), I.Pos + 4), Bytes))
+                    Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
+            }
+            WeaponLayout W;
+            W.Anims = 0x20, W.AnimCount = 88, W.UniqueAnims = 0xe8, W.UniqueAnimCount = 88;
+            WeaponDocuments(Out, W);
         }
 
     protected:
@@ -558,9 +584,17 @@ namespace
             }
         }
 
+        bool RawfileBytes(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes)
+        {
+            bool Inflated = false;
+            const bool Ok = RawfileData(Pos, Nm, Bytes, Inflated);
+            if (Inflated) Counter("rawfiles_inflated")++;
+            return Ok;
+        }
+
         // RawFile: an .atr (animtree) buffer is {u32 inflated size, raw deflate}; any other file is
         // its bytes
-        bool RawfileBytes(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes)
+        bool RawfileData(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes, bool& Inflated) const
         {
             const auto& Z = Image();
             const uint32_t Len = At<uint32_t>(Z, Pos + RawLen);
@@ -578,7 +612,7 @@ namespace
                     {
                         Bytes.assign((uint8_t*)Out, (uint8_t*)Out + Got);
                         mz_free(Out);
-                        Counter("rawfiles_inflated")++;
+                        Inflated = true;
                     }
                 }
                 else
@@ -605,6 +639,48 @@ namespace
                                              { { "so_*", { "ZMUI_{REST}" } },
                                                { "*", { "PRESENCE_{NAME}", "MENU_LEVEL_{NAME}_CAPS" } } } };
             return &Naming;
+        }
+
+        // the anims' AI types, players and weapons, from the zones' compiled scripts, animtrees and
+        // weapons (TreyarchGscOwners.h): a zombie level's zones loaded with it (<zone>_patch,
+        // patch_zm, common_zm; the shared ones the first level's patch, for its players),
+        // multiplayer's (patch_mp, common_patch_mp, common_mp; the shared ones the default factions'
+        // seals and pmc, for their bodies, and the first level, for its dog), the campaign's
+        // (<zone>_patch, patch, common)
+        std::vector<std::string> AnimOwnerDocuments() const override { return GscAnimOwners::Documents(); }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            TreyarchGscOwners::Setup S;
+            S.Options.ByModelPrefix = S.Options.ByNameTokens = true;
+            S.Shared = [](const fs::path& Zone) {
+                const std::string Stem = ExportNaming::Lower(Zone.stem().string());
+                const fs::path Dir = Zone.parent_path();
+                const auto In = [&](std::initializer_list<std::string> Names) {
+                    std::vector<fs::path> Out;
+                    for (const auto& N : Names) Out.push_back(Dir / (N + ".ff"));
+                    return Out;
+                };
+                const auto Ends = [&](const char* Suffix) {
+                    const size_t N = strlen(Suffix);
+                    return Stem.size() > N && Stem.compare(Stem.size() - N, N, Suffix) == 0;
+                };
+                if (Stem.rfind("zm_", 0) == 0) return In({ Stem + "_patch", "patch_zm", "common_zm" });
+                if (Ends("_zm"))
+                {
+                    auto Out = In({ "patch_zm", "common_zm" });
+                    Out.push_back(TreyarchGscOwners::FirstZone(Dir, "zm_*_patch"));
+                    return Out;
+                }
+                if (Stem.rfind("mp_", 0) == 0 || Stem.rfind("faction_", 0) == 0) return In({ "patch_mp", "common_patch_mp", "common_mp" });
+                if (Ends("_mp"))
+                {
+                    auto Out = In({ "patch_mp", "common_patch_mp", "common_mp", "faction_seals_mp", "faction_pmc_mp" });
+                    Out.push_back(TreyarchGscOwners::FirstZone(Dir, "mp_*"));
+                    return Out;
+                }
+                return In({ Stem + "_patch", "patch", "common" });
+            };
+            TreyarchGscOwners::Fill(*this, Options, Zones, Out, S);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override

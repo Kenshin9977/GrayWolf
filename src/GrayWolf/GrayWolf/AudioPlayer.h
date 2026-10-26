@@ -33,6 +33,12 @@ public:
     void TogglePlay();  // Pause() if playing, Play() otherwise
     void Seek(double seconds);
 
+    // ui-record: players loaded from now on open no device; their sound is pulled by ReadOffline,
+    // stereo at Rate, the cursor moving only as it is read
+    static void UseOfflineClock(unsigned rate);
+    // the next frames of what plays, interleaved stereo f32 (silence where nothing does)
+    void ReadOffline(float* out, unsigned long long frames);
+
     bool     IsLoaded()   const { return m_loaded; }
     bool     IsPlaying()  const;
     double   Duration()   const { return m_duration; }   // seconds

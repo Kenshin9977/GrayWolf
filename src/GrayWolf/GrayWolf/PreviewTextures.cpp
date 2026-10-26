@@ -95,18 +95,19 @@ namespace
         return true;
     }
 
-    // The first level of Img, capped to MaxSize, with a full box-filtered mip chain.
-    bool WithMips(ScratchImage& Img, PreviewTexUse Use)
+    // The first level of Img, capped to Cap, with a full box-filtered mip chain.
+    bool WithMips(ScratchImage& Img, PreviewTexUse Use, size_t Cap = MaxSize)
     {
         const Image* Top = Img.GetImage(0, 0, 0);
         if (!Top) return false;
-        ScratchImage Scaled;
-        if (std::max(Top->width, Top->height) > MaxSize)
+        // halved until within Cap (DirectXTex's box filter only halves: 2048 to 512 is two steps)
+        ScratchImage Scaled[2];
+        for (int Step = 0; std::max(Top->width, Top->height) > Cap; Step ^= 1)
         {
-            const double K = (double)MaxSize / (double)std::max(Top->width, Top->height);
-            if (FAILED(Resize(*Top, std::max<size_t>(1, (size_t)(Top->width * K)), std::max<size_t>(1, (size_t)(Top->height * K)),
-                              TEX_FILTER_BOX | TEX_FILTER_FORCE_NON_WIC, Scaled))) return false;
-            Top = Scaled.GetImage(0, 0, 0);
+            const size_t W = std::max<size_t>(1, Top->width / 2), H = std::max<size_t>(1, Top->height / 2);
+            const bool Exact = W * 2 == Top->width && H * 2 == Top->height;
+            if (FAILED(Resize(*Top, W, H, (Exact ? TEX_FILTER_BOX : TEX_FILTER_LINEAR) | TEX_FILTER_FORCE_NON_WIC, Scaled[Step]))) return false;
+            Top = Scaled[Step].GetImage(0, 0, 0);
         }
         TEX_FILTER_FLAGS F = TEX_FILTER_BOX | TEX_FILTER_FORCE_NON_WIC;
         if (Use == PreviewTexUse::Color) F |= TEX_FILTER_SRGB;
@@ -128,12 +129,94 @@ namespace
         else Hr = LoadFromWICMemory(Bytes.data(), Bytes.size(), WIC_FLAGS_IGNORE_SRGB, nullptr, Img);
         return SUCCEEDED(Hr);
     }
+
+    // The mips of a block-compressed 2D DDS no larger than Cap, read alone (the larger levels are
+    // skipped on disk, not read) and written back as a DDS of their own. False when the file is
+    // not such a DDS, has no mip within Cap, or none above it (then it is read whole).
+    bool ReadDdsMipsWithin(const std::string& Path, size_t Cap, std::vector<uint8_t>& Out, TexMetadata& Meta)
+    {
+        std::ifstream In(Strings::ToUnicodeString(Path), std::ios::binary | std::ios::ate);
+        if (!In) return false;
+        const size_t FileSize = (size_t)(std::streamoff)In.tellg();
+        uint8_t Head[148] = {};
+        if (FileSize < 128) return false;
+        const size_t HeadRead = std::min(sizeof(Head), FileSize);
+        In.seekg(0);
+        if (!In.read(reinterpret_cast<char*>(Head), (std::streamsize)HeadRead)) return false;
+        if (FAILED(GetMetadataFromDDSMemory(Head, HeadRead, DDS_FLAGS_NONE, Meta))) return false;
+        if (Meta.dimension != TEX_DIMENSION_TEXTURE2D || Meta.arraySize != 1 || Meta.depth != 1 || Meta.IsCubemap() ||
+            Meta.mipLevels < 2 || !IsCompressed(Meta.format) || Meta.format == DXGI_FORMAT_BC5_SNORM ||
+            std::max(Meta.width, Meta.height) <= Cap) return false;
+        const size_t HeadSize = std::memcmp(Head + 84, "DX10", 4) == 0 ? 148 : 128;
+        size_t Skip = 0, First = 0;
+        for (; First < Meta.mipLevels && std::max(Meta.width >> First, Meta.height >> First) > Cap; First++)
+        {
+            size_t Row = 0, Slice = 0;
+            if (FAILED(ComputePitch(Meta.format, std::max<size_t>(1, Meta.width >> First), std::max<size_t>(1, Meta.height >> First), Row, Slice)))
+                return false;
+            Skip += Slice;
+        }
+        if (First >= Meta.mipLevels) return false;
+        if (HeadSize + Skip >= FileSize) return false;
+        TexMetadata Small = Meta;
+        Small.width = std::max<size_t>(1, Meta.width >> First);
+        Small.height = std::max<size_t>(1, Meta.height >> First);
+        Small.mipLevels = Meta.mipLevels - First;
+        size_t Rest = 0;
+        for (size_t L = 0; L < Small.mipLevels; L++)
+        {
+            size_t Row = 0, Slice = 0;
+            if (FAILED(ComputePitch(Small.format, std::max<size_t>(1, Small.width >> L), std::max<size_t>(1, Small.height >> L), Row, Slice)))
+                return false;
+            Rest += Slice;
+        }
+        if (HeadSize + Skip + Rest > FileSize) return false;
+        size_t NewHead = 0;
+        if (FAILED(EncodeDDSHeader(Small, DDS_FLAGS_NONE, nullptr, 0, NewHead))) return false;
+        Out.resize(NewHead + Rest);
+        if (FAILED(EncodeDDSHeader(Small, DDS_FLAGS_NONE, Out.data(), NewHead, NewHead))) return false;
+        In.seekg((std::streamoff)(HeadSize + Skip));
+        if (!In.read(reinterpret_cast<char*>(Out.data() + NewHead), (std::streamsize)Rest)) return false;
+        Meta = Small;
+        return true;
+    }
+
+    // Blocks decode alone: every Step-th block row and column of a block-compressed image, as a
+    // smaller image of the same format.
+    bool SampleBlocks(const Image& Top, size_t Step, ScratchImage& Out)
+    {
+        const size_t Bw = (Top.width + 3) / 4, Bh = (Top.height + 3) / 4, BlockBytes = BitsPerPixel(Top.format) * 2;
+        const size_t Sw = (Bw + Step - 1) / Step, Sh = (Bh + Step - 1) / Step;
+        if (FAILED(Out.Initialize2D(Top.format, Sw * 4, Sh * 4, 1, 1))) return false;
+        const Image* To = Out.GetImage(0, 0, 0);
+        for (size_t y = 0; y < Sh; y++)
+            for (size_t x = 0; x < Sw; x++)
+                std::memcpy(To->pixels + y * To->rowPitch + x * BlockBytes,
+                            Top.pixels + (y * Step) * Top.rowPitch + (x * Step) * BlockBytes, BlockBytes);
+        return true;
+    }
 }
 
-bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutoff, PreviewImage& Out, bool* OutAlphaUsed)
+bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutoff, PreviewImage& Out, bool* OutAlphaUsed,
+                         int MaxTexture)
 {
     Out = PreviewImage{};
     if (OutAlphaUsed) *OutAlphaUsed = false;
+    const size_t Cap = MaxTexture > 0 ? std::min(MaxSize, (size_t)MaxTexture) : MaxSize;
+
+    // Capped: a mipped DDS's levels within the cap are read alone, uploaded as they are.
+    if (MaxTexture > 0 && Cutoff < 0 && !OutAlphaUsed)
+    {
+        std::vector<uint8_t> Small;
+        TexMetadata Meta{};
+        if (ReadDdsMipsWithin(Path, Cap, Small, Meta))
+        {
+            Out.Width = (int)Meta.width; Out.Height = (int)Meta.height;
+            Out.Dds = std::make_shared<const std::vector<uint8_t>>(std::move(Small));
+            return true;
+        }
+    }
+
     std::vector<uint8_t> Bytes;
     if (!ReadAll(Path, Bytes)) return false;
     const std::string Ext = ExportNaming::Lower(std::filesystem::path(Path).extension().string());
@@ -162,9 +245,19 @@ bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutof
     }
 
     auto Img = std::make_shared<ScratchImage>();
-    if (!Load(Bytes, Ext, *Img) || !ToPlain(*Img)) return false;
+    if (!Load(Bytes, Ext, *Img)) return false;
+    // Capped, a block-compressed image four times the cap or more is decoded from every few of its
+    // blocks (at twice the cap, halved below), not whole: a 4K BC7 map takes 100+ ms to decode.
+    if (const Image* Top = Img->GetImage(0, 0, 0);
+        MaxTexture > 0 && !OutAlphaUsed && Top && IsCompressed(Top->format) && std::max(Top->width, Top->height) >= Cap * 4)
+    {
+        ScratchImage Sample;
+        if (!SampleBlocks(*Top, std::max(Top->width, Top->height) / (Cap * 2), Sample)) return false;
+        *Img = std::move(Sample);
+    }
+    if (!ToPlain(*Img)) return false;
     if (OutAlphaUsed) *OutAlphaUsed = AlphaUsedIn(*Img->GetImage(0, 0, 0));
-    if (!WithMips(*Img, Use)) return false;
+    if (!WithMips(*Img, Use, Cap)) return false;
     Out.Width = (int)Img->GetMetadata().width; Out.Height = (int)Img->GetMetadata().height;
     Out.Image = std::move(Img);
     if (Cutoff >= 0) PreserveAlphaCoverage(Out, Cutoff);
@@ -183,16 +276,7 @@ bool ColorMapAlphaUsed(const std::vector<uint8_t>& Bytes, const std::string& Ext
     ScratchImage Sample;
     if (IsCompressed(M.format) && (Top->width > 256 || Top->height > 256))
     {
-        // blocks decode alone: every Step-th block row and column, as a smaller image
-        const size_t Bw = (Top->width + 3) / 4, Bh = (Top->height + 3) / 4, BlockBytes = BitsPerPixel(M.format) * 2;
-        const size_t Step = std::max<size_t>(1, std::max(Bw, Bh) / 64);
-        const size_t Sw = (Bw + Step - 1) / Step, Sh = (Bh + Step - 1) / Step;
-        if (FAILED(Sample.Initialize2D(M.format, Sw * 4, Sh * 4, 1, 1))) return false;
-        const Image* To = Sample.GetImage(0, 0, 0);
-        for (size_t y = 0; y < Sh; y++)
-            for (size_t x = 0; x < Sw; x++)
-                std::memcpy(To->pixels + y * To->rowPitch + x * BlockBytes,
-                            Top->pixels + (y * Step) * Top->rowPitch + (x * Step) * BlockBytes, BlockBytes);
+        if (!SampleBlocks(*Top, std::max<size_t>(1, std::max((Top->width + 3) / 4, (Top->height + 3) / 4) / 64), Sample)) return false;
     }
     else if (FAILED(Sample.InitializeFromImage(*Top)))
         return false;

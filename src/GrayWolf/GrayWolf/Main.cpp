@@ -210,6 +210,8 @@ static int RunCli(const CliOptions& Options)
 
     if (!Options.UiGridShot.empty()) return RunUiGridShot(Options);
 
+    if (!Options.UiRecord.empty()) return RunUiRecord(Options);
+
     if (!Options.AnimRigs.empty()) return RunAnimRigs(Options);
 
     if (!Options.PreviewWindow.empty()) return RunPreviewWindow(Options);
@@ -259,7 +261,7 @@ static const char* const kHelpOrder[] = {
     "make-test-seanim", "render-anim", "coverage", "oat-extract",
     "xanimbin-dump", "xanimbin-selftest", "xanimbin-to-seanim", "xanimbin-export-dir",
     "oat-fx", "oat-fx-export", "oat-xmodel-materials", "oat-weapon", "oat-rawfiles", "gen-disc", "acts-extract",
-    "dump-model", "dump-glb", "render-glb-png", "ui", "ui-grid-shot", "anim-rigs", "preview-window", "render-model", "render-fx",
+    "dump-model", "dump-glb", "render-glb-png", "ui", "ui-grid-shot", "ui-record", "anim-rigs", "preview-window", "render-model", "render-fx",
     "sab-probe", "update-name-db", "update", "apply-update", "import-hash-csv", "bo4-decrypt", "file",
 };
 

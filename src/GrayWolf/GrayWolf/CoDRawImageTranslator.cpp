@@ -5,7 +5,7 @@
 #include "Image.h"
 #include "CoDAssetType.h"
 
-std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_ptr<uint8_t[]>& BCBuffer, uint32_t BCBufferSize, uint32_t Width, uint32_t Height, uint8_t ImageFormat, uint8_t MipLevels, bool isCubemap)
+std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_ptr<uint8_t[]>& BCBuffer, uint32_t BCBufferSize, uint32_t Width, uint32_t Height, uint8_t ImageFormat, uint8_t MipLevels, bool isCubemap, uint32_t Depth)
 {
     auto Result = std::make_unique<XImageDDS>();
 
@@ -14,9 +14,12 @@ std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_
     auto ImageDataFormat = ImageFormat::DDS_BC1_SRGB;
     switch (ImageFormat)
     {
+    case 2: ImageDataFormat = ImageFormat::DDS_Standard_R32G32B32A32_FLOAT; break;
+    case 10: ImageDataFormat = ImageFormat::DDS_Standard_R16G16B16A16_FLOAT; break;
     case 24: ImageDataFormat = ImageFormat::DDS_Standard_R10G10B10A2_UNORM; break;
     case 28: ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8; break;
     case 29: ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8_SRGB; break;
+    case 34: ImageDataFormat = ImageFormat::DDS_Standard_R16G16_FLOAT; break;
     case 61: ImageDataFormat = ImageFormat::DDS_Standard_R8_UNORM; break;
     case 62: ImageDataFormat = ImageFormat::DDS_Standard_R8_UINT; break;
     case 71: ImageDataFormat = ImageFormat::DDS_BC1_UNORM; break;
@@ -41,7 +44,7 @@ std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_
     }
 
     uint32_t ResultSize = 0;
-    Image::WriteDDSHeaderToStream(ImageBuffer, Width, Height, MipLevels, ImageDataFormat, ResultSize, isCubemap);
+    Image::WriteDDSHeaderToStream(ImageBuffer, Width, Height, MipLevels, ImageDataFormat, ResultSize, isCubemap, Depth);
 
     std::memcpy(ImageBuffer + ResultSize, BCBuffer.get(), BCBufferSize);
 

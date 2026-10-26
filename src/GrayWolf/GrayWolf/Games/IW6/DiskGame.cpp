@@ -15,10 +15,12 @@
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwEffects.h"
 #include "Games/IW/IwWeaponDefs.h"
+#include "Games/IW/IwZoneAnimOwners.h"
 #include "Games/IW6/EntityKeys.h"
 #include "MapLive.h"
 
 #include <filesystem>
+#include <functional>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -90,6 +92,27 @@ namespace
         return L;
     }
 
+    // The anim owners (IwZoneAnimOwners.h): the weapon's view model, the first of WeaponDef's (behind
+    // 8) models array at 8, its hands at 0x10 (the weapons' struct dumps); the multiplayer body and
+    // head, the soap body and helmet head of the install's player zones (mp_body_soap_full_tr,
+    // mp_head_e_helmet_a_tr); the dog's, the model beside its animclass; the zones a zone loads with it
+    const IwZoneAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwZoneAnimOwners::Layout L = [] {
+            IwZoneAnimOwners::Layout L;
+            L.Gun = { 8, 8, 0 }, L.Hands = { 8, 0x10 };
+            L.Trees["multiplayer"] = { { "mp_fullbody_mp_soap_a_urban", "head_mp_head_e_helmet_a" },
+                                       "the install's player zones mp_body_soap_full_tr, mp_head_e_helmet_a_tr" };
+            L.Trees["dog_mp"] = { { "mp_fullbody_dog_a" }, "the dog of common_bots_mp, beside its dog_animclass" };
+            L.SharedMp = { "patch_common_mp", "common_mp", "patch_common_core_mp", "common_core_mp" };
+            L.SharedSp = { "patch_common", "common" };
+            L.LevelTrees = { "generic_human" };
+            L.SharedWhen = { { "alien", { "patch_common_alien_mp", "common_alien_mp" } } };
+            return L;
+        }();
+        return L;
+    }
+
     class GhostsZone final : public IWZone
     {
     public:
@@ -99,7 +122,8 @@ namespace
             ExportsIwWeapons(WeaponLayout());
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
-            Exports(Kind::Map, [this](const Context& C, Totals& T) { ExportMap(C, T); });
+            // the level's materials and its placed models' as a model's are read
+            Exports(Kind::Map, [this](const Context& C, Totals& T) { WithMaterialsElsewhere([&] { ExportMap(C, T); }); });
             ExportsScriptFiles(Scripts::GscToolBin("iw6"));
             ExportsIwRawfiles();
             ExportsIwStringTables();
@@ -109,17 +133,7 @@ namespace
             // a model's material headers (a transient zone's body or head): the images of the
             // material as the zone defining it has them
             if (const auto* Models = ExporterOf(Kind::Model))
-                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
-                    BookMaterialsElsewhere();
-                    // (an engine image, $identitynormalmap, is no zone's to write)
-                    GameGhosts::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
-                        if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Find(Name, Out)) return false;
-                        std::erase_if(Out, [](const auto& I) { return I.second.starts_with('$'); });
-                        return true;
-                    };
-                    Read(C, T);
-                    GameGhosts::ImagesElsewhere = nullptr;
-                });
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) { WithMaterialsElsewhere([&] { Read(C, T); }); });
         }
 
     protected:
@@ -135,6 +149,20 @@ namespace
             DefineStreamed(Out, ImageNameAt);
         }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
+                                                             [this](int64_t F) { return TextAt(F); },
+                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
+                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                                                             },
+                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
+                                        Out);
+        }
 
     private:
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image);
@@ -146,6 +174,20 @@ namespace
         // says define them first (IWZone::BookMaterialsElsewhere). Once, before the models are read.
         void BookMaterialsElsewhere();
         bool BooksTried = false;
+        // Work (the model kind's reader, the map's) with the material headers read as the zones
+        // defining them have them
+        void WithMaterialsElsewhere(const std::function<void()>& Work)
+        {
+            BookMaterialsElsewhere();
+            // (an engine image, $identitynormalmap, is no zone's to write)
+            GameGhosts::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+                if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Find(Name, Out)) return false;
+                std::erase_if(Out, [](const auto& I) { return I.second.starts_with('$'); });
+                return true;
+            };
+            Work();
+            GameGhosts::ImagesElsewhere = nullptr;
+        }
     };
 
     void GhostsZone::BookMaterialsElsewhere()
@@ -272,6 +314,13 @@ namespace
             static const LevelNaming Naming{ { "patch_code_post_gfx_mp", "???_patch_code_post_gfx_mp" },
                                              { { "*", { "PRESENCE_{NAME}", "PRESENCE_SP_{NAME}", "MPUI_{NAME}" } } } };
             return &Naming;
+        }
+
+        // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwZoneAnimOwners::Fill(*this, AnimOwnerLayout(), Options, Zones, Out);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override

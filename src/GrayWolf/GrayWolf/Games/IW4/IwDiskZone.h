@@ -37,7 +37,8 @@ namespace Iw64
     public:
         IwDiskZone(const std::string& Path, const GameInfo& G);
         ~IwDiskZone() override;
-        // the string tables, and the .arena rawfiles (the multiplayer map list)
+        // the string tables, the .arena rawfiles (the multiplayer map list), the GSC source and
+        // animtrees, MW3's compiled scripts' strings (<name>.gscsource): Games/IwClassic/IwClassicAnimOwners.h
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override;
 
     protected:
@@ -102,6 +103,9 @@ namespace Iw64
                        std::string& Error) const override;
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override;
+        // the anims' weapons, player types and characters (Games/IwClassic/IwClassicAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override;
+        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override;
 
     private:
         const GameInfo& Game;

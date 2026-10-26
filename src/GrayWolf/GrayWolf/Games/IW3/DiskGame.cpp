@@ -9,6 +9,7 @@
 #include "DiskGame.h"
 #include "ExportWriters.h"
 #include "GameModernWarfare.h"
+#include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "Games/IW3/IwdZone.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/OAT/OatWeapons.h"
@@ -44,6 +45,21 @@ namespace
             // Material: its techset, images and blend factors as JSON, its images by the image kind;
             // FxEffectDef (0x20, elements 0xfc) as JSON, Black Ops' layout's ancestor
             ExportsEffects(GameModernWarfare::ReadXMaterial, Treyarch::EffectLayout::Iw3);
+        }
+
+        // its string tables, then its GSC source and animtrees (the anim owners': IwClassicAnimOwners.h)
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            for (const auto& I : Walk().Instances)
+            {
+                if (I.Parent >= 0 || !OwnerIs(I, "rawfile")) continue;
+                const std::string Nm = AssetName(Kind::Rawfile, I.Pos), L = ExportNaming::Lower(Nm);
+                if (!L.ends_with(".gsc") && !L.ends_with(".csc") && !L.ends_with(".atr")) continue;
+                std::vector<uint8_t> Bytes;
+                if (!IsReference(Kind::Rawfile, Nm, I.Pos) && RawBytes(I.Pos, { 4, 8 }, Bytes))
+                    Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
+            }
         }
 
     protected:
@@ -169,6 +185,13 @@ namespace
             auto Zone = std::make_unique<Cod4Zone>(Path, Iw3Family::InstallOf(Path, Options.Install));
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the anims' weapons, player types and characters (IwClassicAnimOwners.h)
+        std::vector<std::string> AnimOwnerDocuments() const override { return IwClassicAnimOwners::Documents(); }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwClassicAnimOwners::Fill(*this, Options, Zones, Out);
         }
     };
 

@@ -8,6 +8,7 @@
 #include "DirectXTex.h"
 #include "ExportNaming.h"
 #include "Strings.h"
+#include "AppLog.h"
 
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
@@ -18,6 +19,7 @@
 #include <filesystem>
 #include <chrono>
 #include <map>
+#include <future>
 #include <mutex>
 #include <unordered_map>
 
@@ -268,7 +270,7 @@ struct Renderer::Impl
         }
         ComPtr<ID3D11ShaderResourceView> Srv;
         PreviewImage Img;
-        if (PreparePreviewImage(Path, PreviewTexUse::Color, -1.0f, Img))
+        if (PreparePreviewImage(Path, PreviewTexUse::Color, -1.0f, Img, nullptr, TextureMax))
         {
             if (!Mask.empty()) WithAlphaMask(Img, Path, Mask);
             if (!Opacity.empty() || !Ramp.empty()) Img = WithMaps(Img, Opacity, Invert, Ramp);
@@ -310,7 +312,7 @@ struct Renderer::Impl
             PreviewImage Img;
             int Fw = 0, Fh = 0;
             std::vector<uint8_t> Px;
-            Ok = !Paths[K].empty() && PreparePreviewImage(Paths[K], PreviewTexUse::Color, -1.0f, Img) &&
+            Ok = !Paths[K].empty() && PreparePreviewImage(Paths[K], PreviewTexUse::Color, -1.0f, Img, nullptr, TextureMax) &&
                  PreviewImageToRGBA8(Img, Fw, Fh, Px) && Fw > 0 && Fh > 0;
             if (!Ok) break;
             if (K == 0)
@@ -829,23 +831,42 @@ bool Scene::Load(const std::string& JsonPath, const std::vector<std::string>& Ex
     Folders.insert(Folders.end(), ExtraFolders.begin(), ExtraFolders.end());
     // the effects of the other folders too (a common zone's, which a map's effects start)
     for (size_t K = 1; K < Folders.size(); K++) Lib->AddSearchDir(Folders[K] + "\\fx");
-    // the images of these folders, indexed once a minute at most: the effects of one export
-    // shown one after the other share their index
+    // the images of these folders, indexed once: the effects of one export shown one after the other
+    // share their index. Past a minute it is indexed again on a worker (an export may have added
+    // images), the old one used meanwhile: a game's index takes seconds
     {
+        struct Slot
+        {
+            std::chrono::steady_clock::time_point At;
+            std::shared_ptr<const TextureIndex> Index;
+            std::future<std::shared_ptr<const TextureIndex>> Next;   // the refresh, when one runs
+        };
         static std::mutex Lock;
-        static std::map<std::string, std::pair<std::chrono::steady_clock::time_point, std::shared_ptr<const TextureIndex>>> Indexes;
+        static std::map<std::string, Slot> Indexes;
         std::string Key;
         for (const auto& F : Folders) Key += F + "|";
-        std::lock_guard<std::mutex> Guard(Lock);
-        auto& Slot = Indexes[Key];
-        const auto Now = std::chrono::steady_clock::now();
-        if (!Slot.second || Now - Slot.first > std::chrono::seconds(60))
-        {
+        const auto Build = [Folders, Key] {
+            AppLog::Timer T("fx image index " + Key, spdlog::level::info, 1000);
             auto Index = std::make_shared<TextureIndex>();
             for (const auto& F : Folders) Index->AddFolder(F);
-            Slot = { Now, Index };
+            return std::shared_ptr<const TextureIndex>(std::move(Index));
+        };
+        std::lock_guard<std::mutex> Guard(Lock);
+        Slot& S = Indexes[Key];
+        const auto Now = std::chrono::steady_clock::now();
+        if (S.Next.valid() && S.Next.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            S.Index = S.Next.get();
+            S.At = Now;
         }
-        Textures = Slot.second;
+        if (!S.Index)
+        {
+            S.Index = Build();
+            S.At = Now;
+        }
+        else if (Now - S.At > std::chrono::seconds(60) && !S.Next.valid())
+            S.Next = std::async(std::launch::async, Build);
+        Textures = S.Index;
     }
     // the materials the effects only name, completed from the material kind's files
     Lib->SetMaterials(Textures);

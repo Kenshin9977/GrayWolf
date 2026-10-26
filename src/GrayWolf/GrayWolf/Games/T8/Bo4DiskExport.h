@@ -88,6 +88,8 @@ namespace Bo4DiskExport
         // Sounds: entries without samples in any bank of their language (a line that language does not
         // record, its key a placeholder), not counted in Images
         size_t Empty = 0;
+        // Images: sized headers with no pixels on disk (FilledAtRuntime), not written
+        size_t Runtime = 0;
         // References: name-only headers (no size, no mips) of an image another zone defines
         std::vector<std::string> MissingSamples;   // why, for the first few without pixels
     };
@@ -143,4 +145,10 @@ namespace Bo4DiskExport
                              const std::function<void(const std::string&)>& OnReference = nullptr);
     // a name-only header: no size and no mips (another zone defines the image)
     inline bool IsReference(const ImageInfo& I) { return I.Width == 0 && I.PayloadSize == 0 && I.MipHash == 0; }
+    // A sized image whose pixels are neither read with the zone nor described by a mip record: the
+    // map's lighting volumes (imageFlags 0xb, streaming u8@0x7c 2: BC6H 3D, 1x1x1 R11G11B10 and
+    // R32G32B32A32) and its R16 512x512 or 2048x1536 textures, ~21 a map. Their name hash, u32@0x5c
+    // and every other key are in no package and no other zone (checked over every zone): the game
+    // fills them at run time, there is nothing on disk to write.
+    inline bool FilledAtRuntime(const ImageInfo& I) { return !IsReference(I) && I.PayloadPos < 0 && I.MipKeys.empty(); }
 }

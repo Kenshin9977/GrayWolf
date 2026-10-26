@@ -14,6 +14,8 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 class TreyarchLevelZone : public ZonekitZone
 {
@@ -52,8 +54,20 @@ public:
         Maps::ClipLayout Clip;
     };
 
+    // Where a title keeps a weapon's models and xanims: WeaponVariantDef (zone type "weapon"): its
+    // WeaponDef at Def, the xanim names (Anims, AnimCount pointers); WeaponDef: gunXModel (GunCount
+    // model pointers) at Guns, handXModel at Hands; WeaponAttachmentUnique ("attachmentunique",
+    // Black Ops II): its xanim names at UniqueAnims (-1: the title has none)
+    struct WeaponLayout
+    {
+        int64_t Def = 8, Anims = 0, AnimCount = 0, Guns = 4, GunCount = 16, Hands = 8, UniqueAnims = -1, UniqueAnimCount = 0;
+    };
+
 protected:
     // ReadMap for a title of the family, its materials read by the live reader
     bool ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const Level32Layout& L,
                    const std::function<XMaterial_t(uint64_t)>& Material);
+    // The anim owners' weapon documents (GscAnimOwners::WeaponDocument) of the weapons and
+    // attachment uniques this zone defines
+    void WeaponDocuments(std::vector<std::pair<std::string, std::string>>& Out, const WeaponLayout& L) const;
 };

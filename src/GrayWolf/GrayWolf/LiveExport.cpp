@@ -816,8 +816,8 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
             }
             else
             {
-                // Failed, no loaded lods (Should be marked placeholder anyways)
-                return ExportGameResult::UnknownError;
+                // no LOD: the model holds no geometry to write (AW's vm_sn6_nocamo: no LOD, no bone)
+                return ExportGameResult::Placeholder;
             }
         }
 

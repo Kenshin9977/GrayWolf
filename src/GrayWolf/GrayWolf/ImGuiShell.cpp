@@ -143,6 +143,7 @@ ShellUi::ShellState::ShellState(ID3D11Device* Device, ID3D11DeviceContext* Conte
     {
         Assets.GridView = !ShotMode->List;
         Assets.TypeFilter = ShotMode->Type;
+        std::snprintf(Assets.Filter, sizeof(Assets.Filter), "%s", ShotMode->Search.c_str());
         if (!ShotMode->AnimRig.empty()) Assets.GridRig = ShotMode->AnimRig;
         Shot = std::make_unique<GridShot>(*ShotMode, Device, Context);
     }
@@ -150,7 +151,7 @@ ShellUi::ShellState::ShellState(ID3D11Device* Device, ID3D11DeviceContext* Conte
     RefreshPresets(Assets);
 }
 
-bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode)
+bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode, const UiRecordOptions* Record)
 {
     // Crisp under display scaling.
     if (HMODULE User32 = GetModuleHandleW(L"user32.dll"))
@@ -167,7 +168,9 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
     WNDCLASSEX Wc{}; Wc.cbSize=sizeof(Wc); Wc.style=CS_HREDRAW|CS_VREDRAW; Wc.lpfnWndProc=WndProc;
     Wc.hInstance=Inst; Wc.hCursor=LoadCursor(nullptr,IDC_ARROW); Wc.lpszClassName=L"GrayWolfImGuiShell";
     RegisterClassEx(&Wc);
+    const bool Hidden = ShotMode || Record;   // ui-grid-shot, ui-record: offscreen at the size asked
     if (ShotMode) { State.W = ShotMode->Width; State.H = ShotMode->Height; }
+    if (Record) { State.W = Record->Width; State.H = Record->Height; }
     HWND Hwnd = CreateWindowEx(0, Wc.lpszClassName, L"GrayWolf - Asset Browser (ImGui + D3D11)",
                                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, State.W, State.H,
                                nullptr, nullptr, Inst, nullptr);
@@ -188,12 +191,12 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
     auto CreateBackRTV = [&]{ BackRTV.Reset(); ComPtr<ID3D11Texture2D> B; if (SUCCEEDED(Swap->GetBuffer(0,__uuidof(ID3D11Texture2D),&B))) Dev->CreateRenderTargetView(B.Get(),nullptr,&BackRTV); };
     CreateBackRTV();
 
-    if (!ShotMode) ShowWindow(Hwnd, SW_SHOWMAXIMIZED);   // ui-grid-shot stays hidden
+    if (!Hidden) ShowWindow(Hwnd, SW_SHOWMAXIMIZED);   // ui-grid-shot and ui-record stay hidden
     else
     {
         // the client area the size asked (the screen's work area does not cap a hidden window)
         State.Offscreen = true;
-        RECT Want{ 0, 0, ShotMode->Width, ShotMode->Height };
+        RECT Want{ 0, 0, State.W, State.H };
         AdjustWindowRect(&Want, WS_OVERLAPPEDWINDOW, FALSE);
         SetWindowPos(Hwnd, nullptr, 0, 0, Want.right - Want.left, Want.bottom - Want.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         RECT Rc{}; GetClientRect(Hwnd, &Rc); State.W = Rc.right; State.H = Rc.bottom; State.Resized = true;
@@ -211,6 +214,7 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
 
     LoadGamePanel LoadGame;
     ShellState S(Dev.Get(), Ctx.Get(), ModelsDir, ShotMode);
+    if (Record) S.Recorder = std::make_unique<UiRecorder>(*Record, Dev.Get(), Ctx.Get());
 
     while (!State.Quit)
     {
@@ -231,6 +235,7 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
+        if (S.Recorder) S.Recorder->FrameBegin(S);
         ImGui::NewFrame();
 
         bool OpenHelp = false;
@@ -260,10 +265,13 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
 
         PollUiShotTriggers(S, Swap.Get());
 
-        if (S.Shot && S.Shot->FrameEnd(Swap.Get(), !S.Catalog.Walking() && !S.SelectFirstModel && !S.Viewport.Loader.Busy(),
+        const bool ShotSelectDone = !S.ShotMode || (S.ShotSelected >= S.ShotMode->Select.size() && S.ShotSelectWait <= 0);
+        if (S.Shot && S.Shot->FrameEnd(Swap.Get(), !S.Catalog.Walking() && !S.SelectFirstModel && !S.Viewport.Loader.Busy() &&
+                                       !S.Viewport.AnimRigLoading && ShotSelectDone,
                                        !S.Assets.GridView || (S.Assets.Grid && S.Assets.Grid->Settled()), S.Assets.Grid ? S.Assets.Grid->Stats() + "\n" + S.Rigs->Stats() : std::string()))
             State.Quit = true;
-        Swap->Present(S.Shot ? 0 : 1, 0);
+        if (S.Recorder && S.Recorder->FrameEnd(S, Swap.Get())) State.Quit = true;
+        Swap->Present(Hidden ? 0 : 1, 0);
         AppLog::FrameEnd();
     }
 
@@ -271,8 +279,10 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
     UiAsync::Shutdown();
 
     S.Assets.Grid.reset();   // its workers stop before the device goes
-    const bool ShotSaved = !S.Shot || S.Shot->Ok();
+    if (S.Recorder) S.Recorder->Finish();   // its frames on disk, audio.wav written
+    const bool ShotSaved = (!S.Shot || S.Shot->Ok()) && (!S.Recorder || S.Recorder->Ok());
     if (S.Shot) spdlog::info("ui-grid-shot\n{}", S.Shot->Summary());
+    if (S.Recorder) spdlog::info("ui-record\n{}", S.Recorder->Summary());
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();

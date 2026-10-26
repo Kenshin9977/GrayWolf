@@ -77,6 +77,34 @@ namespace ShellUi
             catch (...) { return false; }
         }
 
+        // An export's folders of one kind (<out>/<game>/<kind>/...): the game's folder is above them
+        bool IsKindFolder(std::string_view Name)
+        {
+            static constexpr std::string_view Kinds[] = { "models", "anims", "images", "sounds", "fx", "maps", "materials",
+                                                          "xmodels", "xanims", "effects", "scripts", "rawfiles" };
+            if (Name.size() > 9) return false;
+            char Low[10] = {};
+            for (size_t i = 0; i < Name.size(); i++) Low[i] = (char)tolower((unsigned char)Name[i]);
+            return std::find(std::begin(Kinds), std::end(Kinds), std::string_view(Low, Name.size())) != std::end(Kinds);
+        }
+
+        // Path's folders, split on either separator (the file's own name left out)
+        std::vector<std::string_view> Folders(const std::string& Path)
+        {
+            std::vector<std::string_view> Out;
+            size_t i = 0;
+            while (i < Path.size())
+            {
+                const size_t Start = Path.find_first_not_of("\\/", i);
+                if (Start == std::string::npos) break;
+                const size_t End = Path.find_first_of("\\/", Start);
+                if (End == std::string::npos) break;
+                Out.emplace_back(Path.data() + Start, End - Start);
+                i = End;
+            }
+            return Out;
+        }
+
         std::string AssetKey(const Item& M)
         {
             std::string Key = M.Root + '|' + std::to_string(M.Kind) + '|' + M.Format + '|' + M.Name;
@@ -180,6 +208,17 @@ namespace ShellUi
         }
     }
 
+    std::string GameOfPath(const std::string& Dir, const std::string& Path)
+    {
+        // the first kind folder from the listed folder's parent down: its parent (the listed folder is
+        // the game's, one of its kind folders, or a folder of several games)
+        const std::vector<std::string_view> Parts = Folders(Path);
+        const size_t DirDepth = Folders(Dir + "/").size();
+        for (size_t k = DirDepth >= 2 ? DirDepth - 1 : 1; k < Parts.size(); k++)
+            if (IsKindFolder(Parts[k])) return std::string(Parts[k - 1]);
+        return {};
+    }
+
     void AssetCatalog::RebuildIdIndex()
     {
         IdToIndex.clear(); for (size_t i = 0; i < Models.size(); i++) IdToIndex[Models[i].Id] = i;
@@ -243,6 +282,7 @@ namespace ShellUi
                         const size_t To = From == std::string::npos ? From : PathText.find_first_of("\\/", From);
                         Md.Root = Dir + '|' + (To == std::string::npos ? std::string() : PathText.substr(From, To - From));
                     }
+                    Md.Game = GameOfPath(Dir, PathText);
                     Md.SizeBytes = (long long)It->file_size(Ec); // from the entry the iterator already has, no extra stat
                     Md.Written = (long long)It->last_write_time(Ec).time_since_epoch().count(); // so is this
                     Md.Format = E.empty() ? "" : E.substr(1);
@@ -394,6 +434,15 @@ namespace ShellUi
         const bool Walking = S.Catalog.Walking();   // read first: a walk that ends now has flushed
         MergeListed(S);
         SyncAnimRigs(S, Walking);
+        // ui-grid-shot --select: each name selected in turn, a second apart, as clicks would
+        if (S.ShotMode && !S.SelectFirstModel && S.ShotSelectWait > 0) S.ShotSelectWait--;
+        else if (S.ShotMode && !S.SelectFirstModel && S.ShotSelected < S.ShotMode->Select.size())
+        {
+            const std::string& Want = S.ShotMode->Select[S.ShotSelected++];
+            for (int k = 0; k < (int)S.Catalog.Models.size(); k++)
+                if (S.Catalog.Models[k].Name == Want) { LoadSelection(S, k); break; }
+            S.ShotSelectWait = 60;
+        }
         if (!S.SelectFirstModel || Walking) return;
         S.SelectFirstModel = false;
         const auto& Models = S.Catalog.Models;

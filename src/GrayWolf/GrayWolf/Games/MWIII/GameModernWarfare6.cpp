@@ -167,6 +167,7 @@ const XMaterial_t GameModernWarfare6::ReadXMaterial(uint64_t MaterialPointer)
     uint64_t Hash;
     uint32_t ImageCount;
     uint64_t ImageTablePtr;
+    bool Header = false;
 
     if (CoDAssets::GameFlags == SupportedGameFlags::SP)
     {
@@ -174,6 +175,7 @@ const XMaterial_t GameModernWarfare6::ReadXMaterial(uint64_t MaterialPointer)
         Hash = MaterialData.Hash;
         ImageCount = MaterialData.ImageCount;
         ImageTablePtr = MaterialData.ImageTablePtr;
+        Header = MaterialData.ImageCount == 0 && MaterialData.TechsetPtr == 0;
     }
     else
     {
@@ -205,9 +207,12 @@ const XMaterial_t GameModernWarfare6::ReadXMaterial(uint64_t MaterialPointer)
     Result.MaterialName = CoDAssets::GetHashedName("xmaterial", Hash);
 
     // an image named by its hash first in it; type 0 the colour map
+    const auto UsageOf = [](uint32_t Semantic) { return Semantic == 0 ? ImageUsageType::DiffuseMap : ImageUsageType::Unknown; };
     GameReaders::AddMaterialImages<MW6XMaterialImage>(
         Result, ImageTablePtr, ImageCount, [](uint64_t ImagePtr) { return CoDAssets::GetHashedName("ximage", CoDAssets::GameInstance->Read<uint64_t>(ImagePtr)); },
-        [](uint32_t Semantic) { return Semantic == 0 ? ImageUsageType::DiffuseMap : ImageUsageType::Unknown; });
+        UsageOf);
+    // a header (a transient zone's handle to a material another zone defines): that zone's images
+    if (Header) GameReaders::AddImagesElsewhere(Result, ImagesElsewhere, std::format("{:x}", Hash & 0x0FFFFFFFFFFFFFFFull), UsageOf);
 
     return Result;
 }

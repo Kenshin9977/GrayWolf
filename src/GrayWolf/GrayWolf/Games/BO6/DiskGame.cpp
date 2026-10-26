@@ -12,6 +12,7 @@
 #include "Games/BO6/TechsetFormat.h"
 #include "Games/BO6/VfxLayout.h"
 #include "GameBlackOps6.h"
+#include "Games/IW/IwctxAnimOwners.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwLanguageNames.h"
 #include "Games/IW/IwWeaponStats.h"
@@ -46,6 +47,22 @@ namespace
     using DiskGame::ExportOptions;
     using DiskGame::Kind;
     using DiskGame::Totals;
+
+    // Anim owners (Games/IW/IwctxAnimOwners.h): aianimset lists its xanims (and Black Ops 7's
+    // xanimset); character (0x80) {body script string 0x40, head 0x48, archetype 0x58}
+    const IwctxAnimOwners::Layout& AnimOwnerLayout()
+    {
+        static const IwctxAnimOwners::Layout L = [] {
+            IwctxAnimOwners::Layout L;
+            L.Sets = { "aianimset", "xanimset" };
+            L.Nodes = { "xanimsetstate", "xanimsetalias" };
+            L.CharBody = 0x40, L.CharHead = 0x48, L.CharArchetype = 0x58;
+            L.AnimName = [](uint64_t H) { return GameBlackOps6::HashedName("xanim", H); };
+            L.AssetName = [](const char* T, uint64_t H) { return GameBlackOps6::HashedName(T, H); };
+            return L;
+        }();
+        return L;
+    }
 
     class BlackOps6Zone final : public ZonekitZone
     {
@@ -176,6 +193,15 @@ namespace
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the zone's entity strings: map_game_objects' pairs, then each script brush model's
         void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
+
+        // its string tables, and the anim owners' facts of the zone (and of the zones loaded beside
+        // it), its scene bundles, AI types and entities
+        void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
+        {
+            ZonekitZone::Documents(Out);
+            Out.emplace_back(IwctxAnimOwners::DocumentName, AnimOwnerFacts());
+        }
+        std::string AnimOwnerFacts() const;
 
         // What LoadBeside looks the meshes up in: the install index of this game
         void SetInstall(const DiskGame::IDiskGame* G, const ExportOptions& O, const std::string& I)
@@ -999,6 +1025,30 @@ namespace
         return Leaf == "cod24" || Leaf == "sp24" ? Dir.parent_path().string() : std::string();
     }
 
+    std::string BlackOps6Zone::AnimOwnerFacts() const
+    {
+        using IwctxAnimOwners::Json;
+        auto& Session = const_cast<BlackOps6Zone*>(this)->Live();
+        std::vector<IwctxAnimOwners::Served> All{ { Name(), &Image(), Session.Origin(), &Walk() } };
+        for (const auto& S : Beside.All()) All.push_back({ S->Name, &S->Bytes, S->Base, &S->R });
+        const IwctxAnimOwners::Zones Zones(std::move(All), AnimOwnerLayout());
+        Json F = Zones.Facts();
+        F["reader_key"] = IndexKey();   // (the shared zones' facts kept on disk under it)
+        std::vector<std::pair<std::string, Json>> Read;
+        if (const auto* E = ExporterOf(Kind::ScriptBundles); E != nullptr && !IwctxAnimOwners::ReadingShared())
+            IwctxAnimOwners::ReadExported(*E, Kind::ScriptBundles, Read);
+        for (const auto& [Stem, B] : Read)
+            IwctxAnimOwners::AddScenes(F, B, B.value("name", std::string()).empty() ? Stem : B.value("name", std::string()),
+                                       [&Zones](const std::string& N) { return Zones.CompositeModels(N); });
+        Read.clear();
+        if (const auto* E = ExporterOf(Kind::AiTypes)) IwctxAnimOwners::ReadExported(*E, Kind::AiTypes, Read);
+        for (const auto& [Stem, A] : Read) IwctxAnimOwners::AddCharacterNames(F, A);
+        std::vector<IwctxReaders::MapEntity> Ents;
+        EntityStrings(Ents);
+        IwctxAnimOwners::AddMapEntities(F, Ents);
+        return F.dump();
+    }
+
     // "bo6" the multiplayer and zombies zones (cod24\*.ff), "bo6sp" the campaign's (sp24\*.ff)
     class BlackOps6Game final : public DiskGame::IDiskGame
     {
@@ -1050,6 +1100,17 @@ namespace
             Zone->SetInstall(this, Options, Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the anims' sets, characters, scenes and entities (Games/IW/IwctxAnimOwners.h): a zone's own
+        // facts, then those of the mode's shared zones
+        std::vector<std::string> AnimOwnerDocuments() const override { return { IwctxAnimOwners::DocumentName }; }
+        void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
+        {
+            IwctxAnimOwners::Fill(*this, Options, Zones, Out, [this, &Options](const std::string& Zone, const IwctxAnimOwners::Json&) {
+                return IwctxAnimOwners::SharedZones(Zone, Options.Install.empty() ? InstallOf(Zone) : Options.Install, Campaign ? "sp24" : "cod24",
+                                                    { "ingame_shared_mp", "ingame_zm" }, { "ingame_shared_mp", "ingame_mp" });
+            });
         }
 
     private:

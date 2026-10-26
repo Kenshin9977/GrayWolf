@@ -75,6 +75,7 @@ bool LoadPreviewGeometry(const std::vector<std::string>& SemodelPaths, PreviewGe
 // The same, as one skeleton an anim plays on (AnimRigs.h): a later part's bones join the first's
 // (a bone of the same name is that bone, the others are appended, the part's root under the bone it
 // is seated on: a weapon's j_gun on the hands' tag_weapon) and its vertices keep their weights.
+// False too for a placeholder of fewer than 4 triangles (nothing to see move).
 bool LoadRigGeometry(const std::vector<std::string>& Paths, PreviewGeometry& Out,
                      const std::function<bool()>& Cancelled = {});
 
@@ -82,9 +83,32 @@ bool LoadRigGeometry(const std::vector<std::string>& Paths, PreviewGeometry& Out
 // via tinygltf, so map previews reuse the exact same GPU upload + viewport code as .semodel/.XMODEL_EXPORT
 // models. Every node places its mesh with its transform (a map's models are instanced), except the
 // map writer's CoD-to-glTF root, so the geometry stays Z-up; skinning/animation are ignored - a static
-// preview only. Textures are kept at 512 texels at most. Skips sky-named meshes: a skybox
-// hijacks camera auto-framing. Returns false if nothing could be read.
-bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out);
+// preview only. Skips sky-named meshes: a skybox hijacks camera auto-framing. Each material's base
+// colour map is the image its texture names (MSFT_texture_dds included), read from the file the URI
+// points at, or from the map's textures/ folder when the export wrote a smaller copy there; images
+// are never embedded by our writer. Returns false if nothing could be read (or once cancelled).
+struct GlbPreviewOptions
+{
+    int MaxTexture = 512;                 // texels; 0 reads no texture
+    size_t MaxTriangles = 12'000'000;     // past this, the densest placed pieces are left out
+    std::function<bool()> Cancelled;
+};
+struct GlbPreviewStats
+{
+    double ReadMs = 0, ParseMs = 0, GeometryMs = 0, TexturesMs = 0;
+    size_t Images = 0, ImagesRead = 0, ImagesMissing = 0;
+    size_t Triangles = 0, TrianglesKept = 0, Pieces = 0, PiecesKept = 0;
+};
+bool LoadPreviewGeometryGlb(const std::string& GlbPath, PreviewGeometry& Out, const GlbPreviewOptions& Options = {},
+                            GlbPreviewStats* Stats = nullptr);
+// The asset grid's: a 256-pixel still of the whole map needs little texture and fewer triangles.
+inline GlbPreviewOptions GlbThumbnailOptions()
+{
+    GlbPreviewOptions O;
+    O.MaxTexture = 128;
+    O.MaxTriangles = 3'000'000;
+    return O;
+}
 
 // Diagnostic: renders a map .glb straight to a PNG via the headless software rasterizer, no D3D
 // device/window needed - a fast way to sanity-check a map load (framing, textures) without driving
