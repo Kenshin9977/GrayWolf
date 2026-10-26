@@ -343,7 +343,9 @@ void LoadGamePanel::DoDiskExport()
     Status = std::string(T.Cancelled ? "cancelled: " : "") + std::to_string(T.ZonesWalked) + "/" + std::to_string(T.Zones)
              + " zones read to their end, " + std::to_string(Written) + " files written to " + C.OutRoot + " in "
              + Clock(std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count())
-             + (T.Failures.empty() ? "" : ", " + std::to_string(T.Failures.size()) + " failures (see the log)");
+             + (T.Failures.empty() ? "" : ", " + std::to_string(T.Failures.size()) + " failures (see the log)")
+             // a zone that did not open says why (a missing Oodle DLL leaves every zone unread)
+             + (T.ZoneErrors.empty() ? "" : "; " + std::to_string(T.ZoneErrors.size()) + " zone(s) did not open: " + T.ZoneErrors.front());
     DiskStall.clear();
     DiskFraction = 1.0f;
     DiskExportedTo = C.OutRoot;

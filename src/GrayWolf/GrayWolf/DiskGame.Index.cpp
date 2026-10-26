@@ -9,6 +9,7 @@
 
 #include "DiskGame.h"
 #include "ExportNaming.h"
+#include "Siren.h"
 
 #include <algorithm>
 #include <chrono>
@@ -464,8 +465,11 @@ std::unique_ptr<ZoneIndex> ZoneIndex::Build(const IDiskGame& Game, const ExportO
 {
     std::vector<std::string> Names;
     if (!Game.IndexedZones(Install, Options, Names, Error)) return nullptr;
+    Siren::AddSearchDir(fs::path(Install).wstring());   // the game's own Oodle, when none is beside the exe
     // the reader's key, as Export takes it: from the first zone that opens
     std::string ReaderKey;
+    bool Opened = false;
+    std::string FirstWhy;
     for (const auto& N : Names)
     {
         std::vector<std::string> Paths;
@@ -474,9 +478,17 @@ std::unique_ptr<ZoneIndex> ZoneIndex::Build(const IDiskGame& Game, const ExportO
         if (const auto Zone = Game.Open(Paths.front(), Options, Why))
         {
             ReaderKey = Zone->IndexKey();
+            Opened = true;
             break;
         }
+        if (FirstWhy.empty()) FirstWhy = N + ": " + Why;
         if (Cancel != nullptr && Cancel->load()) break;
+    }
+    // no zone of the install opens (a missing Oodle DLL): said, not an index with nothing in it
+    if (!Opened && !FirstWhy.empty() && !(Cancel != nullptr && Cancel->load()))
+    {
+        Error = "no zone opened (" + FirstWhy + ")";
+        return nullptr;
     }
     return For(Game, Options, Install, ReaderKey, Step, Cancel, Error);
 }
@@ -489,6 +501,7 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     auto Ix = std::unique_ptr<ZoneIndex>(new ZoneIndex());
     std::vector<std::string> Names;
     if (!Game.IndexedZones(Install, Options, Names, Error)) return nullptr;
+    Siren::AddSearchDir(fs::path(Install).wstring());
     std::string KeyText = "format " + std::to_string(Format) + "\n" + Game.Id() + "\n" + Lower(fs::absolute(Install).string()) +
                           "\n" + ReaderKey + "\n";
     for (const auto& N : Names) KeyText += N + "\n";

@@ -1,7 +1,9 @@
 #include "stdafx.h"
 #include "siren.h"
 
+#include <filesystem>
 #include <mutex>
+#include <vector>
 
 // Oodle compression routine definition, verified for Oodle v5 (x32) (All callbacks are unmarked and aren't needed)
 typedef int32_t(*OodleLZ32_CompressDef)(int32_t Format, unsigned char *Buffer, int32_t BufferSize, unsigned char *OutputBuffer, int32_t Level, void *a, void *b, void *c);
@@ -18,10 +20,50 @@ HMODULE Siren::OodleHandle = NULL;
 uintptr_t Siren::OodleLZ_Compress = NULL;
 uintptr_t Siren::OodleLZ_Decompress = NULL;
 
-SirenStatus Siren::Initialize(const TCHAR* DllPath)
+namespace
 {
     // once at a time: zones decompress on several threads (the install index's workers)
-    static std::mutex Lock;
+    std::mutex Lock;
+    std::vector<std::filesystem::path> SearchDirs;
+
+    // DllPath beside the exe (the loader's own search), else in a game's folder or up to three of
+    // its parents (an install given as its zone or cod24 folder)
+    HMODULE LoadFromSearchDirs(const TCHAR* DllPath)
+    {
+        if (HMODULE H = LoadLibrary(DllPath)) return H;
+        const std::filesystem::path Name(DllPath);
+        if (Name.has_parent_path()) return NULL;
+        for (const auto& Dir : SearchDirs)
+        {
+            std::filesystem::path At = Dir;
+            for (int Up = 0; Up < 4 && !At.empty(); Up++, At = At.parent_path())
+            {
+                std::error_code Ec;
+                const auto File = At / Name;
+                if (std::filesystem::is_regular_file(File, Ec))
+                    if (HMODULE H = LoadLibraryExW(File.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH)) return H;
+                if (At == At.parent_path()) break;
+            }
+        }
+        SetLastError(ERROR_MOD_NOT_FOUND);
+        return NULL;
+    }
+}
+
+void Siren::AddSearchDir(const std::wstring& Dir)
+{
+    if (Dir.empty()) return;
+    std::error_code Ec;
+    auto Abs = std::filesystem::absolute(Dir, Ec);
+    if (Ec) return;
+    std::lock_guard<std::mutex> Guard(Lock);
+    for (const auto& D : SearchDirs)
+        if (D == Abs) return;
+    SearchDirs.push_back(std::move(Abs));
+}
+
+SirenStatus Siren::Initialize(const TCHAR* DllPath)
+{
     std::lock_guard<std::mutex> Guard(Lock);
     if (OodleHandle != NULL && OodleLZ_Compress != NULL && OodleLZ_Decompress != NULL)
         return SirenStatus::Success;
@@ -41,7 +83,7 @@ SirenStatus Siren::Initialize(const TCHAR* DllPath)
     }
     else
     {
-        OodleHandle = LoadLibrary(DllPath);
+        OodleHandle = LoadFromSearchDirs(DllPath);
     }
 
     if (OodleHandle == NULL)
@@ -53,6 +95,7 @@ SirenStatus Siren::Initialize(const TCHAR* DllPath)
         case ERROR_BAD_FORMAT:
             return SirenStatus::InvalidArch;
         }
+        return SirenStatus::MissingDll;
     }
 
     if (sizeof(uintptr_t) == 4)

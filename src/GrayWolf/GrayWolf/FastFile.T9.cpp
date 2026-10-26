@@ -140,10 +140,10 @@ namespace
 
     bool LoadOodle(std::string& Error)
     {
-        // Cold War's own Oodle (oo2core_8_win64.dll, shipped in its install): beside the exe
-        static const bool Ready = Siren::Initialize(L"oo2core_8_win64.dll") == SirenStatus::Success;
+        // Cold War's own Oodle (oo2core_8_win64.dll, shipped in its install): beside the exe or in the game's folder
+        const bool Ready = Siren::Initialize(L"oo2core_8_win64.dll") == SirenStatus::Success;
         if (!Ready)
-            Error = "Cold War blocks need oo2core_8_win64.dll beside GrayWolf.exe (it ships in the game's folder)";
+            Error = "Cold War needs oo2core_8_win64.dll: it is in neither the game's folder nor beside GrayWolf.exe";
         return Ready;
     }
 

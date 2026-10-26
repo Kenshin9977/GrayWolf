@@ -13,6 +13,7 @@
 #include "MaterialGdt.h"
 #include "MemoryBudget.h"
 #include "SettingsManager.h"
+#include "Siren.h"
 #include "WmaSounds.h"
 #include "XboxPackages.h"
 
@@ -914,6 +915,9 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     Progress P;
     P.Zones = Zones.size();
     P.Running = &T;
+    // the game's own Oodle, when none is beside the exe
+    if (!Options.Install.empty()) Siren::AddSearchDir(fs::path(Options.Install).wstring());
+    else if (!Zones.empty()) Siren::AddSearchDir(fs::path(Game.InstallOfZone(Zones.front())).wstring());
     const auto SoundsBefore = ExportWriters::SoundCounters();   // the sound writer's, this run's share added at the end
     std::error_code Ec;
     fs::create_directories(C.OutRoot, Ec);

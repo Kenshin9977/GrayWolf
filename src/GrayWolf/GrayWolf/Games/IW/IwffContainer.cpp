@@ -47,7 +47,7 @@ namespace
             for (const wchar_t* C = Dll; *C != 0; C++)
                 Names += static_cast<char>(*C); // the names are ASCII
         }
-        Error = std::format("{} need {} (from the game's folder) beside GrayWolf.exe", L.Title, Names);
+        Error = std::format("{} need {}: it is in neither the game's folder nor beside GrayWolf.exe", L.Title, Names);
         return false;
     }
 

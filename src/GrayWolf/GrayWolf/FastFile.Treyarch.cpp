@@ -473,11 +473,10 @@ bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileI
     if (IsOodle)
     {
         // Siren wraps a real Oodle DLL loaded from disk, as XPAKCache and XSUBCache do.
-        // BO4 uses oo2core_6_win64.dll.
-        static const bool SirenReady = Siren::Initialize(L"oo2core_6_win64.dll") == SirenStatus::Success;
-        if (!SirenReady)
+        // BO4 uses oo2core_6_win64.dll. Asked each time: the game's folder may be known only later.
+        if (Siren::Initialize(L"oo2core_6_win64.dll") != SirenStatus::Success)
         {
-            Error = "could not load an Oodle dll for Black Ops 4 block decompression";
+            Error = "Black Ops 4 needs oo2core_6_win64.dll: it is in neither the game's folder nor beside GrayWolf.exe";
             return false;
         }
     }
