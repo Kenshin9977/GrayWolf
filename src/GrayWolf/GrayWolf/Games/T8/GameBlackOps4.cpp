@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "GameBlackOps4.h"
 
@@ -555,25 +556,8 @@ static_assert(sizeof(BO4XAssetPoolData) == 0x20, "Invalid Pool Data Size (Expect
 
 std::unique_ptr<XAnim_t> GameBlackOps4::ReadXAnim(const CoDAnim_t* Animation)
 {
-    if (!CoDAssets::GameInstance->IsRunning()) return nullptr;
-
-    auto Anim = std::make_unique<XAnim_t>();
-    const auto AnimData = CoDAssets::GameInstance->Read<BO4XAnim>(Animation->AssetPointer);
-
-    Anim->AnimationName = Animation->AssetName;
-    Anim->ViewModelAnimation = GameReaders::StartsWithAny(Animation->AssetName, { "viewmodel_", "vm_" });
-
-    GameReaders::CopyAnimHeader(*Anim, AnimData);
-    Anim->BoneIndexSize = 4;
-    GameReaders::CopyDeltaParts(*Anim, CoDAssets::GameInstance->Read<BO4XAnimDeltaParts>(AnimData.DeltaPartsPtr));
-    Anim->BlendShapeNamesPtr = AnimData.UnknownPtr;
-    Anim->BlendShapeWeightsPtr = AnimData.UnknownZero1;
-    Anim->BlendShapeWeightCount = (uint32_t)*(uint16_t*)&AnimData.Unknown[0];
-
-    Anim->RotationType = AnimationKeyTypes::QuatPackingA;
-    Anim->TranslationType = AnimationKeyTypes::MinSizeTable;
-    Anim->SupportsInlineIndicies = false;
-    return Anim;
+    return GameReaders::ReadTreyarchAnim<BO4XAnim, BO4XAnimDeltaParts>(Animation, AnimationKeyTypes::QuatPackingA, { "viewmodel_", "vm_" },
+                                                                      [](XAnim_t& Anim, const BO4XAnim& Data) { GameReaders::CopyBlendShapes(Anim, Data); });
 }
 
 std::unique_ptr<XModel_t> GameBlackOps4::ReadXModel(const CoDModel_t* Model)
@@ -713,15 +697,8 @@ void GameBlackOps4::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_pt
 {
     bool ExportColors = (SettingsManager::GetSetting("exportvtxcolor", "true") == "true");
     auto MeshInfo = CoDAssets::GameInstance->Read<BO4XModelMeshInfoEx>(ModelLOD.LODStreamInfoPtr);
-
-    bool HasExtendedVertexInfo = (MeshInfo.StatusFlag & 64) != 0;
-
-    // flag == 8 seems to mean loaded; else the packages, none open failing the model
-    const bool Loaded = (MeshInfo.StatusFlag & 0x3F) == 8;
-    if (!Loaded && CoDAssets::GamePackageCache == nullptr)
-        throw std::runtime_error("the mesh is in the packages, none open");
-    const auto MeshData = Loaded ? MeshDecode::FromZone(MeshInfo.XModelMeshBufferPtr, MeshInfo.XModelMeshBufferSize)
-                                 : MeshDecode::FromPackage(ModelLOD.LODStreamKey, MeshInfo.XModelMeshBufferSize);
+    const auto MeshData = MeshDecode::StreamedMesh(MeshInfo.StatusFlag, MeshInfo.XModelMeshBufferPtr, MeshInfo.XModelMeshBufferSize, ModelLOD.LODStreamKey,
+                                                   (int32_t)MeshInfo.XModelMeshBufferSize);
 
     if (MeshData.Data != nullptr)
     {
@@ -776,8 +753,7 @@ void GameBlackOps4::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_pt
         // the vertex records carry 8 more bytes when extended (the first 4 seem to be a second UV,
         // possibly for camo mapping); a surface is weighted when its flags say so, a bone past the
         // model's own added (smod_bone<n>)
-        const MeshDecode::Regions Regions{ MeshInfo.VertexOffset, MeshInfo.UVOffset, MeshInfo.WeightsOffset, MeshInfo.FacesOffset,
-                                           HasExtendedVertexInfo ? 24u : 16u };
+        const MeshDecode::Regions Regions = MeshDecode::RegionsOf(MeshInfo);
         std::vector<WeightsData> Weights;
         for (auto& Submesh : ModelLOD.Submeshes)
         {
@@ -1131,7 +1107,7 @@ bool GameBlackOps4::DecryptDiskString(const uint8_t* Ciphertext, uint8_t Length,
     return true;
 }
 
-bool GameBlackOps4::ExportDiskLocalize(const std::vector<uint8_t>& Zone, const std::string& OutPath, std::string& Report)
+bool GameBlackOps4::ExportDiskLocalize(ByteView Zone, const std::string& OutPath, std::string& Report)
 {
     constexpr uint64_t FollowsInline = 0xFFFFFFFFFFFFFFFFull;
 
@@ -1210,7 +1186,7 @@ bool GameBlackOps4::ExportDiskLocalize(const std::vector<uint8_t>& Zone, const s
     return true;
 }
 
-bool GameBlackOps4::ExportDiskRawStrings(const std::vector<uint8_t>& Zone, const std::string& OutPath, std::string& Report)
+bool GameBlackOps4::ExportDiskRawStrings(ByteView Zone, const std::string& OutPath, std::string& Report)
 {
     if (Zone.size() < 40)
     {

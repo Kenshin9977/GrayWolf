@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Black Ops Cold War (T9) on the disk template: a ZonekitZone with the t9 profile, served to the
 // live Cold War readers (GameBlackOpsCW). What is Cold War's own: asset names are 60-bit hashes
@@ -7,6 +8,7 @@
 // Zones come from CASC (casc:<pattern>, .fd patches applied), streamed data from the .xsub packages.
 
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "FileSystems.h"
 #include "Games/Treyarch/TreyarchAnimOwners.h"
 #include "Games/Treyarch/TreyarchEffects.h"
@@ -211,6 +213,43 @@ namespace
 
     protected:
         const char* Profile() const override { return "t9"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // its images' records (BOCWGfxImage: its in-zone pixels, its mips' table) served from the
+        // zone's heads, the zone not read
+        static_assert(sizeof(BOCWGfxImage) == 0xd0 && offsetof(BOCWGfxImage, LoadedMipPtr) == 0x28 && offsetof(BOCWGfxImage, GfxMipsPtr) == 0x30 &&
+                      offsetof(BOCWGfxImage, LoadedMipSize) == 0x98 && offsetof(BOCWGfxImage, GfxMipMaps) == 0xb8 && sizeof(BOCWGfxMip) == 32);
+        HeadSpec Heads() const override
+        {
+            HeadSpec S;
+            S.Type = "image";
+            S.Size = sizeof(BOCWGfxImage);
+            S.Data = { { offsetof(BOCWGfxImage, LoadedMipPtr),
+                         [](ByteView R) { return (uint64_t)ExportNaming::At<uint32_t>(R, offsetof(BOCWGfxImage, LoadedMipSize)); }, 256 << 10 },
+                       { offsetof(BOCWGfxImage, GfxMipsPtr),
+                         [](ByteView R) { return (uint64_t)ExportNaming::At<uint8_t>(R, offsetof(BOCWGfxImage, GfxMipMaps)) * sizeof(BOCWGfxMip); } } };
+            return S;
+        }
+        // what GameBlackOpsCW::LoadXImage writes of an image: the largest mip the packages hold
+        // (its size and DXGI format make its bytes: its record's size is no measure of them), else
+        // its pixels in the zone
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K != DiskGame::Kind::Image || Pos + (int64_t)sizeof(BOCWGfxImage) > (int64_t)Image().size()) return;
+            const auto I = At<BOCWGfxImage>(Image(), Pos);
+            const int64_t Table = Off(PointerAt(Pos + offsetof(BOCWGfxImage, GfxMipsPtr)));
+            uint32_t Size = 0, Width = 0, Height = 0;
+            for (uint32_t M = 0; Table >= 0 && M < I.GfxMipMaps && Table + (M + 1) * (int64_t)sizeof(BOCWGfxMip) <= (int64_t)Image().size(); M++)
+            {
+                const auto Mip = At<BOCWGfxMip>(Image(), Table + M * (int64_t)sizeof(BOCWGfxMip));
+                if (Mip.Size <= Size || Mip.HashID == 0 || CoDAssets::GamePackageCache == nullptr || !CoDAssets::GamePackageCache->Exists(Mip.HashID)) continue;
+                Size = Mip.Size;
+                Width = I.LoadedMipWidth >> (I.GfxMipMaps - M - 1), Height = I.LoadedMipHeight >> (I.GfxMipMaps - M - 1);
+            }
+            // (the sRGB BC formats are written as their UNORM twins, the same size)
+            W = Size ? DiskGame::Sizes::ImageWeight(std::max(1u, Width), std::max(1u, Height), I.ImageFormat, 1, 1)
+                     : DiskGame::Sizes::ImageWeight(I.LoadedMipSize, I.LoadedMipWidth, I.LoadedMipHeight);
+        }
         // a hash field's name: the asset name index, else the string hashes
         std::string HashName(uint64_t Hash) const override
         {
@@ -343,12 +382,12 @@ namespace
 
         // with the images it holds (the install index then finds a map's textures in the zone
         // defining them)
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "image") && At<uint8_t>(Image(), I.Pos + offsetof(BOCWGfxImage, GfxMipMaps)) != 0)
-                    Out.push_back({ Kind::Image, AssetName(Kind::Image, I.Pos) });
+                    Out.push_back({ { Kind::Image, AssetName(Kind::Image, I.Pos) }, I.Pos });
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+anims1"; }
 
@@ -386,7 +425,7 @@ namespace
             return true;
         }
         // the district's static models, from its streamed data when the zone holds it
-        void AddDistrictModels(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const std::vector<uint8_t>& Img,
+        void AddDistrictModels(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, ByteView Img,
                                int64_t Data, uint32_t Size, const std::unordered_map<uint64_t, uint64_t>& ModelsByHash);
 
     private:
@@ -402,7 +441,7 @@ namespace
         // The zone's string table: the count at 0, then after the 0x28 header
         // one 8-byte slot per string, 0 or -1, and the text of each -1 slot in order, encrypted
         // (StringCipher.h); one the table cannot decrypt is left empty, counted
-        std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Zone)
+        std::vector<std::string> ZoneStrings(ByteView Zone)
         {
             if (Zone.size() < 0x28) return {};
             const int32_t Count = At<int32_t>(Zone, 0);
@@ -471,7 +510,7 @@ namespace
         return -1;
     }
 
-    void ColdWarZone::AddDistrictModels(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const std::vector<uint8_t>& Img,
+    void ColdWarZone::AddDistrictModels(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, ByteView Img,
                                         int64_t Data, uint32_t Size, const std::unordered_map<uint64_t, uint64_t>& ModelsByHash)
     {
         const uint32_t Count = At<uint32_t>(Img, Data + SModelDataCount);

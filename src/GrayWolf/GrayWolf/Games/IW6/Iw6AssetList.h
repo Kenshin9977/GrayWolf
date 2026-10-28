@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -29,7 +31,7 @@ namespace Iw6
     // The engine's own name for a type id, nullptr past the end of the enum.
     const char* AssetTypeName(uint32_t Type);
 
-    bool ReadAssetList(const std::vector<uint8_t>& Zone, AssetList& Out, std::string& Error);
+    bool ReadAssetList(ByteView Zone, AssetList& Out, std::string& Error);
 
     // Walking every asset's own bytes is the zonekit iw6 walker's job (ZoneTables::WalkZone,
     // "iw6" profile) - see Games/IW6/ZoneSource.cpp.

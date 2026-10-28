@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 
+#include "ByteView.h"
+#include "Hashing.h"
+
 namespace ExportNaming
 {
     inline std::string Lower(std::string S)
@@ -38,19 +41,10 @@ namespace ExportNaming
     }
 
     // FNV-1a (64-bit) of S, continued from H: what the kept indexes (zones, packages) are keyed by.
-    inline uint64_t Fnv1a(const std::string& S, uint64_t H = 0xcbf29ce484222325ull)
-    {
-        for (unsigned char C : S) H = (H ^ C) * 0x100000001b3ull;
-        return H;
-    }
+    inline uint64_t Fnv1a(const std::string& S, uint64_t H = 0xcbf29ce484222325ull) { return Hashing::Fnv1a(S, H); }
 
     // V as 16 lower-case hex digits.
-    inline std::string Hex16(uint64_t V)
-    {
-        char B[20];
-        snprintf(B, sizeof(B), "%016llx", (unsigned long long)V);
-        return B;
-    }
+    inline std::string Hex16(uint64_t V) { return Hashing::Hex16(V); }
 
     // 1630 as "1,630"
     inline std::string Thousands(size_t N)
@@ -88,7 +82,7 @@ namespace ExportNaming
 
     // The T at Off in a zone (or any buffer), T{} when it does not fit.
     template <class T>
-    T At(const std::vector<uint8_t>& Buf, int64_t Off)
+    T At(ByteView Buf, int64_t Off)
     {
         T V{};
         if (Off >= 0 && Off + (int64_t)sizeof(T) <= (int64_t)Buf.size()) std::memcpy(&V, Buf.data() + Off, sizeof(T));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include "AssetGrid.h"
 
 #include <d3d11.h>
@@ -72,11 +74,11 @@ namespace ThumbCache
     std::string FileFor(const AssetGridItem& A, const char* Variant);
     bool Load(const std::string& File, int& W, int& H, std::vector<uint8_t>& Rgba);
     // Needs COM (WIC) on the calling thread: the grid's workers have it.
-    bool Save(const std::string& File, int W, int H, const std::vector<uint8_t>& Rgba);
+    bool Save(const std::string& File, int W, int H, ByteView Rgba);
 }
 
 // An immutable RGBA8 texture's view (device only: any thread).
-Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> MakeRgbaSRV(ID3D11Device* Dev, int W, int H, const std::vector<uint8_t>& Rgba);
+Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> MakeRgbaSRV(ID3D11Device* Dev, int W, int H, ByteView Rgba);
 // An image file (dds, png, tga, iwi) from its first mip within MaxSize, scaled to fit, made opaque.
 bool DecodeImageThumb(const std::string& Path, const std::string& Ext, int MaxSize, int& W, int& H, std::vector<uint8_t>& Rgba);
 

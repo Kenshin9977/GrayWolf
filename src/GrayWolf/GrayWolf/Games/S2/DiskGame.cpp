@@ -7,6 +7,7 @@
 
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportWriters.h"
 #include "GameWorldWar2.h"
 #include "Games/IW/IWMaterialBooks.h"
@@ -53,7 +54,7 @@ namespace
     constexpr uint32_t CompositeFlag = 0x200;
 
     // GfxImage (0x60): pixels at 0x20 (resident in the zone, or null when streamed), four mip
-    // records {u16 width, u16 height, u32} from 0x28, the format at 0x48 (GameWorldWar2::DxgiFormat),
+    // records {u16 width, u16 height, u32} from 0x28, the format at 0x48 (GameWorldWar2::DxgiFormat makes it DXGI),
     // the resident size at 0x54, the map type at 0x58 (5: cube).
     constexpr int64_t ImagePixels = 0x20, ImageMips = 0x28, ImageFormatAt = 0x48, ImageMapType = 0x58;
     constexpr int Levels = 4;
@@ -375,6 +376,10 @@ namespace
 
     protected:
         const char* Profile() const override { return "s2"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // a streamed image's stream records are the table's by its rank among the zone's images
+        std::vector<std::string> Ranked() const override { return { "image" }; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("S2"); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         // a back reference to an asset names its slot in the asset list, which the loader points
@@ -390,7 +395,18 @@ namespace
             }
             GameWorldWar2::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); };
         }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override;
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
+        // a streamed image: its largest level here, as Decode writes it (a resident one is its
+        // bytes in the zone)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            uint32_t Width = 0, Height = 0;
+            PakLevel Where;
+            std::string Pak;
+            if (K != DiskGame::Kind::Image || Resident(Pos) || !Largest(Pos, Width, Height, Where, Pak)) return;
+            const uint8_t Dxgi = GameWorldWar2::DxgiFormat(At<uint8_t>(Image(), Pos + ImageFormatAt));
+            if (Dxgi != 0) W = DiskGame::Sizes::ImageWeight(Width, Height, Dxgi, 1, At<uint8_t>(Image(), Pos + ImageMapType) == 5 ? 6 : 1);
+        }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -592,12 +608,12 @@ namespace
         // streamed images (no pixels here, some mip described; a ",name" header has neither), in
         // walk order, take the stream table's keys four by four
         std::vector<int64_t> Streamed;
-        for (const auto& I : Walk().Instances)
+        for (const int64_t Pos : AllOf("image"))
         {
-            if (!OwnerIs(I, "image") || At<uint64_t>(Z, I.Pos + ImagePixels) != 0) continue;
+            if (At<uint64_t>(Z, Pos + ImagePixels) != 0) continue;
             bool Described = false;
-            for (int64_t K = 0; K < Levels * 8; K += 8) Described = Described || At<uint64_t>(Z, I.Pos + ImageMips + K) != 0;
-            if (Described) Streamed.push_back(I.Pos);
+            for (int64_t K = 0; K < Levels * 8; K += 8) Described = Described || At<uint64_t>(Z, Pos + ImageMips + K) != 0;
+            if (Described) Streamed.push_back(Pos);
         }
         const std::vector<HeaderEntry> Keys = ReadHeaderTable(FastFilePath(), 0);
         Counter("images_streamed") += Streamed.size();
@@ -672,15 +688,15 @@ namespace
         ExportImageList(C, T, L);
     }
 
-    void WW2Zone::Defines(std::vector<DiskGame::AssetId>& Out) const
+    void WW2Zone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
     {
-        ZonekitZone::Defines(Out);
+        ZonekitZone::DefinesAt(Out);
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "image")) continue;
             if (!Resident(I.Pos) && !Streams.count(I.Pos)) continue;
             const std::string N = AssetName(DiskGame::Kind::Image, I.Pos);
-            if (!IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ DiskGame::Kind::Image, N });
+            if (!IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ { DiskGame::Kind::Image, N }, I.Pos });
         }
     }
 
@@ -728,7 +744,7 @@ namespace
         const uint64_t Size = At<uint64_t>(Img, Tr + 0x80);
         if (Data < 0 || Size == 0 || (uint64_t)Data + Size > Img.size()) return {};
         auto Layers = std::make_shared<std::unordered_map<uint64_t, uint32_t>>();   // by material
-        return [this, &Img, Data, Size, Layers](int64_t Surface, uint32_t Local, float* Out, uint32_t Max) -> uint32_t {
+        return [this, Img, Data, Size, Layers](int64_t Surface, uint32_t Local, float* Out, uint32_t Max) -> uint32_t {
             const uint64_t Material = At<uint64_t>(Img, Surface + 0x20);
             auto It = Layers->find(Material);
             if (It == Layers->end())

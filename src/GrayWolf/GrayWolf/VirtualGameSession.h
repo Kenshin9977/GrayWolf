@@ -1,12 +1,14 @@
 #pragma once
 
 // Adapter between the offline zone readers and the live asset code (ReadXAnim, ReadXModel,
-// the XAnim/XModel translators): a copy of the zone, its pointers relocated, is served as the
+// the XAnim/XModel translators): a copy of the zone (ZoneMemory::Copy: copy-on-write when the
+// zone's bytes are a ZoneBytes), its pointers relocated, is served as the
 // game's memory through ProcessReader::AttachVirtual. The live code reads process-wide state
 // (CoDAssets::Game, GameInstance and the string/image handlers), so a session swaps that
 // state in, holds one process-wide lock for its lifetime, and restores everything on exit.
 
 #include "CoDAssets.h"
+#include "ZoneMemory.h"
 
 #include <cstdint>
 #include <memory>
@@ -37,6 +39,9 @@ public:
     // zone) runs on several threads at once (the install index's workers).
     VirtualGameSession(std::unique_lock<std::mutex> Taken, const ICoDGame& Game, std::vector<uint8_t> Image, const Handlers& H,
                        int PointerSize = 8);
+    // The same over a copy made already (ZoneMemory::Copy of a zone's bytes, or one a parked session released)
+    VirtualGameSession(std::unique_lock<std::mutex> Taken, const ICoDGame& Game, ZoneMemory::Copy Image, const Handlers& H,
+                       int PointerSize = 8);
     // The process-wide lock every session holds for its lifetime, taken (waits for the session open now)
     static std::unique_lock<std::mutex> Acquire();
     ~VirtualGameSession();
@@ -58,15 +63,15 @@ public:
     // AddVirtual) into the pointer field at Field, a zone offset.
     void Poke(uint64_t Field, uint64_t Address);
     // The served bytes, relocations included.
-    const std::vector<uint8_t>& Image() const { return Bytes; }
+    ByteView Image() const { return { Bytes.data(), Bytes.size() }; }
     // Hands them back to serve again later (a new session takes them); end this one right after.
-    std::vector<uint8_t> Release() { return std::move(Bytes); }
+    ZoneMemory::Copy Release() { return std::move(Bytes); }
     // True when V is an address inside the served image.
     bool Contains(uint64_t V) const { return V >= Origin_ && V < Origin_ + Bytes.size(); }
 
 private:
     std::unique_lock<std::mutex> Lock;
-    std::vector<uint8_t> Bytes;
+    ZoneMemory::Copy Bytes;
     int Ptr = 8;
     uint64_t Origin_ = Base;
     const ICoDGame* SavedGame;

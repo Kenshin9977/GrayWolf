@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // What the Infinity Ward engine's 64-bit zones (Modern Warfare 2 to WWII) share on the disk
 // template: the LOD surfaces the game links at load time, the streamed-image table some titles keep
 // in the .ff header, and the level's records they have in common.
@@ -173,7 +175,7 @@ protected:
     // the records are in them, how many
     struct TransientVertices
     {
-        const std::vector<uint8_t>* Bytes = nullptr;
+        ByteView Bytes;
         int64_t Vertices = -1;
         uint32_t Count = 0;
     };
@@ -227,10 +229,10 @@ protected:
     // The zone's script strings (Modern Warfare 2019, MWIII): count u32 at 0, 8-byte slots from 0x20
     // when the list's pointer at 8 is inline; a -2 or -1 slot's text follows the slots, in slot
     // order (iw8 0x2ddc1b0, MWIII 0x3b035b0), any other holds none here
-    static std::vector<std::string> InlineScriptStrings(const std::vector<uint8_t>& Z);
+    static std::vector<std::string> InlineScriptStrings(ByteView Z);
     static std::string SoundBankFile(const std::string& Name, const std::string& Extension);
     // Defines' images: Streams' and Also's, those named in place (at their position + NameAt)
-    void DefineStreamed(std::vector<DiskGame::AssetId>& Out, int64_t NameAt, const std::vector<int64_t>& Also = {}) const;
+    void DefineStreamed(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out, int64_t NameAt, const std::vector<int64_t>& Also = {}) const;
     // The rawfile kind as Ghosts to MW2019 keep it (IwRawData.cpp): rawfile {name, u32 compressed
     // size 8, size 0xc, buffer 0x10} (zlib when compressed), LuaType {name, i32 size 8, buffer 0x10}
     // named .lua/.luac

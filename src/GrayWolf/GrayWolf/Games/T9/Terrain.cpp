@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Cold War's terraingfx: a surface's grid point (c, r)
 // is at its origin + (c, r) * cell, its height the heightmap's sample (bilinear) on the grid of the
@@ -21,7 +22,7 @@ namespace
     constexpr int64_t Translation = 0x50, Origin = 0xe8, Cell = 0xf0, HeightOffset = 0xf4, HeightRange = 0xf8, GridSize = 0x100;
     constexpr int64_t HeightMap = 0x168, Visibility = 0x170, ColorMap = 0x198;
 
-    template <typename T> T At(const std::vector<uint8_t>& Buf, int64_t Pos)
+    template <typename T> T At(ByteView Buf, int64_t Pos)
     {
         T V{};
         if (Pos >= 0 && (uint64_t)Pos + sizeof(T) <= Buf.size()) std::memcpy(&V, Buf.data() + Pos, sizeof(T));

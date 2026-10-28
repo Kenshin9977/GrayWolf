@@ -1,3 +1,4 @@
+#include "ByteView.h"
 // Games/T8/CliCommands.Bo4Strings.cpp - Black Ops 4's string commands: bo4-export-localize-disk,
 // bo4-export-rawstrings-disk, bo4-decrypt.
 // NOMINMAX before <windows.h>: std::max/std::min below would be mangled by its macros.
@@ -36,7 +37,7 @@ namespace
     // A decompressed zone's bytes (In) through Export(Zone, Report): result=ok|error, then the
     // exporter's report (dump_error= when it throws)
     int RunZoneExport(const CliOptions& Options, const std::string& In,
-                      const std::function<bool(const std::vector<uint8_t>& Zone, std::string& Report)>& Export)
+                      const std::function<bool(ByteView Zone, std::string& Report)>& Export)
     {
         std::ifstream File(In, std::ios::binary);
         if (!File)
@@ -109,14 +110,14 @@ namespace
 
 int RunBo4ExportLocalizeDisk(const CliOptions& Options)
 {
-    return RunZoneExport(Options, Options.Bo4ExportLocalizeDiskIn, [&Options](const std::vector<uint8_t>& Zone, std::string& Report) {
+    return RunZoneExport(Options, Options.Bo4ExportLocalizeDiskIn, [&Options](ByteView Zone, std::string& Report) {
         return GameBlackOps4::ExportDiskLocalize(Zone, Options.Bo4ExportLocalizeDiskOut, Report);
     });
 }
 
 int RunBo4ExportRawStringsDisk(const CliOptions& Options)
 {
-    return RunZoneExport(Options, Options.Bo4ExportRawStringsDiskIn, [&Options](const std::vector<uint8_t>& Zone, std::string& Report) {
+    return RunZoneExport(Options, Options.Bo4ExportRawStringsDiskIn, [&Options](ByteView Zone, std::string& Report) {
         return GameBlackOps4::ExportDiskRawStrings(Zone, Options.Bo4ExportRawStringsDiskOut, Report);
     });
 }

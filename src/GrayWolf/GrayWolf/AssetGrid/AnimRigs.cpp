@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "AnimRigs.h"
 
@@ -154,7 +155,7 @@ namespace AnimRigs
         }
 
         // Count null-terminated names from Bytes at Offset; false when the bytes end first
-        bool CStrings(const std::vector<uint8_t>& Bytes, size_t Offset, uint32_t Count, std::vector<std::string>& Out)
+        bool CStrings(ByteView Bytes, size_t Offset, uint32_t Count, std::vector<std::string>& Out)
         {
             Out.clear();
             for (uint32_t i = 0; i < Count; i++)

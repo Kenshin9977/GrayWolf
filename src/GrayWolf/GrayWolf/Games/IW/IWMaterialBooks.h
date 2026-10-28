@@ -20,7 +20,6 @@
 namespace IWMaterialBooks
 {
     using ImageList = std::vector<std::pair<uint32_t, std::string>>;
-    using Book = std::unordered_map<std::string, ImageList>;
     // what else a layout may read of a material: its flipbook grid, its techset's name, its sort key
     struct Extra
     {
@@ -28,7 +27,8 @@ namespace IWMaterialBooks
         std::string Techset;
         int SortKey = -1;
     };
-    using Extras = std::unordered_map<std::string, Extra>;
+    // a zone's book, kept on disk and read in place (IWMaterialBooks.cpp)
+    class Book;
 
     // Where a game's Material keeps its images: a u8 count and a table of {u32 semantic, pad,
     // image*} slots; and where its GfxImage keeps its name.
@@ -58,9 +58,6 @@ namespace IWMaterialBooks
 
     // The fast file's book, nullptr when it does not read. CacheDir keeps the books across runs.
     std::shared_ptr<const Book> ZoneBook(const std::filesystem::path& FastFile, const std::string& CacheDir, const Layout& L);
-    // The same with its materials' extras (empty unless the layout reads them)
-    std::shared_ptr<const Book> ZoneBook(const std::filesystem::path& FastFile, const std::string& CacheDir, const Layout& L,
-                                         std::shared_ptr<const Extras>& More);
 
     // The fast files in Dir whose names match Pattern (case ignored), patch_ zones first: a
     // material the patch redefines is the patch's
@@ -90,7 +87,6 @@ namespace IWMaterialBooks
         ZoneList Zones;
         bool Read = false;
         std::vector<std::shared_ptr<const Book>> Books;
-        std::vector<std::shared_ptr<const Extras>> More;
         std::set<std::string> Booked, NotBooked;
         void Open();
     };

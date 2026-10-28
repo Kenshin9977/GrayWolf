@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ZoneMemory.h"
+
+#include "ByteView.h"
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -20,6 +24,7 @@ struct Bo3ZoneImage
     uint8_t Format = 0;     // the engine's image-format byte, at +240 in the struct
     uint8_t Levels = 1;     // how many mip levels the inline payload holds
     uint64_t PixelOffset = 0; // non-zero when the pixels are INLINE in the zone, at this offset
+    int64_t Pos = -1;         // its instance in a walked zone (T7Zone), -1 from a scan
 };
 
 // Finds every image in the fastfile: streamed ones (pixels in the packages under XpakDir) AND
@@ -29,7 +34,7 @@ struct Bo3ZoneImage
 std::vector<Bo3ZoneImage> Bo3ScanZoneImages(const std::string& FastFilePath,
                                             const std::string& XpakDir,
                                             std::string& FailureReason,
-                                            std::vector<uint8_t>* ZoneOut = nullptr);
+                                            ZoneBytes* ZoneOut = nullptr);
 
 // Lists what the zone declares, one "<name>	<width>x<height>	format <n>	size <n>" per line.
 bool Bo3ListZoneImages(const std::string& FastFilePath, const std::string& XpakDir,
@@ -46,11 +51,11 @@ size_t Bo3ExportZoneImages(const std::string& FastFilePath, const std::string& X
 // packages carry, the inline pixels after the name, or (ZoneStem given: the zone's file stem)
 // the object its own packages' index names. False when it is not one. The scan above
 // and the zonekit t7 walk (Games/T7/DiskGame.cpp, which knows where every image is) share it.
-bool Bo3DescribeZoneImage(const std::vector<uint8_t>& Zone, size_t Start, XPAKCache& Cache,
+bool Bo3DescribeZoneImage(ByteView Zone, size_t Start, XPAKCache& Cache,
                           Bo3ZoneImage& Image, const std::string& ZoneStem = std::string());
 
 // Writes described images (Bo3ExportZoneImages' second half). Returns how many were written.
 // Step(done, count) as it goes, when given (DiskGame::Context::Advance); false stops there.
-size_t Bo3WriteZoneImages(const std::vector<uint8_t>& Zone, const std::vector<Bo3ZoneImage>& Images,
+size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images,
                           XPAKCache& Cache, const std::string& OutDir, const std::string& NameFilter,
                           std::string& Report, const std::function<bool(size_t, size_t)>& Step = nullptr);

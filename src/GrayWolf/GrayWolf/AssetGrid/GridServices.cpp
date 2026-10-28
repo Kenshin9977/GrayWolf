@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "GridServices.h"
 #include "ModelPreview.h"      // DecodeImageFileToRGBA8, SavePreviewPng, ScratchImageToRGBA8
@@ -161,7 +162,7 @@ namespace ThumbCache
         return DecodeImageFileToRGBA8(File, W, H, Rgba) && W > 0 && H > 0;
     }
 
-    bool Save(const std::string& File, int W, int H, const std::vector<uint8_t>& Rgba)
+    bool Save(const std::string& File, int W, int H, ByteView Rgba)
     {
         if (File.empty() || W <= 0 || H <= 0 || Rgba.size() != (size_t)W * H * 4) return false;
         DirectX::Image Img{};
@@ -178,7 +179,7 @@ namespace ThumbCache
     }
 }
 
-ComPtr<ID3D11ShaderResourceView> MakeRgbaSRV(ID3D11Device* Dev, int W, int H, const std::vector<uint8_t>& Rgba)
+ComPtr<ID3D11ShaderResourceView> MakeRgbaSRV(ID3D11Device* Dev, int W, int H, ByteView Rgba)
 {
     if (W <= 0 || H <= 0 || Rgba.size() != (size_t)W * H * 4) return nullptr;
     D3D11_TEXTURE2D_DESC Td{}; Td.Width = W; Td.Height = H; Td.MipLevels = 1; Td.ArraySize = 1;

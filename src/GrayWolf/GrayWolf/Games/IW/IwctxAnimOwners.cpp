@@ -55,14 +55,14 @@ namespace IwctxAnimOwners
         uint64_t U64(size_t Zi, int64_t Pos) const
         {
             uint64_t V = 0;
-            const auto& B = *Z[Zi].Bytes;
+            const auto& B = Z[Zi].Bytes;
             if (Pos >= 0 && Pos + 8 <= (int64_t)B.size()) std::memcpy(&V, B.data() + Pos, 8);
             return V;
         }
         uint32_t U32(size_t Zi, int64_t Pos) const
         {
             uint32_t V = 0;
-            const auto& B = *Z[Zi].Bytes;
+            const auto& B = Z[Zi].Bytes;
             if (Pos >= 0 && Pos + 4 <= (int64_t)B.size()) std::memcpy(&V, B.data() + Pos, 4);
             return V;
         }
@@ -72,7 +72,7 @@ namespace IwctxAnimOwners
             auto It = std::upper_bound(ByBase.begin(), ByBase.end(), A, [this](uint64_t V, size_t K) { return V < Z[K].Base; });
             if (It == ByBase.begin()) return false;
             const size_t K = *--It;
-            if (A - Z[K].Base >= Z[K].Bytes->size()) return false;
+            if (A - Z[K].Base >= Z[K].Bytes.size()) return false;
             Zi = K;
             Pos = (int64_t)(A - Z[K].Base);
             return true;
@@ -100,7 +100,7 @@ namespace IwctxAnimOwners
         {
             const auto& R = *Z[Zi].R;
             const auto& I = R.Instances[Inst];
-            const auto& B = *Z[Zi].Bytes;
+            const auto& B = Z[Zi].Bytes;
             for (uint32_t K = I.FirstRead; K < I.EndRead && K < R.Reads.size() && K < R.ReadPos.size(); K++)
             {
                 const int64_t Pos = R.ReadPos[K], Size = R.Reads[K];
@@ -122,7 +122,7 @@ namespace IwctxAnimOwners
             int64_t At;
             std::string N;
             if (Locate(U64(Zi, Pos + L.ModelName), Sz, At))
-                for (const auto& B = *Z[Sz].Bytes; At < (int64_t)B.size() && B[(size_t)At] != 0 && N.size() < 512; At++) N.push_back((char)B[(size_t)At]);
+                for (const auto& B = Z[Sz].Bytes; At < (int64_t)B.size() && B[(size_t)At] != 0 && N.size() < 512; At++) N.push_back((char)B[(size_t)At]);
             return N.empty() ? L.AssetName(L.Model.c_str(), U64(Zi, Pos) & Mask) : ModelFile(N);
         }
     };

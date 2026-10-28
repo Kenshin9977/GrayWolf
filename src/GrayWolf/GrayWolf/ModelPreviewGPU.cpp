@@ -624,6 +624,9 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, 
 
     M.FrameDist = (M.Radius / std::tan(XMConvertToRadians(35.0f) * 0.5f)) * 1.15f;
     M.VertexCount = (UINT)(Geo.Pos.size() / 3);
+    const size_t FitStep = std::max<size_t>(1, M.VertexCount / 4096);
+    M.FitPoints.reserve(M.VertexCount / FitStep + 1);
+    for (size_t v = 0; v < M.VertexCount; v += FitStep) M.FitPoints.push_back({ Geo.Pos[v * 3], Geo.Pos[v * 3 + 1], Geo.Pos[v * 3 + 2] });
     M.TriCount = (UINT)(Geo.Idx.size() / 3);
     M.Valid = M.VB && M.IB;
     return M;
@@ -712,6 +715,42 @@ void FramePreviewForTurn(const PreviewGeometry& Geo, float Pitch, PreviewGpuMesh
     M.Center = XMVectorSet((Lo[0] + Hi[0]) * 0.5f, (Lo[1] + Hi[1]) * 0.5f, (Lo[2] + Hi[2]) * 0.5f, 0);
     M.Radius = Radius;
     M.FrameDist = std::max(Need * 1.06f, Radius * 0.5f);
+    M.FitPoints.clear();
+}
+
+bool FitPreviewCamera(const PreviewGpuMesh& Mesh, float Yaw, float Pitch, float Aspect, float& DistScale, XMFLOAT3& Pan)
+{
+    if (Mesh.FitPoints.empty() || Mesh.FrameDist <= 0.0f) return false;
+    // OrbitPreviewCamera's axes: D from the target to the eye, R and U across the view
+    const float cp = std::cos(Pitch), sp = std::sin(Pitch);
+    const XMVECTOR D = XMVector3Normalize(XMVectorSet(cp * std::cos(Yaw), cp * std::sin(Yaw), sp, 0));
+    const XMVECTOR R = XMVector3Normalize(XMVector3Cross(XMVectorNegate(D), XMVectorSet(0, 0, 1, 0)));
+    const XMVECTOR U = XMVector3Cross(R, XMVectorNegate(D));
+    float Lo[2] = { FLT_MAX, FLT_MAX }, Hi[2] = { -FLT_MAX, -FLT_MAX };
+    for (const XMFLOAT3& P : Mesh.FitPoints)
+    {
+        const XMVECTOR Q = XMVectorSubtract(XMLoadFloat3(&P), Mesh.Center);
+        const float X = XMVectorGetX(XMVector3Dot(Q, R)), Y = XMVectorGetX(XMVector3Dot(Q, U));
+        Lo[0] = std::min(Lo[0], X); Hi[0] = std::max(Hi[0], X);
+        Lo[1] = std::min(Lo[1], Y); Hi[1] = std::max(Hi[1], Y);
+    }
+    // the target at the middle of what the view sees across, then the distance at which every point
+    // is inside both of the view's angles
+    const float Mx = (Lo[0] + Hi[0]) * 0.5f, My = (Lo[1] + Hi[1]) * 0.5f;
+    const XMVECTOR Shift = XMVectorAdd(XMVectorScale(R, Mx), XMVectorScale(U, My));
+    const float TanV = std::tan(XMConvertToRadians(35.0f) * 0.5f), TanH = TanV * std::max(0.05f, Aspect);
+    float Need = 0;
+    for (const XMFLOAT3& P : Mesh.FitPoints)
+    {
+        const XMVECTOR Q = XMVectorSubtract(XMVectorSubtract(XMLoadFloat3(&P), Mesh.Center), Shift);
+        const float X = std::abs(XMVectorGetX(XMVector3Dot(Q, R))), Y = std::abs(XMVectorGetX(XMVector3Dot(Q, U)));
+        const float Z = XMVectorGetX(XMVector3Dot(Q, D));
+        Need = std::max(Need, Z + std::max(X / TanH, Y / TanV));
+    }
+    Need = std::max(Need * 1.08f, Mesh.Radius * 0.05f);
+    DistScale = Need / Mesh.FrameDist;
+    XMStoreFloat3(&Pan, Shift);
+    return true;
 }
 
 PreviewCamera OrbitPreviewCamera(const PreviewGpuMesh& Mesh, float Yaw, float Pitch, float DistScale, XMFLOAT3 Pan)

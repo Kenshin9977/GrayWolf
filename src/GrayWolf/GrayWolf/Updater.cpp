@@ -1,3 +1,4 @@
+#include "ByteView.h"
 #include "Updater.h"
 
 #include "AppLog.h"
@@ -261,7 +262,7 @@ namespace
     // ---------------------------------------------------------------------------------------
     // sha256, zip
 
-    std::string Sha256Hex(const std::vector<uint8_t>& Data)
+    std::string Sha256Hex(ByteView Data)
     {
         BCRYPT_ALG_HANDLE Alg = nullptr;
         BCRYPT_HASH_HANDLE Hash = nullptr;
@@ -302,7 +303,7 @@ namespace
     }
 
     // Extracts every file of Zip under Dir; Files gets their relative paths ('/' separated).
-    bool ExtractZip(const std::vector<uint8_t>& Zip, const fs::path& Dir, std::vector<std::string>& Files, std::string& Error)
+    bool ExtractZip(ByteView Zip, const fs::path& Dir, std::vector<std::string>& Files, std::string& Error)
     {
         mz_zip_archive Archive{};
         if (!mz_zip_reader_init_mem(&Archive, Zip.data(), Zip.size(), 0)) { Error = "not a zip archive"; return false; }

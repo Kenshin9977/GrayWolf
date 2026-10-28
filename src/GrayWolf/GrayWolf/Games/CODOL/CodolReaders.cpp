@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Games/CODOL/CodolReaders.h"
 #include "Games/IW4/Iw4Readers.h"
@@ -52,7 +53,7 @@ namespace Codol
         std::map<std::string, std::unique_ptr<Streamed>> Served;
         uint64_t NextBase = 0x60000000;
 
-        bool Section(const std::vector<uint8_t>& F, int K, uint32_t& Offset, uint32_t& Size)
+        bool Section(ByteView F, int K, uint32_t& Offset, uint32_t& Size)
         {
             std::memcpy(&Size, F.data() + 8 + K * 0x14, 4);
             std::memcpy(&Offset, F.data() + 0xc + K * 0x14, 4);
@@ -70,7 +71,7 @@ namespace Codol
         }
 
         template <class T>
-        T Field(const std::vector<uint8_t>& B, uint64_t At)
+        T Field(ByteView B, uint64_t At)
         {
             T V;
             std::memcpy(&V, B.data() + At, sizeof(T));

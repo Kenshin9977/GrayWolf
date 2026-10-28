@@ -341,6 +341,11 @@ std::unique_ptr<XImageDDS> GameBlackOps7::ReadXImage(const CoDImage_t* Image)
     return LoadXImage(XImage_t(ImageUsageType::DiffuseMap, 0, Image->AssetPointer, Image->AssetName));
 }
 
+uint32_t GameBlackOps7::DxgiFormat(uint8_t Format)
+{
+    return Format < std::size(BO7DXGIFormats) ? BO7DXGIFormats[Format] : 0;
+}
+
 std::unique_ptr<XImageDDS> GameBlackOps7::LoadXImage(const XImage_t& Image)
 {
     return IwctxReaders::LoadXImage(Image, BO7DXGIFormats, (uint32_t)std::size(BO7DXGIFormats));

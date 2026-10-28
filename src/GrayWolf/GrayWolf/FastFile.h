@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ZoneMemory.h"
+
+#include "ByteView.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -44,9 +48,9 @@ enum class FastFileFormat
 
 // A game's own container, registered from Games/<game>/ by a static instance: the whole file in,
 // the zone out.
-using FastFileContainer = bool (*)(const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error);
+using FastFileContainer = bool (*)(ByteView File, ZoneBytes& Zone, std::string& Error);
 // One that also reads files beside it (an update patch next to the fast file) gets its path too.
-using FastFilePathContainer = bool (*)(const std::string& FilePath, const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error);
+using FastFilePathContainer = bool (*)(const std::string& FilePath, ByteView File, ZoneBytes& Zone, std::string& Error);
 struct FastFileContainerRegistration
 {
     FastFileContainerRegistration(const char* Magic, uint32_t Version, FastFileContainer Decode);
@@ -56,7 +60,7 @@ struct FastFileContainerRegistration
 bool HasFastFileContainer(const std::string& Magic, uint32_t Version);
 // The registered container's decode of FilePath (whose bytes are File)
 bool DecodeRegisteredFastFile(const std::string& Magic, uint32_t Version, const std::string& FilePath,
-    const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error);
+    ByteView File, ZoneBytes& Zone, std::string& Error);
 
 // How the blocks of a Treyarch fast file are compressed. Values are the game's own.
 enum class FastFileCompression : uint8_t
@@ -181,6 +185,8 @@ public:
     static FastFileInfo Identify(const std::string& FilePath);
 
     // Decompresses a Fast File into its zone. Returns false and fills Error on failure.
+    static bool Decompress(const std::string& FilePath, ZoneBytes& Zone, std::string& Error);
+    // the same into a plain vector (a copy of the bytes)
     static bool Decompress(const std::string& FilePath, std::vector<uint8_t>& Zone, std::string& Error);
 
     // Pulls the null terminated strings out of a zone.
@@ -190,7 +196,7 @@ public:
     // Until then, the strings are what identify what a zone holds - bone names, material
     // names, asset names - so scanning for them is a genuinely useful first look, as long
     // as nobody mistakes it for having understood the layout.
-    static std::vector<std::pair<uint64_t, std::string>> ScanStrings(const std::vector<uint8_t>& Zone, size_t MinimumLength = 4);
+    static std::vector<std::pair<uint64_t, std::string>> ScanStrings(ByteView Zone, size_t MinimumLength = 4);
 
     // Reads the string table of a Black Ops 3 zone properly, rather than scanning for
     // anything that looks like text.
@@ -201,7 +207,7 @@ public:
     //
     // This is the string table only. The asset list that follows still needs the pointer
     // fixup replayed to make sense of, which is not done.
-    static bool ParseTreyarchZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out, std::string& Error);
+    static bool ParseTreyarchZone(ByteView Zone, ZoneInfo& Out, std::string& Error);
 
     // Everything before Black Ops 3 keeps its zone in 32 bits, and the four titles here
     // differ only in a handful of numbers. Rather than four near identical parsers, the
@@ -211,38 +217,38 @@ public:
     static ZoneLayout LayoutFor(const FastFileInfo& Info);
 
     // Reads the string table and asset list of a 32 bit zone
-    static bool Parse32BitZone(const std::vector<uint8_t>& Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error);
+    static bool Parse32BitZone(ByteView Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error);
 
     // The same, for the 64-bit rebuilds of MW2/MW3: a 32-bit zone header followed by a
     // 64-bit, padded asset list. Separate from Parse32BitZone rather than a flag inside it,
     // because every offset and every stride in the two differs.
-    static bool ParseIWZone(const std::vector<uint8_t>& Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error);
+    static bool ParseIWZone(ByteView Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error);
 
     // Reads the string table and asset list of an Advanced Warfare zone.
     //
     // 64 bit, and unlike every other title here the marker meaning "follows inline" is
     // 0xFDFDFDFFFFFFFFFF rather than all ones - the top bytes are a tag the engine puts on
     // every zone pointer. Layout from Joelrau/x64-zt.
-    static bool ParseSledgehammerZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out, std::string& Error);
+    static bool ParseSledgehammerZone(ByteView Zone, ZoneInfo& Out, std::string& Error);
 
 private:
 
     // Walks the block list of a Treyarch fast file
-    static bool DecompressTreyarch(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressTreyarch(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error);
 
     // Walks the block list of a Black Ops 4 (T8) fast file - same container shape as
     // DecompressTreyarch above (magic "TAff0000", self-describing per-block headers), a different
     // fixed header and compression set. Ported from acts' decompressor_t78.cpp.
-    static bool DecompressTreyarchT8(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressTreyarchT8(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error);
     // Black Ops Cold War (FastFile.T9.cpp): the .ff's blocks, its .fd applied when beside it
-    static bool DecompressTreyarchT9(const std::string& FilePath, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressTreyarchT9(const std::string& FilePath, ZoneBytes& Zone, std::string& Error);
 
     // Walks the block list of a Sledgehammer fast file
-    static bool DecompressSledgehammer(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressSledgehammer(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error);
 
     // Decrypts and walks the block list of a Black Ops 2 fast file
-    static bool DecompressTreyarchT6(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressTreyarchT6(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error);
 
     // Walks the block list of an Infinite Warfare fast file
-    static bool DecompressInfinityWardBlocked(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error);
+    static bool DecompressInfinityWardBlocked(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error);
 };

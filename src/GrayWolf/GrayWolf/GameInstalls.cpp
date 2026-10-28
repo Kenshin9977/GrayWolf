@@ -222,6 +222,20 @@ namespace
 
 namespace GameInstalls
 {
+    std::string GameExe(const std::string& Folder)
+    {
+        std::error_code Ec;
+        fs::path Dir = fs::path(Folder);
+        for (int Up = 0; Up < 3 && !Dir.empty(); Up++, Dir = Dir.parent_path())
+        {
+            for (const auto& T : Titles())
+                for (const char* Exe : T.Markers)
+                    if (fs::is_regular_file(Dir / Exe, Ec)) return (Dir / Exe).string();
+            if (Dir == Dir.parent_path()) break;
+        }
+        return {};
+    }
+
     std::vector<Install> Detect()
     {
         std::vector<Install> Found;

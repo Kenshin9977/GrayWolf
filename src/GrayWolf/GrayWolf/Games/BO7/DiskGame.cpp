@@ -452,6 +452,14 @@ namespace
 
     protected:
         const char* Profile() const override { return "bo7"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // its images' records (IwctxReaders' layout) served from the zone's heads, the zone not read
+        HeadSpec Heads() const override { return ModernIwHeads(); }
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K == DiskGame::Kind::Image) W = ModernIwImageWeight(Pos, GameBlackOps7::DxgiFormat);
+        }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("BO7"); }
         VirtualGameSession::Handlers Handlers() override
         {
@@ -522,9 +530,9 @@ namespace
         }
         // every asset of a zone's list is inline here: references are by hash, never a header
         bool IsReference(DiskGame::Kind, const std::string&, int64_t) const override { return false; }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineImages(Out);
         }
 
@@ -581,7 +589,7 @@ namespace
         {
             static const IwctxReaders::MaterialSlots L{ 0x78, 0x28, 0x68, 0x30, 0x6d, { 44, 0x47 }, 73, 74, 77, 26 };
             return IwctxReaders::SlotMaterials(
-                L, [](uint64_t A) { return GameBlackOps7::ReadXMaterial(A); }, [this]() -> const std::vector<uint8_t>& { return Image(); },
+                L, [](uint64_t A) { return GameBlackOps7::ReadXMaterial(A); }, [this]() -> ByteView { return Image(); },
                 [this](uint64_t A) { return Off(A); }, [](uint64_t V) { return GameBlackOps7::HashName("ximage", V); });
         }
 
@@ -606,7 +614,12 @@ namespace
 
         void LoadBeside()
         {
-            if (Root("gfx_map") < 0) return;
+            if (!Lists("gfx_map")) return;
+            // (where a map's zones beside take their time: time_beside_load_ms, _link_ms, _indexed_ms)
+            auto T0 = std::chrono::steady_clock::now();
+            const auto Tick = [&](const char* K) { const auto T = std::chrono::steady_clock::now(); Counter(std::string("time_beside_") + K + "_ms") += (size_t)std::chrono::duration_cast<std::chrono::milliseconds>(T - T0).count(); T0 = T; };
+            // a partial open reads the zones beside only where its references reach
+            Beside.Lazy = OpenedPartially();
             std::string Error;
             const auto* Loaded = ExportWriters::ZoneProfile("bo7", Error);
             if (Loaded == nullptr) return;
@@ -641,6 +654,7 @@ namespace
             const uint64_t Above = Live().Origin() + Image().size();
             Beside.Load(Globals, *Loaded, Above, Counts, true);
             Beside.Load(Transients, *Loaded, Above, Counts);
+            Tick("load");
             // the asset references of the indexed types no zone loaded defines, by type and hash
             std::set<std::pair<std::string, uint64_t>> Wanted;
             if (!Beside.Empty())
@@ -650,11 +664,16 @@ namespace
                             [&](const std::string&, uint64_t, uint64_t Value, const std::string& Type) {
                                 if (std::find(std::begin(IndexedParts), std::end(IndexedParts), Type) != std::end(IndexedParts))
                                     Wanted.emplace(Type, Value & Rules().AssetHashMask);
-                            });
+                            }, WholeKeys(), WholeHashes());
+                // (its link counts are the second pass's; the zones it read are counted)
+                for (const auto& [K, N] : First)
+                    if (K.starts_with("beside_")) Counts[K] += N;
             }
             // the zones that define them (other maps' transient zones, other modes' items), found in
             // the install index's parts, loaded after the global zones (filed last, as Before)
+            Tick("link");
             if (!Wanted.empty()) LoadIndexed(Wanted, *Loaded, Above, Counts);
+            Tick("indexed");
             if (!Beside.Empty())
             {
                 // (an asset reference's type when the chain says it; the map debug file lists them all)
@@ -664,7 +683,7 @@ namespace
                             [&](const std::string& Zone, uint64_t Field, uint64_t Value, const std::string& Type) {
                                 if (Type != "asset" && Type != "key") UnlinkedTypes[Type]++;
                                 if (Maps::DebugFile()) UnlinkedList.push_back(std::format("{} {:x} {:016x} {}", Zone.empty() ? Name() : Zone, Field, Value, Type));
-                            });
+                            }, WholeKeys(), WholeHashes());
                 if (FILE* Dbg = Maps::DebugFile())
                 {
                     std::fprintf(Dbg, "[zones] %s: %zu zones beside (%zu global), %zu links across zones, %zu unresolved (%zu assets; %zu of the global zones' own)\n", Name().c_str(),
@@ -675,6 +694,7 @@ namespace
                     for (const auto& L : UnlinkedList) std::fprintf(Dbg, "[unresolved] %s\n", L.c_str());
                 }
             }
+            Tick("link");
             for (const auto& [K, N] : Counts) Counter(K) += N;
             if (Beside.Empty()) return;
             Served(true);
@@ -747,7 +767,7 @@ namespace
         // linked across them, and the LODs linked again. Once per zone, before the models are read.
         void LoadMeshesBeside(const DiskGame::Context& C)
         {
-            if (MeshesTried || Indexing || Options.ZoneAlone || Root("gfx_map") >= 0) return;
+            if (MeshesTried || Indexing || Options.ZoneAlone || Lists("gfx_map")) return;
             MeshesTried = true;
             std::set<std::pair<std::string, uint64_t>> Wanted;
             for (const auto& I : Walk().Instances)
@@ -769,7 +789,8 @@ namespace
             LoadIndexed(Wanted, *Loaded, Live().Origin() + Image().size(), Counts);
             if (!Beside.Empty())
             {
-                Beside.Link(Walk(), Live().Origin(), Zone(), Rules(), [this](uint64_t Field, uint64_t Value) { Put(Field, Value); }, Counts);
+                Beside.Link(Walk(), Live().Origin(), Zone(), Rules(), [this](uint64_t Field, uint64_t Value) { Put(Field, Value); }, Counts, {},
+                            WholeKeys(), WholeHashes());
                 Served(true);
                 Counts["model_lods_unlinked_beside"] += LinkLods();
             }
@@ -782,7 +803,7 @@ namespace
         void BookMaterialsElsewhere()
         {
             // (a map's zones beside resolve its references already)
-            if (BooksTried || Indexing || (Root("gfx_map") >= 0 && !Beside.Empty())) return;
+            if (BooksTried || Indexing || (Lists("gfx_map") && !Beside.Empty())) return;
             BooksTried = true;
             std::set<uint64_t> Wanted;
             const auto& R = Walk();
@@ -1462,13 +1483,13 @@ namespace
     std::string BO7Zone::AnimOwnerFacts() const
     {
         using IwctxAnimOwners::Json;
-        std::vector<IwctxAnimOwners::Served> All{ { Name(), &Image(), Live().Origin(), &Walk() } };
+        std::vector<IwctxAnimOwners::Served> All{ { Name(), Image(), Live().Origin(), &Walk() } };
         // the zones served beside, their script strings registered (a character's names)
         std::string Error;
         const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
         for (const auto& S : Beside.All())
         {
-            All.push_back({ S->Name, &S->Bytes, S->Base, &S->R });
+            All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
             if (Tables != nullptr) IwctxReaders::RegisterScriptStrings(IwctxReaders::ZoneStrings(S->Bytes, Tables->Profile.Dir));
         }
         const IwctxAnimOwners::Zones Zones(std::move(All), AnimOwnerLayout());

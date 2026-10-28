@@ -29,6 +29,12 @@ VirtualGameSession::VirtualGameSession(const ICoDGame& Game, std::vector<uint8_t
 
 VirtualGameSession::VirtualGameSession(std::unique_lock<std::mutex> Taken, const ICoDGame& Game, std::vector<uint8_t> Image,
                                        const Handlers& H, int PointerSize)
+    : VirtualGameSession(std::move(Taken), Game, ZoneMemory::Copy(std::move(Image)), H, PointerSize)
+{
+}
+
+VirtualGameSession::VirtualGameSession(std::unique_lock<std::mutex> Taken, const ICoDGame& Game, ZoneMemory::Copy Image,
+                                       const Handlers& H, int PointerSize)
     : Lock(std::move(Taken)), Bytes(std::move(Image)), Ptr(PointerSize == 4 ? 4 : 8), Origin_(PointerSize == 4 ? Base32 : Base)
 {
     SavedGame = CoDAssets::Game;

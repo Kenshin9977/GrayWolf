@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // What the Treyarch map readers (BO3 T7, BO4 T8) share and Infinity Ward's do not: the world's
 // vertices in two streams, the 0x60 GfxSurface with its material at 0x48, dynamic entities that
 // open with a quaternion, an origin, the model and the destroyed model, and primary lights typed
@@ -20,10 +22,10 @@ namespace Treyarch
 
     // A world vertex: its position (12 bytes) in one stream, its colour, uv and 10:10:10 normal
     // (20 bytes) in the other.
-    Maps::WorldBuilder::Fetch WorldVertices(const std::vector<uint8_t>& Image, int64_t Positions, int64_t Data, uint32_t Count);
+    Maps::WorldBuilder::Fetch WorldVertices(ByteView Image, int64_t Positions, int64_t Data, uint32_t Count);
 
     // Dynamic entities (Stride bytes each) as placements; ModelAt names a model's address.
-    void DynamicEntities(const std::vector<uint8_t>& Image, int64_t List, uint32_t Count, int64_t Stride, const std::string& Prefix,
+    void DynamicEntities(ByteView Image, int64_t List, uint32_t Count, int64_t Stride, const std::string& Prefix,
                          const std::function<std::string(uint64_t)>& ModelAt, Maps::MapScene& Scene,
                          std::map<std::string, uint64_t>& Models);
 
@@ -32,7 +34,7 @@ namespace Treyarch
     {
         int64_t Size = 0, Color = 0, Dir = 0, CosHalfFov = 0, Radius = 0, Origin = 72;
     };
-    void Lights(const std::vector<uint8_t>& Image, int64_t List, uint32_t Count, const LightFields& F, Maps::MapScene& Scene);
+    void Lights(ByteView Image, int64_t List, uint32_t Count, const LightFields& F, Maps::MapScene& Scene);
 
     // The entities (BO4's entity_list, Cold War's entitylist) as the map_ents text: { "key"
     // "value" ... } per entity. Count entities of 0x30 bytes from Array (the key-value count at 0,
@@ -45,7 +47,7 @@ namespace Treyarch
     {
         size_t Keys = 0, KeysNamed = 0, Hashes = 0, HashesNamed = 0;
     };
-    std::string EntityText(const std::vector<uint8_t>& Image, int64_t Array, uint64_t Count, const std::function<int64_t(uint64_t)>& Off,
+    std::string EntityText(ByteView Image, int64_t Array, uint64_t Count, const std::function<int64_t(uint64_t)>& Off,
                            const std::function<std::string(uint64_t)>& String, const std::function<std::string(uint64_t)>& HashName,
                            EntityCounts& N, const std::function<std::string(uint64_t Entity, int32_t ModelIndex)>& Model = {});
     // The mapents kind for a zone's entity text (EntityText's): its entities' pairs, a key's order

@@ -120,6 +120,16 @@ int Install::ArchiveOf(const std::string& ArchivePath) const
     return -1;
 }
 
+uint64_t Install::Size(const std::string& Path) const
+{
+    const auto It = Winner.find(Path);
+    if (It == Winner.end()) return 0;
+    Archive& Z = *Zips[It->second];
+    std::lock_guard<std::mutex> Guard(Z.Lock);
+    mz_zip_archive_file_stat Stat;
+    return mz_zip_reader_file_stat(&Z.Zip, WinnerIndex.at(Path), &Stat) ? Stat.m_uncomp_size : 0;
+}
+
 bool Install::Read(const std::string& Path, std::vector<uint8_t>& Out) const
 {
     const auto It = Winner.find(Path);

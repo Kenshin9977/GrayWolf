@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // Anim owners of Black Ops 4 and Cold War (IDiskGame::AnimOwners, AnimOwners.h), read from the
 // zones' own assets: an aitype's characters (body, head, their xmodelalias lists) and its
 // animmappingtables (alias -> xanims), a weapon's view model and its two anim tables. Both games
@@ -49,7 +51,7 @@ namespace TreyarchAnimOwners
     // What the reader reads a zone through (the served, relocated zone).
     struct ZoneView
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(uint64_t Address)> Off;                    // zone offset, -1 outside
         std::function<std::vector<int64_t>(const char* Type)> Assets;   // the zone-level assets of a type
         std::function<std::string(int64_t Pos)> Model, Anim;             // an asset's name as exported

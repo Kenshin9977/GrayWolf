@@ -40,11 +40,6 @@ public:
                                                                 bool paddedBlocks = false);
 
 private:
-    // The packages' tables (CacheObjects, PackageFilePaths) kept in File under Key, which names
-    // the packages' contents: read back when the key matches, false otherwise.
-    bool LoadKept(const std::string& File, const std::string& Key);
-    void SaveKept(const std::string& File, const std::string& Key) const;
-
     // One open handle per .xpak, reused across calls: opening a multi-GB file per streamed image costs
     // ~15 ms each, the whole cost on a zone with thousands of them.
     //

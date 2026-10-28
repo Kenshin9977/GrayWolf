@@ -116,6 +116,12 @@ namespace ShellUi
         nlohmann::json Camera;        // the camera step waiting for the selection to show
         bool Holding = false, Done = false, Failed = false;
         std::string Error, Timeline;
+        // per step, in real seconds: how long it took (its waits and holds) and how long Load Game
+        // worked with no spinner or progress bar shown (steps.tsv, ux-check.py reads it)
+        struct StepTime { std::string Label; double Start = 0, Seconds = 0, Silent = 0; };
+        std::vector<StepTime> Times;
+        double LastNow = -1;
+        void CloseStep() { if (!Times.empty() && Times.back().Seconds == 0) Times.back().Seconds = Now() - Times.back().Start; }
         std::vector<float> Audio;     // stereo f32 at AudioRate
         double AudioDue = 0;          // the frames of sound the video's length asks for so far
         std::unique_ptr<FrameWriter> Writer = std::make_unique<FrameWriter>();   // null once finished
@@ -128,6 +134,7 @@ namespace ShellUi
         {
             const ViewportState& V = S.Viewport;
             if (S.Catalog.Walking() || S.SelectFirstModel || V.Loader.Busy() || V.AnimRigLoading) return true;
+            if (S.LoadGameWorking || !S.SelectWhenListed.empty() || !S.LoadGameScript.empty()) return true;
             if (S.Assets.GridView && S.Assets.Grid && !S.Assets.Grid->Settled()) return true;
             const int Kind = S.Selected >= 0 && S.Selected < (int)S.Catalog.Models.size() ? S.Catalog.Models[S.Selected].Kind : -1;
             if (Kind == 5 && !V.FxPanel.Loaded()) return true;
@@ -151,12 +158,15 @@ namespace ShellUi
         void Fail(const std::string& Why) { Error += Why + "\n"; Failed = true; }
 
         // The steps up to the next wait, all in this frame. A step's keys, applied in this order: label, type,
-        // filter, view, select (+game), merge, rig, camera {yaw pitch zoom image_zoom}, orbit (deg/s), seek, play, wait (s)
+        // filter, view, select (+game), merge, rig, camera {yaw pitch zoom image_zoom}, orbit (deg/s), seek, play,
+        // focus (a window brought forward: "Load Game"), loadgame (LoadGamePanel::Script), wait (s)
         void RunSteps(ShellState& S)
         {
             while (WaitFrames <= 0 && Next < Steps.size())
             {
                 const nlohmann::json& St = Steps[Next++];
+                CloseStep();
+                Times.push_back({ St.value("label", "step " + std::to_string(Next)), Now() });
                 ViewportState& V = S.Viewport;
                 Settle = 3;
                 if (St.contains("label"))
@@ -193,6 +203,8 @@ namespace ShellUi
                 if (St.contains("orbit")) OrbitRadPerSec = St["orbit"].get<float>() * 3.14159265f / 180.0f;
                 if (St.contains("seek")) V.Audio.Seek(St["seek"].get<double>());
                 if (St.contains("play")) { if (St["play"].get<bool>()) V.Audio.Play(); else V.Audio.Stop(); }
+                if (St.contains("focus")) S.FocusWindow = St["focus"].get<std::string>();
+                if (St.contains("loadgame")) S.LoadGameScript = St["loadgame"].dump();
                 if (St.contains("wait")) WaitFrames = std::max(1, (int)std::lround(St["wait"].get<double>() * O.Fps));
             }
         }
@@ -225,10 +237,18 @@ namespace ShellUi
         if (!P->Audio.empty()) WriteWav((std::filesystem::path(P->O.OutDir) / "audio.wav").string(), P->Audio);
         std::ofstream((std::filesystem::path(P->O.OutDir) / "timeline.txt").string()) << P->Timeline;
         std::ofstream((std::filesystem::path(P->O.OutDir) / "record.txt").string()) << Summary();
+        P->CloseStep();
+        std::ofstream Steps((std::filesystem::path(P->O.OutDir) / "steps.tsv").string());
+        Steps << "step\tseconds\tsilent_seconds\n";
+        for (const auto& T : P->Times) Steps << T.Label << "\t" << T.Seconds << "\t" << T.Silent << "\n";
     }
 
     void UiRecorder::FrameBegin(ShellState& S)
     {
+        // the real time since the last frame, counted as silent while Load Game works unseen
+        const double Now = P->Now();
+        if (P->LastNow >= 0 && !P->Times.empty() && S.LoadGameWorking && !S.LoadGameIndicator) P->Times.back().Silent += Now - P->LastNow;
+        P->LastNow = Now;
         // the steps wait for the folder to be listed and its first selection
         if (!P->Done && P->Next == 0 && !S.Catalog.Walking() && !S.SelectFirstModel) P->RunSteps(S);
         P->Holding = P->Next > 0 && (P->Settle > 0 || P->Loading(S));

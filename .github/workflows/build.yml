@@ -37,7 +37,7 @@ jobs:
       VCPKG_BINARY_SOURCES: clear;files,C:\gw-vcpkg-cache,readwrite
       # BUILDING.md's list; casclib comes from vcpkg-overlay-ports
       VCPKG_PACKAGES: >-
-        opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz lz4
+        opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz libdeflate lz4
         xxhash lzo nlohmann-json stb tinygltf
         imgui[docking-experimental,dx11-binding,win32-binding]
 

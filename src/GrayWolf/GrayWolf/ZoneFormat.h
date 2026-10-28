@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // Port: how one game's decompressed zone begins (header, string table, asset list). The walker
 // (ZoneTableWalker) knows only this interface; each game supplies an adapter in
 // Games/<game>/ZoneFormat.cpp that registers itself under the profile's "zone_format" name.
@@ -39,13 +41,13 @@ namespace ZoneTables
         virtual ~IZoneFormat() = default;
         virtual const char* Name() const = 0;
         // Throws std::runtime_error on a malformed header.
-        virtual ZoneHead Read(const std::vector<uint8_t>& Buf, const StreamRules& Rules) const
+        virtual ZoneHead Read(ByteView Buf, const StreamRules& Rules) const
         {
             (void)Buf, (void)Rules;
             throw std::runtime_error(std::string(Name()) + " reads its zone head with the tables");
         }
         // The walker calls this one; a format whose prefix is read by table overrides it.
-        virtual ZoneHead Read(const std::vector<uint8_t>& Buf, const StreamRules& Rules,
+        virtual ZoneHead Read(ByteView Buf, const StreamRules& Rules,
                               const PrefixWalk& Walk) const
         {
             (void)Walk;
@@ -66,7 +68,7 @@ namespace ZoneTables
     class HeaderReader
     {
     public:
-        explicit HeaderReader(const std::vector<uint8_t>& B) : Buf(B) {}
+        explicit HeaderReader(ByteView B) : Buf(B) {}
         uint64_t U64(int64_t At) const { return Get<uint64_t>(At); }
         int32_t I32(int64_t At) const { return Get<int32_t>(At); }
         uint32_t U32(int64_t At) const { return Get<uint32_t>(At); }
@@ -101,6 +103,6 @@ namespace ZoneTables
             memcpy(&V, Buf.data() + At, sizeof(T));
             return V;
         }
-        const std::vector<uint8_t>& Buf;
+        ByteView Buf;
     };
 }

@@ -39,7 +39,7 @@ namespace
         Counts& C;
         const std::function<std::string(uint64_t)>& Outside;
 
-        const std::vector<uint8_t>& Image() const { return *Z.Image; }
+        ByteView Image() const { return *Z.Image; }
         bool Holds(int64_t O, int64_t N) const { return O >= 0 && N >= 0 && (uint64_t)(O + N) <= Image().size(); }
         uint64_t Ptr(int64_t O) const { return Holds(O, 8) ? At<uint64_t>(Image(), O) : 0; }
         template <class T> T Get(int64_t O) const { return Holds(O, sizeof(T)) ? At<T>(Image(), O) : T{}; }
@@ -259,7 +259,7 @@ const Module* Layout::Find(int Id) const
     return nullptr;
 }
 
-void AddAtlas(nlohmann::ordered_json& J, const Layout& L, const std::vector<uint8_t>& Image, int64_t O, int64_t Size)
+void AddAtlas(nlohmann::ordered_json& J, const Layout& L, ByteView Image, int64_t O, int64_t Size)
 {
     if (O >= 0 && (uint64_t)O + Size <= Image.size())
         J["atlas"] = { At<uint8_t>(Image, O + L.MaterialAtlasRows), At<uint8_t>(Image, O + L.MaterialAtlasCols) };

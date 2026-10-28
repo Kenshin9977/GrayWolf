@@ -36,6 +36,14 @@ namespace ShellUi
     {
         GpuMesh BuildGpuMesh(ID3D11Device* Dev, const PreviewGeometry& Geo) { return UploadPreviewMesh(Dev, Geo); }
 
+        // the model filling the view (a map keeps its own framing, FramePreviewForTurn)
+        void FitCamera(ViewportState& V)
+        {
+            auto& F = V.Fitted;
+            F.Kept = FitPreviewCamera(V.Mesh, V.Yaw, V.Pitch, V.ViewAspect, V.DistScale, V.Pan);
+            F.Aspect = V.ViewAspect; F.Yaw = V.Yaw; F.Pitch = V.Pitch; F.DistScale = V.DistScale; F.Pan = V.Pan;
+        }
+
         // Rebuilds only M's vertex buffer from freshly-skinned Pos/Nrm (ranges, SRVs and framing stay from
         // the bind-pose build): called every displayed frame during playback. Vertex count/topology must
         // match the original build; a mismatch is a no-op.
@@ -327,6 +335,13 @@ namespace ShellUi
             DrawScreenshotBar(V, SelKind == 3 && !V.AnimRigPaths.empty() ? V.AnimRigLabel.substr(0, V.AnimRigLabel.find(' ')) + "_" + Models[S.Selected].Name : Models[S.Selected].Name);
             ImVec2 Avail = ImGui::GetContentRegionAvail();
             const int VW = (int)std::max(16.0f, Avail.x), VH = (int)std::max(16.0f, Avail.y);
+            V.ViewAspect = (float)VW / (float)VH;
+            {
+                auto& F = V.Fitted;
+                const bool Moved = V.Yaw != F.Yaw || V.Pitch != F.Pitch || V.DistScale != F.DistScale || V.Pan.x != F.Pan.x || V.Pan.y != F.Pan.y || V.Pan.z != F.Pan.z;
+                if (F.Kept && Moved) F.Kept = false;
+                else if (F.Kept && std::abs(V.ViewAspect - F.Aspect) > F.Aspect * 0.01f) FitCamera(V);
+            }
             RenderMeshToRT(V, S.Dev.Get(), S.Ctx.Get(), VW, VH);
             if (V.Vrt.OutputSRV)
             {
@@ -350,7 +365,7 @@ namespace ShellUi
                     if (io.MouseWheel != 0.0f)
                     {
                         V.DistScale *= (io.MouseWheel > 0) ? 0.88f : 1.136f;
-                        V.DistScale = std::max(0.1f, std::min(8.0f, V.DistScale));
+                        V.DistScale = std::max(0.02f, std::min(8.0f, V.DistScale));
                     }
                 }
             }
@@ -366,7 +381,11 @@ namespace ShellUi
         Lighting.Specular = SettingsManager::GetSetting("preview_specular", "true") != "false";
     }
 
-    void ResetCamera(ViewportState& V) { V.Yaw = 0.9f; V.Pitch = 0.32f; V.DistScale = 1.0f; V.Pan = {}; }
+    void ResetCamera(ViewportState& V)
+    {
+        V.Yaw = 0.9f; V.Pitch = 0.32f; V.DistScale = 1.0f; V.Pan = {};
+        FitCamera(V);
+    }
 
     void SyncAnimRigs(ShellState& S, bool Walking)
     {

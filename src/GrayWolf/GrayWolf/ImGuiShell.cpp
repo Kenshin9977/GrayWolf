@@ -8,6 +8,7 @@
 #include "SettingsManager.h"   // the list or the grid, the anims' rig
 
 #include "imgui.h"
+#include "imgui_internal.h"   // FindWindowByName
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 
@@ -112,6 +113,9 @@ namespace
         St.WindowPadding = ImVec2(10, 10); St.FramePadding = ImVec2(9, 5); St.ItemSpacing = ImVec2(8, 7); St.CellPadding = ImVec2(7, 4);
         St.Colors[ImGuiCol_WindowBg]        = ImVec4(0.11f, 0.115f, 0.13f, 1.0f);
         St.Colors[ImGuiCol_FrameBg]         = ImVec4(0.17f, 0.18f, 0.20f, 1.0f);
+        // secondary text at 4.5:1 or more on the window, the frames, the table headers and the
+        // banners (WCAG 2.2 SC 1.4.3; graywolf-tools ux/ux-check.py contrast checks it)
+        St.Colors[ImGuiCol_TextDisabled]    = ImVec4(0.62f, 0.63f, 0.66f, 1.0f);
         St.Colors[ImGuiCol_Header]          = ImVec4(0.20f, 0.33f, 0.48f, 1.0f);
         St.Colors[ImGuiCol_HeaderHovered]   = ImVec4(0.26f, 0.42f, 0.60f, 1.0f);
         St.Colors[ImGuiCol_HeaderActive]    = ImVec4(0.30f, 0.48f, 0.68f, 1.0f);
@@ -246,7 +250,12 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
         DrawViewportPanel(S);
         DrawFilterHelp(OpenHelp);
 
+        // (kept until the window exists: the first frame has drawn none yet)
+        if (!S.FocusWindow.empty() && ImGui::FindWindowByName(S.FocusWindow.c_str()) != nullptr) { ImGui::SetWindowFocus(S.FocusWindow.c_str()); S.FocusWindow.clear(); }
+        if (!S.LoadGameScript.empty()) { LoadGame.Script(S.LoadGameScript); S.LoadGameScript.clear(); }
         LoadGame.Draw(Dev.Get());
+        S.LoadGameWorking = S.Recorder && LoadGame.Working();
+        S.LoadGameIndicator = LoadGame.ShowedProgress();
 
         if (LoadGame.ConsumeExportJustFinished())
         {
@@ -254,6 +263,15 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
             // re-run is safe.
             OpenFolder(S, LoadGame.ExportOutputDir(), false);
         }
+        // Load Game's preview: its folder listed, the asset shown once it is (PollListing)
+        if (std::string Dir, Name; LoadGame.ConsumePreview(Dir, Name))
+        {
+            OpenFolder(S, Dir, false);
+            S.SelectWhenListed = Name;
+            S.SelectWhenListedDir = Dir;
+            S.SelectWhenListedFrames = 600;
+        }
+        if (LoadGame.ConsumeShowAssets()) ImGui::SetWindowFocus("Assets");
 
         UiAsync::DrawOverlay();   // a dialog's dimmed layer, the notices
         ImGui::Render();

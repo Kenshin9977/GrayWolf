@@ -40,38 +40,26 @@ std::unique_ptr<XModel_t> GameModernWarfare4::ReadXModel(const CoDModel_t* Model
 
             LodReference.LODStreamInfoPtr = ModelData.ModelLods[i].MeshPtr;
 
-            auto XSurfacePtr = ModelData.ModelLods[i].SurfsPtr;
-
-            for (uint32_t s = 0; s < ModelData.ModelLods[i].NumSurfs; s++)
-            {
-                LodReference.Submeshes.emplace_back();
-                auto& SubmeshReference = LodReference.Submeshes[s];
-
-                auto SurfaceInfo = CoDAssets::GameInstance->Read<MW4XModelSurface>(XSurfacePtr);
-
-                SubmeshReference.RigidWeightsPtr  = SurfaceInfo.RigidWeightsPtr;
-                SubmeshReference.VertListcount    = SurfaceInfo.VertListCount;
-                SubmeshReference.VertexCount      = SurfaceInfo.VertexCount;
-                SubmeshReference.FaceCount        = SurfaceInfo.FacesCount;
-                SubmeshReference.VertexPtr        = SurfaceInfo.Offsets[0];
-                SubmeshReference.VertexUVsPtr     = SurfaceInfo.Offsets[2];
-                SubmeshReference.VertexNormalsPtr = SurfaceInfo.Offsets[3];
-                SubmeshReference.FacesPtr         = SurfaceInfo.Offsets[4];
-                SubmeshReference.VertexColorPtr   = SurfaceInfo.Offsets[6];
-                SubmeshReference.Scale            = fmaxf(fmaxf(SurfaceInfo.Min, SurfaceInfo.Scale), SurfaceInfo.Max);
-                SubmeshReference.XOffset          = SurfaceInfo.XOffset;
-                SubmeshReference.YOffset          = SurfaceInfo.YOffset;
-                SubmeshReference.ZOffset          = SurfaceInfo.ZOffset;
-
-                for (int W = 0; W < 8; W++) SubmeshReference.WeightCounts[W] = SurfaceInfo.WeightCounts[W];
-                SubmeshReference.WeightsPtr = SurfaceInfo.WeightsPtr;
-
-                auto MaterialHandle = CoDAssets::GameInstance->Read<uint64_t>(ModelData.MaterialHandlesPtr);
-                LodReference.Materials.emplace_back(ReadXMaterial(MaterialHandle));
-
-                XSurfacePtr += sizeof(MW4XModelSurface);
-                ModelData.MaterialHandlesPtr += sizeof(uint64_t);
-            }
+            GameReaders::ReadSurfaces<MW4XModelSurface, uint64_t>(LodReference, ModelData.ModelLods[i].SurfsPtr, ModelData.ModelLods[i].NumSurfs,
+                                                                  ModelData.MaterialHandlesPtr, ReadXMaterial,
+                                                                  [](XModelSubmesh_t& Submesh, const MW4XModelSurface& Info)
+                                                                  {
+                                                                      Submesh.RigidWeightsPtr = Info.RigidWeightsPtr;
+                                                                      Submesh.VertListcount = Info.VertListCount;
+                                                                      Submesh.VertexCount = Info.VertexCount;
+                                                                      Submesh.FaceCount = Info.FacesCount;
+                                                                      Submesh.VertexPtr = Info.Offsets[0];
+                                                                      Submesh.VertexUVsPtr = Info.Offsets[2];
+                                                                      Submesh.VertexNormalsPtr = Info.Offsets[3];
+                                                                      Submesh.FacesPtr = Info.Offsets[4];
+                                                                      Submesh.VertexColorPtr = Info.Offsets[6];
+                                                                      Submesh.Scale = fmaxf(fmaxf(Info.Min, Info.Scale), Info.Max);
+                                                                      Submesh.XOffset = Info.XOffset;
+                                                                      Submesh.YOffset = Info.YOffset;
+                                                                      Submesh.ZOffset = Info.ZOffset;
+                                                                      for (int W = 0; W < 8; W++) Submesh.WeightCounts[W] = Info.WeightCounts[W];
+                                                                      Submesh.WeightsPtr = Info.WeightsPtr;
+                                                                  });
         }
 
         return ModelAsset;

@@ -14,4 +14,6 @@ namespace LauncherIcons
     // Source: GameInstalls::Install::Source ("Steam", "Battle.net", ...). nullptr when Windows
     // gives no icon.
     ID3D11ShaderResourceView* For(ID3D11Device* Dev, const std::string& Source);
+    // A file's own icon as Windows shows it (a game's exe), read once per path; nullptr when it has none
+    ID3D11ShaderResourceView* ForFile(ID3D11Device* Dev, const std::string& Path);
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The scripts kind (DiskGame::Kind::Script), the same for every game. A reader hands each script
 // of a zone to a Sink as the zone stores it: source text, or compiled bytecode in the form its
 // decompiler reads. Its game says which decompiler its VM takes (Vm). Source is written as is
@@ -50,8 +52,8 @@ namespace Scripts
 
     // gsc-tool's .gscbin of an IW scriptfile: "GSC\0", compressedLen, len, bytecodeLen (u32 each),
     // the compressed stack, the bytecode
-    std::vector<uint8_t> GscBin(uint32_t CompressedLen, uint32_t Len, const std::vector<uint8_t>& Stack,
-                                const std::vector<uint8_t>& Bytecode);
+    std::vector<uint8_t> GscBin(uint32_t CompressedLen, uint32_t Len, ByteView Stack,
+                                ByteView Bytecode);
 
     // One zone's scripts, written into the run's scripts/ folder. Counts Seen and Written of the
     // kind; scripts_decompiled, scripts_decompile_failed (bytecode kept), scripts_bytecode,
@@ -75,7 +77,7 @@ namespace Scripts
             std::string Name, Input;   // the script, its file under the tool's input folder
             std::vector<uint8_t> Bytes;
         };
-        void WriteBytecode(const std::string& Name, const std::vector<uint8_t>& Bytes);
+        void WriteBytecode(const std::string& Name, ByteView Bytes);
         void Decompile();
 
         const DiskGame::Context& C;

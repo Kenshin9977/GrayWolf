@@ -194,7 +194,7 @@ namespace
 
     private:
         const ClipSource& Src;
-        const std::vector<uint8_t>& Img;
+        ByteView Img;
         const ClipLayout& L;
         std::map<std::string, size_t>& Counters;
     };

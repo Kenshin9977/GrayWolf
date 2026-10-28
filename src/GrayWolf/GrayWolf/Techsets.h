@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The techsets kind (DiskGame::Kind::Techsets), for the games whose materials draw through
 // techsets of DXIL shaders and a bindless material buffer (Modern Warfare III, Black Ops 6 and 7):
 // each techset of a zone, its techniques and their shaders (the bytecode as stored, its
@@ -31,7 +33,7 @@ namespace Techsets
     struct ZoneView
     {
         std::string Name;
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(int64_t Field)> Ptr;               // where the pointer field at Field points in Image, -1 elsewhere
         std::vector<std::pair<std::string, int64_t>> Assets;     // the zone's assets: type, position
         std::function<std::string(uint64_t Hash)> NameOf;        // a 63-bit hash's name, "" unknown
@@ -127,7 +129,7 @@ namespace Techsets
     };
 
     // N bytes of B from Pos as hex (what is in range)
-    std::string Hex(const std::vector<uint8_t>& B, int64_t Pos, int64_t N);
+    std::string Hex(ByteView B, int64_t Pos, int64_t N);
 
     // Writes the zone's files (Format: the game's) under C's techsets folder
     void Export(const ZoneView& Z, const Format& F, const DiskGame::Context& C, DiskGame::Totals& T);

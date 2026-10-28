@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Black Ops Cold War (T9): the "flexible" container. The fixed header of BO3/BO4 becomes a list of
 // typed sections ("TAFF", count, then type/size/bytes each; "TAFA" adds a signature after them),
@@ -92,7 +93,7 @@ namespace
     }
 
     // The sections from Pos; Pos ends after them (and the signature of a "TAFA")
-    bool ReadHeader(const std::vector<uint8_t>& File, size_t& Pos, FlexibleHeader& Header, std::string& Error)
+    bool ReadHeader(ByteView File, size_t& Pos, FlexibleHeader& Header, std::string& Error)
     {
         uint32_t Magic = 0, Count = 0;
         if (Pos + 8 > File.size())
@@ -198,7 +199,7 @@ namespace
     }
 
     // The .ff's zone: its blocks, after the header
-    bool DecompressBase(const std::string& Path, std::vector<uint8_t>& Zone, std::string& Error)
+    bool DecompressBase(const std::string& Path, ZoneBytes& Zone, std::string& Error)
     {
         std::vector<uint8_t> File;
         if (!ReadFile(Path, File, Error)) return false;
@@ -268,7 +269,7 @@ namespace
     }
 
     // The .fd applied to the .ff's zone
-    bool ApplyPatch(const std::string& FdPath, const std::vector<uint8_t>& Base, std::vector<uint8_t>& Zone,
+    bool ApplyPatch(const std::string& FdPath, ByteView Base, ZoneBytes& Zone,
                     std::string& Error)
     {
         std::vector<uint8_t> File;
@@ -315,9 +316,9 @@ namespace
     }
 }
 
-bool FastFile::DecompressTreyarchT9(const std::string& FilePath, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressTreyarchT9(const std::string& FilePath, ZoneBytes& Zone, std::string& Error)
 {
-    std::vector<uint8_t> Base;
+    ZoneBytes Base;
     if (!DecompressBase(FilePath, Base, Error)) return false;
     const auto Fd = std::filesystem::path(FilePath).replace_extension(".fd");
     if (!std::filesystem::exists(Fd))

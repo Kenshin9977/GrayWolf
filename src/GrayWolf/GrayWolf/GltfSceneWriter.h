@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <array>
 #include <cstdint>
 #include <set>
@@ -41,7 +43,7 @@ public:
     static std::array<float, 16> MatrixLookDir(const float origin[3], const float dir[3]);
 
     // Registry adds - each returns an index used to reference it.
-    int AddImagePng(const std::string& name, const std::vector<uint8_t>& png); // -1 on empty
+    int AddImagePng(const std::string& name, ByteView png); // -1 on empty
     // An image the .glb refers to by a path relative to itself, not embedded (-1 on empty).
     int AddImageUri(const std::string& name, const std::string& uri);
     // How the base colour's alpha is used (glTF alphaMode): OPAQUE, MASK (cut out at the cutoff), BLEND.

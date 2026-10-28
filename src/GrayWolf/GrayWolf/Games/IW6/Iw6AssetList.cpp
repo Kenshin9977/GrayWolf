@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Iw6AssetList.h"
 
@@ -37,7 +38,7 @@ namespace Iw6
         };
 
         template <typename T>
-        bool ReadAt(const std::vector<uint8_t>& Zone, uint64_t Offset, T& Value)
+        bool ReadAt(ByteView Zone, uint64_t Offset, T& Value)
         {
             if (Offset > Zone.size() || Zone.size() - Offset < sizeof(T))
                 return false;
@@ -48,15 +49,15 @@ namespace Iw6
             return true;
         }
 
-        bool ReadU64(const std::vector<uint8_t>& Zone, uint64_t Offset, uint64_t& Value) { return ReadAt(Zone, Offset, Value); }
-        bool ReadU32(const std::vector<uint8_t>& Zone, uint64_t Offset, uint32_t& Value) { return ReadAt(Zone, Offset, Value); }
+        bool ReadU64(ByteView Zone, uint64_t Offset, uint64_t& Value) { return ReadAt(Zone, Offset, Value); }
+        bool ReadU32(ByteView Zone, uint64_t Offset, uint32_t& Value) { return ReadAt(Zone, Offset, Value); }
 
         bool IsPointer(uint64_t Value)
         {
             return Value == 0 || Value == InlineMarker || (Value >> 32) == ReferencePrefix;
         }
 
-        bool EntryParses(const std::vector<uint8_t>& Zone, uint64_t Offset)
+        bool EntryParses(ByteView Zone, uint64_t Offset)
         {
             uint32_t Type = 0;
             uint32_t Padding = 0;
@@ -71,7 +72,7 @@ namespace Iw6
             return Type < AssetTypeCount && Padding == 0 && IsPointer(Header);
         }
 
-        bool ArrayParsesAt(const std::vector<uint8_t>& Zone, uint64_t Offset, uint64_t Count)
+        bool ArrayParsesAt(ByteView Zone, uint64_t Offset, uint64_t Count)
         {
             if (Count > (Zone.size() - Offset) / EntrySize)
                 return false;
@@ -89,7 +90,7 @@ namespace Iw6
         // inline an XGfxGlobals and its arrays. Its size is computable, so the array's offset is
         // derived rather than searched for. The arrays of D3D state objects are written to the
         // runtime block, which puts no bytes in the file at all, so only these five are here.
-        bool SkipGlobals(const std::vector<uint8_t>& Zone, uint64_t& Position)
+        bool SkipGlobals(ByteView Zone, uint64_t& Position)
         {
             uint64_t GfxGlobals = 0;
             if (!ReadU64(Zone, Position, GfxGlobals))
@@ -135,7 +136,7 @@ namespace Iw6
             return Position <= Zone.size();
         }
 
-        bool ReadStrings(const std::vector<uint8_t>& Zone, AssetList& Out, uint64_t& Position, std::string& Error)
+        bool ReadStrings(ByteView Zone, AssetList& Out, uint64_t& Position, std::string& Error)
         {
             uint64_t StringCount = 0;
             uint64_t StringsPointer = 0;
@@ -198,7 +199,7 @@ namespace Iw6
         return Type < AssetTypeCount ? TypeNames[Type] : nullptr;
     }
 
-    bool ReadAssetList(const std::vector<uint8_t>& Zone, AssetList& Out, std::string& Error)
+    bool ReadAssetList(ByteView Zone, AssetList& Out, std::string& Error)
     {
         Out = AssetList();
 

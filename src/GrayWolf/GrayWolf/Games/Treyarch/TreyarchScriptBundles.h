@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The bundles kind for Black Ops 4 and Cold War: a scriptbundle (what scripts read with
 // getscriptbundle) as JSON. Both games keep the same tree, laid out apart (acts' bo4 and cw
 // scriptbundle unlinkers): ScriptBundle {name, settings type, objects}, objects {u64 count, entries,
@@ -20,7 +22,7 @@ namespace Treyarch
     // What the reader reads a zone through.
     struct BundleZone
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(uint64_t Address)> Off;               // zone offset, -1 outside
         std::function<std::string(uint32_t Index)> ScriptString;     // the zone's script string, ""
         std::function<std::string(uint64_t Hash)> HashName;          // a hash's name, "" unknown

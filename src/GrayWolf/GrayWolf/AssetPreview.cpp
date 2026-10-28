@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "AssetPreview.h"
 
@@ -83,14 +84,14 @@ static std::unique_ptr<uint8_t[]> FindIwdEntry(const std::string& InstallDir, co
 
 // Turns raw IWD sound bytes (BO1 block MS-ADPCM, or an already-RIFF entry) into a PCM16 WAV on disk.
 // Robust: a bad output path (odd chars / over-long) skips instead of throwing. False if undecodable.
-static bool WriteIwdSound(const std::vector<uint8_t>& Raw, const std::string& OutPath)
+static bool WriteIwdSound(ByteView Raw, const std::string& OutPath)
 {
     std::vector<uint8_t> Wav;
     const bool IsRiff = Raw.size() >= 12 && std::memcmp(Raw.data(), "RIFF", 4) == 0
                                          && std::memcmp(Raw.data() + 8, "WAVE", 4) == 0;
-    const std::vector<uint8_t>* Payload = nullptr;
-    if (DecodeIWDSound(Raw, Wav)) Payload = &Wav;
-    else if (IsRiff)              Payload = &Raw;
+    ByteView Payload;
+    if (DecodeIWDSound(Raw, Wav)) Payload = Wav;
+    else if (IsRiff)              Payload = Raw;
     else                          return false;
     try
     {
@@ -99,7 +100,7 @@ static bool WriteIwdSound(const std::vector<uint8_t>& Raw, const std::string& Ou
         fs::create_directories(fs::path(OutPath).parent_path(), Ec);
         std::ofstream O(OutPath, std::ios::binary | std::ios::trunc);
         if (!O) return false;
-        O.write((const char*)Payload->data(), (std::streamsize)Payload->size());
+        O.write((const char*)Payload.data(), (std::streamsize)Payload.size());
         return (bool)O;
     }
     catch (const std::exception&) { return false; }

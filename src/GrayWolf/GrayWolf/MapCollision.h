@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // A level's collision brushes out of its clip map (clipMap_t), the same for every game: where a
 // game keeps the fields is its ClipLayout (a fact of the game, written beside its map reader); the
 // reading is here. What every Call of Duty keeps since Quake 3: planes, brush sides pointing at
@@ -98,7 +100,7 @@ namespace Maps
     // pointer's data is (-1: not in the zone).
     struct ClipSource
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         int PointerSize = 8;
         std::function<int64_t(uint64_t Address)> Off;
         std::function<std::string(uint64_t Address)> String;   // a relocated string pointer's text

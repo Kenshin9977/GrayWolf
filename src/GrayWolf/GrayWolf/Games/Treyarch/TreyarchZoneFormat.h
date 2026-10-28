@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include "ZoneFormat.h"
 
 // The Treyarch zone header (Black Ops 4, Cold War): read outside the
@@ -15,7 +17,7 @@ public:
 
     const char* Name() const override { return FormatName; }
 
-    ZoneTables::ZoneHead Read(const std::vector<uint8_t>& Buf, const ZoneTables::StreamRules& Rules) const override
+    ZoneTables::ZoneHead Read(ByteView Buf, const ZoneTables::StreamRules& Rules) const override
     {
         const int64_t Header = Rules.HeaderSize;
         const ZoneTables::HeaderReader H(Buf);

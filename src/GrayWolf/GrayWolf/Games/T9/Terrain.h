@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // Black Ops Cold War's terrain (terraingfx) as world geometry and collision triangles. A surface
 // is a heightmap grid drawn where its visibility bitmap says, coloured by its colour map; its
 // meshes (the levels of nodes, the finest streamed) are the same grid, so the grid is built from
@@ -17,7 +19,7 @@ namespace ColdWar
 {
     struct TerrainSource
     {
-        const std::vector<uint8_t>* Image = nullptr;   // the zone
+        const ByteView* Image = nullptr;   // the zone
         std::function<int64_t(uint64_t)> Off;          // a pointer field's zone position, -1 when none
         // an image's largest mip, decoded: its raw pixels (no file header), size and DXGI format
         std::function<bool(int64_t Image, std::vector<uint8_t>& Pixels, uint32_t& Width, uint32_t& Height)> Pixels;

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // A zone's compiled Lua files (ZonekitZone's rawfile kind), decompiled with the decompile setting
 // on (DiskGame::ScriptDecompile, --decompile): one run of each decompiler per zone over the files
 // still left, by the bytecode's header (OatBridge.h), external processes like acts:
@@ -21,7 +23,7 @@
 namespace LuaScripts
 {
     // Compiled Lua bytecode by its header (ESC "Lua" or ESC "LJ")
-    bool IsBytecode(const std::vector<uint8_t>& Bytes);
+    bool IsBytecode(ByteView Bytes);
 
     // One zone's compiled Lua files. Counters: lua_decompiled, lua_decompile_failed (bytecode
     // kept), lua_no_decompiler (decompiling asked for, no tool for the file found),

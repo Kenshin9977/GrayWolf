@@ -38,6 +38,8 @@ namespace IW12
         const std::map<std::string, int>& Files() const { return Winner; }
         // A file's bytes, as the game reads it; false when no archive holds it or it does not inflate.
         bool Read(const std::string& Path, std::vector<uint8_t>& Out) const;
+        // ... and its size inflated, 0 when no archive holds it
+        uint64_t Size(const std::string& Path) const;
         int ArchiveOf(const std::string& ArchivePath) const;   // by file name, -1 if not this install's
 
     private:

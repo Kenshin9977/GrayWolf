@@ -24,4 +24,8 @@ namespace GameInstalls
     // manages, all but Steam by an exe in the folder. One entry per
     // folder (the final path, case-insensitive), sorted by release year.
     std::vector<Install> Detect();
+    // The game's own exe for a folder picked to read (its icon is the game's): a marker exe of the
+    // table in the folder or in one of its two parents (an install given as its zone or cod24
+    // folder); "" when none is there
+    std::string GameExe(const std::string& Folder);
 }

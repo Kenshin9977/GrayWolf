@@ -150,6 +150,32 @@ namespace
 
         bool Apply(uint8_t* Data, size_t Length)
         {
+            // whole blocks from a block's start: their counters laid out, then ciphered in one call
+            // (a call per 16 bytes was most of a Modern Warfare WWII zone's opening)
+            if (Used == CounterSize && Length >= CounterSize)
+            {
+                const size_t Blocks = Length / CounterSize;
+                Stream.resize(Blocks * CounterSize);
+                for (size_t K = 0; K < Blocks; K++)
+                {
+                    if (Primed)
+                        for (size_t b = 0; b < CounterSize; b++)
+                            if (++Block[b] != 0) break;
+                    Primed = true;
+                    std::memcpy(Stream.data() + K * CounterSize, Block, CounterSize);
+                }
+                ULONG Produced = 0;
+                if (!BCRYPT_SUCCESS(BCryptEncrypt(Aes, Stream.data(), (ULONG)Stream.size(), nullptr, nullptr, 0, Stream.data(),
+                                                  (ULONG)Stream.size(), &Produced, 0)))
+                {
+                    return false;
+                }
+                for (size_t i = 0; i < Stream.size(); i++) Data[i] ^= Stream[i];
+                // the last block's pad all used: the next byte takes the next counter
+                std::memcpy(Pad, Stream.data() + Stream.size() - CounterSize, CounterSize);
+                Data += Stream.size();
+                Length -= Stream.size();
+            }
             for (size_t i = 0; i < Length; i++)
             {
                 if (Used == CounterSize)
@@ -187,6 +213,7 @@ namespace
     private:
 
         BCRYPT_KEY_HANDLE Aes;
+        std::vector<uint8_t> Stream;   // a run of counters, then their keystream
         uint8_t Block[CounterSize] = {};
         uint8_t Pad[CounterSize] = {};
         size_t Used = CounterSize;

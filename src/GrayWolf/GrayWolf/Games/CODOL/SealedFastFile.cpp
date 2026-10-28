@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Games/CODOL/SealedFastFile.h"
 
@@ -180,7 +181,7 @@ namespace
         return Ok;
     }
 
-    bool Decode(const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error)
+    bool Decode(ByteView File, ZoneBytes& Zone, std::string& Error)
     {
         return Codol::DecryptFastFile(File, Zone, Error);
     }
@@ -188,7 +189,7 @@ namespace
     const FastFileContainerRegistration Registered("IWff0100", 461, Decode);
 }
 
-bool Codol::DecryptFastFile(const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error)
+bool Codol::DecryptFastFile(ByteView File, ZoneBytes& Zone, std::string& Error)
 {
     Zone.clear();
     if (File.size() < HeaderSize + SealSize + BlockSize || (File.size() - HeaderSize - SealSize) % BlockSize != 0)

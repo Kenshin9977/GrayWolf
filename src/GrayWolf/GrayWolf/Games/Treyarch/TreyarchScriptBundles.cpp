@@ -64,7 +64,7 @@ namespace
     {
         const Treyarch::BundleZone& Z;
         const Layout& L;
-        const std::vector<uint8_t>& Img;
+        ByteView Img;
         const std::vector<std::pair<int64_t, int64_t>>& Reads;
         bool Bad = false;
         int64_t Last = -1;   // the last block found among the reads

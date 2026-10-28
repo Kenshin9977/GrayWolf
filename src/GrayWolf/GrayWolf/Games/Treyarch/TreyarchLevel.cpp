@@ -41,7 +41,7 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
         std::fprintf(Dbg, "[map] %s vertices %u (%llu bytes, stride %u) at %llx indices %u surfaces %u brushes %u\n", Scene.Name.c_str(),
                      VertexCount, (unsigned long long)Bytes, Stride, (long long)Vertices, W.IndexCount, W.SurfaceCount, W.BrushCount);
     // a record by its index, a packed vertex by its byte offset in the block
-    const auto Read = [&Img, Vertices, VertexCount, Bytes, Stride, Packed](uint32_t Key, Maps::Vertex& Out) {
+    const auto Read = [Img, Vertices, VertexCount, Bytes, Stride, Packed](uint32_t Key, Maps::Vertex& Out) {
         if (Vertices < 0 || (Packed ? (uint64_t)Key + Stride > Bytes : Key >= VertexCount)) return false;
         const int64_t V = Vertices + (Packed ? (int64_t)Key : (int64_t)Key * Stride);
         if (V + Stride > (int64_t)Img.size()) return false;

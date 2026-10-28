@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Treyarch containers: Black Ops 2's encrypted blocks, the chunked format Black Ops 3 and 4
 // share, and their zone parser.
@@ -13,14 +14,17 @@
 #include "Siren.h"
 #include "VCDiff.h"
 
+#include <algorithm>
+#include <execution>
 #include <fstream>
+#include <future>
 #include <filesystem>
 #include <format>
 #include "FastFile.Internal.h"
 
 using namespace FastFileInternal;
 
-bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error)
 {
     std::vector<uint8_t> File;
     if (!ReadWholeFile(FilePath, File, Error))
@@ -150,8 +154,9 @@ bool FastFile::DecompressTreyarchT6(const std::string& FilePath, const FastFileI
 namespace
 {
     // The blocks of a Treyarch fast file (Black Ops 3 and 4) from HeaderBytes on, each introduced
-    // by a TreyarchBlockHeader, stored or compressed as Info says, appended to Zone
-    bool ReadTreyarchBlocks(const std::vector<uint8_t>& File, size_t HeaderBytes, const FastFileInfo& Info, std::vector<uint8_t>& Zone,
+    // by a TreyarchBlockHeader, stored or compressed as Info says, appended to Zone. The headers
+    // are read first, then the blocks decompress side by side.
+    bool ReadTreyarchBlocks(ByteView File, size_t HeaderBytes, const FastFileInfo& Info, ZoneBytes& Zone,
                             std::string& Error)
     {
         const bool IsLZ4 = Info.Compression == FastFileCompression::LZ4 ||
@@ -168,11 +173,14 @@ namespace
             return false;
         }
 
-        if (Info.DeclaredZoneSize > 0)
+        struct Job
         {
-            ReserveZone(Zone, Info.DeclaredZoneSize, File.size());
-        }
-
+            TreyarchBlockHeader Block;
+            const uint8_t* Data;
+            size_t ZoneOffset;
+        };
+        std::vector<Job> Jobs;
+        size_t ZoneSize = Zone.size();
         size_t Position = HeaderBytes;
 
         while (Position + sizeof(TreyarchBlockHeader) <= File.size())
@@ -217,89 +225,82 @@ namespace
                 return false;
             }
 
-            const auto* BlockData = File.data() + Position;
-
-            const auto ZoneOffset = Zone.size();
-            Zone.resize(ZoneOffset + Block.UncompressedSize);
-
-            if (IsNone)
-            {
-                std::memcpy(Zone.data() + ZoneOffset, BlockData, Block.UncompressedSize);
-            }
-            else if (IsLZ4)
-            {
-                const auto Produced = Compression::DecompressLZ4Block(
-                    (const int8_t*)BlockData, (int8_t*)(Zone.data() + ZoneOffset),
-                    (int32_t)Block.CompressedSize, (int32_t)Block.UncompressedSize);
-
-                if (Produced != Block.UncompressedSize)
-                {
-                    Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                        Block.Offset, Produced, Block.UncompressedSize);
-                    return false;
-                }
-            }
-            else if (IsOodle)
-            {
-                const auto Produced = Siren::Decompress(BlockData, Block.CompressedSize,
-                    Zone.data() + ZoneOffset, Block.UncompressedSize);
-
-                if (Produced != Block.UncompressedSize)
-                {
-                    Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                        Block.Offset, (unsigned long long)Produced, Block.UncompressedSize);
-                    return false;
-                }
-            }
-            else
-            {
-                // The blocks carry a normal zlib header, they just declare a smaller window
-                // than usual, so the default wrapper aware init is what we want (acts' own T8
-                // decompressor does it through plain uncompress2())
-                mz_stream Stream = {};
-                if (mz_inflateInit(&Stream) != MZ_OK)
-                {
-                    Error = "could not start the inflater";
-                    return false;
-                }
-
-                Stream.next_in = BlockData;
-                Stream.avail_in = Block.CompressedSize;
-                Stream.next_out = Zone.data() + ZoneOffset;
-                Stream.avail_out = Block.UncompressedSize;
-
-                const auto Result = mz_inflate(&Stream, MZ_FINISH);
-                const auto Produced = Stream.total_out;
-                mz_inflateEnd(&Stream);
-
-                if (Result != MZ_STREAM_END || Produced != Block.UncompressedSize)
-                {
-                    Error = std::format("block at 0x{:x} failed to inflate ({}, {} of {} bytes)",
-                        Block.Offset, Result, (unsigned long long)Produced, Block.UncompressedSize);
-                    return false;
-                }
-            }
-
+            Jobs.push_back({ Block, File.data() + Position, ZoneSize });
+            ZoneSize += Block.UncompressedSize;
             Position += Block.AlignedSize;
 
             // The header tells us how big the zone is, so stop rather than run off the end
-            if (Info.DeclaredZoneSize > 0 && Zone.size() >= Info.DeclaredZoneSize)
+            if (Info.DeclaredZoneSize > 0 && ZoneSize >= Info.DeclaredZoneSize)
             {
                 break;
             }
         }
 
-        if (Zone.empty())
+        if (Jobs.empty())
         {
             Error = "no blocks were decompressed";
             return false;
         }
+        Zone.resize(ZoneSize);
+
+        // "" when the block decompresses, else what went wrong
+        std::vector<std::string> Failed(Jobs.size());
+        std::for_each(std::execution::par, Jobs.begin(), Jobs.end(), [&](const Job& J) {
+            const TreyarchBlockHeader& Block = J.Block;
+            uint8_t* Out = Zone.data() + J.ZoneOffset;
+            std::string& Why = Failed[&J - Jobs.data()];
+            if (IsNone)
+            {
+                std::memcpy(Out, J.Data, Block.UncompressedSize);
+            }
+            else if (IsLZ4)
+            {
+                const auto Produced = Compression::DecompressLZ4Block(
+                    (const int8_t*)J.Data, (int8_t*)Out,
+                    (int32_t)Block.CompressedSize, (int32_t)Block.UncompressedSize);
+
+                if (Produced != Block.UncompressedSize)
+                {
+                    Why = std::format("block at 0x{:x} gave {} bytes instead of {}",
+                        Block.Offset, Produced, Block.UncompressedSize);
+                }
+            }
+            else if (IsOodle)
+            {
+                const auto Produced = Siren::Decompress(J.Data, Block.CompressedSize, Out, Block.UncompressedSize);
+
+                if (Produced != Block.UncompressedSize)
+                {
+                    Why = std::format("block at 0x{:x} gave {} bytes instead of {}",
+                        Block.Offset, (unsigned long long)Produced, Block.UncompressedSize);
+                }
+            }
+            else
+            {
+                // The blocks carry a normal zlib header, they just declare a smaller window
+                // than usual (acts' own T8 decompressor does it through plain uncompress2())
+                size_t Produced = 0;
+                const libdeflate_result Result = libdeflate_zlib_decompress(Inflater(), J.Data, Block.CompressedSize, Out, Block.UncompressedSize, &Produced);
+
+                if (Result != LIBDEFLATE_SUCCESS || Produced != Block.UncompressedSize)
+                {
+                    Why = std::format("block at 0x{:x} failed to inflate ({}, {} of {} bytes)",
+                        Block.Offset, (int)Result, (unsigned long long)Produced, Block.UncompressedSize);
+                }
+            }
+        });
+        for (const std::string& Why : Failed)
+            if (!Why.empty())
+            {
+                Error = Why;
+                return false;
+            }
 
         return true;
     }
 }
 
-bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error)
 {
     if (Info.Encrypted)
     {
@@ -334,7 +335,7 @@ bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInf
 // the .ff's header (0x840), a 0x28-byte patch header whose first u64 is where the zlib data
 // starts, then zlib'd VCDIFF whose source is the whole decompressed .ff zone. The result is the
 // zone the game's loader reads.
-static bool ApplyBo4Patch(const std::string& FilePath, std::vector<uint8_t>& Zone, std::string& Error)
+static bool ApplyBo4Patch(const std::string& FilePath, ZoneBytes& Zone, std::string& Error)
 {
     std::vector<uint8_t> File;
     {
@@ -374,17 +375,23 @@ static bool ApplyBo4Patch(const std::string& FilePath, std::vector<uint8_t>& Zon
         Error = "the patch needs its base fast file next to it: " + SourcePath.string();
         return false;
     }
-    std::vector<uint8_t> Source;
+    // the delta inflates while the base decompresses
+    std::vector<uint8_t> Delta;
+    std::string DeltaError;
+    auto Inflated = std::async(std::launch::async, [&] {
+        return FastFileInternal::InflateZLibStreams(File.data() + DataStart, File.size() - (size_t)DataStart, Delta, DeltaError);
+    });
+    ZoneBytes Source;
     std::string SourceError;
-    if (!FastFile::Decompress(SourcePath.string(), Source, SourceError))
+    const bool SourceRead = FastFile::Decompress(SourcePath.string(), Source, SourceError);
+    if (!Inflated.get())
     {
-        Error = "the base fast file did not decompress: " + SourceError;
+        Error = DeltaError;
         return false;
     }
-
-    std::vector<uint8_t> Delta;
-    if (!FastFileInternal::InflateZLibStreams(File.data() + DataStart, File.size() - (size_t)DataStart, Delta, Error))
+    if (!SourceRead)
     {
+        Error = "the base fast file did not decompress: " + SourceError;
         return false;
     }
 
@@ -403,29 +410,11 @@ bool FastFileInternal::InflateZLibStreams(const uint8_t* Data, const size_t Size
     size_t In = 0;
     while (In < Size && Data[In] == 0x78)
     {
-        mz_stream S = {};
-        if (mz_inflateInit(&S) != MZ_OK)
+        size_t Used = 0;
+        std::string Why;
+        if (!InflateAppend(ByteView(Data + In, Size - In), Delta, Why, false, 0, &Used))
         {
-            Error = "could not start the inflater";
-            return false;
-        }
-        S.next_in = Data + In;
-        S.avail_in = (unsigned int)(Size - In);
-        int Result = MZ_OK;
-        while (Result == MZ_OK)
-        {
-            const size_t Had = Delta.size();
-            Delta.resize(Had + 0x400000);
-            S.next_out = Delta.data() + Had;
-            S.avail_out = 0x400000;
-            Result = mz_inflate(&S, MZ_NO_FLUSH);
-            Delta.resize(Had + (0x400000 - S.avail_out));
-        }
-        const size_t Used = (size_t)S.total_in;
-        mz_inflateEnd(&S);
-        if (Result != MZ_STREAM_END)
-        {
-            Error = std::format("the patch failed to inflate ({}) at 0x{:x}", Result, (unsigned long long)In);
+            Error = std::format("the patch failed to inflate ({}) at 0x{:x}", Why, (unsigned long long)In);
             return false;
         }
         In += Used;
@@ -435,7 +424,7 @@ bool FastFileInternal::InflateZLibStreams(const uint8_t* Data, const size_t Size
 
 // Walks the block list of a Black Ops 4 (T8) fast file. Same outer shape as
 // DecompressTreyarch's Black Ops 3 container, different fixed header, Oodle joining zlib/LZ4/none.
-bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error)
 {
     if (Info.Encrypted)
     {
@@ -490,7 +479,7 @@ bool FastFile::DecompressTreyarchT8(const std::string& FilePath, const FastFileI
     return ReadTreyarchBlocks(File, (Info.Version == BO4DevVersion) ? BO4DevHeaderSize : BO4RetailHeaderSize, Info, Zone, Error);
 }
 
-bool FastFile::ParseTreyarchZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out, std::string& Error)
+bool FastFile::ParseTreyarchZone(ByteView Zone, ZoneInfo& Out, std::string& Error)
 {
     Out = {};
     Error.clear();

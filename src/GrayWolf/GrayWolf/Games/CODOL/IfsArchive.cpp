@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Games/CODOL/IfsArchive.h"
 
@@ -135,7 +136,7 @@ namespace
         return Pc | (static_cast<uint64_t>(Pb) << 32);
     }
 
-    uint64_t Bits(const std::vector<uint8_t>& Buf, uint64_t Bit, uint32_t Count)
+    uint64_t Bits(ByteView Buf, uint64_t Bit, uint32_t Count)
     {
         uint64_t V = 0;
         for (uint32_t J = 0; J < Count; J++, Bit++)
@@ -174,7 +175,7 @@ namespace
         return true;
     }
 
-    std::vector<std::string> Lines(const std::vector<uint8_t>& Text)
+    std::vector<std::string> Lines(ByteView Text)
     {
         std::vector<std::string> Out;
         std::string Line;

@@ -71,6 +71,9 @@ struct PreviewGpuMesh
     // Framing for an orbit camera, and the counts a viewer shows.
     DirectX::XMVECTOR Center{};
     float Radius = 1.0f, FrameDist = 3.0f;
+    // a sample of the vertices (at most 4096) a view is fitted to (FitPreviewCamera); none when the
+    // framing above is the one to keep (FramePreviewForTurn: a map)
+    std::vector<DirectX::XMFLOAT3> FitPoints;
     UINT VertexCount = 0, TriCount = 0, TexCount = 0;
     bool Valid = false;
 };
@@ -97,6 +100,9 @@ struct PreviewCamera
 // The orbit viewers' camera: around Mesh's center moved by Pan (world units), CoD's Z up.
 PreviewCamera OrbitPreviewCamera(const PreviewGpuMesh& Mesh, float Yaw, float Pitch, float DistScale,
                                  DirectX::XMFLOAT3 Pan = {});
+// The orbit camera at Yaw, Pitch whose view of Aspect (width / height) Mesh's FitPoints fill, a small
+// margin around them: Pan centers them, DistScale brings them to the edges. False: Mesh has none.
+bool FitPreviewCamera(const PreviewGpuMesh& Mesh, float Yaw, float Pitch, float Aspect, float& DistScale, DirectX::XMFLOAT3& Pan);
 // Moves Pan so the model follows a drag of Dx, Dy pixels across a ViewH-pixel-high view of Cam.
 void PanPreviewCamera(const PreviewCamera& Cam, float Dx, float Dy, float ViewH, DirectX::XMFLOAT3& Pan);
 

@@ -48,7 +48,7 @@ namespace
 
     // A name has to look like one: printable, NUL-terminated, and not absurdly long. Without this
     // the 0xFF marker alone matches every null pointer in the zone, which is most of them.
-    bool ReadName(const std::vector<uint8_t>& Zone, size_t At, std::string& Out)
+    bool ReadName(ByteView Zone, size_t At, std::string& Out)
     {
         Out.clear();
         for (size_t i = At; i < Zone.size() && i < At + 160; i++)
@@ -66,7 +66,7 @@ namespace
     using ExportNaming::SafeFileName;
 }
 
-bool Bo3DescribeZoneImage(const std::vector<uint8_t>& Zone, size_t Start, XPAKCache& Cache, Bo3ZoneImage& Image,
+bool Bo3DescribeZoneImage(ByteView Zone, size_t Start, XPAKCache& Cache, Bo3ZoneImage& Image,
                           const std::string& ZoneStem)
 {
     const uint8_t* Base = Zone.data();
@@ -138,12 +138,12 @@ bool Bo3DescribeZoneImage(const std::vector<uint8_t>& Zone, size_t Start, XPAKCa
 std::vector<Bo3ZoneImage> Bo3ScanZoneImages(const std::string& FastFilePath,
                                             const std::string& XpakDir,
                                             std::string& FailureReason,
-                                            std::vector<uint8_t>* ZoneOut)
+                                            ZoneBytes* ZoneOut)
 {
     std::vector<Bo3ZoneImage> Out;
 
-    std::vector<uint8_t> Local;
-    std::vector<uint8_t>& Zone = ZoneOut ? *ZoneOut : Local;
+    ZoneBytes Local;
+    ZoneBytes& Zone = ZoneOut ? *ZoneOut : Local;
     if (!FastFile::Decompress(FastFilePath, Zone, FailureReason))
         return Out;
     if (Zone.size() < NameOffset + 16)
@@ -217,7 +217,7 @@ size_t Bo3ExportZoneImages(const std::string& FastFilePath, const std::string& X
                            std::string& Report)
 {
     std::string Failure;
-    std::vector<uint8_t> Zone;
+    ZoneBytes Zone;
     const auto Images = Bo3ScanZoneImages(FastFilePath, XpakDir, Failure, &Zone);
 
     std::ostringstream Os;
@@ -235,7 +235,7 @@ size_t Bo3ExportZoneImages(const std::string& FastFilePath, const std::string& X
     return Bo3WriteZoneImages(Zone, Images, Cache, OutDir, NameFilter, Report);
 }
 
-size_t Bo3WriteZoneImages(const std::vector<uint8_t>& Zone, const std::vector<Bo3ZoneImage>& Images,
+size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images,
                           XPAKCache& Cache, const std::string& OutDir, const std::string& NameFilter,
                           std::string& Report, const std::function<bool(size_t, size_t)>& Step)
 {

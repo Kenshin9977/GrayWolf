@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The fx kind for Treyarch's FxEffectDef as Black Ops 1, 2 and 3 lay it out: an effect read from the
 // relocated zone into JSON - its lifetimes and bounds, then each element (looping, one-shot,
 // emission) with its type, flags, spawn and life timings, ranges, atlas, velocity and visual state
@@ -41,7 +43,7 @@ namespace Treyarch
     // What the reader reads a zone through.
     struct EffectZone
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(uint64_t Address)> Off;            // zone offset, -1 outside
         std::function<std::string(uint64_t Address)> String;     // a string pointer's text, "" outside
         // the asset at a zone offset by name; unset: the string its first field points to

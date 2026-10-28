@@ -138,6 +138,7 @@ struct CliOptions
     bool OpenMapReimport = false;  // open-map --reimport: run the import script again, even with a .blend
     bool OpenMapBackground = false;// open-map --background: import and save the .blend without a window
     std::string NameFilter;      // --name-filter a,b,c: case-insensitive substrings, match any
+    std::string Assets;          // disk-export --assets kind:name,...: only these assets (Context::Only)
     bool UpdateNameDb = false;   // --update-name-db: fetch echo000/cod-name-db's CSVs into package_index\*.wni
     std::string NameDbDir;       // --name-db-dir <dir>: override the package_index output dir
     bool Update = false;         // update: hash packages from the latest release, app reported
@@ -174,6 +175,7 @@ struct CliOptions
     std::map<std::string, std::string> DiskExportIn;
     std::string DiskGameId;   // disk-export --game (DiskGame.h); detected when empty
     bool EstimateKept = false;  // disk-estimate --kept: the samples kept from the last run, not measured again
+    bool KeepOutput = false;    // disk-weigh --keep: what its export wrote is kept
     std::string EstimateZones; // disk-estimate --picked: the zones picked, comma-separated (as the panel lists them)
     std::string WhereNames;    // disk-where --names: asset names, comma-separated, matched whole (no case)
 };

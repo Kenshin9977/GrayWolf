@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -46,9 +48,9 @@ public:
     static bool DecryptDiskString(const uint8_t* Ciphertext, uint8_t Length, uint8_t EncryptionID, std::string& OutText);
     // Offline Localize export: scans a decompressed zone buffer for Localize headers
     // (Value==T8FollowsInline, pad==0) and decrypts each one via DecryptDiskString.
-    static bool ExportDiskLocalize(const std::vector<uint8_t>& Zone, const std::string& OutPath, std::string& Report);
+    static bool ExportDiskLocalize(ByteView Zone, const std::string& OutPath, std::string& Report);
     // A second header shape, 24 bytes: Value==T8FollowsInline(8) + Hash(8) + AlwaysZero(8), Hash/Pad
     // swapped from LocalizeEntry's on-disk order. The string that follows has no
     // [EncryptionID][StringSize] prefix and no cipher; likely T8XAssetType_RAWSTRING (157), unconfirmed.
-    static bool ExportDiskRawStrings(const std::vector<uint8_t>& Zone, const std::string& OutPath, std::string& Report);
+    static bool ExportDiskRawStrings(ByteView Zone, const std::string& OutPath, std::string& Report);
 };

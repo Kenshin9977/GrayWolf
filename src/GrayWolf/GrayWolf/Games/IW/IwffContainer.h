@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The "IWffa100" fast file container of the Infinity Ward family since Modern Warfare (2019):
 // a header, optional typed sections, then a stream of Oodle blocks with hash blocks spliced in,
 // and the .fp update patch ("IWffd100", VCDIFF over the whole base zone) applied when it sits
@@ -48,7 +50,7 @@ namespace IwffContainer
 
     // The typed sections of a header version-25 file at At: where they end, and the blob size one
     // of them gives. False if they do not parse.
-    bool SkipSections(const std::vector<uint8_t>& File, size_t At, size_t& End, uint64_t& BlobSize);
+    bool SkipSections(ByteView File, size_t At, size_t& End, uint64_t& BlobSize);
 
     // The section list's magic ("TAFF" 0x46464154, "TAFA" 0x41464154) and its section types in a
     // .ff's header (FilePath, read only to its sections); false if it is not an "IWffa100" file

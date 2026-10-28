@@ -77,7 +77,7 @@ namespace SoundAliasCsv
     // A relocated zone as an alias reader reads it (a ZonekitZone's Image, Off and StringAt)
     struct ZoneView
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(uint64_t Address)> Off;            // zone offset, -1 outside
         std::function<std::string(uint64_t Address)> String;     // a string pointer's text, "" outside
         int PointerSize = 8;

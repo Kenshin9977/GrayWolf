@@ -121,7 +121,7 @@ namespace
         return true;
     }
 
-    bool Load(const std::vector<uint8_t>& Bytes, const std::string& Ext, ScratchImage& Img)
+    bool Load(ByteView Bytes, const std::string& Ext, ScratchImage& Img)
     {
         HRESULT Hr = E_FAIL;
         if (Ext == ".dds") Hr = LoadFromDDSMemory(Bytes.data(), Bytes.size(), DDS_FLAGS_NONE, nullptr, Img);
@@ -264,7 +264,7 @@ bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutof
     return true;
 }
 
-bool ColorMapAlphaUsed(const std::vector<uint8_t>& Bytes, const std::string& Ext, bool& Used)
+bool ColorMapAlphaUsed(ByteView Bytes, const std::string& Ext, bool& Used)
 {
     Used = false;
     ScratchImage Img;
@@ -374,7 +374,7 @@ ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* Dev, const Previ
     return Srv;
 }
 
-PreviewImage PreviewImageFromRGBA(int W, int H, const std::vector<uint8_t>& Rgba)
+PreviewImage PreviewImageFromRGBA(int W, int H, ByteView Rgba)
 {
     PreviewImage Out;
     if (W <= 0 || H <= 0 || Rgba.size() != (size_t)W * H * 4) return Out;

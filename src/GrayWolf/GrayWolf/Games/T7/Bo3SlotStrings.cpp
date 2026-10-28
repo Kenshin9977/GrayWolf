@@ -1,10 +1,11 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Bo3SlotStrings.h"
 
 #include <cstring>
 
-std::vector<std::string> Bo3ZoneSlotStrings(const std::vector<uint8_t>& Zone)
+std::vector<std::string> Bo3ZoneSlotStrings(ByteView Zone)
 {
     // Same header walk as FastFile::ParseTreyarchZone, but keeping empty slots so the vector
     // index is the slot index.

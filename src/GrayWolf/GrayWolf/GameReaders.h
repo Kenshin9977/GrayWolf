@@ -120,6 +120,41 @@ namespace GameReaders
         return Anim;
     }
 
+    // A Treyarch XAnim (Black Ops III, 4, Cold War: 4-byte bone indices, no inline indices,
+    // min-size-table translations): its header and delta parts, its rotations as Rotations.
+    // Extra(Anim, Data) adds what one game reads more.
+    template <typename TAnim, typename TDelta, typename FExtra = Detail::NoExtra>
+    std::unique_ptr<XAnim_t> ReadTreyarchAnim(const CoDAnim_t* Animation, AnimationKeyTypes Rotations,
+                                              std::initializer_list<const char*> ViewmodelPrefixes, FExtra Extra = {})
+    {
+        if (!CoDAssets::GameInstance->IsRunning()) return nullptr;
+
+        auto Anim = std::make_unique<XAnim_t>();
+        const auto Data = CoDAssets::GameInstance->Read<TAnim>(Animation->AssetPointer);
+
+        Anim->AnimationName = Animation->AssetName;
+        Anim->ViewModelAnimation = StartsWithAny(Animation->AssetName, ViewmodelPrefixes);
+        CopyAnimHeader(*Anim, Data);
+        Anim->BoneIndexSize = 4;
+        CopyDeltaParts(*Anim, CoDAssets::GameInstance->Read<TDelta>(Data.DeltaPartsPtr));
+
+        Anim->RotationType = Rotations;
+        Anim->TranslationType = AnimationKeyTypes::MinSizeTable;
+        Anim->SupportsInlineIndicies = false;
+
+        Extra(*Anim, Data);
+        return Anim;
+    }
+
+    // A Black Ops 4 or Cold War XAnim's blend shapes: their names, their weights and how many
+    template <typename TAnim>
+    void CopyBlendShapes(XAnim_t& Anim, const TAnim& Data)
+    {
+        Anim.BlendShapeNamesPtr = Data.UnknownPtr;
+        Anim.BlendShapeWeightsPtr = Data.UnknownZero1;
+        Anim.BlendShapeWeightCount = (uint32_t)*(const uint16_t*)&Data.Unknown[0];
+    }
+
     // The skeleton fields every XModel layout names alike
     template <typename TModel>
     void CopyModelBones(XModel_t& Asset, const std::string& Name, const TModel& Data, uint8_t BoneIndexSize, uint8_t BoneParentSize)

@@ -226,6 +226,14 @@ namespace
 
     protected:
         const char* Profile() const override { return Campaign ? "bo6sp" : "bo6"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // its images' records (IwctxReaders' layout) served from the zone's heads, the zone not read
+        HeadSpec Heads() const override { return ModernIwHeads(); }
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K == DiskGame::Kind::Image) W = ModernIwImageWeight(Pos);
+        }
         const ICoDGame& LiveGame() const override { return LiveGames::Get(Campaign ? "BO6SP" : "BO6"); }
         VirtualGameSession::Handlers Handlers() override
         {
@@ -266,11 +274,11 @@ namespace
         // a string read in place of the pointer, never an asset instance
         bool IsReference(Kind, const std::string&, int64_t) const override { return false; }
 
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             for (const auto& I : Walk().Instances)
-                if (OwnerIs(I, "image") && HasPixels(I.Pos)) Out.push_back({ Kind::Image, AssetName(Kind::Image, I.Pos) });
+                if (OwnerIs(I, "image") && HasPixels(I.Pos)) Out.push_back({ { Kind::Image, AssetName(Kind::Image, I.Pos) }, I.Pos });
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+parts3"; }
         void Served(bool On) override
@@ -301,7 +309,7 @@ namespace
         {
             static const IwctxReaders::MaterialSlots L{ 0x80, 0x30, 0x1c, 0x38, 0x21, { 44, 82, 96, 110, 124 }, 84, 85, 88, 25 };
             return IwctxReaders::SlotMaterials(
-                L, [](uint64_t A) { return GameBlackOps6::ReadXMaterial(A); }, [this]() -> const std::vector<uint8_t>& { return Image(); },
+                L, [](uint64_t A) { return GameBlackOps6::ReadXMaterial(A); }, [this]() -> ByteView { return Image(); },
                 [this](uint64_t A) { return Off(A); }, [](uint64_t V) { return GameBlackOps6::HashedName("ximage", V); });
         }
 
@@ -344,12 +352,16 @@ namespace
             }
             Counter("map_transient_zones_named") += Transient.size();
             if (Wanted.empty() && Transient.empty()) return;
+            // (where the zones beside take their time: time_beside_index_ms, _load_ms, _link_ms)
+            auto T0 = std::chrono::steady_clock::now();
+            const auto Tick = [&](const char* K) { const auto T = std::chrono::steady_clock::now(); Counter(std::string("time_beside_") + K + "_ms") += (size_t)std::chrono::duration_cast<std::chrono::milliseconds>(T - T0).count(); T0 = T; };
             std::string Error;
             // the index (built now when the install has none: every zone opened in turn, which
             // needs this one's session ended meanwhile)
             Park();
             const auto Index = DiskGame::ZoneIndex::For(*Game, Options, Install, IndexKey(), nullptr, nullptr, Error);
             Resume();
+            Tick("index");
             if (!Index)
             {
                 Counter("model_meshes_no_index")++;
@@ -378,10 +390,14 @@ namespace
             const auto* Loaded = ExportWriters::ZoneProfile(Profile(), ProfileError);
             if (Loaded == nullptr || Paths.empty()) return;
             std::map<std::string, size_t> Counts;
+            // a partial open reads the zones beside only where its references reach
+            Beside.Lazy = OpenedPartially();
             Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+            Tick("load");
             Beside.Link(Walk(), Live().Origin(), Zone(), Rs, [this](uint64_t Field, uint64_t Value) {
                 if (Live().Contains(Field)) Live().Poke(Field - Live().Origin(), Value);
-            }, Counts);
+            }, Counts, {}, WholeKeys(), WholeHashes());
+            Tick("link");
             for (const auto& [K, N] : Counts) Counter(K) += N;
             Beside.Serve();
         }
@@ -406,6 +422,10 @@ namespace
             std::unique_ptr<DiskGame::ZoneIndex> Index;
             std::set<std::pair<std::string, uint64_t>> Asked;
             std::map<std::string, size_t> Counts;
+            Beside.Lazy = OpenedPartially();
+            // (time_materials_beside_index_ms, _load_ms, _link_ms)
+            auto T0 = std::chrono::steady_clock::now();
+            const auto Tick = [&](const char* K) { const auto T = std::chrono::steady_clock::now(); Counts[std::string("time_materials_beside_") + K + "_ms"] += (size_t)std::chrono::duration_cast<std::chrono::milliseconds>(T - T0).count(); T0 = T; };
             for (int Round = 0; Round < 3; Round++)
             {
                 std::set<std::pair<std::string, uint64_t>> Wanted;
@@ -423,22 +443,34 @@ namespace
                 else
                 {
                     // the images the materials asked for leave unresolved in the zones that gave them
-                    // (a trial link, its counts dropped; their zones' other references are not wanted)
-                    std::map<std::string, std::vector<std::pair<int64_t, int64_t>>> FromMaterials;
-                    for (const auto& Z : Beside.All())
-                        for (const auto& I : Z->R.Instances)
-                            if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "material" && (uint64_t)I.Pos + 8 <= Z->Bytes.size() &&
-                                Asked.count({ "material", ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & Rs.AssetHashMask }))
-                                FromMaterials[Z->Name].emplace_back(I.Pos, I.End);
+                    // (a trial link, its counts dropped; their zones' other references are not wanted).
+                    // A zone's materials are listed when it is heard from, again once it has walked
+                    // more (a lazy zone walks its assets as the link reaches them)
+                    std::map<std::string, std::pair<size_t, std::vector<std::pair<int64_t, int64_t>>>> FromMaterials;   // zone -> (instances seen, ranges)
+                    const auto Materials = [&](const std::string& In) -> const std::vector<std::pair<int64_t, int64_t>>& {
+                        auto& [Seen, Ranges] = FromMaterials[In];
+                        for (const auto& Z : Beside.All())
+                            if (Z->Name == In && Z->R.Instances.size() != Seen)
+                            {
+                                Seen = Z->R.Instances.size();
+                                Ranges.clear();
+                                for (const auto& I : Z->R.Instances)
+                                    if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "material" && (uint64_t)I.Pos + 8 <= Z->Bytes.size() &&
+                                        Asked.count({ "material", ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & Rs.AssetHashMask }))
+                                        Ranges.emplace_back(I.Pos, I.End);
+                            }
+                        return Ranges;
+                    };
                     std::map<std::string, size_t> Trial;
                     Beside.Link(R, Live().Origin(), Zone(), Rs, PutMain, Trial,
                                 [&](const std::string& In, uint64_t Field, uint64_t Value, const std::string& Type) {
-                                    if (Type != "image") return;
-                                    const auto It = FromMaterials.find(In);
-                                    if (It == FromMaterials.end()) return;
-                                    for (const auto& [From, To] : It->second)
+                                    if (Type != "image" || In.empty()) return;
+                                    for (const auto& [From, To] : Materials(In))
                                         if ((int64_t)Field >= From && (int64_t)Field < To) return Want(Type, Value);
-                                });
+                                }, WholeKeys(), WholeHashes());
+                    // (the zones it read lazily are counted)
+                    for (const auto& [K, N] : Trial)
+                        if (K.starts_with("beside_")) Counts[K] += N;
                 }
                 if (Wanted.empty()) break;
                 Asked.insert(Wanted.begin(), Wanted.end());
@@ -449,6 +481,7 @@ namespace
                     Park();
                     Index = DiskGame::ZoneIndex::For(*Game, Options, Install, IndexKey(), nullptr, nullptr, Error);
                     Resume();
+                    Tick("index");
                     if (!Index)
                     {
                         Counts["materials_beside_no_index"]++;
@@ -472,13 +505,16 @@ namespace
                 }
                 Counts["materials_beside_not_indexed"] += Left.size();
                 if (Paths.empty()) break;
+                Tick("link");
                 Counts["materials_beside_zones"] += Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+                Tick("load");
             }
             if (!Beside.Empty() && Counts["materials_beside_zones"] != 0)
             {
-                Beside.Link(R, Live().Origin(), Zone(), Rs, PutMain, Counts);
+                Beside.Link(R, Live().Origin(), Zone(), Rs, PutMain, Counts, {}, WholeKeys(), WholeHashes());
                 Beside.Serve();
             }
+            Tick("link");
             for (const auto& [K, N] : Counts)
                 if (N != 0) Counter(K) += N;
         }
@@ -745,19 +781,19 @@ namespace
         // (a big map's _tr zones), each in its own bytes (pointers there are served addresses)
         struct Transient
         {
-            const std::vector<uint8_t>* Bytes;
+            ByteView Bytes;
             int64_t Pos;
             uint64_t Origin;
         };
         std::unordered_map<int32_t, Transient> Zones;
         for (const auto& I : Walk().Instances)
-            if (OwnerIs(I, "gfx_map_trzone")) Zones.emplace(At<int32_t>(Img, I.Pos + L.TrIndex), Transient{ &Img, I.Pos, Live().Origin() });
+            if (OwnerIs(I, "gfx_map_trzone")) Zones.emplace(At<int32_t>(Img, I.Pos + L.TrIndex), Transient{ Img, I.Pos, Live().Origin() });
         for (const auto& Z : Beside.All())
             for (const auto& I : Z->R.Instances)
                 if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "gfx_map_trzone" &&
                     (uint64_t)I.Pos + L.TrIndex + 4 <= Z->Bytes.size() &&
                     ExportNaming::At<uint32_t>(Z->Bytes, I.Pos + 0x10) == At<uint32_t>(Img, Root("gfx_map_trzone") + 0x10))
-                    Zones.emplace(ExportNaming::At<int32_t>(Z->Bytes, I.Pos + L.TrIndex), Transient{ &Z->Bytes, I.Pos, Z->Base });
+                    Zones.emplace(ExportNaming::At<int32_t>(Z->Bytes, I.Pos + L.TrIndex), Transient{ Z->Bytes, I.Pos, Z->Base });
 
         const int64_t S = World + L.Surfs;
         const uint32_t SurfaceCount = At<uint32_t>(Img, S + L.SurfCount), BrushTotal = At<uint32_t>(Img, S + L.BrushCount);
@@ -810,7 +846,7 @@ namespace
                     continue;
                 }
                 // the draw data: in the transient zone's own bytes
-                const std::vector<uint8_t>& Tz = *Zone->second.Bytes;
+                const ByteView Tz = Zone->second.Bytes;
                 const auto In = [&](int64_t Field) {
                     const uint64_t A = ExportNaming::At<uint64_t>(Tz, Field);
                     return A >= Zone->second.Origin && A - Zone->second.Origin < Tz.size() ? (int64_t)(A - Zone->second.Origin) : (int64_t)-1;
@@ -1029,8 +1065,8 @@ namespace
     {
         using IwctxAnimOwners::Json;
         auto& Session = const_cast<BlackOps6Zone*>(this)->Live();
-        std::vector<IwctxAnimOwners::Served> All{ { Name(), &Image(), Session.Origin(), &Walk() } };
-        for (const auto& S : Beside.All()) All.push_back({ S->Name, &S->Bytes, S->Base, &S->R });
+        std::vector<IwctxAnimOwners::Served> All{ { Name(), Image(), Session.Origin(), &Walk() } };
+        for (const auto& S : Beside.All()) All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
         const IwctxAnimOwners::Zones Zones(std::move(All), AnimOwnerLayout());
         Json F = Zones.Facts();
         F["reader_key"] = IndexKey();   // (the shared zones' facts kept on disk under it)

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Black Ops 6 / 7 terrain: the heightmap of vhmdata as a
 // grid, a point (c, r) of a tile of W samples at centre - half + (c, r) * 2 half / (W - 1), its
@@ -312,7 +313,7 @@ namespace
     // written as a PNG beside the map, its colour the layer material's (slot 71: the terrain
     // materials' BC1 sRGB colour, 72 BC7, 74/75 BC4 not read; 82 a common material's colour).
     // an 8-bit grey PNG in memory (stb_image_write, compiled in Core's GLTFExport.cpp)
-    bool GrayPng(const std::vector<uint8_t>& Pixels, uint32_t W, uint32_t H, std::vector<uint8_t>& Out)
+    bool GrayPng(ByteView Pixels, uint32_t W, uint32_t H, std::vector<uint8_t>& Out)
     {
         Out.clear();
         const auto Append = [](void* Context, void* Data, int Size) {

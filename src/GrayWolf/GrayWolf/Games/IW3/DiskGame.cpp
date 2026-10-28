@@ -64,6 +64,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "iw3"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("IW3"); }
         int64_t XFileSize() const override { return 0x2c; }
         LoadXImageHandler ImageHandler() const override { return GameModernWarfare::LoadXImage; }

@@ -165,7 +165,7 @@ namespace
     // material index), the material name list, and (for skeletal preview) per-vertex bone weights.
     // Colors are skipped; bones/weights are read (not skipped) exactly per the layout so the stream
     // stays aligned. Returns false on a bad header or a desync.
-    bool ParseSEModel(const std::vector<uint8_t>& Bytes, Geo& Out)
+    bool ParseSEModel(ByteView Bytes, Geo& Out)
     {
         if (Bytes.size() < 26 || std::memcmp(Bytes.data(), "SEModel", 7) != 0)
             return false;
@@ -378,7 +378,7 @@ namespace
     // normals, the first UV layer, triangles wound back as SEModel has them, the weights of
     // the first PREVIEW_MAX_BONE_INFLUENCES influences, the mesh's material) and the materials with
     // their albedo (or diffuse), normal and specular file paths, relative to the model file.
-    bool ParseCastModel(const std::vector<uint8_t>& Bytes, Geo& Out)
+    bool ParseCastModel(ByteView Bytes, Geo& Out)
     {
         std::vector<CastFile::Node> Roots;
         if (!CastFile::Parse(Bytes, Roots)) return false;
@@ -530,7 +530,7 @@ namespace
     // MATERIAL line or EOF). Driven by the NUM* counters rather than by sniffing line content, so
     // it never has to disambiguate "BONE" (declaration / transform header / vertex weight all
     // start with it) or "VERT" vs "VERT32" - each is read only where the fixed grammar puts it.
-    bool ParseXModelExport(const std::vector<uint8_t>& Bytes, Geo& Out)
+    bool ParseXModelExport(ByteView Bytes, Geo& Out)
     {
         if (Bytes.empty()) return false;
         std::string Text(reinterpret_cast<const char*>(Bytes.data()), Bytes.size());
@@ -987,7 +987,7 @@ namespace
 namespace
 {
     // Any model file the preview reads, by its extension: .cast, .xmodel_export, else SEModel
-    bool ParseModelBytes(const std::string& Ext, const std::vector<uint8_t>& Bytes, Geo& Out)
+    bool ParseModelBytes(const std::string& Ext, ByteView Bytes, Geo& Out)
     {
         if (Ext == ".cast") return ParseCastModel(Bytes, Out);
         if (Ext == ".xmodel_export") return ParseXModelExport(Bytes, Out);
@@ -1329,7 +1329,7 @@ namespace
     }
 
     // Wraps an RGBA8 buffer and writes it as a PNG via WIC.
-    bool SavePng(const std::vector<uint8_t>& Px, int W, int H, const std::string& OutPngPath)
+    bool SavePng(ByteView Px, int W, int H, const std::string& OutPngPath)
     {
         DirectX::Image Img{};
         Img.width = (size_t)W; Img.height = (size_t)H;

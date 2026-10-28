@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "GltfSceneWriter.h"
 #include "GLTFExport.h"
@@ -83,7 +84,7 @@ int GltfSceneWriter::PushView(const void* data, size_t bytes, int target)
     return (int)m_views.size() - 1;
 }
 
-int GltfSceneWriter::AddImagePng(const std::string& name, const std::vector<uint8_t>& png)
+int GltfSceneWriter::AddImagePng(const std::string& name, ByteView png)
 {
     if (png.empty())
         return -1;

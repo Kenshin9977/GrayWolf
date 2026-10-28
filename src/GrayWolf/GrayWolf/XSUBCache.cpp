@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 #include "XSUBCache.h"
 
 #include "Compression.h"
@@ -69,7 +70,7 @@ namespace
     constexpr uint16_t FirstSizedVersion = 23;
 
     // A version-23 object's stored bytes (Stored) to its Size bytes; false on any inconsistency
-    bool DecodeXSub23(const std::vector<uint8_t>& Stored, uint64_t Key, std::vector<uint8_t>& Object)
+    bool DecodeXSub23(ByteView Stored, uint64_t Key, std::vector<uint8_t>& Object)
     {
         if (Stored.size() < 0x17 || *(const uint16_t*)Stored.data() != FrameMagic || *(const uint64_t*)(Stored.data() + 2) != Key)
             return false;
@@ -131,6 +132,15 @@ void XSUBCache::LoadPackageCache(const std::string& BasePath)
         return;
     }
 
+    // the tables kept (CoDPackageCache::LoadKept): Black Ops 6's 3 M objects are neither read from
+    // its 154 packages nor hashed again per run (2.5 s)
+    const std::string Kept = KeptFile(BasePath, ".xsk"), Key = KeptKey("*.xsub", "xsub");
+    if (LoadKept(Kept, Key, &PackageVersions))
+    {
+        this->SetLoadedState();
+        return;
+    }
+
     FileSystem->EnumerateFiles("*.xsub", [this](const std::string& name, const size_t size)
     {
         try
@@ -142,6 +152,7 @@ void XSUBCache::LoadPackageCache(const std::string& BasePath)
 
         }
     });
+    SaveKept(Kept, Key, &PackageVersions);
 
     this->SetLoadedState();
 }
@@ -226,12 +237,10 @@ bool XSUBCache::LoadPackage(const std::string& FilePath)
 
 std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObjectRaw(uint64_t CacheID, uint32_t & ResultSize)
 {
-    if (CacheObjects.find(CacheID) != CacheObjects.end())
+    if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
     {
         std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
 
-        // Uncompressed size = offset of data segment
-        auto& CacheInfo = CacheObjects[CacheID];
         auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
         auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
         Reader.Seek(CacheInfo.Offset, SEEK_SET);
@@ -249,12 +258,10 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObjectRaw(uint64_t CacheID, 
 
 std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uint32_t& ResultSize)
 {
-    if (CacheObjects.find(CacheID) != CacheObjects.end())
+    if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
     {
         std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
 
-        // Uncompressed size = offset of data segment
-        auto& CacheInfo = CacheObjects[CacheID];
         auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
         auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
 #if _DEBUG

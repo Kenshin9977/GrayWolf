@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "FastFile.h"
 #include "FastFile.Internal.h"
@@ -43,7 +44,7 @@ bool HasFastFileContainer(const std::string& Magic, uint32_t Version)
 }
 
 bool DecodeRegisteredFastFile(const std::string& Magic, uint32_t Version, const std::string& FilePath,
-    const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error)
+    ByteView File, ZoneBytes& Zone, std::string& Error)
 {
     const auto It = Containers().find({ Magic, Version });
     if (It == Containers().end())
@@ -318,7 +319,7 @@ ZoneLayout FastFile::LayoutFor(const FastFileInfo& Info)
     return Layout;
 }
 
-bool FastFile::Parse32BitZone(const std::vector<uint8_t>& Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error)
+bool FastFile::Parse32BitZone(ByteView Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error)
 {
     Out = {};
     Error.clear();
@@ -409,7 +410,7 @@ bool FastFile::Parse32BitZone(const std::vector<uint8_t>& Zone, const ZoneLayout
 }
 
 
-std::vector<std::pair<uint64_t, std::string>> FastFile::ScanStrings(const std::vector<uint8_t>& Zone, size_t MinimumLength)
+std::vector<std::pair<uint64_t, std::string>> FastFile::ScanStrings(ByteView Zone, size_t MinimumLength)
 {
     std::vector<std::pair<uint64_t, std::string>> Found;
 
@@ -446,7 +447,7 @@ std::vector<std::pair<uint64_t, std::string>> FastFile::ScanStrings(const std::v
 // unsigned container. The decryptor rewrites the magic to the unsigned spelling, so the
 // second pass lands on the plain Sledgehammer path rather than back here.
 static bool DecryptAndDecompressWorldWar2(const std::string& FilePath,
-    std::vector<uint8_t>& Zone, std::string& Error)
+    ZoneBytes& Zone, std::string& Error)
 {
     std::vector<uint8_t> Plain;
 
@@ -493,6 +494,14 @@ static bool DecryptAndDecompressWorldWar2(const std::string& FilePath,
 }
 
 bool FastFile::Decompress(const std::string& FilePath, std::vector<uint8_t>& Zone, std::string& Error)
+{
+    ZoneBytes Bytes;
+    if (!Decompress(FilePath, Bytes, Error)) return false;
+    Zone.assign(Bytes.begin(), Bytes.end());
+    return true;
+}
+
+bool FastFile::Decompress(const std::string& FilePath, ZoneBytes& Zone, std::string& Error)
 {
     Zone.clear();
     Error.clear();
@@ -578,95 +587,39 @@ bool FastFile::Decompress(const std::string& FilePath, std::vector<uint8_t>& Zon
         return false;
     }
 
-    // The zone size is not in the header, so inflate as a stream and grow as we go
-    mz_stream Stream = {};
-    if (mz_inflateInit(&Stream) != MZ_OK)
+    // The stream whole, a hash block stepped over after every group (Ghosts' signed zones)
+    std::vector<uint8_t> Stream;
     {
-        Error = "could not start the inflater";
+        _fseeki64(Handle.get(), 0, SEEK_END);
+        const int64_t End = _ftelli64(Handle.get());
+        const int64_t From = (int64_t)(HeaderSize + Info.HeaderExtraBytes);
+        _fseeki64(Handle.get(), From, SEEK_SET);
+        Stream.resize(End > From ? (size_t)(End - From) : 0);
+        size_t Have = 0;
+        while (Have < Stream.size())
+        {
+            size_t Want = Stream.size() - Have;
+            if (Info.AuthedGroupBytes > 0) Want = std::min<size_t>(Want, (size_t)Info.AuthedGroupBytes);
+            const size_t Read = fread(Stream.data() + Have, 1, Want, Handle.get());
+            Have += Read;
+            if (Read < Want || Info.AuthedGroupBytes == 0) break;
+            if (_fseeki64(Handle.get(), (int64_t)Info.AuthedSkipBytes, SEEK_CUR) != 0) break;
+        }
+        Stream.resize(Have);
+    }
+    if (Stream.empty())
+    {
+        Error = "stream ended before the zone was complete";
         return false;
     }
 
-    std::vector<uint8_t> InputChunk(256 * 1024);
-    std::vector<uint8_t> OutputChunk(1024 * 1024);
-    bool Finished = false;
-
-    uint64_t BytesIntoGroup = 0;
-
-    while (!Finished)
+    // The zone size is not in the header: inflated whole into a guess grown until it holds it
+    std::string Why;
+    if (!FastFileInternal::InflateAppend(ByteView(Stream.data(), Stream.size()), Zone, Why, false, Stream.size() * 3))
     {
-        // Never read across a hash block: stop at the group boundary, step over the block, go on.
-        size_t Want = InputChunk.size();
-        if (Info.AuthedGroupBytes > 0)
-        {
-            const uint64_t Left = Info.AuthedGroupBytes - BytesIntoGroup;
-            if (Left < (uint64_t)Want)
-                Want = (size_t)Left;
-        }
-
-        const auto Read = fread(InputChunk.data(), 1, Want, Handle.get());
-
-        if (Info.AuthedGroupBytes > 0 && Read > 0)
-        {
-            BytesIntoGroup += (uint64_t)Read;
-            if (BytesIntoGroup >= Info.AuthedGroupBytes)
-            {
-                BytesIntoGroup = 0;
-                if (_fseeki64(Handle.get(), (int64_t)Info.AuthedSkipBytes, SEEK_CUR) != 0)
-                {
-                    Error = "file ended inside a hash block";
-                    mz_inflateEnd(&Stream);
-                    return false;
-                }
-            }
-        }
-
-        if (Read == 0 && Stream.avail_in == 0)
-        {
-            Error = "stream ended before the zone was complete";
-            mz_inflateEnd(&Stream);
-            return false;
-        }
-
-        Stream.next_in = InputChunk.data();
-        Stream.avail_in = (unsigned int)Read;
-
-        // Drain everything this input chunk can produce
-        while (Stream.avail_in > 0 || Stream.avail_out == 0)
-        {
-            Stream.next_out = OutputChunk.data();
-            Stream.avail_out = (unsigned int)OutputChunk.size();
-
-            const auto Result = mz_inflate(&Stream, MZ_NO_FLUSH);
-            const auto Produced = OutputChunk.size() - Stream.avail_out;
-
-            if (Produced > 0)
-            {
-                Zone.insert(Zone.end(), OutputChunk.begin(), OutputChunk.begin() + Produced);
-            }
-
-            if (Result == MZ_STREAM_END)
-            {
-                Finished = true;
-                break;
-            }
-
-            if (Result != MZ_OK)
-            {
-                Error = std::format("inflate failed with {} after {} bytes",
-                    Result, (unsigned long long)Zone.size());
-                mz_inflateEnd(&Stream);
-                return false;
-            }
-
-            // No progress and nothing left to feed it, go read more input
-            if (Produced == 0 && Stream.avail_in == 0)
-            {
-                break;
-            }
-        }
+        Error = "inflate failed: " + Why;
+        return false;
     }
-
-    mz_inflateEnd(&Stream);
 
     if (Zone.empty())
     {

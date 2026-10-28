@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <functional>
+#include <ostream>
 #include <string>
 
 // File operations and path joins: std::filesystem. What is left here splits names, asset names as
@@ -18,4 +21,9 @@ namespace FileSystems
 
     // The folder GrayWolf.exe is in
     std::string GetApplicationPath();
+
+    // Path written whole by Write (into a file beside it, its folder made) then renamed over it: a
+    // reader (another GrayWolf) never sees it half written. False when the writing or the rename
+    // failed (the file beside it removed).
+    bool WriteReplacing(const std::filesystem::path& Path, const std::function<void(std::ostream&)>& Write);
 }

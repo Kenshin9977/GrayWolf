@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // Container constants, the block header structs, and the small readers every container
 // needs, shared by the per-family FastFile.*.cpp files.
 
@@ -12,6 +14,9 @@
 #include "FastFile.h"
 #include <format>
 #include <miniz/miniz.h>
+#include <libdeflate.h>
+#include <algorithm>
+#include <memory>
 #include "SHA1.h"
 
 // The pointer fixup marker: "the thing I point at follows here in the stream" - 64 bit form
@@ -53,7 +58,7 @@ namespace FastFileInternal
         return Uncompressed <= (Compressed / 2) * OodleChunkSize;
     }
     // A declared zone size as a reserve hint, at most what FileBytes could inflate to
-    inline void ReserveZone(std::vector<uint8_t>& Zone, uint64_t Declared, uint64_t FileBytes)
+    inline void ReserveZone(ZoneBytes& Zone, uint64_t Declared, uint64_t FileBytes)
     {
         Zone.reserve((size_t)(Declared < FileBytes * MaxInflateRatio ? Declared : FileBytes * MaxInflateRatio));
     }
@@ -220,56 +225,48 @@ namespace FastFileInternal
         }
     }
 
-    // Appends one deflate stream to the zone, growing as it goes since nothing says how
-    // large the result will be
-    inline bool InflateInto(const std::vector<uint8_t>& Source, std::vector<uint8_t>& Zone, std::string& Error, bool Raw = false)
+    // The thread's libdeflate decompressor (about twice zlib's speed on the zones, miniz's too)
+    inline libdeflate_decompressor* Inflater()
     {
-        mz_stream Stream = {};
+        thread_local std::unique_ptr<libdeflate_decompressor, decltype(&libdeflate_free_decompressor)> D(libdeflate_alloc_decompressor(),
+                                                                                                         libdeflate_free_decompressor);
+        return D.get();
+    }
 
-        // Black Ops 2's blocks carry no zlib wrapper, so the window size has to be given
-        // rather than read from a header that is not there
-        const auto Started = Raw
-            ? mz_inflateInit2(&Stream, -MZ_DEFAULT_WINDOW_BITS)
-            : mz_inflateInit(&Stream);
-
-        if (Started != MZ_OK)
+    // One zlib stream at the start of Source (a raw deflate one when Raw) appended to Out. Its size
+    // unknown: inflated whole into Guess bytes (0: four times the input, at least 1 MB), twice as
+    // many while they are too few, up to what the input can inflate to. Used: the input bytes it took.
+    template <class Bytes>
+    bool InflateAppend(ByteView Source, Bytes& Out, std::string& Error, bool Raw = false, size_t Guess = 0, size_t* Used = nullptr)
+    {
+        const size_t Most = Source.size() * MaxInflateRatio + 64;
+        size_t Room = std::min(Guess != 0 ? Guess : std::max<size_t>(Source.size() * 4, 1 << 20), Most);
+        for (;;)
         {
-            Error = "could not start the inflater";
-            return false;
-        }
-
-        Stream.next_in = Source.data();
-        Stream.avail_in = (unsigned int)Source.size();
-
-        std::vector<uint8_t> Chunk(256 * 1024);
-        int Result = MZ_OK;
-
-        do
-        {
-            Stream.next_out = Chunk.data();
-            Stream.avail_out = (unsigned int)Chunk.size();
-
-            Result = mz_inflate(&Stream, MZ_NO_FLUSH);
-
-            if (Result != MZ_OK && Result != MZ_STREAM_END && Result != MZ_BUF_ERROR)
+            // (not zeroed: only the bytes inflated are copied)
+            std::unique_ptr<uint8_t[]> Buffer(new uint8_t[Room]);
+            size_t In = 0, Got = 0;
+            const libdeflate_result R = Raw ? libdeflate_deflate_decompress_ex(Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got)
+                                            : libdeflate_zlib_decompress_ex(Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got);
+            if (R == LIBDEFLATE_SUCCESS)
             {
-                Error = std::format("inflate returned {}", Result);
-                mz_inflateEnd(&Stream);
+                Out.insert(Out.end(), Buffer.get(), Buffer.get() + Got);
+                if (Used != nullptr) *Used = In;
+                return true;
+            }
+            if (R != LIBDEFLATE_INSUFFICIENT_SPACE || Room >= Most)
+            {
+                Error = R == LIBDEFLATE_INSUFFICIENT_SPACE ? "the stream inflates past what its input can" : "the stream did not inflate (bad or cut short)";
                 return false;
             }
-
-            Zone.insert(Zone.end(), Chunk.data(), Chunk.data() + (Chunk.size() - Stream.avail_out));
-        } while (Result != MZ_STREAM_END && Stream.avail_in > 0);
-
-        mz_inflateEnd(&Stream);
-
-        if (Result != MZ_STREAM_END)
-        {
-            Error = "the stream ended early";
-            return false;
+            Room = std::min(Room * 2, Most);
         }
+    }
 
-        return true;
+    // Appends one deflate stream to the zone (Black Ops 2's blocks carry no zlib wrapper: Raw)
+    inline bool InflateInto(ByteView Source, ZoneBytes& Zone, std::string& Error, bool Raw = false)
+    {
+        return InflateAppend(Source, Zone, Error, Raw);
     }
 
     // Reads a whole file into memory
@@ -439,7 +436,7 @@ namespace FastFileInternal
     constexpr uint32_t T6TypeScriptParseTree = 48;
     constexpr uint32_t T6TypeKeyValuePairs = 49;
 
-    inline uint32_t ReadU32(const std::vector<uint8_t>& Zone, size_t At)
+    inline uint32_t ReadU32(ByteView Zone, size_t At)
     {
         uint32_t Value = 0;
         std::memcpy(&Value, Zone.data() + At, sizeof(Value));
@@ -447,7 +444,7 @@ namespace FastFileInternal
     }
 
     // Same, for the 64-bit rebuilds of MW2/MW3: their zone content is all 8-byte pointers.
-    inline uint64_t ReadU64(const std::vector<uint8_t>& Zone, size_t At)
+    inline uint64_t ReadU64(ByteView Zone, size_t At)
     {
         uint64_t Value = 0;
         std::memcpy(&Value, Zone.data() + At, sizeof(Value));
@@ -457,7 +454,7 @@ namespace FastFileInternal
     // The zone states how much follows its own header (Content bytes) - checking that first
     // catches a wrong layout before any field is trusted, rather than after producing a
     // plausible asset list.
-    inline bool ContentMatches(const std::vector<uint8_t>& Zone, size_t Content, std::string& Error)
+    inline bool ContentMatches(ByteView Zone, size_t Content, std::string& Error)
     {
         const auto Declared = ReadU32(Zone, 0);
         if (Declared == Zone.size() - Content) return true;
@@ -468,7 +465,7 @@ namespace FastFileInternal
 
     // The strings of Count pointer slots (SlotSize bytes each, from Slots): a slot holding
     // Marker has its NUL-terminated string at At, one after the other. At ends past the last.
-    inline bool ReadInlineStrings(const std::vector<uint8_t>& Zone, size_t Slots, size_t SlotSize, uint32_t Count, uint64_t Marker,
+    inline bool ReadInlineStrings(ByteView Zone, size_t Slots, size_t SlotSize, uint32_t Count, uint64_t Marker,
                                   size_t& At, ZoneInfo& Out, std::string& Error)
     {
         for (uint32_t i = 0; i < Count; i++)
@@ -500,7 +497,7 @@ namespace FastFileInternal
     }
 
     // A string list inline at At: its Count slots, then their strings (ReadInlineStrings)
-    inline bool ReadStringList(const std::vector<uint8_t>& Zone, size_t SlotSize, uint32_t Count, uint64_t Marker, size_t& At, ZoneInfo& Out,
+    inline bool ReadStringList(ByteView Zone, size_t SlotSize, uint32_t Count, uint64_t Marker, size_t& At, ZoneInfo& Out,
                                std::string& Error)
     {
         const auto SlotsEnd = At + (uint64_t)Count * SlotSize;

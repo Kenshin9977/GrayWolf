@@ -30,4 +30,6 @@ public:
     // Sets a setting for this run only (a command line flag): read before the saved value, never
     // written to the settings file; a later SetSetting of the key replaces it
     static void SetRunSetting(const std::string& Key, const std::string& Value);
+    // The saved value read again (a run setting set for one piece of work)
+    static void ClearRunSetting(const std::string& Key);
 };

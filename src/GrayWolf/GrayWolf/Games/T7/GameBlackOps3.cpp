@@ -36,24 +36,11 @@ static_assert(sizeof(BO3XAssetPoolData) == 0x20, "Invalid Pool Data Size (Expect
 
 std::unique_ptr<XAnim_t> GameBlackOps3::ReadXAnim(const CoDAnim_t* Animation)
 {
-    if (!CoDAssets::GameInstance->IsRunning()) return nullptr;
-
-    auto Anim = std::make_unique<XAnim_t>();
-    const auto AnimData = CoDAssets::GameInstance->Read<BO3XAnim>(Animation->AssetPointer);
-
-    Anim->AnimationName = Animation->AssetName;
-    Anim->ViewModelAnimation = GameReaders::StartsWithAny(Animation->AssetName, { "viewmodel_", "vm_" });
-    Anim->AdditiveAnimation = AnimData.AssetType == 0x6;
-    Anim->LoopingAnimation = AnimData.LoopingFlag > 0;
-
-    GameReaders::CopyAnimHeader(*Anim, AnimData);
-    Anim->BoneIndexSize = 4;
-    GameReaders::CopyDeltaParts(*Anim, CoDAssets::GameInstance->Read<BO3XAnimDeltaParts>(AnimData.DeltaPartsPtr));
-
-    Anim->RotationType = AnimationKeyTypes::HalfFloat;
-    Anim->TranslationType = AnimationKeyTypes::MinSizeTable;
-    Anim->SupportsInlineIndicies = false;
-    return Anim;
+    return GameReaders::ReadTreyarchAnim<BO3XAnim, BO3XAnimDeltaParts>(Animation, AnimationKeyTypes::HalfFloat, { "viewmodel_", "vm_" },
+                                                                      [](XAnim_t& Anim, const BO3XAnim& Data) {
+                                                                          Anim.AdditiveAnimation = Data.AssetType == 0x6;
+                                                                          Anim.LoopingAnimation = Data.LoopingFlag > 0;
+                                                                      });
 }
 
 std::unique_ptr<XModel_t> GameBlackOps3::ReadXModel(const CoDModel_t* Model)

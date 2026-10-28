@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "LuaExport.h"
 
@@ -26,7 +27,7 @@ namespace
     // The runs a file is given, in order, until one decompiles it. cod-luajit-decompiler reads
     // Black Ops 6's 0x84 hashes with --uleb-hash and Black Ops 7's without: a file without hashes
     // reads the same either way.
-    std::vector<Attempt> AttemptsFor(const std::vector<uint8_t>& B)
+    std::vector<Attempt> AttemptsFor(ByteView B)
     {
         const Attempt CodLua{ Tool::CodLua, {} };
         if (B.size() > 3 && B[0] == 0x1b && B[1] == 'L' && B[2] == 'J')
@@ -38,7 +39,7 @@ namespace
     }
 }
 
-bool IsBytecode(const std::vector<uint8_t>& B)
+bool IsBytecode(ByteView B)
 {
     return B.size() > 3 && B[0] == 0x1b && ((B[1] == 'L' && B[2] == 'J') || (B[1] == 'L' && B[2] == 'u' && B[3] == 'a'));
 }

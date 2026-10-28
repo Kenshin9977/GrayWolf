@@ -1,6 +1,8 @@
 #include "stdafx.h"
 
 #include "ZonekitZone.h"
+#include "DiskGameSizes.h"
+#include "ResumeIndex.h"
 #include "MapSceneExport.h"
 
 #include "CoDAssets.h"
@@ -42,7 +44,7 @@ ZonekitZone::~ZonekitZone()
     if (Serving == this) Serving = nullptr;
 }
 
-std::vector<std::string> ZonekitZone::InlineStrings(const std::vector<uint8_t>& Z, int64_t First, uint64_t Count, int SlotSize,
+std::vector<std::string> ZonekitZone::InlineStrings(ByteView Z, int64_t First, uint64_t Count, int SlotSize,
                                                     uint64_t Marker)
 {
     std::vector<std::string> Out((size_t)Count);
@@ -213,17 +215,17 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
         if (!N.empty() && !DefinedHere.count(N)) C.Needs(Kind::Image, N);
 }
 
-void ZonekitZone::DefineImages(std::vector<DiskGame::AssetId>& Out) const
+void ZonekitZone::DefineImages(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
 {
     for (const auto& I : R.Instances)
         if (OwnerIs(I, "image"))
         {
             const std::string N = AssetName(DiskGame::Kind::Image, I.Pos);
-            if (!N.empty() && !IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ DiskGame::Kind::Image, N });
+            if (!N.empty() && !IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ { DiskGame::Kind::Image, N }, I.Pos });
         }
 }
 
-bool ZonekitZone::LoadBytes(std::vector<uint8_t>& Out, std::string& Error)
+bool ZonekitZone::LoadBytes(ZoneBytes& Out, std::string& Error)
 {
     return FastFile::Decompress(Path, Out, Error);
 }
@@ -236,6 +238,19 @@ const ZoneTables::StreamRules& ZonekitZone::Rules() const
 bool ZonekitZone::OwnerIs(const ZoneTables::ZoneResult::Instance& I, const char* Type) const
 {
     return I.Owner < R.OwnerNames.size() && R.OwnerNames[I.Owner] == Type;
+}
+
+std::vector<int64_t> ZonekitZone::AllOf(const char* Type) const
+{
+    if (Partial)
+    {
+        const auto It = WholeRanked.find(Type);
+        return It == WholeRanked.end() ? std::vector<int64_t>() : It->second;
+    }
+    std::vector<int64_t> Out;
+    for (const auto& I : R.Instances)
+        if (OwnerIs(I, Type)) Out.push_back(I.Pos);
+    return Out;
 }
 
 std::string ZonekitZone::StringAt(uint64_t Address) const
@@ -296,11 +311,32 @@ bool ZonekitZone::Open(std::string& Error)
         Steps.emplace_back(Step, std::chrono::duration<double>(Now - Start).count());
         Start = Now;
     };
+    // a run asking only for images the zone's resume index holds whole: served from it, the zone
+    // not read (a model's textures in another zone)
+    if (const DiskGame::Selection* Want = DiskGame::PartialScope::Wanted(); Want != nullptr && OpensPartially() && Heads().Size > 0)
+        if (const std::vector<std::string> Sources = SourceFiles(); !Sources.empty())
+            if ((Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error)) != nullptr &&
+                OpenFromHeads(*Want, ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Sources), Lap))
+                return true;
     if (!LoadBytes(Bytes, Error)) return false;
     Lap("load");
     Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error);
     if (Loaded == nullptr) return false;
     Lap("profile");
+    // a few assets asked: only them, from the zone's resume index, when it has one
+    std::string ResumeFile;
+    if (OpensPartially())
+    {
+        const std::vector<std::string> Sources = SourceFiles();
+        if (!Sources.empty()) ResumeFile = ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Sources);
+        if (ResumeFile.empty()) ResumeFile = ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Bytes);
+        Lap("resume_name");
+        if (const DiskGame::Selection* Want = DiskGame::PartialScope::Wanted())
+        {
+            if (OpenPartially(*Want, ResumeFile, Lap)) return true;
+            Lap("partial_fell_back");
+        }
+    }
     {
         ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
         Rs.StartOffset = LayoutOffset();
@@ -315,17 +351,294 @@ bool ZonekitZone::Open(std::string& Error)
     Lap("walk");
     // the links resolved before the session (the walk's alone); from here on, the process-wide
     // session lock is held (the game's handlers and fixups reach process-wide state)
-    ResolvedLinks L = ResolveLinks(R, Rules(), DerefAssetPointers(), &Bytes);
+    ResolvedLinks L = ResolveLinks(R, Rules(), DerefAssetPointers(), Bytes);
     auto Taken = VirtualGameSession::Acquire();
     Lap("links");
     const VirtualGameSession::Handlers H = Handlers();
-    Session = std::make_unique<VirtualGameSession>(std::move(Taken), LiveGame(), Bytes, H, Rules().PointerSize);
+    Session = std::make_unique<VirtualGameSession>(std::move(Taken), LiveGame(), ZoneMemory::Copy(Bytes), H, Rules().PointerSize);
+    Serving = this;
+    Relocate(L);
+    Lap("relocate");
+    Fixups();
+    Lap("fixups");
+    // the resume index a later partial open reads (one of an older format written again)
+    if (!ResumeFile.empty() && !R.Resume.empty() && !ResumeIndex::IsCurrent(ResumeFile))
+    {
+        WriteResume(ResumeFile);
+        Lap("resume_index");
+    }
+    return true;
+}
+
+bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap)
+{
+    ZoneResume Z;
+    if (!ResumeIndex::Load(File, Z)) return false;
+    Lap("resume_read");
+    // an index without a type the game counts is from before it did: read whole
+    for (const std::string& T : Ranked())
+        if (!Z.Ranked.count(T)) return false;
+    std::vector<size_t> Targets;
+    for (const auto& A : Want)
+        if (const size_t P = Z.Find(A.K, A.Name); P != SIZE_MAX) Targets.push_back(P);
+        else Counters["partial_not_indexed"]++;
+    if (Targets.empty()) return false;
+    ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
+    Rs.StartOffset = LayoutOffset();
+    ResolveHints H;
+    H.Points = &Z.Points;
+    H.Keys = &Z.Keys;
+    H.ByHash = &Z.ByHash;
+    // the asked assets, then every asset their links reach (a cap: a composite reaching most of
+    // the zone is read whole)
+    constexpr size_t AtMost = 4000;
+    bool Ok = true;
+    ZoneTables::ZoneResult M;
+    ZoneTables::WalkOnLargeStack([&] {
+        ZoneTables::PartialWalk PW(Bytes, Loaded->Tables, Loaded->Profile.TypeNames, Rs, Z.Points);
+        Ok = PW.Ok();
+        if (!Ok) return;
+        PW.UseKeys(H.Keyed());
+        PW.AddAssetHashes(Z.ByHash);
+        std::set<size_t> Seen;
+        Ok = WalkReached(PW, Targets, Rs, H, Seen, Counters["partial_rounds"], AtMost);
+        if (Ok)
+        {
+            M = PW.Merged();
+            Listed = PW.ListedTypes();
+        }
+    });
+    if (!Ok) return false;
+    R = std::move(M);
+    Walked = true;
+    Partial = true;
+    Counters["partial_assets_walked"] += R.Instances.empty() ? 0 : (size_t)std::count_if(R.Instances.begin(), R.Instances.end(), [](const auto& I) { return I.Parent < 0; });
+    Lap("walk");
+    ResolvedLinks L = ResolveLinks(R, Rs, DerefAssetPointers(), Bytes, &H);
+    Whole.Keys = std::move(Z.Keys);
+    Whole.ByHash = std::move(Z.ByHash);
+    WholeRanked = std::move(Z.Ranked);
+    auto Taken = VirtualGameSession::Acquire();
+    Lap("links");
+    const VirtualGameSession::Handlers Hd = Handlers();
+    const ICoDGame& Game = LiveGame();
+    Lap("live_game");
+    ZoneMemory::Copy Served(Bytes);
+    Lap("copy");
+    Session = std::make_unique<VirtualGameSession>(std::move(Taken), Game, std::move(Served), Hd, Rules().PointerSize);
+    Lap("session");
     Serving = this;
     Relocate(L);
     Lap("relocate");
     Fixups();
     Lap("fixups");
     return true;
+}
+
+void ZonekitZone::WriteResume(const std::string& File) const
+{
+    ZoneResume Z;
+    Z.Size = Bytes.size();
+    Z.Points = R.Resume;
+    std::vector<int64_t> Starts;
+    Starts.reserve(Z.Points.size());
+    for (const auto& P : Z.Points) Starts.push_back(P.Pos);
+    // each asset a run may ask for -> the resume point whose walk holds it
+    std::vector<std::pair<DiskGame::AssetId, int64_t>> Named;
+    DefinesAt(Named);
+    for (const auto& [A, Pos] : Named)
+    {
+        auto It = std::upper_bound(Starts.begin(), Starts.end(), Pos);
+        if (It == Starts.begin()) continue;
+        Z.Names.emplace_back((uint8_t)A.K, ResumeIndex::NameHash(A.K, A.Name), (uint32_t)(It - Starts.begin() - 1));
+    }
+    std::sort(Z.Names.begin(), Z.Names.end());
+    Z.Names.erase(std::unique(Z.Names.begin(), Z.Names.end()), Z.Names.end());
+    // keyed references and assets by hash (Black Ops 6/7: keyed_refs or rewind_prepare): what a
+    // partial walk cannot learn
+    if (Rules().KeyMask != 0)
+    {
+        Z.Keys.assign(R.Keys.begin(), R.Keys.end());
+        for (const auto& I : R.Instances)
+            if (I.Pos >= 0 && I.Pos + 8 <= (int64_t)Bytes.size())
+            {
+                const uint64_t H = ExportNaming::At<uint64_t>(Bytes, I.Pos) & Rules().AssetHashMask;
+                Z.ByHash.try_emplace({ R.OwnerNames[I.Owner], H }, I.Pos);
+                Z.ByHash.try_emplace({ std::string(), H }, I.Pos);
+            }
+    }
+    for (const std::string& T : Ranked()) Z.Ranked[T] = AllOf(T.c_str());
+    ResumeIndex::Save(File, Z);
+    // the images an export reads in their record alone (and the data it points at), as served
+    if (const HeadSpec Spec = Heads(); Spec.Size > 0)
+    {
+        std::map<int64_t, std::string> Records;
+        const ByteView Img = Image();
+        for (const auto& I : R.Instances)
+        {
+            if (!OwnerIs(I, Spec.Type) || I.Pos + Spec.Size > (int64_t)Img.size()) continue;
+            const ByteView Head = Img.subspan((size_t)I.Pos, (size_t)Spec.Size);
+            std::string Record(reinterpret_cast<const char*>(Head.data()), Head.size());
+            bool Whole = true;
+            for (const auto& D : Spec.Data)
+            {
+                const uint64_t Raw = At<uint64_t>(Img, I.Pos + D.At);
+                const int64_t From = Off(PointerAt(I.Pos + D.At));
+                const uint64_t N = D.Bytes(Head);
+                uint32_t Length = ~0u;
+                if (From >= 0 && N <= D.Max && From + (int64_t)N <= (int64_t)Img.size())
+                    Length = (uint32_t)N;
+                else if (Raw != 0)
+                    Whole = false;
+                Record.append(reinterpret_cast<const char*>(&Length), 4);
+                if (Length != ~0u) Record.append(reinterpret_cast<const char*>(Img.data()) + From, Length);
+            }
+            if (Whole) Records.emplace(I.Pos, std::move(Record));
+        }
+        std::map<uint64_t, std::pair<std::string, std::string>> Kept;
+        for (const auto& [A, Pos] : Named)
+            if (const auto It = Records.find(Pos); A.K == DiskGame::Kind::Image && It != Records.end())
+                Kept.try_emplace(ResumeIndex::NameHash(A.K, A.Name), A.Name, It->second);
+        ResumeIndex::SaveHeads(ResumeIndex::HeadsFile(File), Kept);
+    }
+}
+
+ZonekitZone::HeadSpec ZonekitZone::ModernIwHeads()
+{
+    HeadSpec S;
+    S.Type = "image";
+    S.Size = 0x40;
+    S.Data = { { 0x38, [](ByteView R) { return (uint64_t)ExportNaming::At<uint32_t>(R, 0x18); }, 256 << 10 },
+               { 0x30, [](ByteView R) { return (uint64_t)ExportNaming::At<uint8_t>(R, 0x2e) * 24; } } };
+    return S;
+}
+
+void ZonekitZone::WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& File, const uint8_t* Data, size_t Size,
+                                 const char* Written)
+{
+    const std::string Format = ExportWriters::SoundFormatSetting(), Out = ExportWriters::SoundFileName(File, Format);
+    const fs::path Path = (C.KindDir(DiskGame::Kind::Sound) / fs::path(std::u8string(Out.begin(), Out.end()))).make_preferred();
+    std::string Why;
+    if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Data, Size, File), Path, Format, &Why))
+    {
+        T.Kinds[DiskGame::Kind::Sound].Written++;
+        Counter(Written)++;
+    }
+    else
+        T.Fail(Name(), DiskGame::Kind::Sound, File, Why);
+}
+
+DiskGame::Weight ZonekitZone::ModernIwImageWeight(int64_t Pos, uint32_t (*Dxgi)(uint8_t Format)) const
+{
+    constexpr int64_t Loaded = 0x18, Width = 0x20, Height = 0x22, Format = 0x2a, MipCount = 0x2e, Mips = 0x30, Pixels = 0x38, MipSize = 24, Packed = 16;
+    const ByteView Img = Image();
+    if (Pos < 0 || Pos + 0x40 > (int64_t)Img.size()) return {};
+    const uint32_t W = At<uint16_t>(Img, Pos + Width), H = At<uint16_t>(Img, Pos + Height);
+    if (At<uint64_t>(Img, Pos + Pixels) != 0) return DiskGame::Sizes::ImageWeight(At<uint32_t>(Img, Pos + Loaded), W, H);
+    const int64_t Table = Off(PointerAt(Pos + Mips));
+    const uint32_t Count = At<uint8_t>(Img, Pos + MipCount) & 0xf;
+    if (Table < 0 || Count == 0 || Table + Count * MipSize > (int64_t)Img.size()) return {};
+    const auto Running = [&](uint32_t K) { return (At<uint64_t>(Img, Table + K * MipSize + Packed) >> 30) & 0x1FFFFFFF; };
+    for (uint32_t K = Count; K-- > 0;)
+    {
+        const uint64_t Key = At<uint64_t>(Img, Table + K * MipSize);
+        if (CoDAssets::GamePackageCache == nullptr || !CoDAssets::GamePackageCache->Exists(Key)) continue;
+        const uint32_t Shift = Count - 1 - K, LevelW = std::max(1u, W >> Shift), LevelH = std::max(1u, H >> Shift);
+        if (Dxgi != nullptr) return DiskGame::Sizes::ImageWeight(LevelW, LevelH, Dxgi(At<uint8_t>(Img, Pos + Format)), 1, 1);
+        return DiskGame::Sizes::ImageWeight(Running(K) - (K ? Running(K - 1) : 0), LevelW, LevelH);
+    }
+    return {};
+}
+
+bool ZonekitZone::OpenFromHeads(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap)
+{
+    const HeadSpec Spec = Heads();
+    if (File.empty() || Want.empty() || !ResumeIndex::IsCurrent(File) ||
+        std::any_of(Want.begin(), Want.end(), [](const DiskGame::AssetId& A) { return A.K != DiskGame::Kind::Image; }))
+        return false;
+    ResumeIndex::Heads Kept;
+    if (!Kept.Open(ResumeIndex::HeadsFile(File))) return false;
+    std::vector<std::pair<std::string_view, std::string_view>> Use;
+    for (const auto& A : Want)
+    {
+        std::string_view Name, Record;
+        if (!Kept.Find(ResumeIndex::NameHash(A.K, A.Name), Name, Record) || (int64_t)Record.size() < Spec.Size) return false;
+        Use.emplace_back(Name, Record);
+    }
+    Lap("resume_read");
+    // the records one after the other (16-aligned), each one's pixels (when kept) and name after it,
+    // its pointers linked to them: the zone a walk of those images alone would have given
+    Bytes.clear();
+    R = ZoneTables::ZoneResult();
+    R.OwnerNames = { Spec.Type };
+    ResolvedLinks L;
+    for (const auto& [Name, Record] : Use)
+    {
+        const int64_t Pos = ((int64_t)Bytes.size() + 15) & ~(int64_t)15;
+        Bytes.resize((size_t)Pos);
+        Bytes.insert(Bytes.end(), Record.begin(), Record.begin() + Spec.Size);
+        size_t At = (size_t)Spec.Size;
+        for (const auto& D : Spec.Data)
+        {
+            uint32_t Length = ~0u;
+            if (At + 4 > Record.size()) return false;
+            std::memcpy(&Length, Record.data() + At, 4);
+            At += 4;
+            if (Length == ~0u) continue;
+            if (At + Length > Record.size()) return false;
+            const int64_t Data = ((int64_t)Bytes.size() + 15) & ~(int64_t)15;
+            Bytes.resize((size_t)Data);
+            Bytes.insert(Bytes.end(), Record.begin() + At, Record.begin() + At + Length);
+            At += Length;
+            L.Links.emplace_back(Pos + D.At, Data);
+        }
+        if (Spec.NameAt >= 0)
+        {
+            L.Links.emplace_back(Pos + Spec.NameAt, (int64_t)Bytes.size());
+            Bytes.insert(Bytes.end(), Name.begin(), Name.end());
+            Bytes.push_back(0);
+        }
+        ZoneTables::ZoneResult::Instance I;
+        I.Pos = Pos;
+        I.End = Pos + Spec.Size;
+        R.Instances.push_back(I);
+    }
+    Walked = true;
+    Partial = true;
+    Counters["partial_from_heads"] += Use.size();
+    Lap("walk");
+    auto Taken = VirtualGameSession::Acquire();
+    const VirtualGameSession::Handlers Hd = Handlers();
+    const ICoDGame& Game = LiveGame();
+    Lap("live_game");
+    Session = std::make_unique<VirtualGameSession>(std::move(Taken), Game, ZoneMemory::Copy(Bytes), Hd, Rules().PointerSize);
+    Serving = this;
+    Relocate(L);
+    Fixups();
+    Lap("fixups");
+    return true;
+}
+
+bool WalkReached(ZoneTables::PartialWalk& PW, const std::vector<size_t>& Targets, const ZoneTables::StreamRules& Rs,
+                 const ResolveHints& H, std::set<size_t>& Seen, size_t& Rounds, size_t AtMost)
+{
+    bool Ok = true;
+    for (const size_t P : Targets) Ok = Ok && PW.Walk(P) != nullptr;
+    // each round looks only at the walks the rounds before have not (an owner walked on demand
+    // included): what those reached is walked already
+    while (Ok)
+    {
+        std::set<size_t> New;
+        for (const auto& [P, Result] : PW.Walked())
+            if (Seen.insert(P).second) New.insert(P);
+        if (New.empty()) break;
+        const std::set<size_t> More = MissingOwners(PW.Merged(&New), Rs, PW, H);
+        Rounds++;
+        if (More.empty()) break;
+        for (const size_t P : More) Ok = Ok && PW.Walk(P) != nullptr;
+        Ok = Ok && PW.Walked().size() <= AtMost;
+    }
+    return Ok;
 }
 
 namespace
@@ -337,19 +650,19 @@ namespace
     // right before its data's first read: the end of the block's last placed read, aligned.
     // Reserved, when given, gets each slot as {the read it comes before, its offset}.
     std::unordered_map<int64_t, int64_t> ResidentSlots(const ZoneTables::ZoneResult& R, const ZoneTables::StreamRules& Rs,
-                                                       const std::vector<uint8_t>* Zone,
+                                                       ByteView Zone,
                                                        std::vector<std::pair<size_t, int64_t>>* Reserved = nullptr)
     {
         std::unordered_map<int64_t, int64_t> Slots;
-        if (Zone == nullptr || Rs.ResidentSize <= 0 || Rs.ResidentAlign <= 0) return Slots;
+        if (Zone.empty() || Rs.ResidentSize <= 0 || Rs.ResidentAlign <= 0) return Slots;
         const int64_t Ptr = Rs.PointerSize == 4 ? 4 : 8;   // a pointer field's width
         // the resident pointers' data (a few per zone), then where each is first read
         std::unordered_map<int64_t, size_t> FirstRead;
         for (const auto& [Field, Target] : R.Links)
         {
             uint64_t V = 0;
-            if (Field < 0 || Field + Ptr > (int64_t)Zone->size()) continue;
-            std::memcpy(&V, Zone->data() + Field, (size_t)Ptr);
+            if (Field < 0 || Field + Ptr > (int64_t)Zone.size()) continue;
+            std::memcpy(&V, Zone.data() + Field, (size_t)Ptr);
             if (V == Rs.SlotMarker) FirstRead.emplace(Target, SIZE_MAX);
         }
         for (size_t K = 0; K < R.ReadPos.size() && !FirstRead.empty(); K++)
@@ -358,8 +671,8 @@ namespace
         for (const auto& [Field, Target] : R.Links)
         {
             uint64_t V = 0;
-            if (Field < 0 || Field + Ptr > (int64_t)Zone->size()) continue;
-            std::memcpy(&V, Zone->data() + Field, (size_t)Ptr);
+            if (Field < 0 || Field + Ptr > (int64_t)Zone.size()) continue;
+            std::memcpy(&V, Zone.data() + Field, (size_t)Ptr);
             if (V != Rs.SlotMarker) continue;
             const auto It = FirstRead.find(Target);
             if (It->second != SIZE_MAX) Events.emplace_back(It->second, Target);
@@ -384,7 +697,7 @@ namespace
 }
 
 ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::StreamRules& Rs, bool DerefAssetPointers,
-                           const std::vector<uint8_t>* Zone)
+                           ByteView Zone, const ResolveHints* Hints)
 {
     ResolvedLinks Out;
     // counted here, named once at the end: a name looked up per link was most of the time
@@ -394,6 +707,13 @@ ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::St
 
     // Zone-level instances come in list order, one per inline or resident header.
     std::vector<int64_t> AssetPos(R.AssetHeads.size(), -1);
+    if (Hints && Hints->Points)
+    {
+        // a partial walk's: every listed asset where its resume point says it starts
+        for (const auto& P : *Hints->Points)
+            if (P.ListIndex < AssetPos.size()) AssetPos[P.ListIndex] = P.Pos;
+    }
+    else
     {
         std::vector<int64_t> Roots;
         for (const auto& I : R.Instances)
@@ -411,14 +731,29 @@ ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::St
     const int64_t ListAt = R.Start4 - Entry * (int64_t)R.AssetHeads.size();
     const ZoneTables::BlockMap Memory(R);
     std::vector<std::pair<size_t, int64_t>> Reserved;   // resident slots: the read each precedes, offset
-    const std::unordered_map<int64_t, int64_t> Slots = ResidentSlots(R, Rs, Zone, &Reserved);
+    std::unordered_map<int64_t, int64_t> Slots;
+    if (Hints && Hints->Points)
+        for (const auto& [Off, Data] : R.Slots) Slots.emplace(Off, Data);   // as the walks reserved them
+    else
+        Slots = ResidentSlots(R, Rs, Zone, &Reserved);
     // stream.backref_asset_bit (IW8): such a reference counts from where the zone-level asset
     // holding the field began in its block; each root asset's block cursors at its first read.
     // A cursor counts the resident slots reserved up to there too, its own included (MWIII: the
     // -3 images a gfx_map holds take 8 bytes of block 15 each, no read; mp_jup_shipment_iw9's
     // map_ents begins 0x2c past its last read)
     std::vector<std::pair<int64_t, std::vector<int64_t>>> AssetStarts;   // root position -> cursors
-    if (Rs.AssetBit > 0)
+    if (Rs.AssetBit > 0 && Hints && Hints->Points)
+    {
+        // a partial walk's: where each block's last read ended at its resume points
+        for (const auto& P : *Hints->Points)
+        {
+            std::vector<int64_t> Cursor((size_t)std::max(Rs.StreamBlocks, 1), 0);
+            for (const auto& [B, C] : P.Starts)
+                if (B >= 0 && B < (int)Cursor.size()) Cursor[(size_t)B] = C;
+            AssetStarts.emplace_back(P.Pos, std::move(Cursor));
+        }
+    }
+    else if (Rs.AssetBit > 0)
     {
         std::unordered_map<int64_t, size_t> FirstRead;
         for (size_t K = 0; K < R.ReadPos.size(); K++) FirstRead.try_emplace(R.ReadPos[K], K);
@@ -454,16 +789,22 @@ ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::St
     // pointer filed its data under (the first filing wins, as the game's map keeps it), an asset
     // reference the name hash at +0 of an asset instance of the zone
     // (an asset reference names an instance of the type its chain reads inline, R.RefTypes)
-    std::unordered_map<uint64_t, int64_t> Keyed;
+    std::unordered_map<uint64_t, int64_t> Keyed;   // the walk's own keys, under the hints' (Hints->Keyed)
     std::map<std::pair<uint16_t, uint64_t>, int64_t> Hashed;
     if (Rs.InlineBit > 0)
     {
         for (const auto& [Key, Pos] : R.Keys) Keyed.try_emplace(Key, Pos);
-        if (Zone != nullptr)
+        if (!Zone.empty() && !Hints)
             for (const auto& I : R.Instances)
-                if (I.Pos >= 0 && I.Pos + 8 <= (int64_t)Zone->size())
-                    Hashed.try_emplace({ I.Owner, ExportNaming::At<uint64_t>(*Zone, I.Pos) & Rs.AssetHashMask }, I.Pos);
+                if (I.Pos >= 0 && I.Pos + 8 <= (int64_t)Zone.size())
+                    Hashed.try_emplace({ I.Owner, ExportNaming::At<uint64_t>(Zone, I.Pos) & Rs.AssetHashMask }, I.Pos);
     }
+    const auto KeyedAt = [&](uint64_t Key) -> int64_t {
+        if (Hints)
+            if (const auto It = Hints->Keyed().find(Key); It != Hints->Keyed().end()) return It->second;
+        const auto It = Keyed.find(Key);
+        return It == Keyed.end() ? -1 : It->second;
+    };
     for (size_t K = 0; K < R.BackRefs.size(); K++)
     {
         const auto& [Field, Value] = R.BackRefs[K];
@@ -474,11 +815,22 @@ ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::St
             if (IsAsset)
             {
                 const auto Type = R.RefTypes.find(Field);
-                const auto It = Type == R.RefTypes.end() ? Hashed.end() : Hashed.find({ Type->second, Value & Rs.AssetHashMask });
-                if (It != Hashed.end()) Pos = It->second;
+                if (Hints)
+                {
+                    // the zone's assets by type name and hash, the walks' owner ids being their own
+                    if (Type != R.RefTypes.end() && Type->second < R.OwnerNames.size())
+                        if (Hints->ByHash != nullptr)
+                            if (const auto It = Hints->ByHash->find({ R.OwnerNames[Type->second], Value & Rs.AssetHashMask }); It != Hints->ByHash->end())
+                            Pos = It->second;
+                }
+                else
+                {
+                    const auto It = Type == R.RefTypes.end() ? Hashed.end() : Hashed.find({ Type->second, Value & Rs.AssetHashMask });
+                    if (It != Hashed.end()) Pos = It->second;
+                }
             }
-            else if (const auto It = Keyed.find(Value & Rs.KeyMask); It != Keyed.end())
-                Pos = It->second;
+            else
+                Pos = KeyedAt(Value & Rs.KeyMask);
             if (Pos < 0)
             {
                 Unresolved++;
@@ -580,6 +932,72 @@ ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::St
     return Out;
 }
 
+const std::unordered_map<uint64_t, int64_t>& ResolveHints::Keyed() const
+{
+    if (!KeyedOnce)
+    {
+        auto M = std::make_shared<std::unordered_map<uint64_t, int64_t>>();
+        if (Keys != nullptr)
+        {
+            M->reserve(Keys->size());
+            for (const auto& [Key, Pos] : *Keys) M->try_emplace(Key, Pos);
+        }
+        KeyedOnce = std::move(M);
+    }
+    return *KeyedOnce;
+}
+
+std::set<size_t> MissingOwners(const ZoneTables::ZoneResult& M, const ZoneTables::StreamRules& Rs,
+                               const ZoneTables::PartialWalk& Walk, const ResolveHints& Hints)
+{
+    std::set<size_t> Out;
+    const auto& Walked = Walk.Walked();
+    const auto Need = [&](size_t Point) {
+        if (Point != SIZE_MAX && !Walked.count(Point)) Out.insert(Point);
+    };
+    const int64_t Entry = Rs.PointerSize == 4 ? 8 : 16;
+    const int64_t ListAt = M.Start4 - Entry * (int64_t)M.AssetHeads.size();
+    const auto& Keyed = Hints.Keyed();
+    for (const auto& [Field, Target] : M.Links) Need(Walk.OwnerOf(Target));
+    for (size_t K = 0; K < M.BackRefs.size(); K++)
+    {
+        const auto& [Field, Value] = M.BackRefs[K];
+        if (Rs.InlineBit > 0)
+        {
+            int64_t Pos = -1;
+            if (K < M.BackRefIsAsset.size() && M.BackRefIsAsset[K])
+            {
+                const auto Type = M.RefTypes.find(Field);
+                if (Type != M.RefTypes.end() && Type->second < M.OwnerNames.size())
+                    if (Hints.ByHash != nullptr)
+                        if (const auto It = Hints.ByHash->find({ M.OwnerNames[Type->second], Value & Rs.AssetHashMask }); It != Hints.ByHash->end())
+                        Pos = It->second;
+            }
+            else if (const auto It = Keyed.find(Value & Rs.KeyMask); It != Keyed.end())
+                Pos = It->second;
+            if (Pos >= 0) Need(Walk.OwnerOf(Pos));
+            continue;
+        }
+        int Block = 0;
+        int64_t Off = 0;
+        if (!DecodeBackRef(Rs, Value, Block, Off)) continue;
+        if (!Rs.Iw6Refs && (Rs.RefShift || Rs.PointerSize == 4 || Rs.Block32) && Rs.AssetRelative(Value))
+        {
+            const size_t Holder = Walk.OwnerOf(Field);
+            if (Holder == SIZE_MAX) continue;
+            for (const auto& [B, C] : Walk.ResumePoints()[Holder].Starts)
+                if (B == Block) Off += C;
+        }
+        if (Block == Rs.StartBlock && Off >= ListAt && Off < M.Start4)
+        {
+            Need(Walk.PointOfListIndex((uint32_t)((Off - ListAt) / Entry)));
+            continue;
+        }
+        Need(Walk.PlacedBy(Block, Off));
+    }
+    return Out;
+}
+
 void ZonekitZone::Relocate(const ResolvedLinks& L)
 {
     for (const auto& [Field, Target] : L.Links) Session->Link((uint64_t)Field, (uint64_t)Target);
@@ -599,8 +1017,7 @@ bool ZonekitZone::Park()
 void ZonekitZone::Resume()
 {
     if (Session) return;
-    Session = std::make_unique<VirtualGameSession>(LiveGame(), std::move(ParkedImage), Handlers(), Rules().PointerSize);
-    ParkedImage = {};
+    Session = std::make_unique<VirtualGameSession>(VirtualGameSession::Acquire(), LiveGame(), std::move(ParkedImage), Handlers(), Rules().PointerSize);
     Serving = this;
     Served(true);
 }
@@ -733,6 +1150,11 @@ int64_t ZonekitZone::Root(const char* Type) const
     for (const auto& I : R.Instances)
         if (I.Parent < 0 && OwnerIs(I, Type)) return I.Pos;
     return -1;
+}
+
+bool ZonekitZone::Lists(const char* Type) const
+{
+    return Partial ? Listed.count(Type) > 0 : Root(Type) >= 0;
 }
 
 std::string ZonekitZone::ModelAt(uint64_t Address) const
@@ -1247,13 +1669,64 @@ void ZonekitZone::ExportEffects(const DiskGame::Context& C, DiskGame::Totals& T,
 
 void ZonekitZone::Defines(std::vector<DiskGame::AssetId>& Out) const
 {
+    std::vector<std::pair<DiskGame::AssetId, int64_t>> At;
+    DefinesAt(At);
+    Out.reserve(Out.size() + At.size());
+    for (auto& [Id, Pos] : At) Out.push_back(std::move(Id));
+}
+
+void ZonekitZone::Weighs(std::vector<std::pair<DiskGame::AssetId, DiskGame::Weight>>& Out) const
+{
+    std::vector<std::pair<DiskGame::AssetId, int64_t>> At;
+    DefinesAt(At);
+    // the instance at each position, and the types of the assets listed
+    std::unordered_map<int64_t, size_t> InstanceAt;
+    for (size_t I = 0; I < R.Instances.size(); I++) InstanceAt.try_emplace(R.Instances[I].Pos, I);
+    std::vector<bool> Listed(R.Instances.size()), KindType(R.OwnerNames.size());
+    for (const auto& [Id, Pos] : At)
+        if (const auto It = InstanceAt.find(Pos); It != InstanceAt.end())
+        {
+            Listed[It->second] = true;
+            KindType[R.Instances[It->second].Owner] = true;
+        }
+    const auto ReadBytes = [&](const ZoneTables::ZoneResult::Instance& I) {
+        uint64_t N = 0;
+        for (uint32_t K = I.FirstRead; K < I.EndRead && K < R.Reads.size(); K++) N += (uint64_t)std::llabs(R.Reads[K]);
+        return N;
+    };
+    std::vector<uint64_t> Bytes(R.Instances.size());
+    for (size_t I = 0; I < R.Instances.size(); I++)
+        if (Listed[I]) Bytes[I] = ReadBytes(R.Instances[I]);
+    // an instance of a listed type inside another: its bytes are its own (weighed, or another
+    // zone's asset), not the one holding it; taken off the nearest such instance above it, when
+    // that one is listed (one deeper is inside the nearer one's already)
+    for (size_t J = 0; J < R.Instances.size(); J++)
+    {
+        const auto& Inner = R.Instances[J];
+        if (Inner.Parent < 0 || !KindType[Inner.Owner]) continue;
+        int32_t Up = Inner.Parent;
+        while (Up >= 0 && !KindType[R.Instances[Up].Owner]) Up = R.Instances[Up].Parent;
+        if (Up >= 0 && Listed[Up]) Bytes[Up] -= std::min(Bytes[Up], ReadBytes(Inner));
+    }
+    Out.reserve(Out.size() + At.size());
+    for (auto& [Id, Pos] : At)
+    {
+        DiskGame::Weight W;
+        if (const auto It = InstanceAt.find(Pos); It != InstanceAt.end()) W.Bytes = Bytes[It->second];
+        Weigh(Id.K, Pos, W);
+        Out.push_back({ std::move(Id), W });
+    }
+}
+
+void ZonekitZone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
+{
     using DiskGame::Kind;
     for (const auto& I : R.Instances)
         for (const auto& [K, Type] : { std::pair<Kind, const char*>{ Kind::Model, ModelType() }, { Kind::Anim, AnimType() } })
         {
             if (!OwnerIs(I, Type)) continue;
             std::string Name = AssetName(K, I.Pos);
-            if (!IsReference(K, Name, I.Pos) && !Unwritable(K, I.Pos)) Out.push_back({ K, std::move(Name) });
+            if (!IsReference(K, Name, I.Pos) && !Unwritable(K, I.Pos)) Out.push_back({ { K, std::move(Name) }, I.Pos });
         }
     // the materials it defines, for a game that exports them (each name once)
     std::set<std::string> Materials;
@@ -1263,7 +1736,7 @@ void ZonekitZone::Defines(std::vector<DiskGame::AssetId>& Out) const
             if (!OwnerIs(I, MaterialType)) continue;   // inline in an effect or a model too
             std::string Name = AssetName(Kind::Material, I.Pos);
             if (!Name.empty() && !IsReference(Kind::Material, Name, I.Pos) && Materials.insert(ExportNaming::Lower(Name)).second)
-                Out.push_back({ Kind::Material, std::move(Name) });
+                Out.push_back({ { Kind::Material, std::move(Name) }, I.Pos });
         }
 }
 
@@ -1342,6 +1815,14 @@ void ZonekitZone::ExportsMaterials(const char* Type, MaterialReader Read, bool I
 
 std::string ProfileKey(const ExportWriters::LoadedProfile& Loaded)
 {
+    // once per profile loaded (its tables read and hashed whole: Black Ops 7's zones beside asked it
+    // 90 times, 2.2 s)
+    static std::mutex Lock;
+    static std::map<const ExportWriters::LoadedProfile*, std::string> Known;
+    {
+        std::lock_guard<std::mutex> G(Lock);
+        if (const auto It = Known.find(&Loaded); It != Known.end()) return It->second;
+    }
     // what the walk and so the index depend on: the profile, its tables and its stream layout
     uint64_t H = 0xcbf29ce484222325ull;
     const auto Mix = [&H](const std::string& S) { H = ExportNaming::Fnv1a(S, H); };
@@ -1356,10 +1837,11 @@ std::string ProfileKey(const ExportWriters::LoadedProfile& Loaded)
     }
     char B[40];
     snprintf(B, sizeof(B), "%s_%016llx", P.Name.c_str(), (unsigned long long)H);
-    return B;
+    std::lock_guard<std::mutex> G(Lock);
+    return Known.emplace(&Loaded, B).first->second;
 }
 
-std::string ProfileWalk::String(const std::vector<uint8_t>& Zone, int64_t Field) const
+std::string ProfileWalk::String(ByteView Zone, int64_t Field) const
 {
     const auto It = Links.find(Field);
     if (It == Links.end()) return std::string();
@@ -1369,7 +1851,7 @@ std::string ProfileWalk::String(const std::vector<uint8_t>& Zone, int64_t Field)
     return S;
 }
 
-bool WalkWithProfile(const std::string& FastFilePath, const std::vector<uint8_t>& Zone, ProfileWalk& Out,
+bool WalkWithProfile(const std::string& FastFilePath, ByteView Zone, ProfileWalk& Out,
                      std::string& Error)
 {
     Out = ProfileWalk();

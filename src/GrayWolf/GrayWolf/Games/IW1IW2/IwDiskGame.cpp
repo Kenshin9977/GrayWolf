@@ -142,7 +142,7 @@ namespace
 
     // A TGA DirectXTex refuses (CoD2's run-length fonts): true colour or grey, raw or run-length,
     // as RGBA rows from the top.
-    bool DecodeTga(const std::vector<uint8_t>& B, DirectX::ScratchImage& Img, DirectX::TexMetadata& Meta)
+    bool DecodeTga(ByteView B, DirectX::ScratchImage& Img, DirectX::TexMetadata& Meta)
     {
         if (B.size() < 18) return false;
         const uint8_t Type = B[2], Bpp = B[16], Desc = B[17];
@@ -196,7 +196,7 @@ namespace
 
     // An image file as a DDS in memory: IWI through CoDIWIDecoder (CoD2's wavelet formats too), DDS
     // as it is, TGA and JPG decoded and stored uncompressed.
-    std::unique_ptr<XImageDDS> DdsOf(const std::string& Ext, const std::vector<uint8_t>& Bytes, std::string& Error)
+    std::unique_ptr<XImageDDS> DdsOf(const std::string& Ext, ByteView Bytes, std::string& Error)
     {
         std::string Dds;
         if (Ext == ".iwi")
@@ -472,6 +472,16 @@ namespace
         void Defines(std::vector<DiskGame::AssetId>& Out) const override
         {
             for (const auto& [K, Path, Name] : Assets()) Out.push_back({ K, Name });
+        }
+        // each weighing its file
+        void Weighs(std::vector<std::pair<DiskGame::AssetId, DiskGame::Weight>>& Out) const override
+        {
+            for (const auto& [K, Path, Name] : Assets())
+            {
+                DiskGame::Weight W;
+                W.Bytes = Files ? Files->Size(Path) : 0;
+                Out.push_back({ { K, Name }, W });
+            }
         }
         // The .str files' entries as level titles (LevelNames): a title quoted in its text left
         // without the quotes

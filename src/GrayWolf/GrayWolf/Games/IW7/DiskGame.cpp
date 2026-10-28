@@ -10,6 +10,7 @@
 #include "Compression.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "FileSystems.h"
@@ -31,6 +32,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <execution>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -323,6 +325,10 @@ namespace
 
     protected:
         const char* Profile() const override { return "iw7"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // a streamed image's stream records are the table's by its rank among the zone's images
+        std::vector<std::string> Ranked() const override { return { "image" }; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("IW7"); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         const char* AnimType() const override { return "xanimparts"; }
@@ -336,7 +342,7 @@ namespace
             return Raw == ~0ull || Raw == ~1ull;
         }
         bool DerefAssetPointers() const override { return true; }   // resolve 0x9e9a20 reads the pointer it names
-        bool LoadBytes(std::vector<uint8_t>& Zone, std::string& Error) override;   // with the shared stream
+        bool LoadBytes(ZoneBytes& Zone, std::string& Error) override;   // with the shared stream
         int64_t LayoutOffset() override;   // after the shared stream
         bool WalkedToEnd() const override;
         void Fixups() override;
@@ -356,7 +362,7 @@ namespace
                 return true;
             };
         }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override;   // with the images
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;   // with the images
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -405,6 +411,9 @@ namespace
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         bool Holds(int64_t Pos) const;   // an image with pixels here (in the zone or streamed)
+        // what Decode writes of an image: its largest streamed level (its size and format make
+        // it, a cube's six faces), else its pixels in the zone
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
         void LinkShared(std::unordered_map<std::string, uint64_t>& SurfsByName);
         std::vector<uint8_t> SharedAsset(int64_t From, int64_t Length) const;
         int64_t ZoneEnd = 0;                                    // the zone's own bytes, before the shared stream
@@ -446,7 +455,7 @@ namespace
                         const uint64_t Records = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos + 0x10);
                         const int64_t From = Records >= Z->Base && Records < Z->Base + Z->Bytes.size() ? (int64_t)(Records - Z->Base) : -1;
                         Out.try_emplace(ExportNaming::At<int32_t>(Z->Bytes, I.Pos + 8),
-                                        TransientVertices{ &Z->Bytes, From, ExportNaming::At<uint32_t>(Z->Bytes, I.Pos + 0xc) });
+                                        TransientVertices{ Z->Bytes, From, ExportNaming::At<uint32_t>(Z->Bytes, I.Pos + 0xc) });
                     }
         }
     };
@@ -463,6 +472,29 @@ namespace
         if (Levels.count(Pos)) return true;
         return At<uint8_t>(Zone(), Pos + ImageStreamedAt) == 0 && At<uint32_t>(Zone(), Pos + ImageBytesAt) > 0 &&
                Off(PointerAt(Pos + ImagePixelsAt)) >= 0;
+    }
+
+    void IW7Zone::Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const
+    {
+        const auto& Img = Image();
+        if (K != DiskGame::Kind::Image) return;
+        uint32_t Width = At<uint16_t>(Img, Pos + ImageWidthAt), Height = At<uint16_t>(Img, Pos + ImageWidthAt + 2);
+        const auto It = Levels.find(Pos);
+        if (It == Levels.end())
+        {
+            W = DiskGame::Sizes::ImageWeight(At<uint32_t>(Img, Pos + ImageBytesAt), Width, Height);
+            return;
+        }
+        int Level = -1;
+        for (int L = 0; L < StreamLevels; L++)
+        {
+            const StreamRecord& R = It->second[L];
+            const uint32_t LevelW = At<uint16_t>(Img, Pos + ImageStreamsAt + L * 8), LevelH = At<uint16_t>(Img, Pos + ImageStreamsAt + L * 8 + 2);
+            if (R.End > R.Start && LevelW * LevelH > 0 && (Level < 0 || LevelW > Width)) Level = L, Width = LevelW, Height = LevelH;
+        }
+        if (Level < 0) return;
+        const bool Cube = At<uint8_t>(Img, Pos + ImageMapTypeAt) == MapTypeCube;
+        W = DiskGame::Sizes::ImageWeight(TopLevelBytes(At<uint8_t>(Img, Pos + ImageFormatAt), Width, Height) * (Cube ? 6 : 1), Width, Height, Cube ? 6 : 1);
     }
 
     std::unique_ptr<XImageDDS> IW7Zone::Decode(int64_t Pos, ImageUsageType Usage)
@@ -512,7 +544,7 @@ namespace
 
     // The shared stream's records appended after the zone, each a one-asset stream walked on its own
     // (LinkShared): the zone walk ends where the zone does.
-    bool IW7Zone::LoadBytes(std::vector<uint8_t>& Zone, std::string& Error)
+    bool IW7Zone::LoadBytes(ZoneBytes& Zone, std::string& Error)
     {
         if (!ZonekitZone::LoadBytes(Zone, Error)) return false;
         ZoneEnd = (int64_t)Zone.size();
@@ -525,10 +557,19 @@ namespace
         F.seekg(RecordsAt);
         F.read(reinterpret_cast<char*>(Records.data()), (std::streamsize)Shared * sizeof(StreamRecord));
         if (!F) return true;
-        for (const StreamRecord& R : Records)
-        {
+        // read side by side, then appended in order with the room made once (a zone of hundreds of
+        // MB grown record by record was copied again at each growth)
+        std::vector<std::vector<uint8_t>> Read(Records.size());
+        std::for_each(std::execution::par, Records.begin(), Records.end(), [&](const StreamRecord& R) {
             const std::string Pak = std::format("assetfile{}.pak", (unsigned long long)(R.Pak & 0xffff));
-            std::vector<uint8_t> One = ReadSharedRecord((PakDir(FastFilePath(), Pak) / Pak).string(), R.Start, R.End);
+            Read[(size_t)(&R - Records.data())] = ReadSharedRecord((PakDir(FastFilePath(), Pak) / Pak).string(), R.Start, R.End);
+        });
+        size_t Adding = 0;
+        for (const auto& One : Read)
+            if (One.size() > 16) Adding += One.size();
+        Zone.reserve(Zone.size() + Adding);
+        for (const auto& One : Read)
+        {
             if (One.size() <= 16) continue;
             SharedAssets.emplace_back((int64_t)Zone.size(), (int64_t)One.size());
             Zone.insert(Zone.end(), One.begin(), One.end());
@@ -660,8 +701,8 @@ namespace
 
         // streamed images, in walk order, take the stream table's records four by four
         std::vector<int64_t> Streamed;
-        for (const auto& I : Walk().Instances)
-            if (OwnerIs(I, "image") && At<uint8_t>(Z, I.Pos + ImageStreamedAt) > 0) Streamed.push_back(I.Pos);
+        for (const int64_t Pos : AllOf("image"))
+            if (At<uint8_t>(Z, Pos + ImageStreamedAt) > 0) Streamed.push_back(Pos);
         const std::vector<StreamRecord> Table = ReadImageStreams(FastFilePath());
         Counter("images_streamed") += Streamed.size();
         if (Table.size() == Streamed.size() * StreamLevels)
@@ -818,14 +859,14 @@ namespace
         for (const auto& [Key, N] : Unread) Counter("map_" + Key) += N;
     }
 
-    void IW7Zone::Defines(std::vector<DiskGame::AssetId>& Out) const
+    void IW7Zone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
     {
-        ZonekitZone::Defines(Out);
+        ZonekitZone::DefinesAt(Out);
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "image") || !Holds(I.Pos)) continue;
             const std::string N = AssetName(DiskGame::Kind::Image, I.Pos + ImageNameAt);
-            if (!IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ DiskGame::Kind::Image, N });
+            if (!IsReference(DiskGame::Kind::Image, N, I.Pos)) Out.push_back({ { DiskGame::Kind::Image, N }, I.Pos });
         }
     }
 

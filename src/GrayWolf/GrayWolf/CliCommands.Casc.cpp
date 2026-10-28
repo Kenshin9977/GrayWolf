@@ -366,7 +366,7 @@ int RunCascExtractDir(const CliOptions& Options)
 // decompressed zone bytes written to disk.
 int RunZoneDecompress(const CliOptions& Options)
 {
-    std::vector<uint8_t> Zone;
+    ZoneBytes Zone;
     std::string Error;
 
     if (!FastFile::Decompress(Options.ZoneDecompressIn, Zone, Error))

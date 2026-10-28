@@ -263,7 +263,7 @@ const Recipe* ShadingRecipe(const std::string& Profile, const std::string& Techs
     return Row == It->second.end() ? nullptr : &Row->second;
 }
 
-float RecipeFloat(const Recipe& R, const std::string& Field, const std::vector<uint8_t>& Block, int Component, float Default)
+float RecipeFloat(const Recipe& R, const std::string& Field, ByteView Block, int Component, float Default)
 {
     const auto It = R.find(Field);
     if (It == R.end()) return Default;

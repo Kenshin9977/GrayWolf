@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include "GdtWriter.h"   // Gdt::Entry, Gdt::Document
 
 // The gdt kind (DiskGame::Kind::Gdt): a zone's assets written as Black Ops 3 Mod Tools GDT entries.
@@ -29,7 +31,7 @@ namespace Gdt
     // What a zone gives the reader: its relocated image and how to name what a field points at.
     struct Memory
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         std::function<int64_t(uint64_t Address)> Off;                                // zone offset, -1 outside
         std::function<std::string(const std::string& Kind, int64_t Pos)> AssetName;  // a layout kind's asset at Pos
         std::function<std::string(uint64_t Hash)> HashName;                          // "" when not known
