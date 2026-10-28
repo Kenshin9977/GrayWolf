@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "WmaSounds.h"
 
@@ -41,7 +42,7 @@ namespace
     }
 
     // A chunk's body and size, nullptr when there is none
-    const uint8_t* ChunkOf(const std::vector<uint8_t>& F, const char* Id, uint32_t& Len)
+    const uint8_t* ChunkOf(ByteView F, const char* Id, uint32_t& Len)
     {
         for (size_t At = 12; At + 8 <= F.size();)
         {
@@ -55,7 +56,7 @@ namespace
     // ffmpeg's decode of In: true when it exited 0, said no error and, when In has a dpds, decoded
     // the stream to its last packet (its PCM bytes at least dpds' last count less the largest packet's;
     // more are cut to that count)
-    bool RunOnce(const std::string& Ffmpeg, const std::vector<uint8_t>& In, std::vector<uint8_t>& Wav, uint32_t& Short, std::string& Why)
+    bool RunOnce(const std::string& Ffmpeg, ByteView In, std::vector<uint8_t>& Wav, uint32_t& Short, std::string& Why)
     {
         const fs::path Base = ToolScratchPath("gh_wma");
         const fs::path InPath = fs::path(Base).concat(".xwma"), OutPath = fs::path(Base).concat(".wav");
@@ -111,7 +112,7 @@ namespace
     // stream ends 512 samples into a frame (dpds), the sound is decoded short (mp_nuked: 509 of 552
     // sounds end on such a frame, 38 short). Empty when In has no dpds (no count to cut the decode
     // to) or its data is not whole packets.
-    std::vector<uint8_t> Flushed(const std::vector<uint8_t>& In)
+    std::vector<uint8_t> Flushed(ByteView In)
     {
         uint32_t FmtLen = 0, DataLen = 0, DpdsLen = 0;
         const uint8_t* Fmt = ChunkOf(In, "fmt ", FmtLen);
@@ -134,7 +135,7 @@ namespace
 
     // RunOnce of In flushed (Flushed), else of In as it is (a stream ffmpeg fails to flush: Black
     // Ops' whose last packet decodes to nothing)
-    bool Run(const std::string& Ffmpeg, const std::vector<uint8_t>& In, std::vector<uint8_t>& Wav, uint32_t& Short, std::string& Why)
+    bool Run(const std::string& Ffmpeg, ByteView In, std::vector<uint8_t>& Wav, uint32_t& Short, std::string& Why)
     {
         if (const std::vector<uint8_t> F = Flushed(In); !F.empty() && RunOnce(Ffmpeg, F, Wav, Short, Why)) return true;
         return RunOnce(Ffmpeg, In, Wav, Short, Why);
@@ -142,7 +143,7 @@ namespace
 
     // The xWMA In as a RIFF WAVE whose fmt carries WMA's extra data (Flags: its encode options) and
     // Avg bytes a second, its dpds kept for Run's check; empty when In has no fmt or data
-    std::vector<uint8_t> WaveOf(const std::vector<uint8_t>& In, uint32_t Avg, uint16_t Flags)
+    std::vector<uint8_t> WaveOf(ByteView In, uint32_t Avg, uint16_t Flags)
     {
         uint32_t FmtLen = 0, DpdsLen = 0, DataLen = 0;
         const uint8_t* Fmt = ChunkOf(In, "fmt ", FmtLen);

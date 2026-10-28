@@ -69,17 +69,17 @@ namespace
         return VirtualGameSession::SlotString(&ZoneStrings, Index);
     }
 
-    void ReadZoneStrings(const std::vector<uint8_t>& Zone);
+    void ReadZoneStrings(ByteView Zone);
 }
 
 // the zone's string table, decrypted as the game does - for diagnosis (bo4-disk-export --strings)
-const std::vector<std::string>& ZoneStringTable(const std::vector<uint8_t>& Zone)
+const std::vector<std::string>& ZoneStringTable(ByteView Zone)
 {
     ReadZoneStrings(Zone);
     return ZoneStrings;
 }
 
-std::string ZoneString(const std::vector<uint8_t>& Zone, size_t Start, size_t& End)
+std::string ZoneString(ByteView Zone, size_t Start, size_t& End)
 {
     End = std::find(Zone.begin() + (ptrdiff_t)Start, Zone.end(), 0) - Zone.begin();
     const uint8_t* S = Zone.data() + Start;
@@ -97,7 +97,7 @@ std::string ZoneString(const std::vector<uint8_t>& Zone, size_t Start, size_t& E
 
 namespace
 {
-    void ReadZoneStrings(const std::vector<uint8_t>& Zone)
+    void ReadZoneStrings(ByteView Zone)
     {
         ZoneStrings.clear();
         if (Zone.size() < 0x20) return;
@@ -125,7 +125,7 @@ namespace
     // What an image's output file is made of: the streamed payload's package key (the key names
     // the bytes) or a hash of the in-zone bytes, plus every field that shapes the file and the
     // extension. 0 when the image has no pixels to write.
-    uint64_t ContentKey(const std::vector<uint8_t>& Zone, const ImageInfo& Img, const std::string& Ext)
+    uint64_t ContentKey(ByteView Zone, const ImageInfo& Img, const std::string& Ext)
     {
         uint64_t H = 0x9E3779B97F4A7C15ull;
         auto Mix = [&H](const void* P, size_t N) {
@@ -158,7 +158,7 @@ namespace
 
 }
 
-bool ReadZone(const std::vector<uint8_t>& Zone, const std::string& Profile, ZoneAssets& Out,
+bool ReadZone(ByteView Zone, const std::string& Profile, ZoneAssets& Out,
               std::string& Error)
 {
     const ExportWriters::LoadedProfile* L = ExportWriters::ZoneProfile(Profile, Error);
@@ -171,7 +171,7 @@ bool ReadZone(const std::vector<uint8_t>& Zone, const std::string& Profile, Zone
         return false;
     }
     // every pointer resolved the way the disk template does (ResolveLinks, ZonekitZone.h)
-    const ResolvedLinks Links = ResolveLinks(R, L->Profile.Rules, true, &Zone);
+    const ResolvedLinks Links = ResolveLinks(R, L->Profile.Rules, true, Zone);
     Out.Links = Links.Links;
     Out.BackRefs = R.BackRefs.size();
     for (const char* K : {"links_asset", "links_data"})
@@ -180,7 +180,7 @@ bool ReadZone(const std::vector<uint8_t>& Zone, const std::string& Profile, Zone
     return true;
 }
 
-void DescribeZone(const std::vector<uint8_t>& Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Out)
+void DescribeZone(ByteView Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Out)
 {
     Out.Why = R.Why;
     Out.Complete = R.Why == "walked to the end";
@@ -247,7 +247,7 @@ void DescribeZone(const std::vector<uint8_t>& Zone, const ZoneTables::ZoneResult
     }
 }
 
-bool LoadZone(const std::string& Path, std::vector<uint8_t>& Zone, std::string& Error)
+bool LoadZone(const std::string& Path, ZoneBytes& Zone, std::string& Error)
 {
     if (Lower(fs::path(Path).extension().string()) == ".ff")
     {
@@ -339,7 +339,7 @@ namespace
 {
     // An image as DDS: in-zone pixels from the zone, streamed ones from the packages by the widest
     // mip's key. Null when neither is there; FromPackages tells which path it took.
-    std::unique_ptr<XImageDDS> BuildDds(const std::vector<uint8_t>& Zone, const ImageInfo& Img,
+    std::unique_ptr<XImageDDS> BuildDds(ByteView Zone, const ImageInfo& Img,
                                         CoDPackageCache* Packages, bool& FromPackages)
     {
         FromPackages = false;
@@ -379,7 +379,7 @@ namespace
     }
 }
 
-ExportStats ExportImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets,
+ExportStats ExportImages(ByteView Zone, const ZoneAssets& Assets,
                          const std::string& OutDir, const NameTest& Wants,
                          CoDPackageCache* Packages, const StepFn& Step,
                          const std::function<void(const std::string&)>& OnReference)
@@ -474,7 +474,7 @@ ExportStats ExportImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Ass
 namespace
 {
     // for the image handler below, the zone being served (one per thread)
-    thread_local const std::vector<uint8_t>* LiveZoneBytes = nullptr;
+    thread_local ByteView LiveZoneBytes;   // the zone served, empty when none
     thread_local std::unordered_map<int64_t, const ImageInfo*> LiveImages;
 
     // CoDAssets' image handler during a disk export: the image the pointer names, read the disk
@@ -483,11 +483,11 @@ namespace
     std::unique_ptr<XImageDDS> DiskXImage(const XImage_t& Image)
     {
         constexpr uintptr_t Base = VirtualGameSession::Base;
-        if (LiveZoneBytes == nullptr || Image.ImagePtr < Base) return nullptr;
+        if (LiveZoneBytes.empty() || Image.ImagePtr < Base) return nullptr;
         auto It = LiveImages.find(static_cast<int64_t>(Image.ImagePtr - Base));
         if (It == LiveImages.end()) return nullptr;
         bool FromPackages = false;
-        return BuildDds(*LiveZoneBytes, *It->second, CoDAssets::GamePackageCache.get(), FromPackages);
+        return BuildDds(LiveZoneBytes, *It->second, CoDAssets::GamePackageCache.get(), FromPackages);
     }
 
 }
@@ -499,17 +499,17 @@ VirtualGameSession::Handlers LiveHandlers()
     return { DiskStringEntry, DiskXImage };
 }
 
-void ServeZone(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets)
+void ServeZone(ByteView Zone, const ZoneAssets& Assets)
 {
     ReadZoneStrings(Zone);
-    LiveZoneBytes = &Zone;
+    LiveZoneBytes = Zone;
     LiveImages.clear();
     for (const ImageInfo& I : Assets.Images) LiveImages[I.Pos] = &I;
 }
 
 void EndServe()
 {
-    LiveZoneBytes = nullptr;
+    LiveZoneBytes = {};
     LiveImages.clear();
 }
 
@@ -605,7 +605,7 @@ ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, con
     return S;
 }
 
-std::vector<MaterialImage> MaterialImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets)
+std::vector<MaterialImage> MaterialImages(ByteView Zone, const ZoneAssets& Assets)
 {
     // BO4XMaterial: name hash at 0, image table pointer at 0x38, image count u8 at 0x130; each
     // table entry (0x20) is BO4XMaterialImage: image pointer at 0, semantic hash u32 at 8
@@ -646,7 +646,7 @@ namespace
     }
 
     // the zone's full materials; the first occurrence of a name gives its images
-    MaterialBook BookOf(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets)
+    MaterialBook BookOf(ByteView Zone, const ZoneAssets& Assets)
     {
         MaterialBook Book;
         std::vector<std::pair<uint64_t, uint32_t>>* Open = nullptr;
@@ -761,7 +761,7 @@ std::vector<std::shared_ptr<const MaterialBook>> CommonMaterials(const std::stri
         if (!LoadBook(File, *Book))
         {
             Book->clear();
-            std::vector<uint8_t> Bytes;
+            ZoneBytes Bytes;
             ZoneAssets Assets;
             if (!LoadZone(Ff, Bytes, Error) || !ReadZone(Bytes, "bo4", Assets, Error)) continue;
             *Book = BookOf(Bytes, Assets);

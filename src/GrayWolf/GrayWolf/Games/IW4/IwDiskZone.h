@@ -43,6 +43,8 @@ namespace Iw64
 
     protected:
         const char* Profile() const override { return Game.Profile; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get(Game.Live); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         // an asset pointer's back reference names the slot holding it (resolve_deref, 0xf3f60)
@@ -52,7 +54,9 @@ namespace Iw64
         // (Iw64::MaterialDefinedAt)
         void Served(bool On) override;
         // the models and animations, and the images this zone holds whole (pixels or .iwd name)
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override;
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
+        // an image of the .iwd archives (its record alone in the zone): its .iwi's (Sizes::IwiWeight)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "|iw64 images 1"; }
         // the level of a map zone (Games/IW4/IwMap.cpp): world, placements, entity models, lights, sky
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
@@ -72,7 +76,7 @@ namespace Iw64
         // a rawfile's content, inflated
         bool RawfileBytes(int64_t Pos, std::vector<uint8_t>& Out) const;
         // the install's .iwd archives, indexed once per install (shared by every zone of a run)
-        IWDCache* Packages();
+        IWDCache* Packages() const;
 
         const GameInfo& Game;
         OatWeapons::Source Weapons;   // the weapon kinds, through OpenAssetTools

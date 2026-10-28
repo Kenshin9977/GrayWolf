@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The weapon stats kind (DiskGame::Kind::WeaponStats) of the iwctx family: one row per weapon and
 // tunables set, in user units, only fields whose meaning the game's exe proves. The values sit in
 // several zones (the guns in global_stream_mp, their animation packages in ingame_shared_mp, the
@@ -128,7 +130,7 @@ namespace IwWeaponStats
     // What a zone gives the facts reader
     struct ZoneView
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         const ZoneTables::ZoneResult* Walk = nullptr;
         std::function<int64_t(uint64_t)> Off;              // a relocated pointer's zone offset, -1 elsewhere
         std::function<std::string(int64_t)> Text;          // the decrypted text of the string pointer field at a zone offset

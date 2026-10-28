@@ -46,7 +46,7 @@ namespace
     // A rawfile's file. A zone holds an empty rawfile named after itself ("ui"), which can be named
     // like another rawfile's folder ("ui/lui/..."): an empty file in the way of a folder gives way
     // to it, and an empty file whose place is a folder is left out (neither holds anything)
-    bool WriteRawfile(const fs::path& Dir, const fs::path& File, const std::vector<uint8_t>& Bytes)
+    bool WriteRawfile(const fs::path& Dir, const fs::path& File, ByteView Bytes)
     {
         if (ExportWriters::WriteBytes(File, Bytes.data(), Bytes.size())) return true;
         std::error_code Ec;

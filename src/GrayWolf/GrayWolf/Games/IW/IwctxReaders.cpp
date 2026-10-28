@@ -200,7 +200,7 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
     }
 }
 
-std::vector<std::string> IwctxReaders::ZoneStrings(const std::vector<uint8_t>& Z, const std::string& ProfileDir, size_t ListSize)
+std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string& ProfileDir, size_t ListSize)
 {
     std::vector<std::string> Out;
     if (Z.size() < ListSize || ListSize < 0x10) return Out;
@@ -296,14 +296,11 @@ void IwctxReaders::LoadNameIndexes()
         const auto Index = std::filesystem::path(FileSystems::GetApplicationPath()) / "package_index";
         for (const char* F : { "fnv1a_string.wni", "fnv1a_bones.wni" }) CoDAssets::StringCache.LoadIndex((Index / F).string());
         // the games name bones by the FNV-1a 64 of the name (the indexes key them by 32 bits): add those keys
-        std::vector<std::pair<uint64_t, std::string>> Wide;
-        for (const auto& [Key, Name] : CoDAssets::StringCache.NameDatabase)
-        {
+        CoDAssets::StringCache.AddDerivedKeys("fnv1a64", [](const std::string& Name) {
             uint64_t H = 0xcbf29ce484222325ull;
             for (const unsigned char Ch : Name) H = (H ^ Ch) * 0x100000001b3ull;
-            Wide.emplace_back(H, Name);
-        }
-        for (auto& [Key, Name] : Wide) CoDAssets::StringCache.NameDatabase.try_emplace(Key, std::move(Name));
+            return H;
+        });
         // fnv1a_localize.wni: localize key names, hashed as asset names are
         for (const char* F : { "fnv1a_xmodels.wni", "fnv1a_v2_ximages.wni", "fnv1a_v2_xmaterials.wni", "fnv1a_v2_xanims.wni", "fnv1a_ximages.wni",
                                "fnv1a_xmaterials.wni", "fnv1a_xsounds.wni", "fnv1a_localize.wni" })
@@ -319,7 +316,7 @@ void IwctxReaders::LoadNameIndexes()
 // scriptbrushmodel one at 0x10 in both.
 // A key is named by IwEntityKeys: the hash of its text (the multiplayer's salt after the first
 // character, the campaign's after the name)
-void IwctxReaders::EntityPairs(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+void IwctxReaders::EntityPairs(ByteView Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
                                const std::function<uint64_t(int64_t)>& Ptr, std::vector<MapEntity>& Out, IwEntityKeys::Scheme KeyScheme,
                                const PairPacking& Packing)
 {
@@ -371,7 +368,7 @@ std::string IwctxReaders::EntityText(const std::vector<MapEntity>& Entities)
     return Out;
 }
 
-std::string IwctxReaders::EntityText(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+std::string IwctxReaders::EntityText(ByteView Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
                        const std::function<uint64_t(int64_t)>& Ptr, size_t& Count, IwEntityKeys::Scheme KeyScheme, const PairPacking& Packing)
 {
     std::vector<MapEntity> Entities;
@@ -427,7 +424,7 @@ std::string IwctxReaders::ScriptString32(uint32_t Hash)
     return It == Low.end() ? std::string() : It->second;
 }
 decltype(Treyarch::EffectZone::Material) IwctxReaders::SlotMaterials(const MaterialSlots& L, std::function<XMaterial_t(uint64_t Address)> Read,
-                                                                     std::function<const std::vector<uint8_t>&()> Zone,
+                                                                     std::function<ByteView()> Zone,
                                                                      std::function<int64_t(uint64_t Address)> Off,
                                                                      std::function<std::string(uint64_t Hash)> Name)
 {
@@ -435,7 +432,7 @@ decltype(Treyarch::EffectZone::Material) IwctxReaders::SlotMaterials(const Mater
     auto Reader = Treyarch::MaterialReader(
         [L, Read, Zone, Off, Name](uint64_t A) {
             XMaterial_t M = Read(A);
-            const std::vector<uint8_t>& Image = Zone();
+            const ByteView Image = Zone();
             const auto In = [&Image](int64_t P, int64_t N) { return P >= 0 && (uint64_t)(P + N) <= Image.size(); };
             const int64_t O = In(Off(A), L.Size) ? Off(A) : -1;
             const int64_t Slots = O < 0 ? -1 : Off(At<uint64_t>(Image, O + L.Slots)), Images = O < 0 ? -1 : Off(At<uint64_t>(Image, O + L.Images));
@@ -588,7 +585,7 @@ void IwctxReaders::LoadXAnim(const std::unique_ptr<XAnim_t>& Anim, std::unique_p
         if (L.GameRules || K == 0) Rb[K] = (size_t)Sec(RandomBytes + (int)K);
     }
     size_t Pb = (size_t)Sec(DataBytes), Ps = (size_t)Sec(DataShorts), Pi = (size_t)Sec(DataInts), Px = (size_t)Sec(Indices);
-    const auto Get = [&](const std::vector<uint8_t>& Buf, size_t& P, auto Zero) {
+    const auto Get = [&](ByteView Buf, size_t& P, auto Zero) {
         decltype(Zero) V = Zero;
         if (P + sizeof(V) <= Buf.size()) std::memcpy(&V, Buf.data() + P, sizeof(V));
         P += sizeof(V);

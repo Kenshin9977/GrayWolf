@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <d3d11.h>
 #include <wrl/client.h>
 
@@ -38,7 +40,7 @@ bool PreparePreviewImage(const std::string& Path, PreviewTexUse Use, float Cutof
 // Whether a colour map's alpha masks anything (what Auto alpha means, see OutAlphaUsed above),
 // judged on at most 256x256 texels: a block-compressed image on a grid of its blocks, never
 // decoded whole. Bytes are the file's (Ext ".dds", ".png", ".tga"...). False when it does not decode.
-bool ColorMapAlphaUsed(const std::vector<uint8_t>& Bytes, const std::string& Ext, bool& Used);
+bool ColorMapAlphaUsed(ByteView Bytes, const std::string& Ext, bool& Used);
 bool ColorMapAlphaUsed(const std::string& Path, bool& Used);
 
 // Applies a coverage cutoff to an already prepared colour map (its alpha decided the cutout).
@@ -50,7 +52,7 @@ Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> CreatePreviewSRV(ID3D11Device* 
                                                                    int MaxSize = 0);
 
 // A straight RGBA8 image (the .glb previews) with mips, for CreatePreviewSRV.
-PreviewImage PreviewImageFromRGBA(int W, int H, const std::vector<uint8_t>& Rgba);
+PreviewImage PreviewImageFromRGBA(int W, int H, ByteView Rgba);
 
 // The top level as straight RGBA8, for the software rasterizer.
 bool PreviewImageToRGBA8(const PreviewImage& Img, int& W, int& H, std::vector<uint8_t>& Rgba);

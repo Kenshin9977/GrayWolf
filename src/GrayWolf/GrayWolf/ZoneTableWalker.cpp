@@ -1,3 +1,4 @@
+#include "ByteView.h"
 #define NOMINMAX
 #include "ZoneTableWalker.h"
 #include "ZoneFormat.h"
@@ -12,7 +13,9 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -385,11 +388,32 @@ namespace
     constexpr int kMaxDepth = 1024;
     constexpr unsigned kWalkStack = 256u << 20;
 
+    // a read a growing block holds: its offset there, where it is in the zone, its size
+    struct PlacedRead
+    {
+        int64_t Off = 0, Pos = 0, Size = 0;
+    };
+
+    // What a walk learns that a later asset's walk reads: per growing block its placed reads (by
+    // offset), each followed pointer field -> where its data went, and the rewind table's keys. A
+    // full walk keeps its own; partial walks share one, and Fetch walks what it lacks: the asset
+    // owning the field at At (At >= 0), or the one that placed Block's offset Off; true when it
+    // walked something, the lookup then tried again.
+    struct Knowledge
+    {
+        std::unordered_map<int, std::vector<PlacedRead>> Placed;
+        std::unordered_map<int64_t, int64_t> FieldLinks;
+        std::unordered_map<uint64_t, int64_t> RewindKeys;
+        // the keys a partial walk is given (PartialWalk::UseKeys), under the ones it files itself
+        const std::unordered_map<uint64_t, int64_t>* GivenKeys = nullptr;
+        std::function<bool(int64_t At, int Block, int64_t Off)> Fetch;
+    };
+
     class Walker
     {
     public:
         // short-lived, one per zone, never copied: it holds references to the zone and tables
-        Walker(const std::vector<uint8_t>& B, const Tables& T, const StreamRules& R)
+        Walker(ByteView B, const Tables& T, const StreamRules& R)
             : Buf(B), Tabs(T), Marker(R.Marker), Resident(R.Resident), SlotMarker(R.SlotMarker), Other(R.Other),
               MaxNibble(R.BackrefMaxNibble),
               Iw6Refs(R.Iw6Refs), BothMarkerAssets(R.BothMarkerAssets), Ptr(R.PointerSize == 4 ? 4 : 8), Shift(R.BackrefShift) {}
@@ -399,7 +423,7 @@ namespace
         Walker& operator=(Walker&&) = delete;
         ~Walker() = default;
 
-        const std::vector<uint8_t>& Buf;
+        ByteView Buf;
         const Tables& Tabs;
         const uint64_t Marker;
         const uint64_t Resident;
@@ -466,10 +490,11 @@ namespace
         std::string WhereTable = "-";
         int WhereIdx = -1;
         std::unordered_map<int, int64_t> Cursor;
-        // with Layout, for asset@: per growing block its reads (offset, read index), in placement
-        // order (the cursor only grows), and each followed pointer field -> where its data went
-        std::unordered_map<int, std::vector<std::pair<int64_t, size_t>>> Placed;
-        std::unordered_map<int64_t, int64_t> FieldLinks;
+        // per block where its last placed read (or pointer-reserved slot) ended (ResumePoint::Starts)
+        std::unordered_map<int, int64_t> LastEnd;
+        // with Layout, for asset@: what the walk learns (Knowledge), its own or a partial walks'
+        Knowledge Own;
+        Knowledge* K = &Own;
         // with Rules->ListRefs: the asset list, in its block (offset, length) and in the zone
         int ListBlock = -1;
         int64_t ListOff = 0, ListLen = 0, ListZone = 0;
@@ -479,32 +504,51 @@ namespace
         // pointer field the game placed at that block and offset, followed in turn.
         int64_t AssetAt(int64_t At, int Depth) const
         {
-            auto L = FieldLinks.find(At);
-            if (L != FieldLinks.end()) return L->second;
-            const uint64_t V = Pointer(At);
-            int B = -1;
-            int64_t Off = -1;
-            if (Iw6Refs && (V >> 36) == 0xFDFDFDFull)
+            // a partial walk asks for what it has not walked yet, once per lookup
+            for (bool Fetched = false;; Fetched = true)
             {
-                B = (int)((V >> 32) & 0xF);
-                Off = (int64_t)(V & 0xFFFFFFFFull) - 1;
+                auto L = K->FieldLinks.find(At);
+                if (L != K->FieldLinks.end()) return L->second;
+                const uint64_t V = Pointer(At);
+                int B = -1;
+                int64_t Off = -1;
+                if (Iw6Refs && (V >> 36) == 0xFDFDFDFull)
+                {
+                    B = (int)((V >> 32) & 0xF);
+                    Off = (int64_t)(V & 0xFFFFFFFFull) - 1;
+                }
+                else if (!Iw6Refs && V != 0 && !AssetMarker(V))
+                {
+                    if (!Rules->DecodeRef(V, B, Off)) B = -1;
+                }
+                if (B < 0 || !Layout || Depth > 8)
+                {
+                    // a followed pointer of an asset not walked yet: its field's owner
+                    if (!Fetched && Layout && Depth <= 8 && K->Fetch && K->Fetch(At, -1, -1)) continue;
+                    throw WalkError("asset@" + Hex(At) + ": not a back reference the layout resolves");
+                }
+                if (B == ListBlock && Off >= ListOff && Off < ListOff + ListLen)
+                    return AssetAt(ListZone + (Off - ListOff), Depth + 1);
+                const char* Why = nullptr;
+                const PlacedRead* P = nullptr;
+                auto It = K->Placed.find(B);
+                if (It == K->Placed.end()) Why = ": nothing placed in its block";
+                else
+                {
+                    const auto& V2 = It->second;
+                    auto U = std::upper_bound(V2.begin(), V2.end(), Off, [](int64_t O, const PlacedRead& X) { return O < X.Off; });
+                    if (U == V2.begin()) Why = ": before the first read of its block";
+                    else if (Off - (U - 1)->Off >= (U - 1)->Size) Why = ": in no read";
+                    else P = &*(U - 1);
+                }
+                if (P == nullptr)
+                {
+                    // placed by an asset not walked yet
+                    if (!Fetched && K->Fetch && K->Fetch(-1, B, Off)) continue;
+                    throw WalkError("asset@" + Hex(At) + Why);
+                }
+                return AssetAt(P->Pos + (Off - P->Off), Depth + 1);
             }
-            else if (!Iw6Refs && V != 0 && !AssetMarker(V))
-            {
-                if (!Rules->DecodeRef(V, B, Off)) B = -1;
-            }
-            if (B < 0 || !Layout || Depth > 8) throw WalkError("asset@" + Hex(At) + ": not a back reference the layout resolves");
-            if (B == ListBlock && Off >= ListOff && Off < ListOff + ListLen)
-                return AssetAt(ListZone + (Off - ListOff), Depth + 1);
-            auto It = Placed.find(B);
-            if (It == Placed.end()) throw WalkError("asset@" + Hex(At) + ": nothing placed in its block");
-            const auto& V2 = It->second;
-            auto P = std::upper_bound(V2.begin(), V2.end(), std::make_pair(Off, SIZE_MAX));
-            if (P == V2.begin()) throw WalkError("asset@" + Hex(At) + ": before the first read of its block");
-            --P;
-            const int64_t N = Out->Reads[P->second];
-            if (Off - P->first >= (N < 0 ? -N : N)) throw WalkError("asset@" + Hex(At) + ": in no read");
-            return AssetAt(Out->ReadPos[P->second] + (Off - P->first), Depth + 1);
         }
 
         bool Growing(int B) const
@@ -514,7 +558,7 @@ namespace
             return false;
         }
 
-        void Place(const std::string& Key, int64_t Size)
+        void Place(const std::string& Key, int64_t Size, int64_t At)
         {
             int B = -1, A = 1;
             if (Rules->Blocks)
@@ -526,8 +570,13 @@ namespace
             int64_t& C = Cursor[B];
             C = (C + A - 1) / A * A;
             Out->ReadMem.push_back((static_cast<int64_t>(B) << 40) | C);
-            Placed[B].emplace_back(C, Out->ReadMem.size() - 1);
+            // in offset order: a full walk only appends, partial walks come in any order
+            auto& V = K->Placed[B];
+            const PlacedRead P{ C, At, Size < 0 ? -Size : Size };
+            if (V.empty() || V.back().Off <= C) V.push_back(P);
+            else V.insert(std::upper_bound(V.begin(), V.end(), C, [](int64_t O, const PlacedRead& X) { return O < X.Off; }), P);
             C += Size < 0 ? -Size : Size;
+            LastEnd[B] = C;
         }
 
         // stream.pointer_ifs: pointers as IF chains on their field. A taken
@@ -546,7 +595,6 @@ namespace
         // DB_RewindPrepare decides, 4 of an asset pointer. The rewind table's keys (a loaded
         // pointer's low 60 bits) -> where its data is, and the asset pointers named by hash (field,
         // the asset's 63-bit hash), resolved against every instance's hash at +0 once the walk ends
-        std::unordered_map<uint64_t, int64_t> RewindKeys;
         std::vector<std::tuple<int64_t, uint64_t, int>> HashRefs;   // field, hash, the type's owner id (-1: any)
 
         // stream.keyed_refs: the inline arm, as the transcriber writes it or by hand, or an asset
@@ -660,19 +708,24 @@ namespace
                 {
                     const int64_t Target = Pos + (((Head >> 63) & 1) ? 8 : 0);
                     Out->Links.emplace_back(At, Target);
-                    FieldLinks[At] = Target;
+                    K->FieldLinks[At] = Target;
                     if (!((Head >> 61) & 1))
                     {
-                        RewindKeys[Head & KeyMask60] = Target;
+                        K->RewindKeys[Head & KeyMask60] = Target;
                         Out->Keys.emplace_back(Head & KeyMask60, Target);   // for the zones loaded after it
                     }
                     return;
                 }
-                const auto Found = RewindKeys.find(Head & KeyMask60);
-                if (Found != RewindKeys.end())
+                int64_t Filed = 0;
+                bool Known = false;
+                if (const auto Found = K->RewindKeys.find(Head & KeyMask60); Found != K->RewindKeys.end())
+                    Filed = Found->second, Known = true;
+                else if (K->GivenKeys != nullptr)
+                    if (const auto Given = K->GivenKeys->find(Head & KeyMask60); Given != K->GivenKeys->end()) Filed = Given->second, Known = true;
+                if (Known)
                 {
-                    Out->Links.emplace_back(At, Found->second);
-                    FieldLinks[At] = Found->second;
+                    Out->Links.emplace_back(At, Filed);
+                    K->FieldLinks[At] = Filed;
                 }
                 else
                 {
@@ -690,7 +743,7 @@ namespace
                 if ((Head & Low) == Low)
                 {
                     Out->Links.emplace_back(At, Pos);
-                    FieldLinks[At] = Pos;
+                    K->FieldLinks[At] = Pos;
                 }
                 else if ((Head & Low) != 0x3FFFFFFFFFFFFFFFull)
                     HashRefs.emplace_back(At, Head & Low, T.AssetType ? (int)OwnerId(*T.AssetType) : -1);
@@ -698,11 +751,11 @@ namespace
             }
             if (T.Kind == 1)
             {
-                if (Head == SlotMarker && Bit == 0) NoteResident();
+                if (Head == SlotMarker && Bit == 0) NoteResident(Pos);
                 if (Layout)
                 {
                     Out->Links.emplace_back(At, Pos);
-                    FieldLinks[At] = Pos;
+                    K->FieldLinks[At] = Pos;
                     // stream.keyed_refs: the data filed under its key (ResolveStreamPositionEx)
                     if (Bit > 0 && ((Head >> Bit) & 1) != 0 && ((Head >> Rules->NoKeyBit) & 1) == 0)
                         Out->Keys.emplace_back(Head & Rules->KeyMask, Pos);
@@ -729,11 +782,16 @@ namespace
             }
         }
 
-        void NoteResident()
+        // a resident slot reserved for the data at DataPos: where it is in the resident block. A
+        // pointer's slot (not the zone's own asset's, ByList) counts in LastEnd as ResolveLinks has it
+        void NoteResident(int64_t DataPos, bool ByList = false)
         {
             if (!Layout) return;
             int64_t& C = Cursor[Rules->ResidentBlock];
-            C = (C + Rules->ResidentAlign - 1) / Rules->ResidentAlign * Rules->ResidentAlign + Rules->ResidentSize;
+            C = (C + Rules->ResidentAlign - 1) / Rules->ResidentAlign * Rules->ResidentAlign;
+            Out->Slots.emplace_back(C, DataPos);
+            C += Rules->ResidentSize;
+            if (!ByList) LastEnd[Rules->ResidentBlock] = C;
         }
 
         void Record(I128 N, int64_t At, const std::string* SelfOf = nullptr)
@@ -760,7 +818,7 @@ namespace
             {
                 Out->ReadPos.push_back(At);
                 Place(SelfOf ? WhereTable + "|" + std::to_string(WhereIdx) + "|" + *SelfOf
-                             : WhereTable + "|" + std::to_string(WhereIdx), Clamp64(N));
+                             : WhereTable + "|" + std::to_string(WhereIdx), Clamp64(N), At);
             }
         }
 
@@ -1168,11 +1226,11 @@ namespace
                     }
                     if (AssetMarker(Slot))
                     {
-                        if (Slot == SlotMarker) NoteResident();
+                        if (Slot == SlotMarker) NoteResident(Pos);
                         if (Layout)
                         {
                             Out->Links.emplace_back(At + K * Ptr, Pos);
-                            FieldLinks[At + K * Ptr] = Pos;
+                            this->K->FieldLinks[At + K * Ptr] = Pos;
                         }
                         Pos = Asset(ArgAt(A, 2), Pos);
                     }
@@ -1201,11 +1259,11 @@ namespace
             // sees it as a pointer at all)
             if (Iw6Refs && Head != 0 && !AssetMarker(Head)) return Pos;
             if (!Here) return Pos;
-            if (Head == SlotMarker) NoteResident();
+            if (Head == SlotMarker) NoteResident(Pos);
             if (Layout)
             {
                 Out->Links.emplace_back(At, Pos);
-                FieldLinks[At] = Pos;
+                K->FieldLinks[At] = Pos;
             }
 
             if (A.Bare == "STR")
@@ -1400,16 +1458,16 @@ Tables* LoadTables(const std::vector<std::string>& Paths)
 
 void FreeTables(Tables* T) { delete T; }
 
-static ZoneResult WalkZoneOnThisStack(const std::vector<uint8_t>& Buf, const Tables* T,
+static ZoneResult WalkZoneOnThisStack(ByteView Buf, const Tables* T,
                                       const std::vector<std::string>& TypeNames,
                                       const StreamRules& Rules, bool Layout);
 
-ZoneResult WalkZone(const std::vector<uint8_t>& Buf, const Tables* T,
+ZoneResult WalkZone(ByteView Buf, const Tables* T,
                     const std::vector<std::string>& TypeNames, const StreamRules& Rules, bool Layout)
 {
     struct Job
     {
-        const std::vector<uint8_t>* Buf = nullptr;
+        const ByteView* Buf = nullptr;
         const Tables* T = nullptr;
         const std::vector<std::string>* TypeNames = nullptr;
         const StreamRules* Rules = nullptr;
@@ -1429,87 +1487,85 @@ ZoneResult WalkZone(const std::vector<uint8_t>& Buf, const Tables* T,
     return std::move(J.R);
 }
 
-static ZoneResult WalkZoneOnThisStack(const std::vector<uint8_t>& Buf, const Tables* T,
-                                      const std::vector<std::string>& TypeNames,
-                                      const StreamRules& Rules, bool Layout)
+namespace
 {
-    ZoneResult R;
-    if (T == nullptr)
+    // The zone header, through the format's parser (a prefix read by table, IW7's XGlobals, goes
+    // through a walker of its own: its reads are not the assets', as walker.walk keeps them apart)
+    bool ReadZoneHead(ByteView Buf, const Tables& T, const StreamRules& Rules, ZoneHead& Head,
+                      std::string& Why)
     {
-        R.ParseFailed = true;
-        R.Why = "raised: no tables";
-        return R;
-    }
-    // asset@ resolves back references through the layout, so a profile that has one tracks it
-    if (Rules.Blocks && !Rules.Blocks->empty()) Layout = true;
-    const IZoneFormat* Format = FindZoneFormat(Rules.ZoneFormat);
-    if (Format == nullptr)
-    {
-        R.ParseFailed = true;
-        R.Why = "raised: no zone parser for format " + Rules.ZoneFormat;
-        return R;
-    }
-    ZoneHead Head;
-    try
-    {
-        // a prefix read by table (IW7's XGlobals) goes through a walker of its own: its reads
-        // are not the assets', as walker.walk keeps them apart
-        ZoneResult Scratch;
-        Walker Side(Buf, *T, Rules);
-        Side.Out = &Scratch;
-        Side.Rules = &Rules;
-        const PrefixWalk Walk = [&](const std::string& Table, int64_t At) -> int64_t
+        const IZoneFormat* Format = FindZoneFormat(Rules.ZoneFormat);
+        if (Format == nullptr)
         {
-            auto It = T->Index.find(Table);
-            if (It == T->Index.end()) throw std::runtime_error("no table " + Table + " for the zone prefix");
-            Side.Depth = 0;
-            Side.Bases.clear();
-            return Side.Run(It->second, Table, At, false, 0, false);
-        };
-        Head = Format->Read(Buf, Rules, Walk);
-    }
-    catch (const std::exception& E)
-    {
-        R.ParseFailed = true;
-        R.Why = std::string("raised: ") + E.what();
-        return R;
-    }
-    const std::vector<ZoneHead::Asset>& Assets = Head.Assets;
-    int64_t Pos = Head.BodyStart;
-    if (Layout)
-    {
-        for (const auto& A : Assets) R.AssetHeads.push_back(A.Head);
-        R.Start4 = Head.Start + Rules.StartOffset;
-    }
-    Walker W(Buf, *T, Rules);
-    W.Out = &R;
-    W.Layout = Layout;
-    W.Rules = &Rules;
-    if (Layout) W.Cursor[Rules.StartBlock] = R.Start4;
-    // the list is the 16 bytes per asset (8 on x86) before the body, and before the start
-    // block's cursor
-    const int64_t Entry = 2 * (int64_t)(Rules.PointerSize == 4 ? 4 : 8);
-    const bool ListRefs = Layout && Rules.ListRefs && !Assets.empty();
-    if (ListRefs)
-    {
-        W.ListBlock = Rules.StartBlock;
-        W.ListLen = Entry * (int64_t)Assets.size();
-        W.ListOff = R.Start4 - W.ListLen;
-        W.ListZone = Head.BodyStart - W.ListLen;
-    }
-    for (size_t Index = 0; Index < Assets.size(); Index++)
-    {
-        const ZoneHead::Asset& A = Assets[Index];
-        if (A.Head != Rules.Marker && A.Head != Rules.Resident) continue;
-        if (ListRefs) W.FieldLinks[W.ListZone + Entry * (int64_t)Index + Entry / 2] = Pos;
-        const std::string Name = A.Type >= 0 && A.Type < (int)TypeNames.size() ? TypeNames[(size_t)A.Type] : "";
-        auto It = T->Index.find(Name);
-        if (It == T->Index.end())
-        {
-            R.Why = "no table for " + Name;
-            return R;
+            Why = "raised: no zone parser for format " + Rules.ZoneFormat;
+            return false;
         }
-        if (A.Head == Rules.SlotMarker) W.NoteResident();
+        try
+        {
+            ZoneResult Scratch;
+            Walker Side(Buf, T, Rules);
+            Side.Out = &Scratch;
+            Side.Rules = &Rules;
+            const PrefixWalk Walk = [&](const std::string& Table, int64_t At) -> int64_t
+            {
+                auto It = T.Index.find(Table);
+                if (It == T.Index.end()) throw std::runtime_error("no table " + Table + " for the zone prefix");
+                Side.Depth = 0;
+                Side.Bases.clear();
+                return Side.Run(It->second, Table, At, false, 0, false);
+            };
+            Head = Format->Read(Buf, Rules, Walk);
+        }
+        catch (const std::exception& E)
+        {
+            Why = std::string("raised: ") + E.what();
+            return false;
+        }
+        return true;
+    }
+
+    // the asset list's entry: XAsset {type, header}, 16 bytes (8 on x86)
+    int64_t ListEntry(const StreamRules& Rules)
+    {
+        return 2 * (int64_t)(Rules.PointerSize == 4 ? 4 : 8);
+    }
+
+    // A walker set for the zone's assets: its result, the layout, the start block's cursor (R.Start4
+    // set), and with Rules.ListRefs where the asset list is
+    void SetUpWalker(Walker& W, ZoneResult& R, const ZoneHead& Head, const StreamRules& Rules, bool Layout)
+    {
+        W.Out = &R;
+        W.Layout = Layout;
+        W.Rules = &Rules;
+        if (Layout) W.Cursor[Rules.StartBlock] = W.LastEnd[Rules.StartBlock] = R.Start4;
+        // the list is the 16 bytes per asset (8 on x86) before the body, and before the start
+        // block's cursor
+        if (Layout && Rules.ListRefs && !Head.Assets.empty())
+        {
+            const int64_t Entry = ListEntry(Rules);
+            W.ListBlock = Rules.StartBlock;
+            W.ListLen = Entry * (int64_t)Head.Assets.size();
+            W.ListOff = R.Start4 - W.ListLen;
+            W.ListZone = Head.BodyStart - W.ListLen;
+        }
+    }
+
+    // The asset at list slot Index walked from Pos (moved past it): its instance and reads in W's
+    // result; false with Why when it does not walk
+    bool WalkListAsset(Walker& W, const Tables& T, const std::vector<std::string>& TypeNames, const StreamRules& Rules,
+                       const ZoneHead& Head, size_t Index, int64_t& Pos, std::string& Why)
+    {
+        const ZoneHead::Asset& A = Head.Assets[Index];
+        const int64_t Entry = ListEntry(Rules);
+        if (W.ListBlock >= 0) W.K->FieldLinks[W.ListZone + Entry * (int64_t)Index + Entry / 2] = Pos;
+        const std::string Name = A.Type >= 0 && A.Type < (int)TypeNames.size() ? TypeNames[(size_t)A.Type] : "";
+        auto It = T.Index.find(Name);
+        if (It == T.Index.end())
+        {
+            Why = "no table for " + Name;
+            return false;
+        }
+        if (A.Head == Rules.SlotMarker) W.NoteResident(Pos, true);
         W.WhereTable = "-";
         W.WhereIdx = -1;
         W.Stack.push_back(W.OwnerId(Name));
@@ -1523,19 +1579,85 @@ static ZoneResult WalkZoneOnThisStack(const std::vector<uint8_t>& Buf, const Tab
         catch (const std::exception& E)
         {
             while (!W.Open.empty()) W.CloseInstance(Pos);
-            R.Why = Name + ": " + std::string(E.what()).substr(0, 70);
-            return R;
+            W.Stack.clear();
+            Why = Name + ": " + std::string(E.what()).substr(0, 70);
+            return false;
         }
         W.CloseInstance(Pos);
         W.Stack.pop_back();
+        return true;
+    }
+
+    // Rules.RewindRefs: an asset pointer by hash names the instance of its type whose hash (+0) it
+    // is (names are hashed without their type: an xmodel and a material may share one). Find:
+    // (the type's owner id in R, -1 for any; the hash) -> the instance's position, -1 when none
+    void ResolveHashRefs(const Walker& W, ZoneResult& R, const std::function<int64_t(int, uint64_t)>& Find)
+    {
+        for (const auto& [Field, Hash, Type] : W.HashRefs)
+        {
+            const int64_t At = Find(Type, Hash);
+            if (At >= 0) R.Links.emplace_back(Field, At);
+            else
+            {
+                R.BackRefs.emplace_back(Field, Hash | 0x8000000000000000ull);
+                R.BackRefIsAsset.push_back(true);
+                if (Type >= 0) R.RefTypes[Field] = (uint16_t)Type;
+            }
+        }
+    }
+}
+
+static ZoneResult WalkZoneOnThisStack(ByteView Buf, const Tables* T,
+                                      const std::vector<std::string>& TypeNames,
+                                      const StreamRules& Rules, bool Layout)
+{
+    ZoneResult R;
+    if (T == nullptr)
+    {
+        R.ParseFailed = true;
+        R.Why = "raised: no tables";
+        return R;
+    }
+    // asset@ resolves back references through the layout, so a profile that has one tracks it
+    if (Rules.Blocks && !Rules.Blocks->empty()) Layout = true;
+    ZoneHead Head;
+    if (!ReadZoneHead(Buf, *T, Rules, Head, R.Why))
+    {
+        R.ParseFailed = true;
+        return R;
+    }
+    const std::vector<ZoneHead::Asset>& Assets = Head.Assets;
+    int64_t Pos = Head.BodyStart;
+    if (Layout)
+    {
+        for (const auto& A : Assets) R.AssetHeads.push_back(A.Head);
+        R.Start4 = Head.Start + Rules.StartOffset;
+    }
+    Walker W(Buf, *T, Rules);
+    SetUpWalker(W, R, Head, Rules, Layout);
+    for (size_t Index = 0; Index < Assets.size(); Index++)
+    {
+        const ZoneHead::Asset& A = Assets[Index];
+        if (A.Head != Rules.Marker && A.Head != Rules.Resident) continue;
+        // where a partial walk of this asset would start
+        if (Layout)
+        {
+            ZoneResult::ResumePoint P;
+            P.ListIndex = (uint32_t)Index;
+            P.Pos = Pos;
+            P.Cursors.assign(W.Cursor.begin(), W.Cursor.end());
+            std::sort(P.Cursors.begin(), P.Cursors.end());
+            P.Starts.assign(W.LastEnd.begin(), W.LastEnd.end());
+            std::sort(P.Starts.begin(), P.Starts.end());
+            R.Resume.push_back(std::move(P));
+        }
+        if (!WalkListAsset(W, *T, TypeNames, Rules, Head, Index, Pos, R.Why)) return R;
     }
     const int64_t Short = (int64_t)Buf.size() - Pos;
     R.Why = Short == 0 ? "walked to the end" : "stopped " + std::to_string(Short) + " bytes short";
     if (Layout) R.BlockEnds = W.Cursor;
     if (Layout && !W.HashRefs.empty())
     {
-        // Rules.RewindRefs: an asset pointer by hash names the instance of its type whose hash (+0)
-        // it is (names are hashed without their type: an xmodel and a material may share one)
         std::map<std::pair<int, uint64_t>, int64_t> ByHash;
         for (const auto& I : R.Instances)
             if (I.Pos >= 0 && I.Pos + 8 <= (int64_t)Buf.size())
@@ -1545,19 +1667,245 @@ static ZoneResult WalkZoneOnThisStack(const std::vector<uint8_t>& Buf, const Tab
                 ByHash.try_emplace({ (int)I.Owner, H & 0x7FFFFFFFFFFFFFFFull }, I.Pos);
                 ByHash.try_emplace({ -1, H & 0x7FFFFFFFFFFFFFFFull }, I.Pos);
             }
-        for (const auto& [Field, Hash, Type] : W.HashRefs)
-        {
+        ResolveHashRefs(W, R, [&](int Type, uint64_t Hash) -> int64_t {
             const auto It = ByHash.find({ Type, Hash });
-            if (It != ByHash.end()) R.Links.emplace_back(Field, It->second);
-            else
-            {
-                R.BackRefs.emplace_back(Field, Hash | 0x8000000000000000ull);
-                R.BackRefIsAsset.push_back(true);
-                if (Type >= 0) R.RefTypes[Field] = (uint16_t)Type;
-            }
-        }
+            return It == ByHash.end() ? -1 : It->second;
+        });
     }
     return R;
+}
+
+struct PartialWalk::State
+{
+    ByteView Buf;
+    const Tables* T;
+    std::vector<std::string> TypeNames;
+    StreamRules Rules;
+    std::vector<ZoneResult::ResumePoint> Points;
+    ZoneHead Head;
+    bool Ok = false;
+    std::string Why;
+    Knowledge K;
+    std::map<size_t, ZoneResult> Done;
+    std::vector<uint8_t> Walking;                       // per point: its walk is under way
+    std::vector<int64_t> PointPos;                      // per point, its position (stream order)
+    std::unordered_map<int, std::vector<int64_t>> CursorAt;   // per block, each point's cursor
+    std::vector<const std::map<std::pair<std::string, uint64_t>, int64_t>*> ByHash;   // AddAssetHashes', the first given first
+    std::unordered_map<uint64_t, int64_t> GivenKeys;   // AddKeys' (UseKeys: the caller's)
+    int64_t Start4 = 0;
+
+    State(ByteView B, const Tables* Tb, const std::vector<std::string>& Names, const StreamRules& R,
+          std::vector<ZoneResult::ResumePoint> P)
+        : Buf(B), T(Tb), TypeNames(Names), Rules(R), Points(std::move(P)) {}
+};
+
+PartialWalk::PartialWalk(ByteView Buf, const Tables* T, const std::vector<std::string>& TypeNames,
+                         const StreamRules& Rules, std::vector<ZoneResult::ResumePoint> Points)
+    : S(std::make_unique<State>(Buf, T, TypeNames, Rules, std::move(Points)))
+{
+    if (T == nullptr)
+    {
+        S->Why = "raised: no tables";
+        return;
+    }
+    if (!ReadZoneHead(Buf, *T, S->Rules, S->Head, S->Why)) return;
+    S->Start4 = S->Head.Start + S->Rules.StartOffset;
+    S->Ok = true;
+    S->Walking.assign(S->Points.size(), 0);
+    S->PointPos.reserve(S->Points.size());
+    // the blocks any point has a cursor in, then each point's cursor there (0 before it is set)
+    std::set<int> Blocks;
+    for (const auto& P : S->Points)
+        for (const auto& [B, C] : P.Cursors) Blocks.insert(B);
+    for (const int B : Blocks) S->CursorAt[B].reserve(S->Points.size());
+    for (const auto& P : S->Points)
+    {
+        S->PointPos.push_back(P.Pos);
+        for (const int B : Blocks)
+        {
+            int64_t C = 0;
+            for (const auto& [PB, PC] : P.Cursors)
+                if (PB == B) C = PC;
+            S->CursorAt[B].push_back(C);
+        }
+    }
+    // what a field of an asset not walked yet, or a placement, needs: the owner walked first
+    S->K.Fetch = [this](int64_t At, int Block, int64_t Off) -> bool {
+        const size_t Owner = At >= 0 ? OwnerOf(At) : PlacedBy(Block, Off);
+        if (Owner == SIZE_MAX || S->Done.count(Owner) || S->Walking[Owner]) return false;
+        return Walk(Owner) != nullptr;
+    };
+}
+
+PartialWalk::~PartialWalk() = default;
+
+bool PartialWalk::Ok() const { return S->Ok; }
+const std::string& PartialWalk::Why() const { return S->Why; }
+const std::map<size_t, ZoneResult>& PartialWalk::Walked() const { return S->Done; }
+size_t PartialWalk::Points() const { return S->Points.size(); }
+
+void PartialWalk::AddKeys(const std::vector<std::pair<uint64_t, int64_t>>& Keys)
+{
+    for (const auto& [Key, Pos] : Keys) S->GivenKeys.try_emplace(Key, Pos);
+    S->K.GivenKeys = &S->GivenKeys;
+}
+
+void PartialWalk::UseKeys(const std::unordered_map<uint64_t, int64_t>& Keyed)
+{
+    S->K.GivenKeys = &Keyed;
+}
+
+void PartialWalk::Forget()
+{
+    S->K.Placed.clear();
+    S->K.FieldLinks.clear();
+    S->K.RewindKeys.clear();
+    S->Done.clear();
+    std::fill(S->Walking.begin(), S->Walking.end(), 0);
+}
+
+void PartialWalk::AddAssetHashes(const std::map<std::pair<std::string, uint64_t>, int64_t>& ByHash)
+{
+    S->ByHash.push_back(&ByHash);
+}
+
+size_t PartialWalk::OwnerOf(int64_t Pos) const
+{
+    auto It = std::upper_bound(S->PointPos.begin(), S->PointPos.end(), Pos);
+    if (It == S->PointPos.begin()) return SIZE_MAX;
+    return (size_t)(It - S->PointPos.begin()) - 1;
+}
+
+size_t PartialWalk::PlacedBy(int Block, int64_t Off) const
+{
+    // the walk during which the block's cursor passed Off: the last point whose cursor there is at
+    // or before it (points that placed nothing in the block share the next one's cursor)
+    const auto It = S->CursorAt.find(Block);
+    if (It == S->CursorAt.end()) return SIZE_MAX;
+    const auto& C = It->second;
+    auto U = std::upper_bound(C.begin(), C.end(), Off);
+    if (U == C.begin()) return SIZE_MAX;
+    return (size_t)(U - C.begin()) - 1;
+}
+
+const ZoneResult* PartialWalk::Walk(size_t Index)
+{
+    if (!S->Ok || Index >= S->Points.size()) return nullptr;
+    if (const auto It = S->Done.find(Index); It != S->Done.end()) return &It->second;
+    if (S->Walking[Index]) return nullptr;
+    S->Walking[Index] = 1;
+    const ZoneResult::ResumePoint& P = S->Points[Index];
+    ZoneResult R;
+    R.Start4 = S->Start4;
+    Walker W(S->Buf, *S->T, S->Rules);
+    W.K = &S->K;
+    SetUpWalker(W, R, S->Head, S->Rules, true);
+    W.Cursor.clear();
+    for (const auto& [B, C] : P.Cursors) W.Cursor[B] = C;
+    W.LastEnd.clear();
+    for (const auto& [B, C] : P.Starts) W.LastEnd[B] = C;
+    int64_t Pos = P.Pos;
+    std::string Why;
+    const bool Walked = WalkListAsset(W, *S->T, S->TypeNames, S->Rules, S->Head, P.ListIndex, Pos, Why);
+    S->Walking[Index] = 0;
+    if (!Walked)
+    {
+        S->Why = Why;
+        return nullptr;
+    }
+    R.Why = "walked";
+    R.BlockEnds = W.Cursor;
+    if (!W.HashRefs.empty())
+        ResolveHashRefs(W, R, [&](int Type, uint64_t Hash) -> int64_t {
+            const std::string Name = Type >= 0 && Type < (int)R.OwnerNames.size() ? R.OwnerNames[(size_t)Type] : "";
+            const std::pair<std::string, uint64_t> Key{ Name, Hash };
+            for (const auto* Given : S->ByHash)
+                if (const auto It = Given->find(Key); It != Given->end()) return It->second;
+            return (int64_t)-1;
+        });
+    return &(S->Done[Index] = std::move(R));
+}
+
+const std::vector<ZoneResult::ResumePoint>& PartialWalk::ResumePoints() const { return S->Points; }
+
+std::set<std::string> PartialWalk::ListedTypes() const
+{
+    std::set<std::string> Out;
+    for (const auto& A : S->Head.Assets)
+        if (A.Type >= 0 && A.Type < (int)S->TypeNames.size()) Out.insert(S->TypeNames[(size_t)A.Type]);
+    return Out;
+}
+
+size_t PartialWalk::PointOfListIndex(uint32_t ListIndex) const
+{
+    auto It = std::lower_bound(S->Points.begin(), S->Points.end(), ListIndex,
+                               [](const ZoneResult::ResumePoint& P, uint32_t L) { return P.ListIndex < L; });
+    return It != S->Points.end() && It->ListIndex == ListIndex ? (size_t)(It - S->Points.begin()) : SIZE_MAX;
+}
+
+ZoneResult PartialWalk::Merged(const std::set<size_t>* Only) const
+{
+    ZoneResult M;
+    M.Why = "partial";
+    M.Start4 = S->Start4;
+    for (const auto& A : S->Head.Assets) M.AssetHeads.push_back(A.Head);
+    if (Only == nullptr) M.Resume = S->Points;
+    std::unordered_map<std::string, uint16_t> Ids;
+    const auto Id = [&](const std::string& Name) -> uint16_t {
+        auto It = Ids.find(Name);
+        if (It != Ids.end()) return It->second;
+        const uint16_t N = (uint16_t)M.OwnerNames.size();
+        M.OwnerNames.push_back(Name);
+        Ids.emplace(Name, N);
+        return N;
+    };
+    for (const auto& [Point, R] : S->Done)   // by point: stream order
+    {
+        if (Only != nullptr && !Only->count(Point)) continue;
+        const uint32_t ReadBase = (uint32_t)M.Reads.size();
+        const int32_t InstanceBase = (int32_t)M.Instances.size();
+        std::vector<uint16_t> Map(R.OwnerNames.size());
+        for (size_t K = 0; K < R.OwnerNames.size(); K++) Map[K] = Id(R.OwnerNames[K]);
+        M.Reads.insert(M.Reads.end(), R.Reads.begin(), R.Reads.end());
+        for (const uint16_t O : R.Owners) M.Owners.push_back(O < Map.size() ? Map[O] : O);
+        M.ReadPos.insert(M.ReadPos.end(), R.ReadPos.begin(), R.ReadPos.end());
+        M.ReadMem.insert(M.ReadMem.end(), R.ReadMem.begin(), R.ReadMem.end());
+        for (ZoneResult::Instance I : R.Instances)
+        {
+            I.Owner = I.Owner < Map.size() ? Map[I.Owner] : I.Owner;
+            if (I.Parent >= 0) I.Parent += InstanceBase;
+            I.FirstRead += ReadBase;
+            I.EndRead += ReadBase;
+            M.Instances.push_back(I);
+        }
+        M.Links.insert(M.Links.end(), R.Links.begin(), R.Links.end());
+        M.BackRefs.insert(M.BackRefs.end(), R.BackRefs.begin(), R.BackRefs.end());
+        M.BackRefIsAsset.insert(M.BackRefIsAsset.end(), R.BackRefIsAsset.begin(), R.BackRefIsAsset.end());
+        M.Keys.insert(M.Keys.end(), R.Keys.begin(), R.Keys.end());
+        for (const auto& [Field, Type] : R.RefTypes) M.RefTypes[Field] = Type < Map.size() ? Map[Type] : Type;
+        M.Slots.insert(M.Slots.end(), R.Slots.begin(), R.Slots.end());
+    }
+    return M;
+}
+
+void WalkOnLargeStack(const std::function<void()>& F)
+{
+    struct Job
+    {
+        const std::function<void()>* F;
+    } J{ &F };
+    auto Body = [](void* P) -> unsigned {
+        (*static_cast<Job*>(P)->F)();
+        return 0;
+    };
+    HANDLE H = reinterpret_cast<HANDLE>(_beginthreadex(nullptr, kWalkStack, Body, &J, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr));
+    if (H == nullptr)
+    {
+        F();
+        return;
+    }
+    WaitForSingleObject(H, INFINITE);
+    CloseHandle(H);
 }
 
 namespace

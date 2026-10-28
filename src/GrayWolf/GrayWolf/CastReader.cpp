@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "CastReader.h"
 #include "SeAnimReader.h"
@@ -32,7 +33,7 @@ namespace
     }
 
     template <typename T>
-    bool Take(const std::vector<uint8_t>& B, size_t& O, T& V)
+    bool Take(ByteView B, size_t& O, T& V)
     {
         if (O + sizeof(T) > B.size()) return false;
         std::memcpy(&V, B.data() + O, sizeof(T));
@@ -41,7 +42,7 @@ namespace
     }
 
     // Depth caps a malformed file's recursion
-    bool ParseNode(const std::vector<uint8_t>& B, size_t& O, Node& Out, int Depth)
+    bool ParseNode(ByteView B, size_t& O, Node& Out, int Depth)
     {
         uint32_t Size = 0, Props = 0, Children = 0;
         const size_t Start = O;
@@ -192,7 +193,7 @@ uint64_t Node::Integer(const std::string& Name, uint64_t Default) const
     return (P && P->Count > 0 && ElementSize(P->Type) > 0 && P->Floats() == 0) ? P->Integer(0) : Default;
 }
 
-bool Parse(const std::vector<uint8_t>& Bytes, std::vector<Node>& Roots)
+bool Parse(ByteView Bytes, std::vector<Node>& Roots)
 {
     size_t O = 0;
     uint32_t Head[4] = {};

@@ -21,12 +21,6 @@
 #include <fstream>
 #include <vector>
 
-namespace
-{
-    // bumped when what the kept tables file holds changes
-    constexpr char KeptMagic[8] = { 'G', 'H', 'X', 'P', 'A', 'K', '1', '\n' };
-}
-
 XPAKCache::XPAKCache()
 {
     Siren::Initialize(L"oo2core_6_win64.dll");
@@ -49,21 +43,14 @@ void XPAKCache::LoadPackageCache(const std::string& BasePath)
         return;
     }
 
-    // A CASC install's tables are kept on disk under a key of every package's name, size and
-    // content hash (CKey): reading them through CASC takes seconds. A game update changes the key:
-    // the tables are read again.
-    auto* Casc = dynamic_cast<CascFileSystem*>(FileSystem.get());
+    // A CASC install's tables are kept (CoDPackageCache::LoadKept): reading them through CASC takes
+    // seconds. A game update changes the key: the tables are read again.
+    const bool Casc = dynamic_cast<CascFileSystem*>(FileSystem.get()) != nullptr;
     std::string Kept, Key;
-    if (Casc != nullptr)
+    if (Casc)
     {
-        using ExportNaming::Fnv1a;
-        uint64_t H = Fnv1a(std::string(KeptMagic, sizeof(KeptMagic)));
-        Casc->EnumerateFilesWithKey("*.xpak", [&](const std::string& Name, const size_t Size, const std::string& CKey) {
-            H = Fnv1a(Name + '\0' + std::to_string(Size) + '\0' + CKey + '\n', H);
-        });
-        const std::string Where = ExportNaming::Lower(std::filesystem::absolute(BasePath).string());
-        Kept = (std::filesystem::temp_directory_path() / "greyhound_packages" / (ExportNaming::Hex16(Fnv1a(Where)) + ".xpk")).string();
-        Key = ExportNaming::Hex16(H);
+        Kept = KeptFile(BasePath, ".xpk");
+        Key = KeptKey("*.xpak", "xpak");
         if (LoadKept(Kept, Key))
         {
             this->SetLoadedState();
@@ -75,75 +62,9 @@ void XPAKCache::LoadPackageCache(const std::string& BasePath)
     {
         this->LoadPackage(name);
     });
-    if (Casc != nullptr) SaveKept(Kept, Key);
+    if (Casc) SaveKept(Kept, Key);
 
     this->SetLoadedState();
-}
-
-bool XPAKCache::LoadKept(const std::string& File, const std::string& Key)
-{
-    std::ifstream In(File, std::ios::binary);
-    char Magic[sizeof(KeptMagic)] = {};
-    std::string Have(Key.size(), '\0');
-    if (!In.read(Magic, sizeof(Magic)) || !std::equal(Magic, Magic + sizeof(Magic), KeptMagic) ||
-        !In.read(Have.data(), (std::streamsize)Have.size()) || Have != Key)
-        return false;
-    uint32_t Paths = 0;
-    In.read(reinterpret_cast<char*>(&Paths), sizeof(Paths));
-    std::vector<std::string> Names(In ? Paths : 0);
-    for (auto& N : Names)
-    {
-        uint32_t Length = 0;
-        In.read(reinterpret_cast<char*>(&Length), sizeof(Length));
-        N.resize(In ? Length : 0);
-        In.read(N.data(), (std::streamsize)N.size());
-    }
-    uint64_t Count = 0;
-    In.read(reinterpret_cast<char*>(&Count), sizeof(Count));
-    if (!In) return false;
-#pragma pack(push, 1)
-    struct Row
-    {
-        uint64_t Key;
-        PackageCacheObject Object;
-    };
-#pragma pack(pop)
-    std::vector<Row> Rows((size_t)Count);
-    if (!In.read(reinterpret_cast<char*>(Rows.data()), (std::streamsize)(Rows.size() * sizeof(Row)))) return false;
-    CacheObjects.reserve(Rows.size());
-    for (const Row& R : Rows) CacheObjects.emplace(R.Key, R.Object);
-    PackageFilePaths = std::move(Names);
-    return true;
-}
-
-void XPAKCache::SaveKept(const std::string& File, const std::string& Key) const
-{
-    std::error_code Ec;
-    std::filesystem::create_directories(std::filesystem::path(File).parent_path(), Ec);
-    const std::string Temp = File + "." + std::to_string(GetCurrentProcessId()) + ".tmp";
-    {
-        std::ofstream Out(Temp, std::ios::binary | std::ios::trunc);
-        Out.write(KeptMagic, sizeof(KeptMagic));
-        Out.write(Key.data(), (std::streamsize)Key.size());
-        const uint32_t Paths = (uint32_t)PackageFilePaths.size();
-        Out.write(reinterpret_cast<const char*>(&Paths), sizeof(Paths));
-        for (const auto& N : PackageFilePaths)
-        {
-            const uint32_t Length = (uint32_t)N.size();
-            Out.write(reinterpret_cast<const char*>(&Length), sizeof(Length));
-            Out.write(N.data(), (std::streamsize)N.size());
-        }
-        const uint64_t Count = CacheObjects.size();
-        Out.write(reinterpret_cast<const char*>(&Count), sizeof(Count));
-        for (const auto& [K, Object] : CacheObjects)
-        {
-            Out.write(reinterpret_cast<const char*>(&K), sizeof(K));
-            Out.write(reinterpret_cast<const char*>(&Object), sizeof(Object));
-        }
-        if (!Out) Ec = std::make_error_code(std::errc::io_error);
-    }
-    if (!Ec) std::filesystem::rename(Temp, File, Ec);
-    if (Ec) std::filesystem::remove(Temp, Ec);
 }
 
 void XPAKCache::LoadPackagesIn(const std::string& Dir)
@@ -213,11 +134,8 @@ bool XPAKCache::LoadPackage(const std::string& FilePath)
 
 std::unique_ptr<uint8_t[]> XPAKCache::ExtractPackageObject(uint64_t CacheID, int32_t Size, uint32_t& ResultSize)
 {
-    if (CacheObjects.find(CacheID) != CacheObjects.end())
+    if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
     {
-        // Uncompressed size = offset of data segment
-        const auto& CacheInfo = CacheObjects[CacheID];
-
         std::vector<uint8_t> payload;
         bool PaddedBlocks = false;
         {
@@ -333,7 +251,7 @@ bool XPAKCache::FindNamed(const std::string& Name, const std::string& Stem, Name
                     else if (Field.rfind("size", 0) == 0) Object.Parts++;
                 }
                 if (Object.Size != 0) Object.Parts++;
-                if (!ObjectName.empty() && CacheObjects.count(Key) != 0)
+                if (!ObjectName.empty() && Exists(Key))
                     It->second.emplace(ObjectName, Object);
             }
         }

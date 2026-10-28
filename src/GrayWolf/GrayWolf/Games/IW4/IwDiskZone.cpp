@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "DiskGameSizes.h"
 
 #include "Games/IW4/IwDiskZone.h"
 
@@ -177,20 +178,31 @@ namespace Iw64
         Slots = InlineStrings(Z, Start, Count, 8, Rules().Marker);
     }
 
-    void IwDiskZone::Defines(std::vector<DiskGame::AssetId>& Out) const
+    void IwDiskZone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
     {
-        ZonekitZone::Defines(Out);
+        ZonekitZone::DefinesAt(Out);
         std::set<std::string> Seen;
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "image")) continue;
             const std::string N = StringAt(At<uint64_t>(Image(), I.Pos + ImageName));
             if (!IsReference(DiskGame::Kind::Image, N, I.Pos) && Seen.insert(ExportNaming::Lower(N)).second)
-                Out.push_back({ DiskGame::Kind::Image, N });
+                Out.push_back({ { DiskGame::Kind::Image, N }, I.Pos });
         }
     }
 
-    IWDCache* IwDiskZone::Packages()
+    void IwDiskZone::Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const
+    {
+        // an image whose pixels are in the zone weighs its reads there (a GfxImageLoadDef's)
+        constexpr uint64_t RecordOnly = 0x100;
+        if (K != DiskGame::Kind::Image || W.Bytes > RecordOnly) return;
+        IWDCache* Iwd = Packages();
+        const std::string Name = StringAt(At<uint64_t>(Image(), Pos + ImageName));
+        PackageCacheObject O;
+        if (Iwd != nullptr && !Name.empty() && Iwd->Find(Iwd->HashPackageID(Name), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
+    }
+
+    IWDCache* IwDiskZone::Packages() const
     {
         const std::string Main = MainFolder(FastFilePath());
         if (Main.empty()) return nullptr;
@@ -515,7 +527,7 @@ namespace Iw64
 
     namespace
     {
-        bool WriteFile(const fs::path& Dir, const std::string& File, const std::vector<uint8_t>& Bytes)
+        bool WriteFile(const fs::path& Dir, const std::string& File, ByteView Bytes)
         {
             return ExportWriters::WriteBytes(Dir / fs::path(File).make_preferred(), Bytes.data(), Bytes.size());
         }

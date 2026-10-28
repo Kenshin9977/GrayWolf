@@ -101,8 +101,8 @@ bool IsSourceName(const std::string& Name)
     return Ext == ".gsc" || Ext == ".csc" || Ext == ".gsh" || Ext == ".csh";
 }
 
-std::vector<uint8_t> GscBin(uint32_t CompressedLen, uint32_t Len, const std::vector<uint8_t>& Stack,
-                            const std::vector<uint8_t>& Bytecode)
+std::vector<uint8_t> GscBin(uint32_t CompressedLen, uint32_t Len, ByteView Stack,
+                            ByteView Bytecode)
 {
     std::vector<uint8_t> Out = { 'G', 'S', 'C', 0 };
     for (uint32_t V : { CompressedLen, Len, (uint32_t)Bytecode.size() })
@@ -170,7 +170,7 @@ void Sink::Add(Script S)
     Queue.push_back({ Rel, Input, std::move(S.Bytes) });
 }
 
-void Sink::WriteBytecode(const std::string& Rel, const std::vector<uint8_t>& Bytes)
+void Sink::WriteBytecode(const std::string& Rel, ByteView Bytes)
 {
     auto& Kt = T.Kinds[DiskGame::Kind::Script];
     const std::string File = Stem(Rel) + ScriptExtension(Rel) + V.Suffix;

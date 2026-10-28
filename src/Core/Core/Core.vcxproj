@@ -105,6 +105,7 @@
     <ClInclude Include="HuskyMath.h" />
     <ClInclude Include="Image.h" />
     <ClInclude Include="MayaExport.h" />
+    <ClInclude Include="MappedFile.h" />
     <ClInclude Include="MemoryReader.h" />
     <ClInclude Include="MemoryWriter.h" />
     <ClInclude Include="OBJExport.h" />

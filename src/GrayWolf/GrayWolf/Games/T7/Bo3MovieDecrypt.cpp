@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "Bo3MovieDecrypt.h"
 
@@ -62,7 +63,7 @@ namespace
     }
 
     // EBML/Matroska structural check (magic bytes + DocType), not a byte-count heuristic.
-    bool LooksLikeValidMkv(const std::vector<uint8_t>& Data)
+    bool LooksLikeValidMkv(ByteView Data)
     {
         static const uint8_t EbmlMagic[4] = { 0x1A, 0x45, 0xDF, 0xA3 };
         if (Data.size() < 256 || std::memcmp(Data.data(), EbmlMagic, 4) != 0)

@@ -51,7 +51,7 @@ int RunBo4ZoneDiag(const CliOptions& Options, const std::string& Input)
     for (const auto& Path : Zones)
     {
         const std::string Stem = fs::path(Path).stem().string();
-        std::vector<uint8_t> Zone;
+        ZoneBytes Zone;
         Bo4DiskExport::ZoneAssets A;
         if (!Bo4DiskExport::LoadZone(Path, Zone, Error) || !Bo4DiskExport::ReadZone(Zone, Profile, A, Error))
         {

@@ -280,9 +280,11 @@ bool IDiskGame::Zones(const std::string& Input, const ExportOptions&, std::vecto
 bool IDiskGame::ListZones(const std::string& Install, const ExportOptions&, std::vector<std::string>& Names, std::string& Error) const
 {
     std::error_code Ec;
+    // (the iterator's paths begin with Install: relative to it as written, no file system call
+    // per zone, which fs::relative's canonical paths make: seconds over 14 000 zones)
     for (const auto& E : fs::recursive_directory_iterator(Install, fs::directory_options::skip_permission_denied, Ec))
         if (IsZoneFile(E))
-            Names.push_back(fs::relative(E.path(), Install, Ec).string());
+            Names.push_back(E.path().lexically_relative(Install).string());
     std::sort(Names.begin(), Names.end());
     // an Xbox app game's DLC, each its own package beside the game's: its zones as
     // "<package name>\<path in it>" (ResolveZones maps them back)
@@ -291,7 +293,7 @@ bool IDiskGame::ListZones(const std::string& Install, const ExportOptions&, std:
         const size_t First = Names.size();
         for (const auto& E : fs::recursive_directory_iterator(D.Root, fs::directory_options::skip_permission_denied, Ec))
             if (IsZoneFile(E))
-                Names.push_back((fs::path(D.Name) / fs::relative(E.path(), D.Root, Ec)).string());
+                Names.push_back((fs::path(D.Name) / E.path().lexically_relative(D.Root)).string());
         std::sort(Names.begin() + (std::ptrdiff_t)First, Names.end());
     }
     if (Names.empty()) Error = "no zone in " + Install;
@@ -606,7 +608,13 @@ namespace
                         {
                             Mon.Where(From, "dependencies: opening");
                             Start = std::chrono::steady_clock::now();
-                            Zone = Game.Open(Paths.front(), Options, Error);
+                            {
+                                // only the dependencies taken from it, where the zone can
+                                auto Asked = std::make_shared<Selection>();
+                                for (const auto& A : Take) Asked->insert(A);
+                                const PartialScope Partial(std::move(Asked));
+                                Zone = Game.Open(Paths.front(), Options, Error);
+                            }
                             const double OpenS = Seconds(Start);
                             Mon.AddTime("deps_open", OpenS);
                             if (Zone) Mon.Log("  " + From + ": resolved in " + Ms(ResolveS) + ", " + Opened(*Zone, OpenS, Mon, "deps_open_"));
@@ -642,10 +650,16 @@ namespace
                     Mon.AddKind(std::string("deps ") + KindName(K), S);
                     Mon.Log("  " + From + " " + KindName(K) + ": " + S.Describe());
                 }
-                // kept while memory allows twice its size: the next round may ask it again
-                if (MemoryBudget::Available() >= 2 * Zone->Footprint() && Zone->Park()) Parked[Z] = std::move(Zone);
+                // kept while memory allows twice its size: the next round may ask it again (a partial
+                // open is not: what it is asked next is what it did not walk, opened afresh)
+                const bool AskAgain = Zone->OpenedPartially();
+                if (!AskAgain && MemoryBudget::Available() >= 2 * Zone->Footprint() && Zone->Park()) Parked[Z] = std::move(Zone);
                 Zone.reset();
-                for (const auto& A : L.Settle()) Next[A].insert(From);
+                for (const auto& A : L.Settle())
+                {
+                    auto& Not = Next[A];
+                    if (!AskAgain) Not.insert(From);
+                }
                 for (const auto& A : Take)
                     if (!L.Exported.count(A)) Elsewhere(A, "not exported from " + From);
             }
@@ -908,6 +922,20 @@ namespace
     }
 }
 
+namespace
+{
+    thread_local std::shared_ptr<const Selection> PartialWanted;
+}
+
+PartialScope::PartialScope(std::shared_ptr<const Selection> Only) : Previous(PartialWanted)
+{
+    PartialWanted = Only && !Only->empty() && Only->size() <= PartialAtMost ? std::move(Only) : nullptr;
+}
+
+PartialScope::~PartialScope() { PartialWanted = Previous; }
+
+const Selection* PartialScope::Wanted() { return PartialWanted.get(); }
+
 Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::vector<std::string>& Zones,
               const Context& C, const ProgressFn& OnProgress, const std::atomic<bool>* Cancel)
 {
@@ -996,7 +1024,12 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         Mon.Where(P.ZoneName, "opening");
         std::string Error;
         const auto Start = std::chrono::steady_clock::now();
-        auto Zone = Game.Open(Path, Options, Error);
+        std::unique_ptr<IDiskZone> Zone;
+        {
+            // a run asking for a few assets walks only them where the zone can (its resume index)
+            const PartialScope Partial(C.Only);
+            Zone = Game.Open(Path, Options, Error);
+        }
         const double OpenS = Seconds(Start);
         Mon.AddTime("open", OpenS);
         if (!Zone)
@@ -1013,6 +1046,9 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         for (Kind K : AllKinds())
         {
             if (!C.Kinds.count(K) || !Declared.count(K) || Cancelled()) continue;
+            // a run asking for a few assets: only the kinds it asks (as the dependencies' rounds do);
+            // a map's or a sound bank's reader would write its whole kind
+            if (C.Only && std::none_of(C.Only->begin(), C.Only->end(), [K](const AssetId& A) { return A.K == K; })) continue;
             Notify(K);
             T.Kinds[K];
             Mon.Where(P.ZoneName, KindName(K));
@@ -1032,9 +1068,15 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         Zone->Measures(T);   // after the exports, which measure too
         if (OwnAnims && !T.Cancelled) NoteAnimZone(Game, *Zone, Path, L.Met, L.Asked, AnimZones);
         const auto Closing = std::chrono::steady_clock::now();
+        // a partial open's needs may be its own assets it did not walk: it may be asked them
+        const bool AskAgain = Zone->OpenedPartially();
         Zone.reset();        // one zone open at a time
         Mon.AddTime("close", Seconds(Closing));
-        for (const auto& A : L.Settle()) Pending[A].insert(Stem(Path));
+        for (const auto& A : L.Settle())
+        {
+            auto& Not = Pending[A];
+            if (!AskAgain) Not.insert(Stem(Path));
+        }
     }
     // a kind no zone could export is reported as unsupported, not as zero
     for (Kind K : T.Unsupported)

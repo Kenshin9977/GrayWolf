@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <cstdint>
 #include <map>
 #include <string>
@@ -49,7 +51,7 @@ namespace CastFile
     };
 
     // The file's root nodes; false on a bad magic or anything past the end of Bytes
-    bool Parse(const std::vector<uint8_t>& Bytes, std::vector<Node>& Roots);
+    bool Parse(ByteView Bytes, std::vector<Node>& Roots);
 
     enum class Kind { None, Model, Animation };
     // What a file holds (its first Model or Animation node), read from the node headers only

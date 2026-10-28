@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ZoneMemory.h"
+
+#include "ByteView.h"
+
 // Bo4DiskExport - BO4 assets straight from zone files, no game running: the zone is walked with
 // the zonekit tables (ZoneTableWalker, profile bo4), and each asset is read at the place the walk
 // found it.
@@ -53,7 +57,7 @@ namespace Bo4DiskExport
 
     // The zone: a decompressed zone (.bin) or a fast file (.ff, decompressed here, with the
     // update patch of the same name applied when an .fd sits next to it - the zone the game loads).
-    bool LoadZone(const std::string& Path, std::vector<uint8_t>& Zone, std::string& Error);
+    bool LoadZone(const std::string& Path, ZoneBytes& Zone, std::string& Error);
 
     // The 1080_ and 4k_ zones (also behind a locale prefix: arasafe_4k_core_ui) hold the same UI
     // images, the 4K ones at twice the width and height. UiRes "4k" or "1080" keeps that set only,
@@ -67,15 +71,15 @@ namespace Bo4DiskExport
                const std::string& UiRes, std::vector<std::string>& Out, size_t& Skipped, std::string& Error);
 
     // Walks the zone with the profile's tables and lists what it holds.
-    bool ReadZone(const std::vector<uint8_t>& Zone, const std::string& Profile, ZoneAssets& Out,
+    bool ReadZone(ByteView Zone, const std::string& Profile, ZoneAssets& Out,
                   std::string& Error);
     // What an existing layout walk holds (ReadZone without the walk): assets, images, models...
-    void DescribeZone(const std::vector<uint8_t>& Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Out);
+    void DescribeZone(ByteView Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Out);
 
     // BO4's live readers on a zone served as memory: its string table and the disk image handler.
     // ServeZone points them at a zone (per thread) until EndServe; Assets must outlive the serving.
     VirtualGameSession::Handlers LiveHandlers();
-    void ServeZone(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets);
+    void ServeZone(ByteView Zone, const ZoneAssets& Assets);
     void EndServe();
     // An asset's name from BO4's name index, or <prefix>_<hash>.
     std::string LiveName(uint64_t Hash, const char* Prefix);
@@ -114,7 +118,7 @@ namespace Bo4DiskExport
     std::vector<AssetRef> AssetRefs(const ZoneAssets& Assets);
 
     struct MaterialImage { uint64_t Material = 0; uint32_t Slot = 0, Semantic = 0; uint64_t Image = 0; };
-    std::vector<MaterialImage> MaterialImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets);
+    std::vector<MaterialImage> MaterialImages(ByteView Zone, const ZoneAssets& Assets);
 
     // A zone's materials: name hash -> its images (image name hash, semantic hash) in slot order,
     // its technique set's name hash and its constant blob (what the material adapter reads).
@@ -132,14 +136,14 @@ namespace Bo4DiskExport
                                                                      const std::string& FfCache, const std::string& BookDir);
 
     // The zone's string table, the encrypted entries decrypted as the game's interning does.
-    const std::vector<std::string>& ZoneStringTable(const std::vector<uint8_t>& Zone);
+    const std::vector<std::string>& ZoneStringTable(ByteView Zone);
     // The zone string at Start, up to its NUL (End: the NUL's offset): the game's encrypted form
     // ([10xxxxxx cipher id][length][ciphertext]) decrypted as its interning does, else the bytes.
-    std::string ZoneString(const std::vector<uint8_t>& Zone, size_t Start, size_t& End);
+    std::string ZoneString(ByteView Zone, size_t Start, size_t& End);
 
     // Writes every image Wants, in the export format: in-zone ones from the zone, streamed ones
     // from Packages when given. A wanted name-only header is counted and given to OnReference.
-    ExportStats ExportImages(const std::vector<uint8_t>& Zone, const ZoneAssets& Assets,
+    ExportStats ExportImages(ByteView Zone, const ZoneAssets& Assets,
                              const std::string& OutDir, const NameTest& Wants,
                              CoDPackageCache* Packages = nullptr, const StepFn& Step = nullptr,
                              const std::function<void(const std::string&)>& OnReference = nullptr);

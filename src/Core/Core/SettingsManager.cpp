@@ -12,11 +12,19 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <mutex>
 #include <thread>
 
 std::unordered_map<std::string, std::string> SettingsManager::SettingsCache;
 std::unordered_map<std::string, std::string> SettingsManager::RunOverrides;
 std::string SettingsManager::SettingsFileName = "";
+
+namespace
+{
+    // the settings are read from the export's threads while the GUI's sets them (recursive: a
+    // setting set saves the file)
+    std::recursive_mutex SettingsLock;
+}
 
 void SettingsManager::LoadSettings(const std::string& SettingsName, const std::map<std::string, std::string>& Defaults)
 {
@@ -120,6 +128,7 @@ void SettingsManager::LoadSettings(const std::string& SettingsName, const std::s
 
 void SettingsManager::SaveSettings()
 {
+    std::lock_guard<std::recursive_mutex> G(SettingsLock);
     if (SettingsFileName.empty())
     {
         return;
@@ -145,6 +154,7 @@ void SettingsManager::SaveSettings()
 
 std::string SettingsManager::GetSetting(const std::string& Key, const std::string& Default)
 {
+    std::lock_guard<std::recursive_mutex> G(SettingsLock);
     if (const auto Run = RunOverrides.find(Key); Run != RunOverrides.end())
         return Run->second;
     if (SettingsCache.find(Key) != SettingsCache.end())
@@ -157,6 +167,7 @@ std::string SettingsManager::GetSetting(const std::string& Key, const std::strin
 
 void SettingsManager::SetSetting(const std::string& Key, const std::string& Value)
 {
+    std::lock_guard<std::recursive_mutex> G(SettingsLock);
     RunOverrides.erase(Key);
     auto NewValue = UnModifyValue(Key, Value);
 
@@ -174,7 +185,14 @@ void SettingsManager::SetSetting(const std::string& Key, const std::string& Valu
 
 void SettingsManager::SetRunSetting(const std::string& Key, const std::string& Value)
 {
+    std::lock_guard<std::recursive_mutex> G(SettingsLock);
     RunOverrides[Key] = Value;
+}
+
+void SettingsManager::ClearRunSetting(const std::string& Key)
+{
+    std::lock_guard<std::recursive_mutex> G(SettingsLock);
+    RunOverrides.erase(Key);
 }
 
 std::string SettingsManager::ModifyValue(const std::string& Key, const std::string& Value)

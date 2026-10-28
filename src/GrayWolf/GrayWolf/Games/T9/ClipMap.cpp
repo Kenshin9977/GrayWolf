@@ -251,7 +251,7 @@ namespace
         }
 
         const Maps::ClipSource& Src;
-        const std::vector<uint8_t>& Img;
+        ByteView Img;
         std::map<std::string, size_t>& Counters;
         std::vector<Mat> Mats;
     };

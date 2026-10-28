@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "ZoneFormat.h"
 
@@ -13,7 +14,7 @@ namespace
     public:
         const char* Name() const override { return "iw8"; }
 
-        ZoneTables::ZoneHead Read(const std::vector<uint8_t>& Buf, const ZoneTables::StreamRules& Rules) const override
+        ZoneTables::ZoneHead Read(ByteView Buf, const ZoneTables::StreamRules& Rules) const override
         {
             const ZoneTables::HeaderReader H(Buf);
             constexpr int64_t List = 0x20;

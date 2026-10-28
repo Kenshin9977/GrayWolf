@@ -1,3 +1,4 @@
+#include "ByteView.h"
 // CliCommands.ZoneWalk.cpp - `zone-walk` (alias `bo4-walk`): walk zones with a zonekit profile's
 // reader tables (ZoneTableWalker), in parallel, and write every read to a binary file for the
 // zonekit tools.
@@ -58,7 +59,7 @@ namespace
         O.write(S.data(), (std::streamsize)S.size());
     }
 
-    template <typename T> T At(const std::vector<uint8_t>& Buf, int64_t Pos)
+    template <typename T> T At(ByteView Buf, int64_t Pos)
     {
         T V{};
         if (Pos >= 0 && (uint64_t)Pos + sizeof(T) <= Buf.size()) std::memcpy(&V, Buf.data() + Pos, sizeof(T));
@@ -73,7 +74,7 @@ namespace
     // GameBlackOpsCW::LoadXImage reads): pixels in the zone when (u32@0x90 >> 4) & 1 == 0, u32@0x98
     // bytes; DXGI format u32@0x9c, size u16@0xa0/0xa2; u8@0xb8 mip records of 32 bytes at the
     // pointer +0x30 (key u64@0, pixel bytes (u64@0x18 >> 4) & 0x1fffffff, as the t9 image table).
-    void WriteAssets(const std::string& Path, const std::string& Profile, const std::vector<uint8_t>& Buf,
+    void WriteAssets(const std::string& Path, const std::string& Profile, ByteView Buf,
                      const ZoneTables::ZoneResult& R)
     {
         std::ofstream O(Path, std::ios::binary);

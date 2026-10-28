@@ -1,10 +1,15 @@
 #pragma once
 
+#include "ByteView.h"
+
 // ZoneTableWalker - walks a decompressed zone with reader tables transcribed from the game's
 // own loaders. The game comes from a zonekit profile (zonekit/profiles/<game>): pointer markers,
 // zone format, type names, tables.
 
 #include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -188,12 +193,82 @@ namespace ZoneTables
         // pointer field position -> where the data it points to was read (inline pointers only;
         // a back reference into an earlier block is not resolved here)
         std::vector<std::pair<int64_t, int64_t>> Links;
+
+        // With Layout: each zone-level asset's resume point, in list order: where its walk starts
+        // and the stream memory's cursors there. A partial walk starts from one (PartialWalk).
+        struct ResumePoint
+        {
+            uint32_t ListIndex = 0;                          // its slot in the asset list
+            int64_t Pos = 0;                                 // where its walk starts in the zone
+            std::vector<std::pair<int, int64_t>> Cursors;    // block -> cursor, by block
+            // block -> where its last read placed (or slot a pointer reserved) ended, by block: the
+            // cursor without the alignment an empty allocation adds, which an asset-relative
+            // reference counts from (ResolveLinks)
+            std::vector<std::pair<int, int64_t>> Starts;
+        };
+        std::vector<ResumePoint> Resume;
+        // With Layout: each resident slot reserved, as the walk reserved it (its offset in the
+        // resident block, where the data it stands for is), the zone's own asset slots included
+        std::vector<std::pair<int64_t, int64_t>> Slots;
     };
 
     // TypeNames[tid] = the table name of asset type tid.
-    ZoneResult WalkZone(const std::vector<uint8_t>& Buf, const Tables* T,
+    ZoneResult WalkZone(ByteView Buf, const Tables* T,
                         const std::vector<std::string>& TypeNames,
                         const StreamRules& Rules = StreamRules(), bool Layout = false);
+
+    // One zone-level asset walked alone from its resume point (ZoneResult::Resume of a full walk of
+    // the same zone, or a resume index), the assets whose placements or fields it reads (asset@)
+    // walked first, on demand. Each result holds that asset's reads, instances, links and back
+    // references as the full walk records them; what the walks learn (placements, followed fields,
+    // rewind keys) serves the next ones. Walks recurse deep: run them on WalkOnLargeStack.
+    class PartialWalk
+    {
+    public:
+        PartialWalk(ByteView Buf, const Tables* T, const std::vector<std::string>& TypeNames,
+                    const StreamRules& Rules, std::vector<ZoneResult::ResumePoint> Points);
+        ~PartialWalk();
+        PartialWalk(const PartialWalk&) = delete;
+        PartialWalk& operator=(const PartialWalk&) = delete;
+        bool Ok() const;                     // the zone header parsed
+        const std::string& Why() const;      // why the header or the last walk failed
+        // the asset at Points[Index] walked (once); nullptr with Why() when it did not walk
+        const ZoneResult* Walk(size_t Index);
+        // every asset walked so far, by resume point
+        const std::map<size_t, ZoneResult>& Walked() const;
+        // what a partial walk cannot learn from its own walks, given by a resume index or a full
+        // walk: rewind keys (Black Ops 6/7) and the zone's assets by their name hash at +0, per
+        // type name ("" for any type), for asset pointers by hash
+        void AddKeys(const std::vector<std::pair<uint64_t, int64_t>>& Keys);
+        // the same, the first of each key already kept by the caller: read where it is (kept alive
+        // as long as the walk)
+        void UseKeys(const std::unordered_map<uint64_t, int64_t>& Keyed);
+        // read where it is (kept alive as long as the walk); a later one under the ones before
+        void AddAssetHashes(const std::map<std::pair<std::string, uint64_t>, int64_t>& ByHash);
+        // the resume point whose walk covers a zone position (stream order), or SIZE_MAX
+        size_t OwnerOf(int64_t Pos) const;
+        // the resume point whose walk placed a block's offset, or SIZE_MAX
+        size_t PlacedBy(int Block, int64_t Off) const;
+        size_t Points() const;
+        // everything walked and learnt dropped (what AddKeys gave kept): the next walks start afresh
+        void Forget();
+        // the walks so far as one result, in stream order (instances, reads, links, back references,
+        // keys, slots; owner ids made one), with the zone's asset list, start and resume points.
+        // Only: those walks alone, without the resume points (what a closure round looks at)
+        ZoneResult Merged(const std::set<size_t>* Only = nullptr) const;
+        // the resume point of an asset list slot, or SIZE_MAX
+        size_t PointOfListIndex(uint32_t ListIndex) const;
+        // the types the zone's asset list names (walked or not)
+        std::set<std::string> ListedTypes() const;
+        const std::vector<ZoneResult::ResumePoint>& ResumePoints() const;
+
+    private:
+        struct State;
+        std::unique_ptr<State> S;
+    };
+
+    // F on a thread with the walker's stack (its tables recurse deep)
+    void WalkOnLargeStack(const std::function<void()>& F);
 
     // A layout walk's reads by stream memory position: a back reference's (block, offset) back
     // to the zone position of the byte the game had placed there.

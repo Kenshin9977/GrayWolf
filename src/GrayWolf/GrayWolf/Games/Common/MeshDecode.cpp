@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <stdexcept>
 #include <intrin.h>
 #include <limits>
 #include <numeric>
@@ -411,6 +412,13 @@ Buffer FromZone(uint64_t Address, uint64_t Size)
     Result.Data = std::make_unique<uint8_t[]>((size_t)Size);
     Result.Size = CoDAssets::GameInstance->Read(Result.Data.get(), Address, (size_t)Size);
     return Result;
+}
+
+Buffer StreamedMesh(uint32_t StatusFlag, uint64_t Address, uint64_t Size, uint64_t Key, int32_t PackageSize)
+{
+    if ((StatusFlag & 0x3F) == 8) return FromZone(Address, Size);
+    if (CoDAssets::GamePackageCache == nullptr) throw std::runtime_error("the mesh is in the packages, none open");
+    return FromPackage(Key, PackageSize);
 }
 
 Buffer FromPackage(uint64_t Key, int32_t Size)

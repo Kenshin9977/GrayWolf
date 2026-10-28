@@ -75,6 +75,9 @@
     <ClCompile Include="ImGuiLoadGamePanel.Disk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ImGuiLoadGamePanel.Assets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="CoDAssets.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

@@ -48,8 +48,32 @@ struct ResolvedLinks
     std::vector<std::pair<int64_t, int64_t>> Links;   // pointer field -> where its data is
     std::map<std::string, size_t> Counters;           // links_inline/asset/data/deref, refs_unresolved
 };
+// What resolving a partial walk's links (ZoneTables::PartialWalk::Merged) takes from the zone's
+// resume points instead of the reads it lacks: where each listed asset starts and its cursors there,
+// the resident slots as the walks reserved them, the zone's keys and its assets by hash
+struct ResolveHints
+{
+    const std::vector<ZoneTables::ZoneResult::ResumePoint>* Points = nullptr;
+    const std::vector<std::pair<uint64_t, int64_t>>* Keys = nullptr;               // every key of the zone, in stream order
+    const std::map<std::pair<std::string, uint64_t>, int64_t>* ByHash = nullptr;   // (type name, "" any; hash) -> asset
+    // Keys by key, the first of each (the filing the game's map keeps): built on the first use and
+    // kept, a partial walk's rounds and links asking it again and again (millions of keys)
+    const std::unordered_map<uint64_t, int64_t>& Keyed() const;
+
+private:
+    mutable std::shared_ptr<const std::unordered_map<uint64_t, int64_t>> KeyedOnce;
+};
 ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::StreamRules& Rules, bool DerefAssetPointers,
-                           const std::vector<uint8_t>* Zone = nullptr);
+                           ByteView Zone = {}, const ResolveHints* Hints = nullptr);
+// The resume points a partial walk's links reach that it has not walked yet: the owners of its back
+// references' targets (data, slots, listed assets, keys, hashes) and of its inline links' targets
+std::set<size_t> MissingOwners(const ZoneTables::ZoneResult& M, const ZoneTables::StreamRules& Rules,
+                               const ZoneTables::PartialWalk& Walk, const ResolveHints& Hints);
+// Targets walked, then every resume point their links reach (MissingOwners), round after round;
+// Seen: the walks a round has looked at already (kept between calls). False when a walk fails or
+// more than AtMost points are walked. On the walker's stack (ZoneTables::WalkOnLargeStack).
+bool WalkReached(ZoneTables::PartialWalk& Walk, const std::vector<size_t>& Targets, const ZoneTables::StreamRules& Rules,
+                 const ResolveHints& Hints, std::set<size_t>& Seen, size_t& Rounds, size_t AtMost = 4000);
 
 // What a walk with this profile depends on (its tables, its stream layout), hashed: the key of
 // anything kept from one (the install index, BO4's material books).
@@ -68,10 +92,10 @@ struct ProfileWalk
     std::unordered_map<int64_t, int64_t> Links;   // inline pointer field -> where its data is
 
     // The text an inline string pointer at Field names, "" when it is not one
-    std::string String(const std::vector<uint8_t>& Zone, int64_t Field) const;
+    std::string String(ByteView Zone, int64_t Field) const;
 };
 // False with Error when the file's game is not read by zonekit tables or its profile does not load
-bool WalkWithProfile(const std::string& FastFilePath, const std::vector<uint8_t>& Zone, ProfileWalk& Out,
+bool WalkWithProfile(const std::string& FastFilePath, ByteView Zone, ProfileWalk& Out,
                      std::string& Error);
 
 // A script bundle value's kind (ZonekitZone::ScriptBundleLayout)
@@ -87,14 +111,42 @@ public:
     void SetProfile(const std::string& Name) { ProfileName = Name; }
     // The profile Open walks with
     std::string ProfileUsed() const { return ProfileName.empty() ? Profile() : ProfileName; }
-    // Loads, walks and relocates; false with Error when the zone does not read.
+    // Loads, walks and relocates; false with Error when the zone does not read. Inside a
+    // DiskGame::PartialScope, a zone that OpensPartially walks only the assets asked and what they
+    // reach, from its resume index (ResumeIndex.h); without the index, or when the walk falls short,
+    // the whole zone, which writes the index for the next time.
     bool Open(std::string& Error);
+    bool OpenedPartially() const override { return Partial; }
+
+private:
+    bool OpenPartially(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap);
+    // Want only images the resume index File holds whole (Heads): served from their records alone,
+    // the zone neither read nor walked; false otherwise
+    bool OpenFromHeads(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap);
+    void WriteResume(const std::string& File) const;
+
+public:
+    // the full walk and what it walked (the bytes before relocation), its profile's tables and type
+    // names, its stream rules (LayoutOffset applied): what a partial walk of the zone needs
+    const ZoneTables::ZoneResult& FullWalk() const { return R; }
+    bool ResolvesDerefs() const { return DerefAssetPointers(); }
+    ByteView WalkedBytes() const { return Bytes; }
+    const ExportWriters::LoadedProfile* WalkProfile() const { return Loaded; }
+    ZoneTables::StreamRules WalkRules()
+    {
+        ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
+        Rs.StartOffset = LayoutOffset();
+        return Rs;
+    }
 
     const std::string& Name() const override { return ZoneName; }
     bool WalkedToEnd() const override { return Walked; }
     void Measures(DiskGame::Totals& T) const override;
-    // the models and animations this zone holds whole; a game adds its own kinds
-    void Defines(std::vector<DiskGame::AssetId>& Out) const override;
+    // DefinesAt's assets (the install index's)
+    void Defines(std::vector<DiskGame::AssetId>& Out) const final;
+    // with each one's weight: the bytes its instance's reads hold in the zone (an asset inlined in
+    // it that the index weighs on its own, or that another asset's kind is, left out), then Weigh
+    void Weighs(std::vector<std::pair<DiskGame::AssetId, DiskGame::Weight>>& Out) const final;
     // the entries of its LocalizeType() assets, by LocalizeEntry
     void Strings(std::vector<std::pair<std::string, std::string>>& Out) const override;
     // its stringtable assets: name at 0, column and row counts, the cells (a string pointer each)
@@ -120,7 +172,10 @@ protected:
     virtual VirtualGameSession::Handlers Handlers() = 0;     // its string and image handlers
 
     // What the game may change
-    virtual bool LoadBytes(std::vector<uint8_t>& Zone, std::string& Error);   // FastFile::Decompress
+    virtual bool LoadBytes(ZoneBytes& Zone, std::string& Error);   // FastFile::Decompress
+    // the files LoadBytes reads (a resume index is kept for them as they are: path, size, time
+    // written); none when it reads from inside an archive (the index is then kept for the bytes)
+    virtual std::vector<std::string> SourceFiles() const { return { FastFilePath() }; }
     // IW6: an ASSET pointer's back reference names the pointer field to follow (resolve_deref)
     virtual bool DerefAssetPointers() const { return false; }
     // before the walk (the profile loaded): where in its start block the zone's reads begin, the
@@ -128,6 +183,19 @@ protected:
     virtual int64_t LayoutOffset() { return 0; }
     // after relocation: what the game's load-time fixups write (Ghosts: LOD surfaces)
     virtual void Fixups() {}
+    // a game whose readers and Fixups work on a partial walk's result (only the walked assets in it)
+    virtual bool OpensPartially() const { return false; }
+    // the types whose instances the game counts over the whole zone (a streamed image's records
+    // are the stream table's by its rank among them): a resume index keeps where each one is, for
+    // AllOf after a partial open
+    virtual std::vector<std::string> Ranked() const { return {}; }
+    // the assets this zone holds whole, each with where it is (its instance's position; -1 for one
+    // a resume index cannot name): what the install index lists and a resume index finds. The
+    // models, animations and materials; a game adds its own kinds
+    virtual void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const;
+    // what the game's reader knows of the asset at Pos beyond its bytes in the zone (W.Bytes, set):
+    // its data streamed from packages (added), its pixels or samples (DiskGame::Weight)
+    virtual void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const {}
     // the zone becomes the one the game's plain handler functions reach (On: opened or resumed),
     // or stops being it (parked)
     virtual void Served(bool On) {}
@@ -174,8 +242,9 @@ protected:
     virtual bool MaterialDrawn(const XMaterial_t& M) const { return true; }
 
     // For the game's own overrides
-    const std::vector<uint8_t>& Zone() const { return Bytes; }
-    const std::vector<uint8_t>& Image() const { return Session->Image(); }
+    // views kept as members, so a reader may hold their address (a ZoneView)
+    const ByteView& Zone() const { return ZoneView = Bytes; }
+    const ByteView& Image() const { return ImageView = Session->Image(); }
     const ZoneTables::ZoneResult& Walk() const { return R; }
     const ZoneTables::StreamRules& Rules() const;
     VirtualGameSession& Live() { return *Session; }
@@ -190,6 +259,16 @@ protected:
     std::string ModelAt(uint64_t Address) const;
     // The zone-level asset of a type (the first), -1 when the zone has none
     int64_t Root(const char* Type) const;
+    // the zone lists an asset of Type: from its asset list, so a partial open (where Root finds
+    // only the walked ones) answers as a full one
+    bool Lists(const char* Type) const;
+    // where every instance of a Ranked type is, in walk order: the walk's, or after a partial open
+    // its resume index's (the whole zone)
+    std::vector<int64_t> AllOf(const char* Type) const;
+    // a partial open's: the whole zone's keys and assets by (type, hash) from its resume index (the
+    // games resolving by key and hash), nullptr after a full open (the walk holds them)
+    const std::vector<std::pair<uint64_t, int64_t>>* WholeKeys() const { return Partial ? &Whole.Keys : nullptr; }
+    const std::map<std::pair<std::string, uint64_t>, int64_t>* WholeHashes() const { return Partial ? &Whole.ByHash : nullptr; }
     // Where a relocated pointer's data is in the zone, -1 when it is elsewhere
     int64_t Off(uint64_t Address) const
     {
@@ -218,6 +297,9 @@ protected:
     // The served zone as MapCollision reads it
     Maps::ClipSource ClipSource() const;
     size_t& Counter(const std::string& Name) { return Counters[Name]; }
+    // A sound file (File: its path under the sound kind's folder, UTF-8) written as WriteSound
+    // writes it in the run's sound format: counted written and under Written, else failed with why
+    void WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& File, const uint8_t* Data, size_t Size, const char* Written);
     // The relocated zone as a sound alias reader reads it (SoundAliasCsv::ZoneView)
     SoundAliasCsv::ZoneView AliasView() const
     {
@@ -243,7 +325,7 @@ protected:
     void ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
                            bool ReferencesByName = false);
     // Defines' images for such a zone: every named image it holds whole
-    void DefineImages(std::vector<DiskGame::AssetId>& Out) const;
+    void DefineImages(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const;
 
     // The image kind of a zone whose images the game lists itself (Order: their positions, in the
     // order to write them), each named at its position + NameAt: identical content written once
@@ -262,6 +344,37 @@ protected:
         bool NamesChecked = false;   // an unnamed image is left out, an unreadable name failed
     };
     void ExportImageList(const DiskGame::Context& C, DiskGame::Totals& T, const ImageList& L);
+
+    // An image a run may serve from the zone's heads alone (ResumeIndex::Heads), the zone not read:
+    // its type, its record's size, where its name pointer is (-1: named by a hash in the record), and
+    // the data its record points at that its export reads (its pixels when the zone holds them, its
+    // mips' table), each kept after the record: a pointer the zone does not resolve is left as it
+    // is when null, else the image is not kept, nor is one whose data is past Max bytes. Size 0: the
+    // game keeps none.
+    struct HeadSpec
+    {
+        struct Pointed
+        {
+            int64_t At = 0;                                   // the pointer's offset in the record
+            std::function<uint64_t(ByteView Record)> Bytes;  // how many bytes it points at
+            uint64_t Max = ~0ull;
+        };
+        const char* Type = nullptr;
+        int64_t Size = 0;
+        int64_t NameAt = -1;
+        std::vector<Pointed> Data;
+    };
+    // the images of IwctxReaders::LoadXImage and ModernIwReaders::LoadMipImage (MWIII, Black Ops 6
+    // and 7): a 0x40 record, the hash at 0, its in-zone pixels at 0x38 (u32 size 0x18), its mips'
+    // table at 0x30 (24 bytes per mip, u8 count 0x2e)
+    static HeadSpec ModernIwHeads();
+    // ... and what their readers write of the image at Pos: its pixels in the zone (u32 0x18 bytes
+    // at 0x38), else the largest level the packages hold (its mips' table at 0x30, u8 count 0x2e,
+    // 24 bytes each {key, pad, packed: the running size from bit 30}), its size u16 0x20 by 0x22
+    // halved per level below the last. Dxgi, when given, makes a level's bytes from its size and
+    // its format (u8 0x2a) instead (Black Ops 7's packed field is no size)
+    DiskGame::Weight ModernIwImageWeight(int64_t Pos, uint32_t (*Dxgi)(uint8_t Format) = nullptr) const;
+    virtual HeadSpec Heads() const { return {}; }
 
     // The gdt kind (Gdt.h), for a game whose profile has gdt/<type>/ folders: each top-level asset
     // of every type's zone type, as BO3 GDT blocks, one <zone>.gdt per zone.
@@ -500,7 +613,7 @@ protected:
     void ExportsScriptFiles(const Scripts::Vm& Vm);
 
     template <class T>
-    static T At(const std::vector<uint8_t>& Buf, int64_t Off) { return ExportNaming::At<T>(Buf, Off); }
+    static T At(ByteView Buf, int64_t Off) { return ExportNaming::At<T>(Buf, Off); }
 
     // CoDAssets' package cache, which the live readers read pixels and meshes through, set to the
     // one Make gives while the zone is served (On), the previous one back when it is not
@@ -513,7 +626,7 @@ protected:
     std::vector<std::string> Slots;
     // Count script string slots of SlotSize bytes (4 or 8) from First: a slot equal to Marker holds
     // a string whose text follows the slots, in slot order; the others hold none ("")
-    static std::vector<std::string> InlineStrings(const std::vector<uint8_t>& Zone, int64_t First, uint64_t Count, int SlotSize,
+    static std::vector<std::string> InlineStrings(ByteView Zone, int64_t First, uint64_t Count, int SlotSize,
                                                   uint64_t Marker);
     // A string handler for Handlers(): the served zone's slot, else bone_<n>
     static std::string SlotString(uint64_t Index);
@@ -540,15 +653,24 @@ private:
     Gdt::Memory GdtMemory() const;
 
     std::string Path, ZoneName, ProfileName;
-    std::vector<uint8_t> Bytes;
+    ZoneBytes Bytes;
     ZoneTables::ZoneResult R;
     mutable std::unique_ptr<ZoneTables::BlockMap> Memory;   // R's stream layout, built by TextAt
     const ExportWriters::LoadedProfile* Loaded = nullptr;
     std::unique_ptr<VirtualGameSession> Session;
-    std::vector<uint8_t> ParkedImage;   // the session's relocated zone while parked
+    ZoneMemory::Copy ParkedImage;   // the session's relocated zone while parked
     std::unique_ptr<CoDPackageCache> SavedPackages;   // CoDAssets' own while ServePackages serves
     bool PackagesServed = false;
     bool Walked = false;
+    bool Partial = false;             // opened from the resume index, only some assets walked
+    std::set<std::string> Listed;     // a partial open's: the types its asset list names
+    mutable ByteView ZoneView, ImageView;   // Zone() and Image()
+    struct
+    {
+        std::vector<std::pair<uint64_t, int64_t>> Keys;
+        std::map<std::pair<std::string, uint64_t>, int64_t> ByHash;
+    } Whole;                          // a partial open's: its resume index's keys and hashes
+    std::map<std::string, std::vector<int64_t>> WholeRanked;   // a partial open's: Ranked's instances
     const char* MaterialType = nullptr;   // ExportsMaterials' type: Defines lists those materials
     std::function<XMaterial_t(uint64_t Address)> MaterialOf;   // ReadsMaterials'
     // the model kind's: the images of the material headers this zone names (MaterialImages, its

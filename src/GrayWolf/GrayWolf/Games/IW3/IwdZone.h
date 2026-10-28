@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The IW3 family on the disk template (CoD4, World at War): a ZonekitZone served to the game's live
 // readers, whose images are .iwi files of the install's .iwd archives (IWDCache, by name) or, for
 // the code images, the pixels the zone carries (GfxImageLoadDef), and whose sounds are files of
@@ -26,7 +28,7 @@ namespace Iw3Family
 
         // the index keeps what Defines gives: its images and loaded sounds too
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images_sounds1"; }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override;
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
 
     protected:
         // its XFile's size: where the asset list (and its script strings' count) starts
@@ -60,9 +62,12 @@ namespace Iw3Family
         std::shared_ptr<IWDCache> Iwd;
 
         void Serve(bool On);
-        std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Z) const;
+        std::vector<std::string> ZoneStrings(ByteView Z) const;
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos);
+        // an image of the .iwd archives, as Decode reads it first: its .iwi's (Sizes::IwiWeight);
+        // one in the zone weighs its GfxImageLoadDef there
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
         std::unique_ptr<XImageDDS> LoadDef(int64_t Pos);
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportSoundFiles(const DiskGame::Context& C, DiskGame::Totals& T);

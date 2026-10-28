@@ -63,6 +63,38 @@ namespace DiskGame::Sizes
     // when that is an encoder's output (a typical ratio) or a length the header does not give
     uint64_t SoundBytes(const SoundRow& R, const std::string& Format, bool& Exact);
 
+    // An image's weight (DiskGame::Weight): the pixel data its reader writes behind a DDS header
+    // (Bytes), its size, its faces or slices
+    Weight ImageWeight(uint64_t Bytes, uint32_t Width, uint32_t Height, uint32_t Layers = 1);
+    // ... its pixel data worked out from its DXGI format, the mips its reader writes from the largest
+    Weight ImageWeight(uint32_t Width, uint32_t Height, uint32_t DxgiFormat, uint32_t Mips, uint32_t Layers);
+    // A streamed image whose record has Width, Height, MipLevels[3] (each a Width and Height),
+    // ImageFormat (a DXGI format) and MapType (5: a cube): its largest level, as
+    // GameReaders::TranslatePakImage writes it (Ghosts, Advanced Warfare, Modern Warfare Remastered)
+    template <class TImage>
+    Weight PakImageWeight(const TImage& Info)
+    {
+        uint32_t Width = Info.Width, Height = Info.Height;
+        for (const auto& M : Info.MipLevels)
+            if (M.Width > Width) Width = M.Width, Height = M.Height;
+        return ImageWeight(Width, Height, Info.ImageFormat, 1, Info.MapType == 5 ? 6 : 1);
+    }
+    // An image its reader reads from an .iwi file of FileBytes (Call of Duty 4, World at War, Modern
+    // Warfare 2 and 3: an .iwd archive's): its largest mip, about three quarters of the file (its
+    // header and smaller mips the rest), an approximation
+    Weight IwiWeight(uint64_t FileBytes, uint32_t Width = 0, uint32_t Height = 0);
+    // An image whose record says the memory its mips take (CardBytes: Black Ops II's, Call of Duty
+    // Online's cardMemory): its largest mip, all of it when that is a whole number of bytes per
+    // pixel (no smaller mips), else about three quarters
+    Weight CardMemoryWeight(uint64_t CardBytes, uint32_t Width, uint32_t Height);
+    // A sound's, from what its header says, and back
+    Weight SoundWeight(const SoundHeader& H);
+    SoundRow RowOf(const Weight& W);
+    // What an asset of weight W writes in Formats (FormatsNow()'s): exact for an image in DDS (its
+    // shape known) and a sound whose SoundBytes is; else a typical ratio (Exact false); 0 when its
+    // weight is not known
+    uint64_t Predict(Kind K, const Weight& W, const std::string& Formats, bool& Exact);
+
     struct Calibration
     {
         std::string Formats;   // FormatsNow() when measured
@@ -98,9 +130,23 @@ namespace DiskGame::Sizes
                         const std::function<void(const std::string&)>& Step, const std::atomic<bool>* Cancel,
                         const Calibration* Previous = nullptr);
 
+    // What the install index's weights make of the picked zones' assets of a kind, each once
+    // (WeighPicks): how many there are, how many it weighed, what those write (Predict)
+    struct Weighed
+    {
+        size_t Assets = 0, Known = 0;
+        uint64_t Bytes = 0;
+        bool Exact = true;   // each one's Predict exact
+    };
+    // ... of Kinds over Zones of Ix, in Formats (FormatsNow()'s). An image or a sound only: what
+    // another kind writes is not known from its weight yet (Predict gives its bytes in the zone).
+    std::map<Kind, Weighed> WeighPicks(const ZoneIndex& Ix, const std::vector<size_t>& Zones, const std::set<Kind>& Kinds,
+                                       const std::string& Formats);
+
     // What an estimate is for: the kinds ticked and the zones picked
     struct Picks
     {
+        std::map<Kind, Weighed> Weights;     // WeighPicks', when the index weighs them
         std::set<Kind> Kinds;
         std::map<Kind, size_t> Counts;       // the install index's counts over the picked zones
         size_t Zones = 0;

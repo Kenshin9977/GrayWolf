@@ -40,6 +40,8 @@ public:
     // Sources, when given, gets each one's loaded sound (loaded) or file spec (the others)
     static void AddAliasSounds(const WWIISoundAlias& Alias, std::set<uint64_t>& Unique, std::vector<CoDAsset_t*>& Out,
                                std::vector<uint64_t>* Sources = nullptr);
+    // An image's format byte as DXGI's, 0 when unknown
+    static uint8_t DxgiFormat(uint8_t Format);
     // One level of a streamed image, the LZ4 chunks at Offset in an imagefile<N>.pak
     static std::unique_ptr<XImageDDS> DecodePakImage(const std::string& PakPath, uint64_t Offset, uint32_t Width, uint32_t Height,
                                                      uint8_t Format, bool Cube, ImageUsageType Usage);

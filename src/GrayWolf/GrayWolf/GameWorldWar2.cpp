@@ -216,6 +216,11 @@ namespace
     }
 }
 
+uint8_t GameWorldWar2::DxgiFormat(uint8_t Format)
+{
+    return WW2ImageFormat(Format);
+}
+
 std::unique_ptr<XImageDDS> GameWorldWar2::DecodePakImage(const std::string& PakPath, uint64_t Offset, uint32_t Width, uint32_t Height,
                                                          uint8_t Format, bool Cube, ImageUsageType Usage)
 {

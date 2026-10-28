@@ -568,7 +568,7 @@ int RunDecompressFF(const CliOptions& Options)
 {
     const auto Info = FastFile::Identify(Options.DecompressFF);
 
-    std::vector<uint8_t> Zone;
+    ZoneBytes Zone;
     std::string FailureReason;
     const auto Ok = FastFile::Decompress(Options.DecompressFF, Zone, FailureReason);
 

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Call of Duty: Black Ops (T5) on the disk template: a ZonekitZone with the t5 profile (32-bit:
 // every pointer 4 bytes, the zone served below 4 GB), served to the live Black Ops readers
@@ -10,6 +11,7 @@
 #include "CoDIWITranslator.h"
 #include "Games/Treyarch/TreyarchSoundAliases.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchGscOwners.h"
 #include "Games/Treyarch/TreyarchLevel.h"
@@ -210,6 +212,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "t5"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("T5"); }
         // an asset pointer's back reference is resolved through the slot it names (the Ptr
         // loaders call DB_ConvertOffsetToAlias 0x19bf20: *p = *(block + offset)); a data one is
@@ -251,7 +255,7 @@ namespace
 
         // The zone's script strings: count at 0x24, the list pointer at 0x28 (any
         // non-null value: present), u32 slots from 0x34, then the text of every -1 slot
-        static std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Z)
+        static std::vector<std::string> ZoneStrings(ByteView Z)
         {
             const uint32_t Count = At<uint32_t>(Z, 0x24);
             if (At<uint32_t>(Z, 0x28) == 0 || Count == 0 || 0x34 + (size_t)Count * 4 > Z.size()) return {};
@@ -270,10 +274,21 @@ namespace
 
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
         // the images this zone holds whole, for the install index (a texture another zone names)
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineImages(Out);
+        }
+
+        // an image of the .iwd archives, as Decode reads it first: its .iwi's (Sizes::IwiWeight);
+        // one in the zone weighs its GfxImageLoadDef there
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K != DiskGame::Kind::Image || Install.empty()) return;
+            const auto Packages = Iw3Family::IwdPackagesOf(Install);
+            const std::string N = AssetName(DiskGame::Kind::Image, Pos);
+            PackageCacheObject O;
+            if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
         }
 
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos)
@@ -468,12 +483,6 @@ namespace
                     }
                 }
             }
-            const fs::path Root = C.KindDir(Kind::Sound);
-            const std::string Format = ExportWriters::SoundFormatSetting();
-            const auto Write = [&](const uint8_t* Data, size_t Size, const std::string& F, std::string& Why) {
-                return ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Data, Size, F),
-                                                 Root / fs::path(ExportWriters::SoundFileName(F, Format)).make_preferred(), Format, &Why);
-            };
             size_t N = 0;
             const size_t All = Loaded.size() + Streamed.size();
             for (const auto& [F, Snd] : Loaded)
@@ -487,14 +496,7 @@ namespace
                     WrapLoaded(Snd, Z.data() + Data, Size, Wrapped))
                 {
                     Kt.Seen++;
-                    std::string Why;
-                    if (Write(Wrapped.data(), Wrapped.size(), F, Why))
-                    {
-                        Kt.Written++;
-                        Counter("sounds_loaded_wrapped")++;
-                    }
-                    else
-                        T.Fail(Name(), Kind::Sound, F, Why);
+                    WriteSoundFile(C, T, F, Wrapped.data(), Wrapped.size(), "sounds_loaded_wrapped");
                     continue;
                 }
                 if (Size < 12 || Data < 0 || (uint64_t)Data + Size > Z.size() || std::memcmp(Z.data() + Data, "RIFF", 4) != 0 ||
@@ -506,14 +508,7 @@ namespace
                     continue;
                 }
                 Kt.Seen++;
-                std::string Why;
-                if (Write(Z.data() + Data, Size, F, Why))
-                {
-                    Kt.Written++;
-                    Counter("sounds_loaded")++;
-                }
-                else
-                    T.Fail(Name(), Kind::Sound, F, Why);
+                WriteSoundFile(C, T, F, Z.data() + Data, Size, "sounds_loaded");
             }
             for (const auto& F : Streamed)
             {
@@ -525,19 +520,13 @@ namespace
                 const bool Found = IwdFilesOf(Install)->Read(F, Raw);
                 const bool Riff = Raw.size() >= 12 && std::memcmp(Raw.data(), "RIFF", 4) == 0 && std::memcmp(Raw.data() + 8, "WAVE", 4) == 0;
                 const std::vector<uint8_t>* Payload = !Found ? nullptr : DecodeIWDSound(Raw, Wav) ? &Wav : Riff ? &Raw : nullptr;
-                std::string Why;
                 if (Payload == nullptr)
                 {
                     Counter("sounds_iwd_missing")++;
                     T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives");
                 }
-                else if (Write(Payload->data(), Payload->size(), F, Why))
-                {
-                    Kt.Written++;
-                    Counter("sounds_iwd")++;
-                }
                 else
-                    T.Fail(Name(), Kind::Sound, F, Why);
+                    WriteSoundFile(C, T, F, Payload->data(), Payload->size(), "sounds_iwd");
             }
         }
 

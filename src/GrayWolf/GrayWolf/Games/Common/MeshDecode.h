@@ -159,6 +159,17 @@ namespace MeshDecode
     };
     constexpr Encoding RegionEncoding{ PositionCodec::Float3, NormalCodec::Signed10, UvCodec::Half2, FaceCodec::U16 };
     SubmeshStreams RegionStreams(const Regions& R, uint64_t FirstVertex, uint32_t VertexCount, uint64_t FirstIndex, uint32_t FaceCount, bool Colors);
+    // A Black Ops 4 or Cold War LOD's mesh info (TInfo: its StatusFlag and its regions' offsets):
+    // its regions, the records 8 bytes longer when its status says extended (bit 6)
+    template <class TInfo>
+    Regions RegionsOf(const TInfo& Info)
+    {
+        return { Info.VertexOffset, Info.UVOffset, Info.WeightsOffset, Info.FacesOffset, (Info.StatusFlag & 64) != 0 ? 24u : 16u };
+    }
+    // ... and its buffer: Size bytes at Address in the zone when its status says loaded (8 in its
+    // low six bits), else the package object Key (PackageSize as FromPackage's); throws when it is
+    // in the packages and none is open
+    Buffer StreamedMesh(uint32_t StatusFlag, uint64_t Address, uint64_t Size, uint64_t Key, int32_t PackageSize = -1);
 
     // The decoder's checks on byte arrays from real surfaces; the failures appended to Failures
     int SelfTest(std::string& Failures);

@@ -19,6 +19,7 @@
 #include "Bo3ZoneSounds.h"
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "Gdt.h"
 #include "Games/Common/WeaponFiles.h"
 #include "Games/Treyarch/TreyarchEffects.h"
@@ -104,6 +105,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "t7"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("T7"); }
         // pixels the BO3 way: inline after the image, or the largest mip from the packages
         VirtualGameSession::Handlers Handlers() override { return { SlotString, GameBlackOps3::LoadXImage }; }
@@ -178,7 +181,9 @@ namespace
         // the images with pixels (a package or inline), once per name, that Wants
         void Described(std::vector<Bo3ZoneImage>& Images, size_t& WithoutPixels,
                        const std::function<bool(const std::string&)>& Wants) const;
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override;
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
+        // an image: the mip its export writes (the size the zone declares for it)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         std::shared_ptr<const Bo3SoundNames::Table> SoundNames(const DiskGame::Context& C, bool Languages);
         void ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T);
@@ -287,17 +292,30 @@ namespace
                 WithoutPixels++;
                 continue;
             }
+            Image.Pos = I.Pos;
             if (Wants(Image.Name) && Names.insert(Image.Name).second) Images.push_back(std::move(Image));
         }
     }
 
-    void T7Zone::Defines(std::vector<DiskGame::AssetId>& Out) const
+    void T7Zone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
     {
-        ZonekitZone::Defines(Out);
+        ZonekitZone::DefinesAt(Out);
         std::vector<Bo3ZoneImage> Images;
         size_t WithoutPixels = 0;
         Described(Images, WithoutPixels, [](const std::string&) { return true; });
-        for (const auto& I : Images) Out.push_back({ DiskGame::Kind::Image, I.Name });
+        for (const auto& I : Images) Out.push_back({ { DiskGame::Kind::Image, I.Name }, I.Pos });
+    }
+
+    void T7Zone::Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const
+    {
+        // a streamed mip as its size and format make it (the size its record declares is not the
+        // one its package gives); inline pixels, as many as the zone holds (all its mips). Its
+        // format byte is the DXGI format (CoDRawImageTranslator::TranslateBC)
+        Bo3ZoneImage Image;
+        if (K != DiskGame::Kind::Image || !Bo3DescribeZoneImage(Zone(), (size_t)Pos, PackagesFor(FastFilePath()), Image, fs::path(FastFilePath()).stem().string()))
+            return;
+        W = Image.PixelOffset != 0 ? DiskGame::Sizes::ImageWeight(Image.Size, Image.Width, Image.Height)
+                                   : DiskGame::Sizes::ImageWeight(Image.Width, Image.Height, Image.Format, 1, 1);
     }
 
     void T7Zone::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)

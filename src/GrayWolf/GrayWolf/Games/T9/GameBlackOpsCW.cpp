@@ -119,27 +119,12 @@ namespace
 
 std::unique_ptr<XAnim_t> GameBlackOpsCW::ReadXAnim(const CoDAnim_t* Animation)
 {
-    if (!CoDAssets::GameInstance->IsRunning()) return nullptr;
-
-    auto Anim = std::make_unique<XAnim_t>();
-    const auto AnimData = CoDAssets::GameInstance->Read<BOCWXAnim>(Animation->AssetPointer);
-
-    Anim->AnimationName = Animation->AssetName;
-
-    GameReaders::CopyAnimHeader(*Anim, AnimData);
-    if (AnimData.StreamKeyPtr != 0) ReadStreamedAnim(*Anim, AnimData);
-    // the bone mask some anims open their data ints with (a bit per bone) is not a key
-    if (AnimData.HasBoneMask != 0) Anim->DataIntsPtr += ((uint64_t)AnimData.TotalBoneCount + 31) / 32 * 4;
-    Anim->BoneIndexSize = 4;
-    GameReaders::CopyDeltaParts(*Anim, CoDAssets::GameInstance->Read<BO4XAnimDeltaParts>(AnimData.DeltaPartsPtr));
-    Anim->BlendShapeNamesPtr = AnimData.UnknownPtr;
-    Anim->BlendShapeWeightsPtr = AnimData.UnknownZero1;
-    Anim->BlendShapeWeightCount = (uint32_t)*(uint16_t*)&AnimData.Unknown[0];
-
-    Anim->RotationType = AnimationKeyTypes::QuatPackingA;
-    Anim->TranslationType = AnimationKeyTypes::MinSizeTable;
-    Anim->SupportsInlineIndicies = false;
-    return Anim;
+    return GameReaders::ReadTreyarchAnim<BOCWXAnim, BO4XAnimDeltaParts>(Animation, AnimationKeyTypes::QuatPackingA, {}, [](XAnim_t& Anim, const BOCWXAnim& Data) {
+        if (Data.StreamKeyPtr != 0) ReadStreamedAnim(Anim, Data);
+        // the bone mask some anims open their data ints with (a bit per bone) is not a key
+        if (Data.HasBoneMask != 0) Anim.DataIntsPtr += ((uint64_t)Data.TotalBoneCount + 31) / 32 * 4;
+        GameReaders::CopyBlendShapes(Anim, Data);
+    });
 }
 
 std::unique_ptr<XModel_t> GameBlackOpsCW::ReadXModel(const CoDModel_t* Model)
@@ -466,15 +451,7 @@ void GameBlackOpsCW::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_p
 {
     bool ExportColors = (SettingsManager::GetSetting("exportvtxcolor", "true") == "true");
     auto MeshInfo = CoDAssets::GameInstance->Read<BOCWXModelMeshInfo>(ModelLOD.LODStreamInfoPtr);
-
-    bool HasExtendedVertexInfo = (MeshInfo.StatusFlag & 64) != 0;
-
-    // flag == 8 seems to mean loaded; else the packages, none open failing the model
-    const bool Loaded = (MeshInfo.StatusFlag & 0x3F) == 8;
-    if (!Loaded && CoDAssets::GamePackageCache == nullptr)
-        throw std::runtime_error("the mesh is in the packages, none open");
-    const auto MeshData = Loaded ? MeshDecode::FromZone(MeshInfo.XModelMeshBufferPtr, MeshInfo.XModelMeshBufferSize)
-                                 : MeshDecode::FromPackage(ModelLOD.LODStreamKey);
+    const auto MeshData = MeshDecode::StreamedMesh(MeshInfo.StatusFlag, MeshInfo.XModelMeshBufferPtr, MeshInfo.XModelMeshBufferSize, ModelLOD.LODStreamKey);
 
     if (MeshData.Data != nullptr)
     {
@@ -521,8 +498,7 @@ void GameBlackOpsCW::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_p
         // the vertex records carry 8 more bytes when extended (the first 4 seem to be a second UV,
         // possibly for camo mapping); a surface is weighted when its flags say so (bones masked
         // off their bit 15, seemingly blendshape related)
-        const MeshDecode::Regions Regions{ MeshInfo.VertexOffset, MeshInfo.UVOffset, MeshInfo.WeightsOffset, MeshInfo.FacesOffset,
-                                           HasExtendedVertexInfo ? 24u : 16u };
+        const MeshDecode::Regions Regions = MeshDecode::RegionsOf(MeshInfo);
         std::vector<WeightsData> Weights;
         for (auto& Submesh : ModelLOD.Submeshes)
         {

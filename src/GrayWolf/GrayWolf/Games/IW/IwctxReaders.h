@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // What the readers of Black Ops 6 and Black Ops 7 (the iwctx zone format: their zones served as
 // game memory by the disk template) read alike: packed normals, images and sounds.
 // Each game passes what its build moves (GameBlackOps6::Layout, the campaign's included).
@@ -93,7 +95,7 @@ namespace IwctxReaders
     // slots (u64) after the list (ListSize: the profile's zone_load.asset_list_size, 0x30; Black Ops 6's
     // campaign 0x20), then the text of each slot with bit 61 set, NUL-terminated, encrypted with the
     // string cipher of the profile in ProfileDir (strings.cipher.txt); "" for the others
-    std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Zone, const std::string& ProfileDir, size_t ListSize = 0x30);
+    std::vector<std::string> ZoneStrings(ByteView Zone, const std::string& ProfileDir, size_t ListSize = 0x30);
     // Script strings by their 64-bit hash, XXH3-64 with the seed 0x100000001b3 (the game's
     // DB_RegisterScrString: Black Ops 7 0x3ad7010 -> 0xae3ccc0; Black Ops 6 the same "end" hash):
     // each zone's own registered as it opens, "end" built in (a script constant); unknown: its hex
@@ -119,7 +121,7 @@ namespace IwctxReaders
         uint8_t Emissive, Opacity, Transmittance, Ramp;
     };
     decltype(Treyarch::EffectZone::Material) SlotMaterials(const MaterialSlots& L, std::function<XMaterial_t(uint64_t Address)> Read,
-                                                           std::function<const std::vector<uint8_t>&()> Zone,
+                                                           std::function<ByteView()> Zone,
                                                            std::function<int64_t(uint64_t Address)> Off,
                                                            std::function<std::string(uint64_t Hash)> Name);
 
@@ -145,12 +147,12 @@ namespace IwctxReaders
         uint32_t NewEntity = 9;           // the type that starts an entity
         uint32_t Vector = 2;              // the type of a vector (three floats at 0x30)
     };
-    std::string EntityText(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+    std::string EntityText(ByteView Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
                            const std::function<uint64_t(int64_t)>& Ptr, size_t& Count, IwEntityKeys::Scheme KeyScheme,
                            const PairPacking& Packing = {});
     // The same entities as key/value pairs, in their order (EntityText writes them as text)
     using MapEntity = std::vector<std::pair<std::string, std::string>>;
-    void EntityPairs(const std::vector<uint8_t>& Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
+    void EntityPairs(ByteView Img, int64_t Pairs, const std::function<int64_t(uint64_t)>& Off,
                      const std::function<uint64_t(int64_t)>& Ptr, std::vector<MapEntity>& Out, IwEntityKeys::Scheme KeyScheme,
                      const PairPacking& Packing = {});
     std::string EntityText(const std::vector<MapEntity>& Entities);

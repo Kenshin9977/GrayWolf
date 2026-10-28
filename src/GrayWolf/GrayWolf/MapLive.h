@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // A map's pieces as the live readers give them, in MapScene terms: a material (XMaterial_t) and a
 // model (the live model reader's mesh). What every game read through its live readers shares.
 
@@ -36,10 +38,10 @@ namespace Maps
     // A static model's placement as MW (2019) to Black Ops 7 pack it (24 bytes at Pos): its origin
     // in 1/4096 units (3 i32), its rotation a quaternion of u16 mapped to [-1, 1] (at 12), its scale
     // at 20 (a float, or a half when HalfScale). Name and Model are the caller's.
-    Instance PackedPlacement(const std::vector<uint8_t>& Image, int64_t Pos, bool HalfScale);
+    Instance PackedPlacement(ByteView Image, int64_t Pos, bool HalfScale);
     // A name kept inline at Pos (a char array, NUL-terminated within Max): empty when it is not
     // printable text.
-    std::string InlineName(const std::vector<uint8_t>& Image, int64_t Pos, size_t Max);
+    std::string InlineName(ByteView Image, int64_t Pos, size_t Max);
 
     // The entity string ({ "key" "value" ... } blocks, Quake 3 to IW5) as key/value maps, in
     // order; false when it does not read as one. A key may be a bare token (MW3 numbers them).
@@ -93,7 +95,7 @@ namespace Maps
     // world's one index buffer, its indices counted from its first vertex. Field places per game.
     struct WorldLayout
     {
-        const std::vector<uint8_t>* Image = nullptr;   // the served zone
+        const ByteView* Image = nullptr;   // the served zone
         int64_t Surfaces = -1, Brushes = -1, Indices = -1;   // where the arrays are (-1: not in the zone)
         uint32_t SurfaceCount = 0, BrushCount = 0, IndexCount = 0;
         int64_t SurfaceSize = 0, FirstVertex = 0, TriCount = 0, BaseIndex = 0, Material = 0;   // u32, u16, u32, pointer

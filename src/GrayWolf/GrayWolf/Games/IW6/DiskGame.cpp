@@ -6,6 +6,7 @@
 
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "GameGhosts.h"
@@ -138,15 +139,25 @@ namespace
 
     protected:
         const char* Profile() const override { return "iw6"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // a streamed image's stream records are the table's by its rank among the zone's images
+        std::vector<std::string> Ranked() const override { return { "image" }; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("IW6"); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         bool DerefAssetPointers() const override { return true; }
         void Fixups() override;
         // with the streamed images
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineStreamed(Out, ImageNameAt);
+        }
+        // a streamed image: its largest level (a resident one is its bytes in the zone)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K == DiskGame::Kind::Image && Streams.count(Pos) && Pos + (int64_t)sizeof(GhostsGfxImage) <= (int64_t)Image().size())
+                W = DiskGame::Sizes::PakImageWeight(At<GhostsGfxImage>(Image(), Pos));
         }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
         // the string tables, then what the anim owners read (IwZoneAnimOwners.h)

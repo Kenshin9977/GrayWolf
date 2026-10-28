@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Modern Warfare 2019 (IW8) on the disk template: a ZonekitZone with the iw8 profile, served to the
 // live Modern Warfare readers (GameModernWarfare4.cpp). The install is a Battle.net CASC storage:
@@ -12,6 +13,7 @@
 #include "CoDFileSystem.h"
 #include "CoDPackageCache.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportWriters.h"
 #include "GameModernWarfare4.h"
 #include "MapLive.h"
@@ -349,6 +351,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "iw8"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("IW8"); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         // resolve_deref 0x2d961d0: an asset's back reference names the slot holding its pointer
@@ -359,12 +363,39 @@ namespace
             Slots = InlineScriptStrings(Zone());
             Counter("lods_without_surfaces") += LinkLodSurfaces(ModelLods());
         }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineImages(Out);
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1+parts1"; }
+        // an image's record (MW4GfxImage, 0xe8) and its pixels when the zone holds them are all its
+        // export reads: served from the zone's heads, the zone not read
+        HeadSpec Heads() const override
+        {
+            HeadSpec S;
+            S.Type = "image";
+            S.Size = ImagePixelsAt + 8;
+            S.NameAt = ImageNameAt;
+            S.Data = { { ImagePixelsAt, [](ByteView R) { return (uint64_t)ExportNaming::At<uint32_t>(R, ImageLoadedSizeAt); }, 256 << 10 } };
+            return S;
+        }
+        // what GameModernWarfare4::LoadXImage writes of an image read from disk: its pixels in the
+        // zone, else the largest level the local packages hold
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K != DiskGame::Kind::Image || Pos + (int64_t)sizeof(MW4GfxImage) > (int64_t)Image().size()) return;
+            auto I = At<MW4GfxImage>(Image(), Pos);
+            if (At<uint64_t>(Image(), Pos + ImagePixelsAt) != 0)
+            {
+                W = DiskGame::Sizes::ImageWeight(At<uint32_t>(Image(), Pos + ImageLoadedSizeAt), I.LoadedMipWidth, I.LoadedMipHeight);
+                return;
+            }
+            int Best = -1;
+            for (int L = 0; L < 4; L++)
+                if (I.Mips.Levels[L].HashID != 0 && CoDAssets::GamePackageCache != nullptr && CoDAssets::GamePackageCache->Exists(I.Mips.Levels[L].HashID)) Best = L;
+            if (Best >= 0) W = DiskGame::Sizes::ImageWeight(I.Mips.GetImageSize((size_t)Best), I.Mips.Levels[Best].Width, I.Mips.Levels[Best].Height);
+        }
         // what other zones' LODs name only (",name") and this one holds (the install index's parts):
         // its xmodelsurfs with surfaces, by the FNV-1a of their lower-case name
         void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
@@ -590,7 +621,7 @@ namespace
     // self.animtree = tree, self.animationarchetype = archetype, ... The stack: per function u32
     // size, u32 name token (its name follows when 0), then the literals; the first literal that is
     // neither empty nor plain text is the next function's header.
-    std::vector<std::string> FirstFunctionLiterals(const std::vector<uint8_t>& GscBin, const std::function<std::string(const std::string&)>& Decrypt)
+    std::vector<std::string> FirstFunctionLiterals(ByteView GscBin, const std::function<std::string(const std::string&)>& Decrypt)
     {
         std::vector<std::string> Out;
         if (GscBin.size() < 16) return Out;

@@ -2,6 +2,8 @@
 
 #include "FileSystems.h"
 
+#include <fstream>
+
 #include "Strings.h"
 
 #include <Windows.h>
@@ -67,4 +69,20 @@ std::string FileSystems::GetApplicationPath()
     wchar_t Buffer[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, Buffer, MAX_PATH);
     return GetDirectoryName(Strings::ToNormalString(Buffer));
+}
+
+bool FileSystems::WriteReplacing(const std::filesystem::path& Path, const std::function<void(std::ostream&)>& Write)
+{
+    std::error_code Ec;
+    if (Path.has_parent_path()) std::filesystem::create_directories(Path.parent_path(), Ec);
+    std::filesystem::path Temp = Path;
+    Temp += "." + std::to_string(GetCurrentProcessId()) + ".tmp";
+    {
+        std::ofstream Out(Temp, std::ios::binary | std::ios::trunc);
+        if (Out) Write(Out);
+        if (!Out) Ec = std::make_error_code(std::errc::io_error);
+    }
+    if (!Ec) std::filesystem::rename(Temp, Path, Ec);
+    if (Ec) std::filesystem::remove(Temp, Ec);
+    return !Ec;
 }

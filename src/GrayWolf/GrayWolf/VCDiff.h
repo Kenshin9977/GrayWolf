@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ByteView.h"
+#include "ZoneMemory.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,6 +14,6 @@
 namespace VCDiff
 {
     // Source may be empty if the delta never references it (VCD_TARGET-only or ADD-only streams).
-    bool Decode(const std::vector<uint8_t>& Source, const uint8_t* Delta, size_t DeltaSize,
-        std::vector<uint8_t>& Target, std::string& Error);
+    bool Decode(ByteView Source, const uint8_t* Delta, size_t DeltaSize,
+        ZoneBytes& Target, std::string& Error);
 }

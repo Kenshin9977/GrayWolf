@@ -3,6 +3,8 @@
 // The Assets tab's rows: the folders' walks, their merge into one row per asset, the header reads.
 #include "ImGuiShell.Internal.h"
 #include "AppLog.h"           // timed steps
+#include "ImGuiDialogs.h"      // ContainsNoCase
+#include "imgui.h"
 #include "CastReader.h"        // ReadCastAnim, CastFile::ModelCounts / FileKind
 #include "UiAsync.h"           // the folder walks off the frame
 
@@ -442,6 +444,21 @@ namespace ShellUi
             for (int k = 0; k < (int)S.Catalog.Models.size(); k++)
                 if (S.Catalog.Models[k].Name == Want) { LoadSelection(S, k); break; }
             S.ShotSelectWait = 60;
+        }
+        // Load Game's preview, once its folder is listed: the asset whose file names it
+        if (!S.SelectWhenListed.empty() && !Walking)
+        {
+            for (int k = 0; k < (int)S.Catalog.Models.size(); k++)
+            {
+                const Item& I = S.Catalog.Models[k];
+                if (!ContainsNoCase(I.Path, "graywolf_preview") || !ContainsNoCase(I.Path, S.SelectWhenListed.c_str())) continue;
+                LoadSelection(S, k);
+                S.ScrollToSelected = true;
+                S.SelectWhenListed.clear();
+                ImGui::SetWindowFocus("Viewport");
+                break;
+            }
+            if (!S.SelectWhenListed.empty() && --S.SelectWhenListedFrames <= 0) S.SelectWhenListed.clear();
         }
         if (!S.SelectFirstModel || Walking) return;
         S.SelectFirstModel = false;

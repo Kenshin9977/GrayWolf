@@ -7,6 +7,7 @@
 
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportWriters.h"
 #include "GameModernWarfareRM.h"
 #include "GameReaders.h"
@@ -172,16 +173,26 @@ namespace
 
     protected:
         const char* Profile() const override { return "h1"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // a streamed image's stream records are the table's by its rank among the zone's images
+        std::vector<std::string> Ranked() const override { return { "image" }; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("H1"); }
         VirtualGameSession::Handlers Handlers() override { return { SlotString, DiskImage }; }
         bool DerefAssetPointers() const override { return true; }
         void Fixups() override;
         void Served(bool On) override;
         // with the images
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineStreamed(Out, ImageNameAt, Loaded);
+        }
+        // a streamed image: its largest level (a resident one is its bytes in the zone)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K == DiskGame::Kind::Image && Streams.count(Pos) && Pos + (int64_t)sizeof(MWRGfxImage) <= (int64_t)Image().size())
+                W = DiskGame::Sizes::PakImageWeight(At<MWRGfxImage>(Image(), Pos));
         }
         // a stream entry's word: {u16 locale, u16 pak index, u32 checksum}
         uint64_t PakOf(const PakEntry& E) const override { return (E.Pak >> 16) & 0xffff; }

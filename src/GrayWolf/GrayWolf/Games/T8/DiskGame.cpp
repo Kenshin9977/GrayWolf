@@ -8,6 +8,7 @@
 #include "Bo4DiskExport.h"
 #include "DBGameAssets.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "FileSystems.h"
 #include "GameBlackOps4.h"
 #include "Games/Treyarch/TreyarchAnimOwners.h"
@@ -221,12 +222,31 @@ namespace
         }
 
         // with the images that are not name-only headers
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             for (const auto& I : Assets.Images)
-                if (!Bo4DiskExport::IsReference(I)) Out.push_back({ DiskGame::Kind::Image, I.Name });
+                if (!Bo4DiskExport::IsReference(I)) Out.push_back({ { DiskGame::Kind::Image, I.Name }, I.Pos });
         }
+        // an image as Bo4DiskExport::BuildDds writes it: its largest streamed mip (its size and
+        // DXGI format make it), else its pixels in the zone (an array's first layer)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K != DiskGame::Kind::Image) return;
+            const auto It = std::find_if(Assets.Images.begin(), Assets.Images.end(), [Pos](const auto& I) { return I.Pos == Pos; });
+            if (It == Assets.Images.end()) return;
+            const Bo4DiskExport::ImageInfo& I = *It;
+            const bool Cube = I.MapType == 4 || I.MapType == 5;
+            if (!I.Streamed && I.PayloadPos >= 0)
+            {
+                const uint32_t Layers = (!Cube && I.MapType != 3 && I.Depth > 1) ? I.Depth : 1;
+                W = DiskGame::Sizes::ImageWeight(I.PayloadSize / Layers, I.Width, I.Height, Cube ? 6 : 1);
+            }
+            else if (I.MipHash != 0 && I.MipSize != 0)
+                W = DiskGame::Sizes::ImageWeight(I.MipWidth, I.MipHeight, I.Format, 1, Cube ? 6 : 1);
+        }
+        // its readers and DescribeZone work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
 
     private:
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T)
@@ -339,9 +359,19 @@ namespace
         const ICoDGame& LiveGame() const override { return LiveGames::Get("T8"); }
         VirtualGameSession::Handlers Handlers() override { return Bo4DiskExport::LiveHandlers(); }
         // the zone the game loads: the .ff decompressed, with its .fd update patch applied
-        bool LoadBytes(std::vector<uint8_t>& Zone, std::string& Error) override
+        bool LoadBytes(ZoneBytes& Zone, std::string& Error) override
         {
             return Bo4DiskExport::LoadZone(FastFilePath(), Zone, Error);
+        }
+        std::vector<std::string> SourceFiles() const override
+        {
+            // a .ff's update patch beside it, which LoadZone reads instead
+            fs::path Patch(FastFilePath());
+            const bool FastFile = ExportNaming::Lower(Patch.extension().string()) == ".ff";
+            Patch.replace_extension(".fd");
+            std::error_code Ec;
+            if (FastFile && fs::exists(Patch, Ec)) return { FastFilePath(), Patch.string() };
+            return { FastFilePath() };
         }
         // an asset pointer's back reference goes through resolve_asset (0x2eba2b0), which reads
         // the pointer at the referenced place: another material's image slot, not an image

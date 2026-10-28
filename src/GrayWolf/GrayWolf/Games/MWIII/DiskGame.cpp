@@ -216,6 +216,14 @@ namespace
 
     protected:
         const char* Profile() const override { return Campaign ? "mwiii_sp" : "mwiii"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
+        // its images' records (MW6GfxImage, IwctxReaders' layout) served from the zone's heads, the zone not read
+        HeadSpec Heads() const override { return ModernIwHeads(); }
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K == DiskGame::Kind::Image) W = ModernIwImageWeight(Pos);
+        }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("MWIII"); }
         VirtualGameSession::Handlers Handlers() override
         {
@@ -263,17 +271,17 @@ namespace
         }
         // (a transient zone is indexed for its parts only: a reference is not pulled from one, as an
         // export of a global zone would then open thousands of them)
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
             if (ExportNaming::Lower(Name()).ends_with("_tr")) return;
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             std::set<std::string> Materials;   // the campaign's (its material kind is not read: no MaterialType)
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "image") || (Campaign && OwnerIs(I, "material")))
                 {
                     const Kind K = OwnerIs(I, "image") ? Kind::Image : Kind::Material;
                     const std::string N = AssetName(K, I.Pos);
-                    if (!IsReference(K, N, I.Pos) && (K == Kind::Image || Materials.insert(N).second)) Out.push_back({ K, N });
+                    if (!IsReference(K, N, I.Pos) && (K == Kind::Image || Materials.insert(N).second)) Out.push_back({ { K, N }, I.Pos });
                 }
         }
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1+materials1" : "_images1+parts2+materials1"); }

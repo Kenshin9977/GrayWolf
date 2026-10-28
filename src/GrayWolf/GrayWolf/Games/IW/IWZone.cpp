@@ -69,8 +69,8 @@ size_t IWZone::LinkLodSurfaces(const LodLayout& L, const std::function<uint64_t(
 void IWZone::ReadStreams(int64_t StreamedAt)
 {
     std::vector<int64_t> Streamed;
-    for (const auto& I : Walk().Instances)
-        if (OwnerIs(I, "image") && At<uint8_t>(Zone(), I.Pos + StreamedAt) > 0) Streamed.push_back(I.Pos);
+    for (const int64_t Pos : AllOf("image"))
+        if (At<uint8_t>(Zone(), Pos + StreamedAt) > 0) Streamed.push_back(Pos);
     const std::vector<PakEntry> Table = ReadStreamTable(FastFilePath());
     Counter("images_streamed") += Streamed.size();
     if (Table.size() == Streamed.size() * 4)
@@ -113,11 +113,11 @@ std::vector<std::string> IWZone::HeaderScriptStrings() const
     return {};
 }
 
-void IWZone::DefineStreamed(std::vector<DiskGame::AssetId>& Out, int64_t NameAt, const std::vector<int64_t>& Also) const
+void IWZone::DefineStreamed(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out, int64_t NameAt, const std::vector<int64_t>& Also) const
 {
     const auto Add = [&](int64_t Pos) {
         const std::string N = AssetName(DiskGame::Kind::Image, Pos + NameAt);
-        if (!IsReference(DiskGame::Kind::Image, N, Pos)) Out.push_back({ DiskGame::Kind::Image, N });
+        if (!IsReference(DiskGame::Kind::Image, N, Pos)) Out.push_back({ { DiskGame::Kind::Image, N }, Pos });
     };
     for (const auto& [Pos, Entries] : Streams) Add(Pos);
     for (const int64_t Pos : Also) Add(Pos);
@@ -168,7 +168,7 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
         for (const auto& I : Walk().Instances)
             if (OwnerIs(I, M.VertexAsset))
                 Transients.try_emplace(At<int32_t>(Img, I.Pos + M.TransientNumber),
-                                       TransientVertices{ &Img, Off(At<uint64_t>(Img, I.Pos + M.Vertices)), At<uint32_t>(Img, I.Pos + M.VertexCount) });
+                                       TransientVertices{ Img, Off(At<uint64_t>(Img, I.Pos + M.Vertices)), At<uint32_t>(Img, I.Pos + M.VertexCount) });
         TransientsBeside(Transients);
         if (Transients.size() > 1)
         {
@@ -184,7 +184,7 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
     }
     // a record: position, binormal sign, colour, uv, then its packed normal at 36
     const auto Record = [&](uint32_t I, Maps::Vertex& V) {
-        const std::vector<uint8_t>* Bytes = &Img;
+        ByteView Bytes = Img;
         int64_t From = Vertices;
         uint32_t Count = VertexCount;
         if (!Spans.empty())
@@ -196,13 +196,13 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
         }
         if (I >= Count || From < 0) return false;
         const int64_t P = From + (int64_t)I * VertexSize;
-        if (P + VertexSize > (int64_t)Bytes->size()) return false;
-        for (int K = 0; K < 3; K++) V.Pos[K] = At<float>(*Bytes, P + K * 4);
-        const uint32_t Color = At<uint32_t>(*Bytes, P + 16);
+        if (P + VertexSize > (int64_t)Bytes.size()) return false;
+        for (int K = 0; K < 3; K++) V.Pos[K] = At<float>(Bytes, P + K * 4);
+        const uint32_t Color = At<uint32_t>(Bytes, P + 16);
         std::memcpy(V.Color, &Color, 4);
-        V.Uv[0] = At<float>(*Bytes, P + 20);
-        V.Uv[1] = At<float>(*Bytes, P + 24);
-        Normal(At<uint32_t>(*Bytes, P + 36), V.Normal);
+        V.Uv[0] = At<float>(Bytes, P + 20);
+        V.Uv[1] = At<float>(Bytes, P + 24);
+        Normal(At<uint32_t>(Bytes, P + 36), V.Normal);
         return true;
     };
     // the streams, each where its asset has it
@@ -441,7 +441,7 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
     CoDAssets::GamePackageCache = std::move(SavedCache);
 }
 
-std::vector<std::string> IWZone::InlineScriptStrings(const std::vector<uint8_t>& Z)
+std::vector<std::string> IWZone::InlineScriptStrings(ByteView Z)
 {
     std::vector<std::string> Out;
     if (Z.size() < 0x20) return Out;

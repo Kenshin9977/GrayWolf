@@ -38,7 +38,7 @@ namespace Techsets
         struct Reader
         {
             const ZoneView& Z;
-            const std::vector<uint8_t>& B;
+            ByteView B;
 
             template <class T>
             T At(int64_t Pos) const { return ExportNaming::At<T>(B, Pos); }
@@ -158,15 +158,16 @@ namespace Techsets
             std::sort(Files.begin(), Files.end());
             for (const auto& F : Files)
             {
-                std::vector<uint8_t> Bytes;
+                ZoneBytes Bytes;
                 if (!FastFile::Decompress(F.string(), Bytes, Error)) continue;
                 const auto W = ZoneTables::WalkZone(Bytes, Loaded->Tables, Loaded->Profile.TypeNames, Loaded->Profile.Rules, true);
                 if (W.ParseFailed) continue;
-                const auto Links = ResolveLinks(W, Loaded->Profile.Rules, true, &Bytes);
+                const auto Links = ResolveLinks(W, Loaded->Profile.Rules, true, Bytes);
                 std::unordered_map<int64_t, int64_t> Map(Links.Links.begin(), Links.Links.end());
+                const ByteView Image = Bytes;
                 ZoneView V;
                 V.Name = F.stem().string();
-                V.Image = &Bytes;
+                V.Image = &Image;
                 V.Ptr = [&Map](int64_t Field) {
                     const auto It = Map.find(Field);
                     return It == Map.end() ? (int64_t)-1 : It->second;
@@ -229,7 +230,7 @@ namespace Techsets
         }
     }
 
-    std::string Hex(const std::vector<uint8_t>& B, int64_t Pos, int64_t N)
+    std::string Hex(ByteView B, int64_t Pos, int64_t N)
     {
         std::string S;
         for (int64_t K = 0; K < N && Pos >= 0 && Pos + K < (int64_t)B.size(); K++) S += std::format("{:02x}", B[(size_t)(Pos + K)]);

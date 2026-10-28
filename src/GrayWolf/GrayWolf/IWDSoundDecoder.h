@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -12,4 +14,4 @@
 //
 // Returns false if the buffer is not a recognisable IWD sound. On success OutWav holds a
 // complete little-endian RIFF/WAVE PCM16 file.
-bool DecodeIWDSound(const std::vector<uint8_t>& Raw, std::vector<uint8_t>& OutWav);
+bool DecodeIWDSound(ByteView Raw, std::vector<uint8_t>& OutWav);

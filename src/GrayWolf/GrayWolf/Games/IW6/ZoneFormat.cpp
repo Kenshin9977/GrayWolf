@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "ZoneFormat.h"
 
@@ -12,7 +13,7 @@ namespace
     public:
         const char* Name() const override { return "iw6"; }
 
-        ZoneTables::ZoneHead Read(const std::vector<uint8_t>& Buf, const ZoneTables::StreamRules& Rules) const override
+        ZoneTables::ZoneHead Read(ByteView Buf, const ZoneTables::StreamRules& Rules) const override
         {
             const ZoneTables::HeaderReader H(Buf);
             if (H.Size() < 0x70) throw std::runtime_error("shorter than a header");

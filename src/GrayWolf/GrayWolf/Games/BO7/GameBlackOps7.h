@@ -21,6 +21,8 @@ public:
     static void LoadXModel(const std::unique_ptr<XModel_t>& Model, const XModelLod_t& ModelLOD, const std::unique_ptr<WraithModel>& ResultModel);
     static const XMaterial_t ReadXMaterial(uint64_t MaterialPointer);
     static std::unique_ptr<XImageDDS> LoadXImage(const XImage_t& Image);
+    // An image's format byte as DXGI's, 0 when unknown
+    static uint32_t DxgiFormat(uint8_t Format);
     static std::unique_ptr<XImageDDS> ReadXImage(const CoDImage_t* Image);
     // sndasset (0x40, loader 0x38924d0): flags u8 0x30 (bits 4-5 not 0: its .xsub key at 8; else its
     // frames in the zone at 8, size u32 0x10), seek table size u32 0x20, frames' size u32 0x24, frame

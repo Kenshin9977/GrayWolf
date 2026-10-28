@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "DiskGameSizes.h"
+#include "ByteView.h"
 
 #include "ExportWriters.h"
 
@@ -158,7 +160,7 @@ namespace Iw3Family
     // The zone's script strings: the count right after the XFile, the list
     // pointer after it (any non-null value: present), u32 slots after the 16-byte asset list, then
     // the text of every -1 slot
-    std::vector<std::string> IwdZone::ZoneStrings(const std::vector<uint8_t>& Z) const
+    std::vector<std::string> IwdZone::ZoneStrings(ByteView Z) const
     {
         const int64_t List = XFileSize(), First = List + 0x10;
         const uint32_t Count = At<uint32_t>(Z, List);
@@ -177,21 +179,30 @@ namespace Iw3Family
 
     // the images and loaded sounds this zone holds whole, for the install index (a texture or a
     // sound another zone names)
-    void IwdZone::Defines(std::vector<DiskGame::AssetId>& Out) const
+    void IwdZone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
     {
-        ZonekitZone::Defines(Out);
+        ZonekitZone::DefinesAt(Out);
         const int64_t LoadedSize = Sounds().LoadedSize;
         for (const auto& I : Walk().Instances)
             if (OwnerIs(I, "image"))
             {
                 const std::string N = AssetName(Kind::Image, I.Pos);
-                if (!N.empty() && !IsReference(Kind::Image, N, I.Pos)) Out.push_back({ Kind::Image, N });
+                if (!N.empty() && !IsReference(Kind::Image, N, I.Pos)) Out.push_back({ { Kind::Image, N }, I.Pos });
             }
             else if (OwnerIs(I, "loaded_sound") && At<uint32_t>(Image(), I.Pos + LoadedSize) != 0)
             {
                 const std::string N = AssetName(Kind::Sound, I.Pos);
-                if (!N.empty() && !IsReference(Kind::Sound, N, I.Pos)) Out.push_back({ Kind::Sound, N });
+                if (!N.empty() && !IsReference(Kind::Sound, N, I.Pos)) Out.push_back({ { Kind::Sound, N }, I.Pos });
             }
+    }
+
+    void IwdZone::Weigh(Kind K, int64_t Pos, DiskGame::Weight& W) const
+    {
+        if (K != Kind::Image || Install.empty()) return;
+        const auto Packages = IwdPackagesOf(Install);
+        const std::string N = AssetName(Kind::Image, Pos);
+        PackageCacheObject O;
+        if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
     }
 
     std::unique_ptr<XImageDDS> IwdZone::Decode(const std::string& ImageName, int64_t Pos)

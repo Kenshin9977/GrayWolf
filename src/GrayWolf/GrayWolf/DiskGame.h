@@ -120,7 +120,8 @@ namespace DiskGame
     struct SoundHeader
     {
         std::string Name;          // its file under sounds/ without extension: the same file once
-        enum class Form { Wav, Flac, Pcm16, Opus, Other } Is = Form::Wav;
+        // Decoded: a file WriteSound decodes to 16-bit PCM under WAV (WMA)
+        enum class Form { Wav, Flac, Pcm16, Opus, Other, Decoded } Is = Form::Wav;
         uint64_t Stored = 0;       // its bytes as given (a whole .wav or .flac file, samples, packets)
         uint32_t Rate = 0, Channels = 0;
         uint64_t Frames = 0;       // samples per channel, 0 when the header does not say
@@ -138,6 +139,21 @@ namespace DiskGame
         bool operator<(const AssetId& O) const;
     };
     using Selection = std::set<AssetId>;
+
+    // What an asset weighs, as the install index keeps it (ZoneIndex::Weights) for the size
+    // estimate: Bytes what its zone holds of it, its data streamed from packages included when its
+    // reader knows (0: not known); A, B and C each kind's own, 0 when not known (Sizes::ImageShape,
+    // Sizes::SoundShape write and read them):
+    // - an image: Bytes the pixel data its reader writes (behind a DDS header), A its width, B its
+    //   height, C its faces or slices << 16
+    // - a sound: Bytes its data as stored (SoundHeader::Stored), A its frames, B its rate, C its
+    //   channels | its SoundHeader::Form << 8 | KeptUnderWav << 12 | its bits << 16
+    // - a model: A its vertices, B its triangles; an anim: A its frames, B its bones
+    struct Weight
+    {
+        uint64_t Bytes = 0;
+        uint32_t A = 0, B = 0, C = 0;
+    };
 
     // A choice a game takes, shown in the GUI only while one of its kinds is ticked; the CLI maps
     // its own flag onto the same key. Of() is the value a run asked for, or the default.
@@ -351,11 +367,22 @@ namespace DiskGame
         virtual ~IDiskZone() = default;
         virtual const std::string& Name() const = 0;
         virtual bool WalkedToEnd() const = 0;
+        // walked only the assets asked and what they reach (DiskGame::PartialScope): what it needs
+        // may be its own assets, which a later open asking for them gives
+        virtual bool OpenedPartially() const { return false; }
         // the reader's own measures for this zone (links resolved...), added to Totals::Counters
         virtual void Measures(Totals&) const {}
         // What the zone holds whole: every asset its exporters write under that name. The install
         // index is made of it; a reader that lists nothing has no dependency pulled.
         virtual void Defines(std::vector<AssetId>&) const {}
+        // Defines' assets with what each weighs (unknown: Defines' with none)
+        virtual void Weighs(std::vector<std::pair<AssetId, Weight>>& Out) const
+        {
+            std::vector<AssetId> Ids;
+            Defines(Ids);
+            Out.reserve(Out.size() + Ids.size());
+            for (auto& A : Ids) Out.push_back({ std::move(A), Weight() });
+        }
         // The parts it holds that other zones' assets name by hash, (asset type, hash): an
         // xmodelsurfs a model of another zone points at (Black Ops 6). Kept in the install index
         // beside Defines (ZoneIndex::PartIn), for a reader to load the zone holding a part.
@@ -398,6 +425,12 @@ namespace DiskGame
     private:
         std::map<Kind, Exporter> Exporters;
     };
+
+    // What the install index keeps of an open zone: IDiskZone::Weighs, then, with Sounds, its
+    // sounds as its reader's headers tell them when it lists none (a dry run of its sound kind,
+    // nothing written). Not while other zones are read beside it (IndexInParallel): a sound reader
+    // shares the game's packages with their opening, which crashed Modern Warfare 2019's builds
+    void WeighAll(const IDiskZone& Zone, std::vector<std::pair<AssetId, Weight>>& Out, bool Sounds = true);
 
     class IDiskGame
     {
@@ -573,27 +606,50 @@ namespace DiskGame
     // Where each asset of an install is defined (IDiskZone::Defines of every zone ListZones
     // gives), built once and kept in a file keyed by the game, the install, the zone list and the
     // reader's IndexKey. What a run pulls dependencies from, and a zone's asset list for a picker.
+    // A run that asks for a few assets (Context::Only) opens each zone inside one: a zone that can
+    // walk only what is asked (a zonekit zone and its resume index, ResumeIndex.h) asks Wanted()
+    class PartialScope
+    {
+    public:
+        explicit PartialScope(std::shared_ptr<const Selection> Only);
+        ~PartialScope();
+        PartialScope(const PartialScope&) = delete;
+        PartialScope& operator=(const PartialScope&) = delete;
+        // what the open running on this thread asks for; nullptr: the whole zone
+        static const Selection* Wanted();
+
+    private:
+        std::shared_ptr<const Selection> Previous;
+    };
+    // at most this many assets asked: a partial open; more, the whole zone
+    inline constexpr size_t PartialAtMost = 256;
+
     class ZoneIndex
     {
     public:
         // The cached index, or one built now (every zone opened in turn, Cancel checked between
         // zones). nullptr and Error when the install lists no zone or the build was cancelled.
+        // AcceptUnweighed: one kept before the assets' weights (what an export asks of it) is read
+        // as it is, not built again
         static std::unique_ptr<ZoneIndex> For(const IDiskGame& Game, const ExportOptions& Options,
                                               const std::string& Install, const std::string& ReaderKey,
                                               const std::function<void(size_t Done, size_t Count)>& Step,
-                                              const std::atomic<bool>* Cancel, std::string& Error);
+                                              const std::atomic<bool>* Cancel, std::string& Error, bool AcceptUnweighed = true);
         // The index kept for this install whatever the reader's key (counts to show, possibly
         // from older tables), nullptr when none was built for its current zone list.
         static std::unique_ptr<ZoneIndex> Kept(const IDiskGame& Game, const ExportOptions& Options,
                                                const std::string& Install);
-        // For, the reader's key taken from the first zone that opens (what Export does).
+        // For, the reader's key taken from the first zone that opens (as Export does): the install
+        // indexed (the Load Game panel's count, disk-index), one kept before weights built again
         static std::unique_ptr<ZoneIndex> Build(const IDiskGame& Game, const ExportOptions& Options,
                                                 const std::string& Install,
                                                 const std::function<void(size_t Done, size_t Count)>& Step,
                                                 const std::atomic<bool>* Cancel, std::string& Error);
         const std::vector<std::string>& Zones() const { return Names; }   // as ListZones names them
         uint64_t Footprint(size_t Zone) const { return Sizes[Zone]; }
-        const std::vector<AssetId>& Defined(size_t Zone) const { return Assets[Zone]; }
+        const std::vector<AssetId>& Defined(size_t Zone) const;
+        // what each of Defined(Zone) weighs, in its order (none known: an index of before weights)
+        const std::vector<Weight>& Weights(size_t Zone) const;
         // the zones that define A, in ListZones order
         std::vector<size_t> DefinedIn(const AssetId& A) const;
         // the zones holding the part (IDiskZone::Parts), in ListZones order
@@ -609,11 +665,19 @@ namespace DiskGame
     private:
         // File read in when its key is Key (any key when Key is empty); false when it is not
         bool Load(const std::string& Key);
-        void Add(size_t Zone, AssetId A);
+        void Add(size_t Zone, AssetId A, Weight W = {});
+        // the kept file read in place (its lookups and lists read from it, nothing loaded whole),
+        // or written from what is in memory; false when it is missing, another format or another key
+        bool LoadMapped(const std::string& Path, const std::string& Key);
+        bool SaveMapped(const std::string& Path, const std::string& Key) const;
+        struct Mapped;
+        std::shared_ptr<const Mapped> Map;
+        std::shared_ptr<std::mutex> MappedLock = std::make_shared<std::mutex>();   // Defined's reads of Map
 
         std::vector<std::string> Names;
         std::vector<uint64_t> Sizes;
-        std::vector<std::vector<AssetId>> Assets;
+        mutable std::vector<std::vector<AssetId>> Assets;   // a mapped index's: each zone's read when asked
+        mutable std::vector<std::vector<Weight>> AssetWeights;   // beside Assets, read with them
         // (hashed: an index of every zone of an install holds millions of entries; an asset's name
         // compares without case, as AssetId's order does)
         struct AssetHash

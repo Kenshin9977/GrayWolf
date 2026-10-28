@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The anim owners (AnimOwners.h) of the Infinity Ward zones Ghosts to Infinite Warfare, from the
 // zones' own assets: weapon:<w> (hands, view model; its xanims, its attachments', IW's anim
 // packages'), animtree:<t> (an .atr on its tree's models, Layout::Trees), character:<script> (AW's
@@ -25,7 +27,7 @@ namespace IwZoneAnimOwners
     // What a zone gives the documents reader (its protected accessors, from the game's zone class)
     struct ZoneView
     {
-        const std::vector<uint8_t>* Image = nullptr;
+        const ByteView* Image = nullptr;
         const ZoneTables::ZoneResult* Walk = nullptr;
         std::function<int64_t(uint64_t)> Off;                              // a relocated pointer's zone offset, -1 elsewhere
         std::function<std::string(int64_t)> Text;                          // the string pointer field at a zone offset

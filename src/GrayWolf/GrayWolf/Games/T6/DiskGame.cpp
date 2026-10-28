@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Call of Duty: Black Ops II (T6) on the disk template: a ZonekitZone with the t6 profile (32-bit:
 // every pointer 4 bytes, the zone served below 4 GB), served to the live Black Ops II readers
@@ -10,6 +11,7 @@
 #include "CoDIWITranslator.h"
 #include "Games/Treyarch/TreyarchSoundAliases.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "Games/Treyarch/TreyarchEffects.h"
 #include "Games/Treyarch/TreyarchGscOwners.h"
 #include "Games/Treyarch/TreyarchLevel.h"
@@ -46,8 +48,9 @@ namespace
     // 0x4c. A streamed image's .ipak key is hash << 32 | part hash. GfxImageLoadDef (0xc +
     // resourceSize): levelCount u8, flags u8, a DXGI_FORMAT at 4, resourceSize at 8, the pixels
     // from 0xc, the largest level first.
+    // its cardMemory (u32 0x10): the bytes its mips take
     constexpr int64_t ImageNameAt = 0x48, ImageWidth = 0x14, ImageHeight = 0x16, ImagePartHash = 0x28,
-                      ImagePartCount = 0x3c, ImageHash = 0x4c;
+                      ImagePartCount = 0x3c, ImageHash = 0x4c, ImageCardMemory = 0x10;
     // RawFile (0xc): name 0, len 4, buffer 8 (len + 1 bytes); an .atr is {u32 size, raw deflate}
     constexpr int64_t RawLen = 4, RawBuffer = 8;
     // SndBank (0x1294, Load_SndBank 0x1830c0): aliasCount 4, alias lists 8 (SndAliasList 0x14:
@@ -310,6 +313,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "t6"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("T6"); }
         // an asset pointer's back reference is resolved through the slot it names (the Ptr
         // loaders call DB_ConvertOffsetToAlias 0x19b7d0: *p = *(block + offset)); a data one is
@@ -357,7 +362,7 @@ namespace
 
         // The zone's script strings: count at 0x28, the list pointer at 0x2c (any
         // non-null value: present), u32 slots from 0x40, then the text of every -1 slot
-        static std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Z)
+        static std::vector<std::string> ZoneStrings(ByteView Z)
         {
             const uint32_t Count = At<uint32_t>(Z, 0x28);
             if (At<uint32_t>(Z, 0x2c) == 0 || Count == 0 || 0x40 + (size_t)Count * 4 > Z.size()) return {};
@@ -374,10 +379,25 @@ namespace
 
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
         // the images this zone holds whole, for the install index (a texture another zone names)
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineImages(Out);
+        }
+
+        // a streamed image in the install's .ipak: what its record says its mips take
+        // (Sizes::CardMemoryWeight; the .ipak's LZO bytes are no measure of it); one in the zone
+        // weighs its GfxImageLoadDef there
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            const auto& Z = Image();
+            if (K != DiskGame::Kind::Image || At<uint8_t>(Z, Pos + ImagePartCount) == 0 || Install.empty()) return;
+            const auto Packages = PackagesOf(Install, fs::path(FastFilePath()).parent_path().filename().string());
+            const uint64_t Key = (uint64_t)At<uint32_t>(Z, Pos + ImageHash) << 32 | At<uint32_t>(Z, Pos + ImagePartHash);
+            PackageCacheObject O;
+            if (Packages && Packages->Find(Key, O))
+                W = DiskGame::Sizes::CardMemoryWeight(At<uint32_t>(Z, Pos + ImageCardMemory), At<uint16_t>(Z, Pos + ImageWidth),
+                                                      At<uint16_t>(Z, Pos + ImageHeight));
         }
 
         std::unique_ptr<XImageDDS> Decode(int64_t Pos)

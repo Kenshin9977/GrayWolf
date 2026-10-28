@@ -168,4 +168,23 @@ namespace LauncherIcons
         }
         return (Cache[Key] = S).Get();
     }
+
+    ID3D11ShaderResourceView* ForFile(ID3D11Device* Dev, const std::string& Path)
+    {
+        static std::mutex Lock;
+        static std::map<std::string, ComPtr<ID3D11ShaderResourceView>> Cache;   // one per path, tried once
+        if (Dev == nullptr || Path.empty()) return nullptr;
+        std::lock_guard<std::mutex> Guard(Lock);
+        if (const auto It = Cache.find(Path); It != Cache.end()) return It->second.Get();
+        ComPtr<ID3D11ShaderResourceView> S;
+        const int Wide = MultiByteToWideChar(CP_ACP, 0, Path.c_str(), -1, nullptr, 0);
+        std::wstring File(Wide > 0 ? Wide - 1 : 0, L'\0');
+        if (Wide > 1) MultiByteToWideChar(CP_ACP, 0, Path.c_str(), -1, File.data(), Wide);
+        if (HICON Icon = Extract(File, 0))
+        {
+            S = Upload(Dev, Icon);
+            DestroyIcon(Icon);
+        }
+        return (Cache[Path] = S).Get();
+    }
 }

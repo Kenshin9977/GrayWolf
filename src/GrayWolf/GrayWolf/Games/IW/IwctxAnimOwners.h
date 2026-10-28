@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // Anim owners (AnimOwners.h) for Black Ops 6 and 7 (iwctx zones): anim sets (their name an
 // archetype's), the characters naming that archetype (body, head as script strings), scene
 // bundles' objects and map entities. Owner ids "archetype:<archetype>/<character>",
@@ -32,7 +34,7 @@ namespace IwctxAnimOwners
     struct Served
     {
         std::string Name;
-        const std::vector<uint8_t>* Bytes = nullptr;
+        ByteView Bytes;
         uint64_t Base = 0;
         const ZoneTables::ZoneResult* R = nullptr;
     };

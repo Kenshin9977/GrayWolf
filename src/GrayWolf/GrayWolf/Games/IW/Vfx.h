@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // The vfx kind's core: the particle system of Infinite Warfare and its successors (emitters ->
 // states -> init/update/test module groups -> typed modules), read through a game's Layout (where
 // each level sits, its module types by id with their fields) into the fx kind's JSON, one shape
@@ -117,7 +119,7 @@ namespace Vfx
     // A material's atlas (its MaterialAtlasRows and MaterialAtlasCols counts), what an effect's
     // frames are, as the material kind's "atlas": the material at zone offset O (-1: none), Size
     // of its bytes checked to be in the zone (0: not checked)
-    void AddAtlas(nlohmann::ordered_json& J, const Layout& L, const std::vector<uint8_t>& Image, int64_t O, int64_t Size = 0);
+    void AddAtlas(nlohmann::ordered_json& J, const Layout& L, ByteView Image, int64_t O, int64_t Size = 0);
 
     // The preview adapter: a vfx JSON (format "vfx") into FxPreview's model, each emitter's first
     // state an element; false with Error when it is not one.

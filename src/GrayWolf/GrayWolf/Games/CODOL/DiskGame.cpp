@@ -8,6 +8,7 @@
 
 #include "CoDIWITranslator.h"
 #include "DiskGame.h"
+#include "DiskGameSizes.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "Games/CODOL/CodolAnimOwners.h"
@@ -176,6 +177,8 @@ namespace
             }, [this](uint64_t A) { return Off(A); });
         }
         const char* Profile() const override { return "codol"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("CODOL"); }
         // an asset pointer's back reference names the slot holding it (the Ptr loaders read
         // *(block + offset), 0x493a78)
@@ -300,14 +303,21 @@ namespace
             C.VertexCount = 0x64, C.Vertices = 0x68, C.TriangleCount = 0x6c, C.Triangles = 0x70;   // u16 vertex numbers
             return C;
         }
-        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
-            ZonekitZone::Defines(Out);
+            ZonekitZone::DefinesAt(Out);
             DefineImages(Out);
         }
 
+        // a loose fast file's; read from the archives, none (the index is kept for the bytes)
+        std::vector<std::string> SourceFiles() const override
+        {
+            std::error_code Ec;
+            if (fs::exists(Ifs::Utf8Path(FastFilePath()), Ec)) return ZonekitZone::SourceFiles();
+            return {};
+        }
         // A loose fast file when there is one, else the install's archives
-        bool LoadBytes(std::vector<uint8_t>& Out, std::string& Error) override
+        bool LoadBytes(ZoneBytes& Out, std::string& Error) override
         {
             std::error_code Ec;
             if (fs::exists(Ifs::Utf8Path(FastFilePath()), Ec)) return ZonekitZone::LoadBytes(Out, Error);
@@ -325,7 +335,7 @@ namespace
 
     private:
         std::string Install;
-        std::shared_ptr<Ifs::Install> Opened;
+        mutable std::shared_ptr<Ifs::Install> Opened;   // Archives_'s, opened when first asked
 
         // The weaponstats kind: the weapons as weapon files, the weaponattach assets as attachment files,
         // the zone's strings and its weapon attachment table (code_post_gfx_mp's) to WeaponFiles
@@ -362,7 +372,7 @@ namespace
             WeaponFiles::ExportStats(Weapons, S, Name(), C, T, IwWeaponDefs::StatsNotes(L), Tables);
         }
 
-        std::shared_ptr<Ifs::Install> Archives_(std::string& Error)
+        std::shared_ptr<Ifs::Install> Archives_(std::string& Error) const
         {
             if (!Opened && !Install.empty()) Opened = InstallOf(Install, Error);
             if (!Opened && Error.empty()) Error = "no install: --install <the Call of Duty Online folder>";
@@ -378,7 +388,7 @@ namespace
 
         // The script strings: count at 0x28, the list pointer at 0x2c, u32
         // slots from 0x38, then the text of every -1 slot
-        static std::vector<std::string> ZoneStrings(const std::vector<uint8_t>& Z)
+        static std::vector<std::string> ZoneStrings(ByteView Z)
         {
             const uint32_t Count = At<uint32_t>(Z, 0x28);
             if (At<uint32_t>(Z, 0x2c) == 0 || Count == 0 || 0x38 + (size_t)Count * 4 > Z.size()) return {};
@@ -412,8 +422,9 @@ namespace
             return nullptr;
         }
 
-        // GfxImage (0x34): mapType u8 at 4 (5 a cube), width u16 at 0x20, height at 0x22
-        static constexpr int64_t ImageMapType = 0x4, ImageWidth = 0x20, ImageHeight = 0x22;
+        // GfxImage (0x34): mapType u8 at 4 (5 a cube), cardMemory u32 at 0x10 (the bytes its mips
+        // take), width u16 at 0x20, height at 0x22
+        static constexpr int64_t ImageMapType = 0x4, ImageCardMemory = 0x10, ImageWidth = 0x20, ImageHeight = 0x22;
 
         // The pixels a GfxImage carries in the zone: the largest level of each face
         std::unique_ptr<XImageDDS> LoadDef(int64_t Pos)
@@ -441,6 +452,25 @@ namespace
             if (Level * Faces > Size || Def + Codol::LoadDefData + (int64_t)Size > (int64_t)Z.size()) return nullptr;
             Counter("images_in_zone")++;
             return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + Codol::LoadDefData, Level, Swap, Faces, Size / Faces);
+        }
+
+        // an image whose pixels the zone does not hold, as FromArchives finds it in the archives
+        // (their sizes are packed ones): what its record says its mips take (Sizes::CardMemoryWeight)
+        void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
+        {
+            if (K != DiskGame::Kind::Image) return;
+            if (const int64_t Def = Off(PointerAt(Pos + Codol::ImageLoadDef)); Def >= 0 && At<uint32_t>(Image(), Def + Codol::LoadDefSize) != 0) return;
+            std::string Error;
+            const auto Archives = Archives_(Error);
+            const std::string N = AssetName(DiskGame::Kind::Image, Pos);
+            if (!Archives || N.empty()) return;
+            for (const char* Folder : { "hires/images/", "main/images/" })
+                if (const auto* L = Archives->Find(Folder + ExportNaming::Lower(N) + ".iwi"))
+                {
+                    W = DiskGame::Sizes::CardMemoryWeight(At<uint32_t>(Image(), Pos + ImageCardMemory), At<uint16_t>(Image(), Pos + ImageWidth),
+                                                          At<uint16_t>(Image(), Pos + ImageHeight));
+                    return;
+                }
         }
 
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos)
@@ -554,8 +584,6 @@ namespace
                     }
                 }
             }
-            const fs::path Root = C.KindDir(Kind::Sound);
-            const std::string Format = ExportWriters::SoundFormatSetting();
             size_t N = 0;
             const size_t All = Loaded.size() + Streamed.size();
             for (const auto& [F, Snd] : Loaded)
@@ -581,15 +609,7 @@ namespace
                      (uint16_t)At<uint32_t>(Z, Snd + 0x14), (uint16_t)At<uint32_t>(Z, Snd + 0x24), Z.data() + Data, Size);
                 std::string File = F;
                 if (File.size() < 4 || ExportNaming::Lower(File.substr(File.size() - 4)) != ".wav") File += ".wav";
-                std::string Why;
-                if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Wav.data(), Wav.size(), File),
-                                              (Root / Ifs::Utf8Path(ExportWriters::SoundFileName(File, Format))).make_preferred(), Format, &Why))
-                {
-                    Kt.Written++;
-                    Counter(Codec == 0x11 ? "sounds_loaded_ima_adpcm" : "sounds_loaded_pcm")++;
-                }
-                else
-                    T.Fail(Name(), Kind::Sound, F, Why);
+                WriteSoundFile(C, T, File, Wav.data(), Wav.size(), Codec == 0x11 ? "sounds_loaded_ima_adpcm" : "sounds_loaded_pcm");
             }
             std::string Error;
             const auto Archives = Archives_(Error);
@@ -617,15 +637,7 @@ namespace
                     continue;
                 }
                 Codol::UnwrapFile(F, Data);
-                std::string Why;
-                if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Data.data(), Data.size(), Rel),
-                                              (Root / Ifs::Utf8Path(ExportWriters::SoundFileName(Rel, Format))).make_preferred(), Format, &Why))
-                {
-                    Kt.Written++;
-                    Counter("sounds_streamed")++;
-                }
-                else
-                    T.Fail(Name(), Kind::Sound, Rel, Why);
+                WriteSoundFile(C, T, Rel, Data.data(), Data.size(), "sounds_streamed");
             }
         }
     };

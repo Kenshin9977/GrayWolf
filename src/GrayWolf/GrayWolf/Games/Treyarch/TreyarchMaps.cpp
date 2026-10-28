@@ -13,9 +13,9 @@ namespace Treyarch
 {
 using ExportNaming::At;
 
-Maps::WorldBuilder::Fetch WorldVertices(const std::vector<uint8_t>& Img, int64_t Positions, int64_t Data, uint32_t Count)
+Maps::WorldBuilder::Fetch WorldVertices(ByteView Img, int64_t Positions, int64_t Data, uint32_t Count)
 {
-    return [&Img, Positions, Data, Count](uint32_t I, Maps::Vertex& V) {
+    return [Img, Positions, Data, Count](uint32_t I, Maps::Vertex& V) {
         if (I >= Count || Positions < 0 || Data < 0) return false;
         for (int K = 0; K < 3; K++) V.Pos[K] = At<float>(Img, Positions + (int64_t)I * 12 + K * 4);
         const int64_t D = Data + (int64_t)I * 20;
@@ -29,7 +29,7 @@ Maps::WorldBuilder::Fetch WorldVertices(const std::vector<uint8_t>& Img, int64_t
     };
 }
 
-void DynamicEntities(const std::vector<uint8_t>& Img, int64_t List, uint32_t Count, int64_t Stride, const std::string& Prefix,
+void DynamicEntities(ByteView Img, int64_t List, uint32_t Count, int64_t Stride, const std::string& Prefix,
                      const std::function<std::string(uint64_t)>& ModelAt, Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
 {
     for (uint32_t K = 0; List >= 0 && K < Count; K++)
@@ -51,7 +51,7 @@ void DynamicEntities(const std::vector<uint8_t>& Img, int64_t List, uint32_t Cou
     }
 }
 
-void Lights(const std::vector<uint8_t>& Img, int64_t List, uint32_t Count, const LightFields& F, Maps::MapScene& Scene)
+void Lights(ByteView Img, int64_t List, uint32_t Count, const LightFields& F, Maps::MapScene& Scene)
 {
     for (uint32_t K = 0; List >= 0 && K < Count; K++)
     {
@@ -72,7 +72,7 @@ void Lights(const std::vector<uint8_t>& Img, int64_t List, uint32_t Count, const
     }
 }
 
-std::string EntityText(const std::vector<uint8_t>& Img, int64_t Array, uint64_t Count, const std::function<int64_t(uint64_t)>& Off,
+std::string EntityText(ByteView Img, int64_t Array, uint64_t Count, const std::function<int64_t(uint64_t)>& Off,
                        const std::function<std::string(uint64_t)>& String, const std::function<std::string(uint64_t)>& HashName,
                        EntityCounts& N, const std::function<std::string(uint64_t Entity, int32_t ModelIndex)>& Model)
 {

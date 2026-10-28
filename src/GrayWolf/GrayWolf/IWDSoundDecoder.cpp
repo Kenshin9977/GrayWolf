@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 #include "IWDSoundDecoder.h"
 
@@ -18,11 +19,11 @@ namespace
         return (int16_t)v;
     }
 
-    inline int32_t ReadU32(const std::vector<uint8_t>& D, size_t O)
+    inline int32_t ReadU32(ByteView D, size_t O)
     {
         return (int32_t)(D[O] | (D[O + 1] << 8) | (D[O + 2] << 16) | ((uint32_t)D[O + 3] << 24));
     }
-    inline int16_t ReadS16(const std::vector<uint8_t>& D, size_t O)
+    inline int16_t ReadS16(ByteView D, size_t O)
     {
         return (int16_t)(D[O] | (D[O + 1] << 8));
     }
@@ -31,7 +32,7 @@ namespace
     struct Ch
     {
         int Predictor = 0, Delta = 0, S1 = 0, S2 = 0, C1 = 0, C2 = 0;
-        void Init(const std::vector<uint8_t>& D, size_t O)
+        void Init(ByteView D, size_t O)
         {
             int bp = D[O]; if (bp > 6) bp = 6;
             Delta = ReadS16(D, O + 1);
@@ -64,7 +65,7 @@ namespace
     }
 }
 
-bool DecodeIWDSound(const std::vector<uint8_t>& Raw, std::vector<uint8_t>& OutWav)
+bool DecodeIWDSound(ByteView Raw, std::vector<uint8_t>& OutWav)
 {
     if (Raw.size() < 32) return false;
 

@@ -1,8 +1,12 @@
 #include "stdafx.h"
+#include "ByteView.h"
 #include "VCDiff.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <execution>
+#include <vector>
 
 namespace VCDiff
 {
@@ -155,10 +159,106 @@ namespace VCDiff
                 return true;
             }
         };
+
+        // A window as its header reads: where its source segment is, its three sections, and
+        // where its bytes go in the target
+        struct Window
+        {
+            size_t SourceSegLength = 0, SourceSegPosition = 0;
+            bool SegInTarget = false;   // VCD_TARGET: the segment is in the target, decoded before
+            size_t TargetStart = 0, TargetLength = 0;
+            const uint8_t* DataSec = nullptr; const uint8_t* DataSecEnd = nullptr;
+            const uint8_t* InstSec = nullptr; const uint8_t* InstSecEnd = nullptr;
+            const uint8_t* AddrSec = nullptr; const uint8_t* AddrSecEnd = nullptr;
+        };
+
+        // The window's instructions run into Target (resized to hold every window); "" when they
+        // decode, else what went wrong
+        const char* DecodeWindow(const Window& W, ByteView Source, ZoneBytes& Target)
+        {
+            const uint8_t* SourceSegPtr = W.SegInTarget ? Target.data() + W.SourceSegPosition
+                                                        : Source.data() + W.SourceSegPosition;
+            AddressCache Cache;
+            Cache.Reset();
+            size_t Written = 0;
+
+            const uint8_t* DataPos = W.DataSec;
+            const uint8_t* InstPos = W.InstSec;
+            const uint8_t* AddrPos = W.AddrSec;
+
+            while (Written < W.TargetLength)
+            {
+                uint8_t Opcode = 0;
+                if (!ReadByte(InstPos, W.InstSecEnd, Opcode)) return "truncated instruction stream";
+                const OpEntry& Entry = DefaultCodeTable[Opcode];
+
+                for (int Half = 0; Half < 2; Half++)
+                {
+                    const Inst I = Half == 0 ? Entry.Inst1 : Entry.Inst2;
+                    if (I == Inst::Noop) continue;
+                    uint8_t Mode = Half == 0 ? Entry.Mode1 : Entry.Mode2;
+                    uint8_t FixedSize = Half == 0 ? Entry.Size1 : Entry.Size2;
+
+                    size_t Size = FixedSize;
+                    if (FixedSize == 0)
+                    {
+                        uint64_t V = 0;
+                        if (!ReadVarint(InstPos, W.InstSecEnd, V)) return "truncated instruction size";
+                        Size = (size_t)V;
+                    }
+                    if (Written + Size > W.TargetLength) return "instruction size exceeds target window length";
+
+                    uint8_t* Out = Target.data() + W.TargetStart + Written;
+
+                    if (I == Inst::Add)
+                    {
+                        if (DataPos + Size > W.DataSecEnd) return "ADD runs past data section";
+                        std::memcpy(Out, DataPos, Size);
+                        DataPos += Size;
+                    }
+                    else if (I == Inst::Run)
+                    {
+                        if (DataPos + 1 > W.DataSecEnd) return "RUN runs past data section";
+                        std::memset(Out, *DataPos, Size);
+                        DataPos += 1;
+                    }
+                    else // Copy
+                    {
+                        const int32_t HereAddress = (int32_t)(W.SourceSegLength + Written);
+                        int32_t Address = 0;
+                        if (!Cache.Decode(HereAddress, Mode, AddrPos, W.AddrSecEnd, Address)) return "truncated or invalid COPY address";
+                        if (Address < 0 || Address >= HereAddress) return "COPY address out of range";
+
+                        // The combined addressable range is [source segment][target bytes
+                        // decoded so far in this window]; a copy can span across that boundary,
+                        // and can even read bytes this same instruction is still writing (RFC
+                        // 3284's self-referential run-length trick): the target part repeats the
+                        // Distance bytes before it, copied in runs of at most Distance, which
+                        // never overlap.
+                        size_t Done = 0;
+                        if ((size_t)Address < W.SourceSegLength)
+                        {
+                            Done = std::min(Size, W.SourceSegLength - (size_t)Address);
+                            std::memcpy(Out, SourceSegPtr + Address, Done);
+                        }
+                        const size_t Distance = (size_t)(HereAddress - Address);
+                        while (Done < Size)
+                        {
+                            const size_t Run = std::min(Size - Done, Distance);
+                            std::memcpy(Out + Done, Out + Done - Distance, Run);
+                            Done += Run;
+                        }
+                    }
+
+                    Written += Size;
+                }
+            }
+            return Written == W.TargetLength ? "" : "decoded window size does not match the declared target window length";
+        }
     }
 
-    bool Decode(const std::vector<uint8_t>& Source, const uint8_t* Delta, size_t DeltaSize,
-        std::vector<uint8_t>& Target, std::string& Error)
+    bool Decode(ByteView Source, const uint8_t* Delta, size_t DeltaSize,
+        ZoneBytes& Target, std::string& Error)
     {
         Target.clear();
 
@@ -184,14 +284,17 @@ namespace VCDiff
             return false;
         }
 
+        // the windows' headers first: the target is sized once, and windows that copy only from
+        // the source decode side by side
+        std::vector<Window> Windows;
+        size_t Total = 0;
+        bool AnyInTarget = false;
         while (Pos < End)
         {
+            Window W;
+            W.TargetStart = Total;
             uint8_t WinIndicator = 0;
             if (!ReadByte(Pos, End, WinIndicator)) { Error = "truncated window header"; return false; }
-
-            size_t SourceSegLength = 0, SourceSegPosition = 0;
-            const uint8_t* SourceSegPtr = nullptr;
-            bool SegInTarget = false;   // VCD_TARGET: re-pointed after Target grows
 
             if (WinIndicator & 0x03) // VCD_SOURCE or VCD_TARGET
             {
@@ -201,26 +304,25 @@ namespace VCDiff
                     Error = "truncated source segment length/position";
                     return false;
                 }
-                SourceSegLength = (size_t)Len;
-                SourceSegPosition = (size_t)PosVal;
+                W.SourceSegLength = (size_t)Len;
+                W.SourceSegPosition = (size_t)PosVal;
 
                 if (WinIndicator & 0x01) // VCD_SOURCE: from the external dictionary/source buffer
                 {
-                    if (SourceSegPosition + SourceSegLength > Source.size())
+                    if (W.SourceSegPosition + W.SourceSegLength > Source.size())
                     {
                         Error = "source segment runs past the end of the source buffer";
                         return false;
                     }
-                    SourceSegPtr = Source.data() + SourceSegPosition;
                 }
                 else // VCD_TARGET: from the already-decoded output of this same stream
                 {
-                    if (SourceSegPosition + SourceSegLength > Target.size())
+                    if (W.SourceSegPosition + W.SourceSegLength > Total)
                     {
                         Error = "VCD_TARGET source segment runs past already-decoded output";
                         return false;
                     }
-                    SegInTarget = true;
+                    W.SegInTarget = AnyInTarget = true;
                 }
             }
 
@@ -238,6 +340,8 @@ namespace VCDiff
 
             uint64_t TargetWindowLength = 0;
             if (!ReadVarint(Pos, End, TargetWindowLength)) { Error = "truncated target window length"; return false; }
+            if (TargetWindowLength > ((uint64_t)1 << 36) - Total) { Error = "target window length out of range"; return false; }
+            W.TargetLength = (size_t)TargetWindowLength;
 
             uint8_t DeltaIndicator = 0;
             if (!ReadByte(Pos, End, DeltaIndicator)) { Error = "truncated delta indicator"; return false; }
@@ -253,129 +357,58 @@ namespace VCDiff
                 Error = "truncated section lengths";
                 return false;
             }
-
-            const uint8_t* DataSec = Pos;
-            const uint8_t* DataSecEnd = DataSec + DataLen;
-            const uint8_t* InstSec = DataSecEnd;
-            const uint8_t* InstSecEnd = InstSec + InstLen;
-            const uint8_t* AddrSec = InstSecEnd;
-            const uint8_t* AddrSecEnd = AddrSec + AddrLen;
-
-            if (AddrSecEnd > End || AddrSecEnd != DeltaEncodingStart + DeltaEncodingLength)
+            if (DataLen > (uint64_t)(End - Pos) || InstLen > (uint64_t)(End - Pos) - DataLen ||
+                AddrLen > (uint64_t)(End - Pos) - DataLen - InstLen)
             {
                 Error = "window section lengths do not add up to the declared delta encoding length";
                 return false;
             }
 
-            AddressCache Cache;
-            Cache.Reset();
+            W.DataSec = Pos;
+            W.DataSecEnd = W.DataSec + DataLen;
+            W.InstSec = W.DataSecEnd;
+            W.InstSecEnd = W.InstSec + InstLen;
+            W.AddrSec = W.InstSecEnd;
+            W.AddrSecEnd = W.AddrSec + AddrLen;
 
-            const size_t TargetWindowStart = Target.size();
-            Target.resize(TargetWindowStart + (size_t)TargetWindowLength);
-            if (SegInTarget) SourceSegPtr = Target.data() + SourceSegPosition;
-            size_t Written = 0;
-
-            const uint8_t* DataPos = DataSec;
-            const uint8_t* InstPos = InstSec;
-            const uint8_t* AddrPos = AddrSec;
-
-            while (Written < (size_t)TargetWindowLength)
+            if (W.AddrSecEnd != DeltaEncodingStart + DeltaEncodingLength)
             {
-                uint8_t Opcode = 0;
-                if (!ReadByte(InstPos, InstSecEnd, Opcode)) { Error = "truncated instruction stream"; return false; }
-                const OpEntry& Entry = DefaultCodeTable[Opcode];
-
-                for (int Half = 0; Half < 2; Half++)
-                {
-                    const Inst I = Half == 0 ? Entry.Inst1 : Entry.Inst2;
-                    if (I == Inst::Noop) continue;
-                    uint8_t Mode = Half == 0 ? Entry.Mode1 : Entry.Mode2;
-                    uint8_t FixedSize = Half == 0 ? Entry.Size1 : Entry.Size2;
-
-                    size_t Size = FixedSize;
-                    if (FixedSize == 0)
-                    {
-                        uint64_t V = 0;
-                        if (!ReadVarint(InstPos, InstSecEnd, V)) { Error = "truncated instruction size"; return false; }
-                        Size = (size_t)V;
-                    }
-                    if (Written + Size > (size_t)TargetWindowLength)
-                    {
-                        Error = "instruction size exceeds target window length";
-                        return false;
-                    }
-
-                    uint8_t* Out = Target.data() + TargetWindowStart + Written;
-
-                    if (I == Inst::Add)
-                    {
-                        if (DataPos + Size > DataSecEnd) { Error = "ADD runs past data section"; return false; }
-                        std::memcpy(Out, DataPos, Size);
-                        DataPos += Size;
-                    }
-                    else if (I == Inst::Run)
-                    {
-                        if (DataPos + 1 > DataSecEnd) { Error = "RUN runs past data section"; return false; }
-                        std::memset(Out, *DataPos, Size);
-                        DataPos += 1;
-                    }
-                    else // Copy
-                    {
-                        const int32_t HereAddress = (int32_t)(SourceSegLength + Written);
-                        int32_t Address = 0;
-                        if (!Cache.Decode(HereAddress, Mode, AddrPos, AddrSecEnd, Address))
-                        {
-                            Error = "truncated or invalid COPY address";
-                            return false;
-                        }
-                        if (Address < 0 || Address >= HereAddress) { Error = "COPY address out of range"; return false; }
-
-                        // The combined addressable range is [source segment][target bytes
-                        // decoded so far in this window]; a copy can span across that boundary,
-                        // and can even read bytes this same instruction is still writing (RFC
-                        // 3284's self-referential run-length trick) - copy byte by byte instead
-                        // of memcpy/memmove to get that overlap right.
-                        if ((size_t)Address + Size <= SourceSegLength)
-                        {
-                            std::memcpy(Out, SourceSegPtr + Address, Size);
-                            Written += Size;
-                            continue;
-                        }
-                        for (size_t k = 0; k < Size; k++)
-                        {
-                            const size_t A = (size_t)Address + k;
-                            uint8_t V;
-                            if (A < SourceSegLength)
-                            {
-                                V = SourceSegPtr[A];
-                            }
-                            else
-                            {
-                                const size_t TargetRelative = A - SourceSegLength;
-                                V = *(Target.data() + TargetWindowStart + TargetRelative);
-                            }
-                            Out[k] = V;
-                        }
-                    }
-
-                    Written += Size;
-                }
-            }
-
-            if (Written != (size_t)TargetWindowLength)
-            {
-                Error = "decoded window size does not match the declared target window length";
+                Error = "window section lengths do not add up to the declared delta encoding length";
                 return false;
             }
 
-            Pos = AddrSecEnd;
+            Pos = W.AddrSecEnd;
             if (WinIndicator & 0x08)
             {
                 if (End - Pos < 4) { Error = "truncated window trailer"; return false; }
                 Pos += 4;
             }
+            Total += W.TargetLength;
+            Windows.push_back(W);
         }
 
+        Target.resize(Total);
+        // a window that reads the target needs the ones before it decoded: then they go in order
+        std::vector<const char*> Failed(Windows.size(), "");
+        if (AnyInTarget)
+        {
+            for (size_t K = 0; K < Windows.size(); K++)
+                if (*(Failed[K] = DecodeWindow(Windows[K], Source, Target))) break;
+        }
+        else
+        {
+            std::vector<size_t> Order(Windows.size());
+            for (size_t K = 0; K < Order.size(); K++) Order[K] = K;
+            std::for_each(std::execution::par, Order.begin(), Order.end(),
+                          [&](size_t K) { Failed[K] = DecodeWindow(Windows[K], Source, Target); });
+        }
+        for (const char* F : Failed)
+            if (*F)
+            {
+                Error = F;
+                Target.clear();
+                return false;
+            }
         return true;
     }
 }

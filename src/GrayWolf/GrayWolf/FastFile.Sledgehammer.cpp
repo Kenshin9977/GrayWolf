@@ -1,10 +1,14 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Sledgehammer containers: Advanced Warfare and WWII, LZ4 blocks.
 
 #include "stdafx.h"
 
 #include "FastFile.h"
+
+#include <algorithm>
+#include <execution>
 
 #include "Compression.h"
 
@@ -32,7 +36,7 @@ uint64_t FastFileInternal::SledgehammerTableBytes(FILE* Handle)
     return (uint64_t)Count * EntrySize;
 }
 
-bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error)
 {
     auto Handle = std::unique_ptr<FILE, decltype(&fclose)>(nullptr, fclose);
     {
@@ -86,8 +90,8 @@ bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFil
         return Logical + ((Logical - AuthStart) / AuthGroup) * AuthHole;
     };
 
-    // Reads Count logical bytes, stepping over any hash block in between
-    const auto ReadLogical = [&](uint64_t Logical, uint8_t* Into, uint64_t Count)
+    // Reads Count logical bytes through H, stepping over any hash block in between
+    const auto ReadLogicalFrom = [&](FILE* H, uint64_t Logical, uint8_t* Into, uint64_t Count)
     {
         while (Count > 0)
         {
@@ -97,8 +101,8 @@ bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFil
                 const auto Left = AuthGroup - (Logical - AuthStart) % AuthGroup;
                 Chunk = std::min(Chunk, Left);
             }
-            if (_fseeki64(Handle.get(), (int64_t)Physical(Logical), SEEK_SET) != 0 ||
-                fread(Into, 1, (size_t)Chunk, Handle.get()) != Chunk)
+            if (_fseeki64(H, (int64_t)Physical(Logical), SEEK_SET) != 0 ||
+                fread(Into, 1, (size_t)Chunk, H) != Chunk)
             {
                 return false;
             }
@@ -108,8 +112,18 @@ bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFil
         }
         return true;
     };
+    const auto ReadLogical = [&](uint64_t Logical, uint8_t* Into, uint64_t Count) { return ReadLogicalFrom(Handle.get(), Logical, Into, Count); };
 
-    std::vector<uint8_t> Block;
+    // the blocks' headers first, then the blocks read and decompressed side by side (each worker
+    // on its own handle) into the zone sized once
+    struct Job
+    {
+        uint64_t Position, ZoneOffset;
+        uint32_t Compressed, Size;
+    };
+    std::vector<Job> Jobs;
+    const uint64_t Base = Zone.size();
+    uint64_t Total = Base;
     uint64_t Position = HeaderEnd;
 
     while (Physical(Position) + sizeof(SledgehammerBlockHeader) <= Length)
@@ -144,37 +158,57 @@ bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFil
             return false;
         }
 
-        Block.resize(Header.CompressedSize);
-        if (!ReadLogical(Position, Block.data(), Block.size()))
-        {
-            Error = std::format("could not read the block at 0x{:x}", (unsigned long long)Physical(Position));
-            return false;
-        }
-
-        const auto ZoneOffset = Zone.size();
-        Zone.resize(ZoneOffset + Header.UncompressedSize);
-
-        const auto Produced = Compression::DecompressLZ4Block(
-            (const int8_t*)Block.data(), (int8_t*)(Zone.data() + ZoneOffset),
-            (int32_t)Header.CompressedSize, (int32_t)Header.UncompressedSize);
-
-        if (Produced != Header.UncompressedSize)
-        {
-            Error = std::format("block at 0x{:x} gave {} bytes instead of {}",
-                (unsigned long long)Physical(Position - sizeof(Header)), Produced, Header.UncompressedSize);
-            return false;
-        }
+        Jobs.push_back({ Position, Total, (uint32_t)Header.CompressedSize, (uint32_t)Header.UncompressedSize });
+        Total += Header.UncompressedSize;
 
         Position = (Position + Header.CompressedSize + SledgehammerBlockAlignment - 1) &
                    ~(uint64_t)(SledgehammerBlockAlignment - 1);
 
         // The block list is not terminated - what follows the last block parses as an enormous
         // filler block, so the declared size is what says when to stop, not the stream itself.
-        if (Info.DeclaredZoneSize > 0 && Zone.size() >= Info.DeclaredZoneSize)
+        if (Info.DeclaredZoneSize > 0 && Total >= Info.DeclaredZoneSize)
         {
             break;
         }
     }
+    Zone.resize((size_t)Total);
+    // per run of blocks a handle and a buffer; the first block that failed and why
+    constexpr size_t Run = 64;
+    std::vector<size_t> Runs;
+    for (size_t K = 0; K < Jobs.size(); K += Run) Runs.push_back(K);
+    std::vector<std::string> Failed(Runs.size());
+    std::for_each(std::execution::par, Runs.begin(), Runs.end(), [&](size_t First) {
+        std::string& Why = Failed[First / Run];
+        FILE* H = nullptr;
+        if (fopen_s(&H, FilePath.c_str(), "rb") != 0 || H == nullptr)
+        {
+            Why = "could not open the file";
+            return;
+        }
+        std::vector<uint8_t> Block;
+        for (size_t K = First; K < std::min(First + Run, Jobs.size()) && Why.empty(); K++)
+        {
+            const Job& J = Jobs[K];
+            Block.resize(J.Compressed);
+            if (!ReadLogicalFrom(H, J.Position, Block.data(), Block.size()))
+            {
+                Why = std::format("could not read the block at 0x{:x}", (unsigned long long)Physical(J.Position));
+                break;
+            }
+            const auto Produced = Compression::DecompressLZ4Block((const int8_t*)Block.data(), (int8_t*)(Zone.data() + J.ZoneOffset),
+                                                                  (int32_t)J.Compressed, (int32_t)J.Size);
+            if (Produced != J.Size)
+                Why = std::format("block at 0x{:x} gave {} bytes instead of {}", (unsigned long long)Physical(J.Position - sizeof(SledgehammerBlockHeader)),
+                                  Produced, J.Size);
+        }
+        fclose(H);
+    });
+    for (const std::string& Why : Failed)
+        if (!Why.empty())
+        {
+            Error = Why;
+            return false;
+        }
 
     if (Zone.empty())
     {
@@ -194,7 +228,7 @@ bool FastFile::DecompressSledgehammer(const std::string& FilePath, const FastFil
     return true;
 }
 
-bool FastFile::ParseSledgehammerZone(const std::vector<uint8_t>& Zone, ZoneInfo& Out, std::string& Error)
+bool FastFile::ParseSledgehammerZone(ByteView Zone, ZoneInfo& Out, std::string& Error)
 {
     Out = {};
     Error.clear();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 // One material description for every game: which file is the colour, normal, roughness or gloss,
 // occlusion, specular or metalness, emission, transmission, which channel holds each value, and the
 // alpha mode.
@@ -141,7 +143,7 @@ namespace Materials
     using Recipe = std::map<std::string, std::string>;
     const Recipe* ShadingRecipe(const std::string& Profile, const std::string& Techset);
     // The float at a recipe field's offset in Block (the field a decimal or 0x offset), else Default.
-    float RecipeFloat(const Recipe& R, const std::string& Field, const std::vector<uint8_t>& Block, int Component, float Default);
+    float RecipeFloat(const Recipe& R, const std::string& Field, ByteView Block, int Component, float Default);
 
     // One per game (Games/<game>/MaterialAdapter.cpp): its materials as a Description.
     class IAdapter

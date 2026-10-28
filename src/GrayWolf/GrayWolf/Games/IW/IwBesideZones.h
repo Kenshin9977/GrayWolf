@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ByteView.h"
+#include "ZoneMemory.h"
+
 // Zones loaded beside a served zone, as the game has them loaded at the same time. These are the
 // global zones a model's mesh is in, or a map's transient zones. Each is walked with the same
 // profile and its own pointers are resolved. It is placed above the served zone and served with it
@@ -11,6 +14,10 @@
 // zones (loaded before it, Before) and its transient zones, as the game loads them.
 // The keys: stream.keyed_refs' (Black Ops 6) or the rewind table's (stream.rewind_prepare, Black
 // Ops 7: the walker links a zone's own, the rest is left to Link).
+// A partial open's zones beside are read lazily (Set::Lazy): a zone with a resume index
+// (ResumeIndex.h) is placed from its index alone, and read and walked only where a reference
+// reaches, with what those walks reach in turn; a zone without one is read whole once and its
+// index written.
 
 #include <algorithm>
 #include <cstdint>
@@ -24,24 +31,39 @@
 #include <vector>
 
 #include "ExportWriters.h"
+#include "ResumeIndex.h"
 #include "ZoneTableWalker.h"
+#include "ZonekitZone.h"
 
 namespace IwBeside
 {
     struct Zone
     {
         std::string Name;
-        std::vector<uint8_t> Bytes;
+        ZoneBytes Bytes;
         ZoneTables::ZoneResult R;
         uint64_t Base = 0;   // where it is served
         bool Before = false; // loaded before the served zone (a level's global zones): its keys and
                              // assets only fill what the others do not define, its own unresolved
                              // references are counted apart
+        // read lazily: its resume index (its keys and assets by hash for the whole zone), its
+        // size, and the walks done so far (R: their result)
+        std::string Path;
+        std::unique_ptr<ZoneResume> Index;
+        uint64_t Size = 0;
+        const ExportWriters::LoadedProfile* Loaded = nullptr;
+        std::unique_ptr<ZoneTables::PartialWalk> Walker;
+        ResolveHints Hints;
+        std::set<size_t> Seen;                  // the closure rounds'
+        std::unordered_set<int64_t> OwnLinked;  // its own pointer fields written
+        bool Failed = false;                    // its bytes did not read
     };
 
     class Set
     {
     public:
+        // the zones loaded from here on are read lazily where they have a resume index (above)
+        bool Lazy = false;
         // Loads each fast file (FastFile::Decompress), walks it with Loaded and resolves its own
         // links (read on up to 4 threads). Each one is placed from Above upward (after the zones
         // already loaded), 16 MB aligned, in the order of Paths. Returns how many loaded; the others
@@ -54,10 +76,13 @@ namespace IwBeside
         // Links the references Main (served at MainBase) and the loaded zones left unresolved,
         // across all of them, Main's own instances and keys first (it loaded first), the Before
         // zones' last. Main's fields are written through PutMain. OnUnresolved hears every
-        // reference left unresolved but the Before zones' own.
-        void Link(const ZoneTables::ZoneResult& Main, uint64_t MainBase, const std::vector<uint8_t>& MainBytes,
+        // reference left unresolved but the Before zones' own. MainKeys and MainHashes, when given,
+        // are Main's keys and assets by (type, hash) for the whole zone (a partial open's Main holds
+        // only the assets walked: ZonekitZone::WholeKeys)
+        void Link(const ZoneTables::ZoneResult& Main, uint64_t MainBase, ByteView MainBytes,
                   const ZoneTables::StreamRules& Rules, const std::function<void(uint64_t Field, uint64_t Value)>& PutMain,
-                  std::map<std::string, size_t>& Counters, const Unresolved& OnUnresolved = {});
+                  std::map<std::string, size_t>& Counters, const Unresolved& OnUnresolved = {},
+                  const std::vector<std::pair<uint64_t, int64_t>>* MainKeys = nullptr, const std::map<std::pair<std::string, uint64_t>, int64_t>* MainHashes = nullptr);
         // Serves the loaded zones beside the current session's image (call again on a new session)
         void Serve() const;
         // The bytes at an address of a loaded zone, null when N bytes are not all in one
@@ -72,8 +97,14 @@ namespace IwBeside
         const std::vector<std::unique_ptr<Zone>>& All() const { return Zones; }
 
     private:
+        // a lazy zone's assets at Positions walked (its bytes read the first time), with what they
+        // reach, and its own pointers written; New gets the resume points walked
+        bool Reach(Zone& Z, const std::vector<int64_t>& Positions, std::map<std::string, size_t>& Counters, std::set<size_t>& New);
         std::vector<std::unique_ptr<Zone>> Zones;
         uint64_t Next = 0;
+        // Main's keys by key (Link's MainKeys, the first of each), kept between the calls
+        const void* MainKeysOf = nullptr;
+        std::unordered_map<uint64_t, int64_t> MainKeyed;
         mutable std::mutex HeldLock;
         mutable std::map<std::string, std::pair<size_t, std::unordered_set<uint64_t>>> Held;   // type -> (zones seen, addresses)
     };

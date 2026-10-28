@@ -62,6 +62,8 @@ namespace
 
     protected:
         const char* Profile() const override { return "t4"; }
+        // its readers and Fixups work from the walk's instances: a partial walk serves them
+        bool OpensPartially() const override { return true; }
         const ICoDGame& LiveGame() const override { return LiveGames::Get("T4"); }
         int64_t XFileSize() const override { return 0x24; }
         LoadXImageHandler ImageHandler() const override { return GameWorldAtWar::LoadXImage; }

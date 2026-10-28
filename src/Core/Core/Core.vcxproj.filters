@@ -102,6 +102,9 @@
     <ClInclude Include="XMEExport.h">
       <Filter>Header Files\Exporters</Filter>
     </ClInclude>
+    <ClInclude Include="MappedFile.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="MemoryReader.h">
       <Filter>Header Files</Filter>
     </ClInclude>

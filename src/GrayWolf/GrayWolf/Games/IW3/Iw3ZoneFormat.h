@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ByteView.h"
+
 #include "ZoneFormat.h"
 
 // The IW3-family zone layout: 32-bit, every
@@ -22,7 +24,7 @@ namespace Iw3Family
 
         const char* Name() const override { return FormatName; }
 
-        ZoneTables::ZoneHead Read(const std::vector<uint8_t>& Buf, const ZoneTables::StreamRules& Rules) const override
+        ZoneTables::ZoneHead Read(ByteView Buf, const ZoneTables::StreamRules& Rules) const override
         {
             const ZoneTables::HeaderReader H(Buf);
             const int64_t ListSize = Depends ? 0x18 : 0x10;

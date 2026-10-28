@@ -1,5 +1,9 @@
 #pragma once
 
+#include "ZoneMemory.h"
+
+#include "ByteView.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -13,5 +17,5 @@
 // zlib stream: the zone. The game's code: COL_DB_LoadXFile 0x483db0, its block read 0x4834f0.
 namespace Codol
 {
-    bool DecryptFastFile(const std::vector<uint8_t>& File, std::vector<uint8_t>& Zone, std::string& Error);
+    bool DecryptFastFile(ByteView File, ZoneBytes& Zone, std::string& Error);
 }

@@ -83,52 +83,30 @@ std::unique_ptr<XModel_t> GameModernWarfare6::ReadXModel(const CoDModel_t* Model
 
             LodReference.LODStreamInfoPtr = ModelLod.MeshPtr;
 
-            auto XSurfacePtr = ModelLod.SurfsPtr;
-
-            for (uint32_t s = 0; s < ModelLod.NumSurfs; s++)
-            {
-                LodReference.Submeshes.emplace_back();
-                auto& SubmeshReference = LodReference.Submeshes[s];
-
-                auto SurfaceInfo = CoDAssets::GameInstance->Read<MW6XModelSurface>(XSurfacePtr);
-
-                SubmeshReference.RigidWeightsPtr              = SurfaceInfo.RigidWeightsPtr;
-                SubmeshReference.VertListcount                = SurfaceInfo.VertListCount;
-                SubmeshReference.VertexCount                  = SurfaceInfo.VertexCount;
-                SubmeshReference.FaceCount                    = SurfaceInfo.FacesCount;
-                SubmeshReference.PackedIndexTableCount        = SurfaceInfo.PackedIndexTableCount;
-                SubmeshReference.VertexPtr                    = SurfaceInfo.Offsets[0];
-                SubmeshReference.VertexUVsPtr                 = SurfaceInfo.Offsets[1];
-                SubmeshReference.VertexNormalsPtr             = SurfaceInfo.Offsets[2];
-                SubmeshReference.FacesPtr                     = SurfaceInfo.Offsets[3];
-                SubmeshReference.PackedIndexTablePtr          = SurfaceInfo.Offsets[4];
-                SubmeshReference.PackedIndexBufferPtr         = SurfaceInfo.Offsets[5];
-                SubmeshReference.VertexColorPtr               = SurfaceInfo.Offsets[6];
-                SubmeshReference.WeightsPtr                   = SurfaceInfo.Offsets[11];
-
-                if (SurfaceInfo.NewScale != -1)
-                {
-                    SubmeshReference.Scale = SurfaceInfo.NewScale;
-                    SubmeshReference.XOffset = 0;
-                    SubmeshReference.YOffset = 0;
-                    SubmeshReference.ZOffset = 0;
-                }
-                else
-                {
-                    SubmeshReference.Scale = fmaxf(fmaxf(SurfaceInfo.Min, SurfaceInfo.Scale), SurfaceInfo.Max);
-                    SubmeshReference.XOffset = SurfaceInfo.XOffset;
-                    SubmeshReference.YOffset = SurfaceInfo.YOffset;
-                    SubmeshReference.ZOffset = SurfaceInfo.ZOffset;
-                }
-
-                for (int W = 0; W < 8; W++) SubmeshReference.WeightCounts[W] = SurfaceInfo.WeightCounts[W];
-
-                auto MaterialHandle = CoDAssets::GameInstance->Read<uint64_t>(ModelData.MaterialHandlesPtr);
-                LodReference.Materials.emplace_back(ReadXMaterial(MaterialHandle));
-
-                XSurfacePtr += sizeof(MW6XModelSurface);
-                ModelData.MaterialHandlesPtr += sizeof(uint64_t);
-            }
+            GameReaders::ReadSurfaces<MW6XModelSurface, uint64_t>(LodReference, ModelLod.SurfsPtr, ModelLod.NumSurfs, ModelData.MaterialHandlesPtr, ReadXMaterial,
+                                                                  [](XModelSubmesh_t& Submesh, const MW6XModelSurface& Info)
+                                                                  {
+                                                                      Submesh.RigidWeightsPtr = Info.RigidWeightsPtr;
+                                                                      Submesh.VertListcount = Info.VertListCount;
+                                                                      Submesh.VertexCount = Info.VertexCount;
+                                                                      Submesh.FaceCount = Info.FacesCount;
+                                                                      Submesh.PackedIndexTableCount = Info.PackedIndexTableCount;
+                                                                      Submesh.VertexPtr = Info.Offsets[0];
+                                                                      Submesh.VertexUVsPtr = Info.Offsets[1];
+                                                                      Submesh.VertexNormalsPtr = Info.Offsets[2];
+                                                                      Submesh.FacesPtr = Info.Offsets[3];
+                                                                      Submesh.PackedIndexTablePtr = Info.Offsets[4];
+                                                                      Submesh.PackedIndexBufferPtr = Info.Offsets[5];
+                                                                      Submesh.VertexColorPtr = Info.Offsets[6];
+                                                                      Submesh.WeightsPtr = Info.Offsets[11];
+                                                                      // a new scale: the positions unoffset
+                                                                      const bool New = Info.NewScale != -1;
+                                                                      Submesh.Scale = New ? Info.NewScale : fmaxf(fmaxf(Info.Min, Info.Scale), Info.Max);
+                                                                      Submesh.XOffset = New ? 0 : Info.XOffset;
+                                                                      Submesh.YOffset = New ? 0 : Info.YOffset;
+                                                                      Submesh.ZOffset = New ? 0 : Info.ZOffset;
+                                                                      for (int W = 0; W < 8; W++) Submesh.WeightCounts[W] = Info.WeightCounts[W];
+                                                                  });
         }
 
         return ModelAsset;

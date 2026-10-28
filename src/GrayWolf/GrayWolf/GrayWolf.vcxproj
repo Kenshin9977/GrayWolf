@@ -108,7 +108,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>..\..\External\OpenAssetTools\build\lib\Release_x64;$(VcpkgInstalled)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>miniz.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
     <Manifest>
@@ -136,7 +136,7 @@
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>..\..\External\OpenAssetTools\build\lib\Release_x64;$(VcpkgInstalled)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>miniz.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
     <Manifest>
@@ -272,6 +272,9 @@
     <ClCompile Include="UiAsync.cpp" />
     <ClCompile Include="CliCommands.Blender.cpp" />
     <ClCompile Include="ImGuiLoadGamePanel.Disk.cpp" />
+    <ClCompile Include="ImGuiLoadGamePanel.Assets.cpp" />
+    <ClCompile Include="ResumeIndex.cpp" />
+    <ClCompile Include="ZoneMemory.cpp" />
     <ClCompile Include="IWDSoundDecoder.cpp" />
     <ClCompile Include="GameWorldWar2.cpp" />
     <ClCompile Include="IPAKCache.cpp" />
@@ -398,6 +401,10 @@
     <ClInclude Include="Updater.h" />
     <ClInclude Include="ImGuiUpdates.h" />
     <ClInclude Include="ImGuiLoadGamePanel.h" />
+    <ClInclude Include="ImGuiLoadGamePanel.Common.h" />
+    <ClInclude Include="ResumeIndex.h" />
+    <ClInclude Include="ZoneMemory.h" />
+    <ClInclude Include="ByteView.h" />
     <ClInclude Include="ImGuiDialogs.h" />
     <ClInclude Include="BlenderLauncher.h" />
     <ClInclude Include="ImGuiBlender.h" />

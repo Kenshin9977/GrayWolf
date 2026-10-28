@@ -147,7 +147,7 @@ FILE* DebugFile()
     return F;
 }
 
-Instance PackedPlacement(const std::vector<uint8_t>& Image, int64_t Pos, bool HalfScale)
+Instance PackedPlacement(ByteView Image, int64_t Pos, bool HalfScale)
 {
     using ExportNaming::At;
     Instance In;
@@ -159,7 +159,7 @@ Instance PackedPlacement(const std::vector<uint8_t>& Image, int64_t Pos, bool Ha
     return In;
 }
 
-std::string InlineName(const std::vector<uint8_t>& Image, int64_t Pos, size_t Max)
+std::string InlineName(ByteView Image, int64_t Pos, size_t Max)
 {
     std::string S;
     for (size_t I = 0; Pos >= 0 && (size_t)Pos + I < Image.size() && I < Max; I++)

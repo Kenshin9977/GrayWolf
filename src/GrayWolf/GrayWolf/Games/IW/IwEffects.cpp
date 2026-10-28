@@ -95,7 +95,7 @@ namespace
         }
 
         const Treyarch::EffectZone& Z;
-        const std::vector<uint8_t>& Img;
+        ByteView Img;
     };
 
     template <class T>

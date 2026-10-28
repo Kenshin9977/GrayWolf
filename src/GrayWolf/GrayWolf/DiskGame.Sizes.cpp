@@ -4,6 +4,7 @@
 
 #include "DiskGameSizes.h"
 
+#include "DirectXTex.h"
 #include "ExportNaming.h"
 #include "SettingsManager.h"
 #include "Strings.h"
@@ -15,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 #include <windows.h>
 
@@ -97,6 +99,17 @@ namespace
     {
         const auto It = M.find(Key);
         return It == M.end() ? std::string() : It->second;
+    }
+
+    // a PNG of an image decoded to 8-bit RGBA, against those raw bytes: the average of a Black Ops
+    // III map's (0.34) and a Ghosts map's (0.40)
+    constexpr double PngOfRgba = 0.37;
+    // an image's bytes as the game stores them (as a DDS writes them) in the format F, by the ratios
+    double FormatBytesOf(double Dds, const std::string& F)
+    {
+        for (const Format& I : ImageFormats)
+            if (F == I.Key) return Dds * I.Ratio;
+        return Dds;
     }
 
     // What the map settings make a level write, relative to the defaults (the textures as they
@@ -224,6 +237,133 @@ SoundRow RowOf(const SoundHeader& H)
     return R;
 }
 
+Weight ImageWeight(uint64_t Bytes, uint32_t Width, uint32_t Height, uint32_t Layers)
+{
+    return Weight{ Bytes, Width, Height, std::clamp<uint32_t>(Layers, 1, 0xffff) << 16 };
+}
+
+Weight ImageWeight(uint32_t Width, uint32_t Height, uint32_t DxgiFormat, uint32_t Mips, uint32_t Layers)
+{
+    uint64_t Bytes = 0;
+    for (uint32_t M = 0; M < std::max(1u, Mips); M++)
+    {
+        size_t Row = 0, Slice = 0;
+        if (FAILED(DirectX::ComputePitch((DXGI_FORMAT)DxgiFormat, std::max(1u, Width >> M), std::max(1u, Height >> M), Row, Slice)))
+            return ImageWeight(0, Width, Height, Layers);
+        Bytes += (uint64_t)Slice * std::max(1u, Layers);
+    }
+    return ImageWeight(Bytes, Width, Height, Layers);
+}
+
+Weight IwiWeight(uint64_t FileBytes, uint32_t Width, uint32_t Height)
+{
+    constexpr uint64_t IwiHeader = 32;
+    return ImageWeight(FileBytes > IwiHeader ? (FileBytes - IwiHeader) * 3 / 4 : 0, Width, Height);
+}
+
+Weight CardMemoryWeight(uint64_t CardBytes, uint32_t Width, uint32_t Height)
+{
+    bool Chain = true;
+    if (Width && Height)
+    {
+        const double PerPixel = (double)CardBytes / ((double)Width * Height);
+        for (const double B : { 0.5, 1.0, 2.0, 3.0, 4.0, 8.0, 16.0 })
+            if (std::abs(PerPixel - B) <= B * 0.01) Chain = false;
+    }
+    return ImageWeight(Chain ? CardBytes * 3 / 4 : CardBytes, Width, Height);
+}
+
+Weight SoundWeight(const SoundHeader& H)
+{
+    Weight W;
+    W.Bytes = H.Stored;
+    W.A = (uint32_t)std::min<uint64_t>(H.Frames, 0xffffffffu);
+    W.B = H.Rate;
+    W.C = (H.Channels & 0xff) | ((uint32_t)H.Is << 8) | ((uint32_t)H.KeptUnderWav << 12) | ((H.Bits ? H.Bits : 16) << 16);
+    return W;
+}
+
+SoundRow RowOf(const Weight& W)
+{
+    SoundRow R;
+    R.Stored = W.Bytes, R.Frames = W.A, R.Rate = W.B;
+    R.Channels = W.C & 0xff;
+    R.Is = (SoundHeader::Form)((W.C >> 8) & 0xf);
+    R.KeptUnderWav = ((W.C >> 12) & 1) != 0;
+    R.Bits = (W.C >> 16) ? (W.C >> 16) : 16;
+    return R;
+}
+
+namespace
+{
+    // Predict's, the image and sound formats read already (Image: exportimg's, Sound: exportsnd's)
+    uint64_t PredictIn(Kind K, const Weight& W, const std::string& Image, const std::string& Sound, bool& Exact)
+    {
+        Exact = false;
+        if (K == Kind::Image)
+        {
+            constexpr uint64_t DdsHeader = 148;   // "DDS ", its header and the DX10 one
+            const uint32_t Layers = std::max(1u, W.C >> 16);
+            const std::string& F = Image;
+            if (W.A == 0 || W.B == 0) return W.Bytes ? FormatBytesOf((double)W.Bytes, F) : 0;
+            if (F == "DDS" && W.Bytes)
+            {
+                Exact = true;
+                return DdsHeader + W.Bytes;
+            }
+            // the largest mip, decoded to 8-bit RGBA: a TGA keeps it whole, a PNG compresses it
+            const double Pixels = (double)W.A * W.B * Layers;
+            if (F == "TGA") return (uint64_t)(18 + Pixels * 4);
+            return (uint64_t)(Pixels * 4 * PngOfRgba);
+        }
+        if (K == Kind::Sound)
+        {
+            if (W.Bytes == 0 && W.A == 0) return 0;
+            const SoundRow R = RowOf(W);
+            return SoundBytes(R, Sound, Exact);
+        }
+        return W.Bytes;
+    }
+}
+
+uint64_t Predict(Kind K, const Weight& W, const std::string& Formats, bool& Exact)
+{
+    const auto Now = Parse(Formats);
+    return PredictIn(K, W, Of(Now, ImageKey), Of(Now, SoundKey), Exact);
+}
+
+bool AsfStreamInfo(const uint8_t* Data, size_t Size, uint32_t& Rate, uint32_t& Channels, uint64_t& Frames)
+{
+    // an ASF file (WMA): its header object, then objects of {GUID, u64 size}: the file's
+    // properties (its play duration in 100 ns at 64, its preroll in ms at 80) and its audio
+    // stream's (a WAVEFORMATEX at 78: channels 2, rate 4)
+    static const uint8_t Header[16] = { 0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c };
+    static const uint8_t File[16] = { 0xa1, 0xdc, 0xab, 0x8c, 0x47, 0xa9, 0xcf, 0x11, 0x8e, 0xe4, 0x00, 0xc0, 0x0c, 0x20, 0x53, 0x65 };
+    static const uint8_t Stream[16] = { 0x91, 0x07, 0xdc, 0xb7, 0xb7, 0xa9, 0xcf, 0x11, 0x8e, 0xe6, 0x00, 0xc0, 0x0c, 0x20, 0x53, 0x65 };
+    if (Size < 30 || std::memcmp(Data, Header, 16) != 0) return false;
+    uint64_t Duration = 0, Preroll = 0;
+    Rate = 0, Channels = 0;
+    for (size_t At = 30; At + 24 <= Size;)
+    {
+        uint64_t Len = 0;
+        std::memcpy(&Len, Data + At + 16, 8);
+        if (Len < 24 || At + Len > Size) break;
+        if (std::memcmp(Data + At, File, 16) == 0 && Len >= 88)
+            std::memcpy(&Duration, Data + At + 64, 8), std::memcpy(&Preroll, Data + At + 80, 8);
+        else if (std::memcmp(Data + At, Stream, 16) == 0 && Len >= 86 && Channels == 0)
+        {
+            uint16_t C = 0;
+            std::memcpy(&C, Data + At + 80, 2), std::memcpy(&Rate, Data + At + 82, 4);
+            Channels = C;
+        }
+        At += (size_t)Len;
+    }
+    if (Duration == 0 || Rate == 0 || Channels == 0) return false;
+    const uint64_t Ms = Duration / 10000 > Preroll ? Duration / 10000 - Preroll : 0;
+    Frames = Ms * Rate / 1000;
+    return true;
+}
+
 bool FlacStreamInfo(const uint8_t* Data, size_t Size, uint32_t& Rate, uint32_t& Channels, uint32_t& Bits, uint64_t& Frames)
 {
     // "fLaC", a metadata block header (type 0: STREAMINFO), then its 34 bytes: block and frame
@@ -266,12 +406,18 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
         FlacStreamInfo(S.Data, S.Size, H.Rate, H.Channels, H.Bits, H.Frames);
         return H;
     }
+    // a WMA, decoded under WAV (WmaSounds): its length from its ASF header
+    if (AsfStreamInfo(S.Data, S.Size, H.Rate, H.Channels, H.Frames))
+    {
+        H.Is = SoundHeader::Form::Decoded, H.Bits = 16;
+        return H;
+    }
     // a .wav file (or another, written as it is under WAV): its fmt and data chunks, or a FLAC
     // stream behind its header (WWII)
     H.Is = SoundHeader::Form::Wav;
     if (Ext != ".wav" || S.Size < 12 || std::memcmp(S.Data, "RIFF", 4) != 0) return H;
     uint16_t Tag = 0, Bits = 0, Channels = 0, BlockAlign = 0, PerBlock = 0;
-    uint32_t Rate = 0, Fact = 0;
+    uint32_t Rate = 0, Fact = 0, AvgBytes = 0, Decoded = 0;
     for (size_t At = 12; At + 8 <= S.Size;)
     {
         uint32_t Len = 0;
@@ -280,12 +426,14 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
         if (std::memcmp(S.Data + At, "fmt ", 4) == 0 && Len >= 16 && At + 8 + 16 <= S.Size)
         {
             std::memcpy(&Tag, Body, 2), std::memcpy(&Channels, Body + 2, 2), std::memcpy(&Rate, Body + 4, 4), std::memcpy(&Bits, Body + 14, 2);
-            std::memcpy(&BlockAlign, Body + 12, 2);
+            std::memcpy(&BlockAlign, Body + 12, 2), std::memcpy(&AvgBytes, Body + 8, 4);
             // IMA ADPCM's samples per block, after its extra size
             if (Len >= 20 && At + 8 + 20 <= S.Size) std::memcpy(&PerBlock, Body + 18, 2);
         }
         else if (std::memcmp(S.Data + At, "fact", 4) == 0 && Len >= 4 && At + 12 <= S.Size)
             std::memcpy(&Fact, Body, 4);   // a compressed WAV's sample count
+        else if (std::memcmp(S.Data + At, "dpds", 4) == 0 && Len >= 4 && At + 8 + Len <= S.Size)
+            std::memcpy(&Decoded, Body + (Len / 4 - 1) * 4, 4);   // an xWMA's decoded bytes, its last packet's running total
         else if (std::memcmp(S.Data + At, "data", 4) == 0)
         {
             const uint64_t Data = std::min<uint64_t>(Len, S.Size - (At + 8));
@@ -301,6 +449,18 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
                 // decoded to 16-bit PCM
                 H.Rate = Rate, H.Channels = Channels, H.Bits = 16;
                 H.Frames = Fact ? Fact : Data / BlockAlign * PerBlock;
+            }
+            else if (Channels && Rate && AvgBytes)
+            {
+                // another compressed WAV without its length: its length from its average byte rate;
+                // a WMA one (World at War) is decoded to 16-bit PCM (WmaSounds), another kept
+                H.Rate = Rate, H.Channels = Channels, H.Bits = 16;
+                H.Frames = Data * Rate / AvgBytes;
+                if (Tag >= 0x160 && Tag <= 0x163)
+                {
+                    H.Is = SoundHeader::Form::Decoded;
+                    if (Decoded) H.Frames = Decoded / (2ull * Channels);
+                }
             }
             break;
         }
@@ -465,6 +625,10 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
     }
     C.Formats = FormatsNow();
     for (const auto& [Key, Value] : Options.Settings) C.Settings += (C.Settings.empty() ? "" : ";") + Key + "=" + Value;
+    // the kinds measured before in the same formats and settings and not asked again: kept
+    if (Previous != nullptr && Previous->Formats == C.Formats && Previous->Settings == C.Settings)
+        for (const auto& [K, S] : Previous->Kinds)
+            if (!Wanted.count(K)) C.Kinds[K] = S;
     std::vector<size_t> Zones = Candidates;
     if (Zones.empty())
         for (size_t Z = 0; Z < Ix.Zones().size(); Z++) Zones.push_back(Z);
@@ -738,6 +902,36 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
     return C;
 }
 
+std::map<Kind, Weighed> WeighPicks(const ZoneIndex& Ix, const std::vector<size_t>& Zones, const std::set<Kind>& Kinds,
+                                   const std::string& Formats)
+{
+    std::map<Kind, Weighed> Out;
+    std::unordered_set<uint64_t> Seen;
+    const auto Now = Parse(Formats);
+    const std::string Image = Of(Now, ImageKey), Sound = Of(Now, SoundKey);
+    for (const size_t Z : Zones)
+    {
+        if (Z >= Ix.Zones().size()) continue;
+        const auto& Assets = Ix.Defined(Z);
+        const auto& Weights = Ix.Weights(Z);
+        for (size_t I = 0; I < Assets.size(); I++)
+        {
+            const AssetId& A = Assets[I];
+            if ((A.K != Kind::Image && A.K != Kind::Sound) || !Kinds.count(A.K)) continue;
+            if (!Seen.insert(ExportNaming::Fnv1a(ExportNaming::Lower(A.Name), 0xcbf29ce484222325ull ^ (uint64_t)A.K)).second) continue;
+            Weighed& W = Out[A.K];
+            W.Assets++;
+            bool Exact = false;
+            const uint64_t Bytes = I < Weights.size() ? PredictIn(A.K, Weights[I], Image, Sound, Exact) : 0;
+            if (Bytes == 0) continue;
+            W.Known++;
+            W.Bytes += Bytes;
+            W.Exact = W.Exact && Exact;
+        }
+    }
+    return Out;
+}
+
 Estimate Compute(const Calibration& C, const Picks& S)
 {
     Estimate E;
@@ -748,6 +942,21 @@ Estimate Compute(const Calibration& C, const Picks& S)
         KindEstimate R;
         const auto Measured = C.Kinds.find(K);
         const size_t Count = S.Counts.count(K) ? S.Counts.at(K) : 0;
+        // the install index's weights, when it weighs nine in ten of the assets or more (the
+        // others at their average)
+        if (const auto It = S.Weights.find(K); It != S.Weights.end() && It->second.Known > 0 && It->second.Known * 10 >= It->second.Assets * 9)
+        {
+            const Weighed& W = It->second;
+            R.Bytes = (uint64_t)((double)W.Bytes * (double)W.Assets / (double)W.Known);
+            R.Approx = !W.Exact || W.Known < W.Assets;
+            R.Basis = Thousands(W.Assets) + " " + KindFolder(K) + " (each once), " +
+                      (W.Known < W.Assets ? Thousands(W.Known) + " of them " : std::string()) + "weighed by the install index" +
+                      (W.Exact ? ": exact" : ": some by a typical ratio") + " in " + Of(Now, K == Kind::Image ? ImageKey : SoundKey);
+            E.Bytes += R.Bytes;
+            E.Approx = E.Approx || R.Approx;
+            E.Kinds[K] = std::move(R);
+            continue;
+        }
         if (K == Kind::Map)
         {
             // a sampled level's bytes per byte of its zone's footprint (its textures in the image

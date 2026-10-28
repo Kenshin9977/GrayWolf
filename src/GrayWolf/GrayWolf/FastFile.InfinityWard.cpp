@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "ByteView.h"
 
 // Infinity Ward containers: the blocked variant Infinite Warfare uses, and the zone parser
 // shared by CoD4 through Ghosts.
@@ -15,7 +16,7 @@
 
 using namespace FastFileInternal;
 
-bool FastFile::DecompressInfinityWardBlocked(const std::string& FilePath, const FastFileInfo& Info, std::vector<uint8_t>& Zone, std::string& Error)
+bool FastFile::DecompressInfinityWardBlocked(const std::string& FilePath, const FastFileInfo& Info, ZoneBytes& Zone, std::string& Error)
 {
     std::vector<uint8_t> File;
     if (!ReadWholeFile(FilePath, File, Error))
@@ -174,7 +175,7 @@ bool FastFile::DecompressInfinityWardBlocked(const std::string& FilePath, const 
     return true;
 }
 
-bool FastFile::ParseIWZone(const std::vector<uint8_t>& Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error)
+bool FastFile::ParseIWZone(ByteView Zone, const ZoneLayout& Layout, ZoneInfo& Out, std::string& Error)
 {
     Out = {};
     Error.clear();

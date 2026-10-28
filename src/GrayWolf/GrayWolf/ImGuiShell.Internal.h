@@ -178,6 +178,10 @@ namespace ShellUi
         PreviewLoader Loader;
         float Yaw = 0.9f, Pitch = 0.32f, DistScale = 1.0f;
         DirectX::XMFLOAT3 Pan{};
+        // the 3D view's width / height, and the camera ResetCamera fitted to it: fitted again while the
+        // view is resized and the camera not moved
+        float ViewAspect = 16.0f / 9.0f;
+        struct { bool Kept = false; float Aspect = 0, Yaw = 0, Pitch = 0, DistScale = 0; DirectX::XMFLOAT3 Pan{}; } Fitted;
         PreviewRenderer Renderer;
         PreviewTarget Vrt;   // the 3D view, shown with ImGui::Image
         FxPreviewPanel FxPanel;   // the selected effect's view
@@ -246,6 +250,13 @@ namespace ShellUi
 
         AssetCatalog Catalog;
         bool SelectFirstModel = true;   // the startup folder's first model is shown once listed
+        // Load Game's preview: the asset whose file names this, under that folder, shown once listed
+        std::string SelectWhenListed, SelectWhenListedDir;
+        int SelectWhenListedFrames = 0;   // given up after this many frames without it
+        // ui-record: a window brought forward, a Load Game step (JSON), both applied in the next frame
+        std::string FocusWindow, LoadGameScript;
+        bool LoadGameWorking = false;   // Load Game's worker runs: ui-record holds its frames
+        bool LoadGameIndicator = false; // and shows a spinner or progress bar for it (else a silent wait)
         size_t ShotSelected = 0; int ShotSelectWait = 0;   // ui-grid-shot --select: the names selected so far, frames left before the next
         int Selected = -1;
         bool ScrollToSelected = false; // set on keyboard nav so the table scrolls the new row into view
