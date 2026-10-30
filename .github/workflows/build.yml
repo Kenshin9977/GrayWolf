@@ -135,6 +135,10 @@ jobs:
         shell: pwsh
         run: ./tools/run-selftests.ps1 -Exe "src/GrayWolf/x64/$env:CONFIG/GrayWolf.exe" -Out "$env:RUNNER_TEMP/selftests"
 
+      - name: IW8 soundbank layout regression (no game data)
+        shell: pwsh
+        run: python tools/check-iw8-soundbank-layout.py --exe "src/GrayWolf/x64/$env:CONFIG/GrayWolf.exe"
+
       # only what the sign check and the release use
       - name: Upload build output
         if: env.CONFIG == 'Release'
