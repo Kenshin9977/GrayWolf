@@ -3,6 +3,10 @@
 #include "ModelPreviewGPU.h"
 #include "ModelPreview.h"     // LoadPreviewGeometry / PreviewGeometry
 #include "PreviewTextures.h"
+#include "PreviewEnvironment.h"   // the image based light, BRDF table (hooks marked "environment")
+#include "PreviewBloom.h"         // bloom (hook marked "bloom")
+#include "PreviewShadows.h"   // the key light's shadow, the ground
+#include "PreviewD3D.h"
 #include "DirectXTex.h"       // CaptureTexture, SaveToWICFile
 
 #include <directxtk/CommonStates.h>
@@ -149,6 +153,8 @@ float3 LightSurface(float3 V, float3 N, float3 cDiff, float3 cSpec, float roughn
     float NdotV = saturate(dot(N, V));
     float alpha = max(roughness * roughness, 0.002);
     float3 color = 0;
+    float2 envBrdf = EnvBrdf(IblSampler, NdotV, roughness);   // environment (PreviewEnvironment.cpp)
+    float3 energy = EnvEnergy(cSpec, envBrdf);
     [unroll] for (int i = 0; i < 3; i++)
     {
         float3 L = normalize(-LightDirection[i]);
@@ -159,13 +165,14 @@ float3 LightSurface(float3 V, float3 N, float3 cDiff, float3 cSpec, float roughn
         float a2 = alpha * alpha, d = NdotH * NdotH * (a2 - 1) + 1;
         float D = a2 / max(1e-6, PI * d * d);
         float G = rcp(lerp(LdotH * LdotH, 1, a2 * 0.25));
-        float3 spec = D * FresnelSchlick(cSpec, LdotH) * G;
+        float3 spec = D * FresnelSchlick(cSpec, LdotH) * G * energy;
+        if (i == 0) NdotL *= KeyShadow;   // PreviewShadows: the key light's shadow
         color += NdotL * LightColor[i] * (cDiff * diffuse + spec);
     }
-    color += cDiff * (Irradiance.Sample(IblSampler, N) * IblScale + Ambient) * ao;
-    float3 R = reflect(-V, N);
-    float3 env = Radiance.SampleLevel(IblSampler, R, roughness * NumRadianceMipLevels);
-    color += FresnelSchlick(cSpec, NdotV) * env * IblScale * ao;
+    // environment: split sum + multiple scattering, turned (PreviewEnvironment.cpp); the occlusion on
+    // its diffuse part, the specular occlusion on its reflection (PreviewPost hook)
+    color += EnvImageLight(Radiance, Irradiance, IblSampler, V, N, cDiff, cSpec, roughness, envBrdf, IblScale, Ambient,
+                           ao, PreviewSpecularOcclusion(NdotV, ao, roughness));
     return color;
 }
 
@@ -214,6 +221,7 @@ float4 PSMain(PSIn i, out uint Coverage : SV_Coverage) : SV_Target0
     float3 V = normalize(EyePosition - i.PositionWS.xyz);
     float3 Ng = normalize(i.NormalWS);
     if (dot(Ng, V) < 0) Ng = -Ng;
+    KeyShadow = PreviewShadowAt(i.PositionWS.xyz, Ng, i.PositionPS.xy, true);   // PreviewShadows
     float3 N = Ng;
     if (Flags & 2048)
     {
@@ -234,6 +242,7 @@ float4 PSMain(PSIn i, out uint Coverage : SV_Coverage) : SV_Target0
                          LayerRoughness(LayerRough1, uv1, LayerTint[1], rough, MaterialPad.y > 0.5), mask);
         rough = clamp(rough, 0.03, 1);
         float ao = (Flags & 32) ? dot(OcclusionMap.Sample(Surface, uv), OcclusionMask) : 1;
+        if (!(Flags & 32768)) ao *= PreviewScreenAO(i.PositionPS.xy);   // PreviewPost hook: XeGTAO, not on blended surfaces
         float3 cDiff, cSpec;
         if (Flags & 8)
         {
@@ -261,7 +270,7 @@ float4 PSMain(PSIn i, out uint Coverage : SV_Coverage) : SV_Target0
     {
         float t = dot(TransmissionMap.Sample(Surface, uv), TransmissionMask);
         if (TransmissionColor.w > 0.5) t = 1 - t;
-        float3 back = Irradiance.Sample(IblSampler, -N) * IblScale + Ambient;
+        float3 back = Irradiance.Sample(IblSampler, EnvDir(-N)) * IblScale + Ambient;   // environment: turned
         [unroll] for (int k = 0; k < 3; k++) back += saturate(dot(N, normalize(LightDirection[k]))) * LightColor[k];
         color += albedo.rgb * TransmissionColor.rgb * t * back;
     }
@@ -285,7 +294,31 @@ float4 PSMain(float4 Pos : SV_Position) : SV_Target0
 }
 )";
 
+    // The backdrop: the environment seen through each pixel, from its radiance cube at a roughness
+    // (blurred), turned (EnvDir, the environment's b3) and scaled as it lights; drawn after the clear,
+    // before the model, at no depth. Compiled after PreviewEnvironmentHlsl().
+    const char* kBackdropShader = R"(
+cbuffer Backdrop : register(b7)
+{
+    float4 BdRight;     // xyz: the view's right times tan(fov / 2) * aspect
+    float4 BdUp;        // xyz: its up times tan(fov / 2)
+    float4 BdForward;   // xyz: its forward
+    float4 BdParams;    // x, y: 2 / width, 2 / height; z: the mip; w: the scale
+};
+TextureCube<float3> BdRadiance : register(t4);
+SamplerState BdSampler : register(s1);
+float4 BackdropPS(float4 Pos : SV_Position) : SV_Target0
+{
+    float2 ndc = float2(Pos.x * BdParams.x - 1, 1 - Pos.y * BdParams.y);
+    float3 d = normalize(BdForward.xyz + ndc.x * BdRight.xyz + ndc.y * BdUp.xyz);
+    return float4(BdRadiance.SampleLevel(BdSampler, EnvDir(d), BdParams.z) * BdParams.w, 1);
+}
+)";
+    struct BackdropConstants { float Right[4], Up[4], Forward[4], Params[4]; };
+
     struct SceneConstants { float IblScale, Samples, Ambient, NoSpecular; };
+    // the image based light's scale on the environment's cubes (and the backdrop's)
+    constexpr float kIblScale = 0.45f;
 
     // The image based light: a sky that only varies with height (orbiting never makes it jump).
     // Each radiance mip is that sky through a GGX-sized lobe, the irradiance cube the cosine-
@@ -568,6 +601,7 @@ PreviewGpuMesh UploadPreviewMesh(ID3D11Device* Dev, const PreviewGeometry& Geo, 
     M.VB = MakeBuffer(Vtx.data(), (UINT)(Vtx.size() * sizeof(float)), D3D11_BIND_VERTEX_BUFFER);
 
     PreviewBoundingSphere(Geo, M.Center, M.Radius);
+    PreviewMeshBox(Geo.Pos, M.BoxMin, M.BoxMax);
 
     // Triangles grouped by material, so each draw binds one material, and within one by layer
     // (OverlayLayers): counted per (material, layer), then placed (one pass each, a map has a
@@ -791,15 +825,14 @@ bool PreviewTarget::Resize(ID3D11Device* Dev, int NewW, int NewH)
     DSV.Reset(); HdrSRV.Reset(); StraightSRV.Reset(); OutputSRV.Reset();
 
     const DXGI_FORMAT HdrFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    Samples = 4;
-    UINT Q = 0;
-    if (FAILED(Dev->CheckMultisampleQualityLevels(HdrFormat, Samples, &Q)) || Q == 0) Samples = 1;
+    Generation++;   // PreviewPost: WantSamples, or fewer when the device has not as many
+    for (Samples = std::max(1u, WantSamples); Samples > 1; Samples /= 2)
+    {
+        UINT Q = 0;
+        if (SUCCEEDED(Dev->CheckMultisampleQualityLevels(HdrFormat, Samples, &Q)) && Q > 0) break;
+    }
 
-    auto Tex = [&](DXGI_FORMAT F, UINT S, UINT Bind, ComPtr<ID3D11Texture2D>& Out) {
-        D3D11_TEXTURE2D_DESC Td{}; Td.Width = W; Td.Height = H; Td.MipLevels = 1; Td.ArraySize = 1;
-        Td.Format = F; Td.SampleDesc.Count = S; Td.Usage = D3D11_USAGE_DEFAULT; Td.BindFlags = Bind;
-        return SUCCEEDED(Dev->CreateTexture2D(&Td, nullptr, &Out));
-    };
+    auto Tex = [&](DXGI_FORMAT F, UINT S, UINT Bind, ComPtr<ID3D11Texture2D>& Out) { return PreviewD3D::Texture(Dev, W, H, F, Bind, Out, S); };
     ComPtr<ID3D11Texture2D> Depth;
     if (!Tex(HdrFormat, Samples, D3D11_BIND_RENDER_TARGET, Hdr) ||
         !Tex(DXGI_FORMAT_D32_FLOAT, Samples, D3D11_BIND_DEPTH_STENCIL, Depth) ||
@@ -823,14 +856,19 @@ struct PreviewRenderer::Impl
     std::unique_ptr<CommonStates> States;
     std::unique_ptr<ToneMapPostProcess> ToneMap;
     ComPtr<ID3D11InputLayout> Layout;
-    ComPtr<ID3D11PixelShader> PS, UnpremultiplyPS;
+    ComPtr<ID3D11PixelShader> PS, UnpremultiplyPS, BackdropPS;
     ComPtr<ID3D11VertexShader> FullscreenVS;
-    ComPtr<ID3D11Buffer> MaterialCB, SceneCB;
+    ComPtr<ID3D11Buffer> MaterialCB, SceneCB, BackdropCB;
     ComPtr<ID3D11ShaderResourceView> Radiance, Irradiance;
     // no culling, pulled toward the camera by layer (PreviewGpuMesh::Range::Layer; [0] unused)
     ComPtr<ID3D11RasterizerState> Overlay[PreviewGpuMesh::MaxLayer + 1];
     int RadianceMips = 1;
+    std::unique_ptr<PreviewEnvironment> Env;   // environment
+    std::unique_ptr<PreviewBloom> Bloom;       // bloom
     PreviewLighting Lighting;
+    uint64_t LightingGeneration = 0;   // one more each time Lighting changes
+    std::unique_ptr<PreviewShadows> Shadows;
+    std::unique_ptr<PreviewPost> Post;   // PreviewPost: ambient occlusion, SMAA, still accumulation
     bool Ok = false;
 
     explicit Impl(ID3D11Device* D) : Dev(D)
@@ -844,8 +882,14 @@ struct PreviewRenderer::Impl
         }
         catch (...) { return; }
 
+        // PreviewPost hook: its declarations ahead of the shader, its prepass built from the same source
+        // the environment's and the shadows' preludes ahead of the shader too (the prepass compiles the same)
+        const std::string Shader = std::string(PreviewEnvironmentHlsl()) + PreviewShadowHlsl() + kPixelShader;
+        Post = std::make_unique<PreviewPost>(D);
+        Post->CompilePrepass(Shader.c_str());
+        const std::string Source = std::string(PreviewPost::ShaderPrefix()) + Shader;
         ComPtr<ID3DBlob> Blob, Err;
-        if (FAILED(D3DCompile(kPixelShader, std::strlen(kPixelShader), "PreviewPS", nullptr, nullptr, "PSMain", "ps_5_0",
+        if (FAILED(D3DCompile(Source.data(), Source.size(), "PreviewPS", nullptr, nullptr, "PSMain", "ps_5_0",
                               D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &Blob, &Err)))
         {
             if (Err) OutputDebugStringA((const char*)Err->GetBufferPointer());
@@ -861,11 +905,18 @@ struct PreviewRenderer::Impl
             FAILED(D->CreatePixelShader(PsBlob->GetBufferPointer(), PsBlob->GetBufferSize(), nullptr, &UnpremultiplyPS)))
             return;
 
-        auto Cb = [&](UINT Bytes, ComPtr<ID3D11Buffer>& Out) {
-            D3D11_BUFFER_DESC B{}; B.ByteWidth = Bytes; B.Usage = D3D11_USAGE_DEFAULT; B.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-            return SUCCEEDED(D->CreateBuffer(&B, nullptr, &Out));
-        };
-        if (!Cb(sizeof(PreviewGpuMaterial::Constants), MaterialCB) || !Cb(sizeof(SceneConstants), SceneCB)) return;
+        using PreviewD3D::ConstantBuffer;
+        if (!ConstantBuffer(D, sizeof(PreviewGpuMaterial::Constants), MaterialCB) || !ConstantBuffer(D, sizeof(SceneConstants), SceneCB) ||
+            !ConstantBuffer(D, sizeof(BackdropConstants), BackdropCB)) return;
+        {
+            // the backdrop (without it the background stays the clear colour)
+            const std::string Bd = std::string(PreviewEnvironmentHlsl()) + kBackdropShader;
+            ComPtr<ID3DBlob> BdBlob, BdErr;
+            if (SUCCEEDED(D3DCompile(Bd.data(), Bd.size(), "PreviewBackdrop", nullptr, nullptr, "BackdropPS", "ps_5_0",
+                                     D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &BdBlob, &BdErr)))
+                D->CreatePixelShader(BdBlob->GetBufferPointer(), BdBlob->GetBufferSize(), nullptr, &BackdropPS);
+            else if (BdErr) OutputDebugStringA((const char*)BdErr->GetBufferPointer());
+        }
 
         for (int Layer = 1; Layer <= PreviewGpuMesh::MaxLayer; Layer++)
         {
@@ -875,22 +926,93 @@ struct PreviewRenderer::Impl
         }
         if (!StudioEnvironment(D, Radiance, RadianceMips, Irradiance)) return;
         Effect->SetIBLTextures(Radiance.Get(), RadianceMips, Irradiance.Get());
+        // environment, bloom
+        Env = std::make_unique<PreviewEnvironment>(D, Radiance.Get(), RadianceMips, Irradiance.Get());
+        Bloom = std::make_unique<PreviewBloom>(D);
+        if (!Env->Ok()) return;
         ToneMap->SetOperator(ToneMapPostProcess::ACESFilmic);
         ToneMap->SetTransferFunction(ToneMapPostProcess::SRGB);
         Effect->SetAlpha(1.0f);
+        Shadows = std::make_unique<PreviewShadows>(D);   // without them (not Ok) the model is drawn unshadowed
         Ok = true;
+    }
+
+    // The environment behind everything, into T's HDR target (no depth): L's environment through
+    // Cam's view, at L.BackdropBlur's roughness, scaled as the image based light is
+    void DrawBackdrop(ID3D11DeviceContext* Ctx, const PreviewCamera& Cam, PreviewTarget& T, const PreviewLighting& L)
+    {
+        if (!BackdropPS) return;
+        Env->Apply(Ctx, *Effect, L);   // the environment loaded, its turn at b3
+        const XMVECTOR Eye = XMLoadFloat3(&Cam.Eye), At = XMLoadFloat3(&Cam.Target), Up = XMLoadFloat3(&Cam.Up);
+        const XMVECTOR Fwd = XMVector3Normalize(XMVectorSubtract(At, Eye));
+        const XMVECTOR Right = XMVector3Normalize(XMVector3Cross(Fwd, Up));
+        const XMVECTOR CamUp = XMVector3Cross(Right, Fwd);
+        const float TanV = std::tan(Cam.Fov * 0.5f), TanH = TanV * (float)T.W / (float)std::max(1, T.H);
+        BackdropConstants C{};
+        XMStoreFloat4(reinterpret_cast<XMFLOAT4*>(C.Right), XMVectorScale(Right, TanH));
+        XMStoreFloat4(reinterpret_cast<XMFLOAT4*>(C.Up), XMVectorScale(CamUp, TanV));
+        XMStoreFloat4(reinterpret_cast<XMFLOAT4*>(C.Forward), Fwd);
+        const float Blur = std::clamp(L.BackdropBlur, 0.0f, 1.0f);
+        C.Params[0] = 2.0f / (float)T.W; C.Params[1] = 2.0f / (float)T.H;
+        C.Params[2] = Blur * (float)std::max(0, Env->RadianceMips() - 1);
+        C.Params[3] = kIblScale * L.EnvIntensity;
+        Ctx->UpdateSubresource(BackdropCB.Get(), 0, nullptr, &C, 0, 0);
+
+        D3D11_VIEWPORT Vp{}; Vp.Width = (float)T.W; Vp.Height = (float)T.H; Vp.MaxDepth = 1.0f;
+        Ctx->RSSetViewports(1, &Vp);
+        ID3D11RenderTargetView* Rtv[] = { T.HdrRTV.Get() };
+        Ctx->OMSetRenderTargets(1, Rtv, nullptr);
+        Ctx->OMSetBlendState(States->Opaque(), nullptr, 0xFFFFFFFF);
+        Ctx->OMSetDepthStencilState(States->DepthNone(), 0);
+        Ctx->RSSetState(States->CullNone());
+        Ctx->IASetInputLayout(nullptr);
+        Ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        Ctx->VSSetShader(FullscreenVS.Get(), nullptr, 0);
+        Ctx->PSSetShader(BackdropPS.Get(), nullptr, 0);
+        ID3D11Buffer* Cbs[] = { BackdropCB.Get() };
+        Ctx->PSSetConstantBuffers(7, 1, Cbs);
+        ID3D11ShaderResourceView* Srv[] = { Env->Radiance() };
+        Ctx->PSSetShaderResources(4, 1, Srv);
+        ID3D11SamplerState* Smp[] = { States->LinearClamp() };
+        Ctx->PSSetSamplers(1, 1, Smp);
+        Ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* NoSrv[] = { nullptr };
+        Ctx->PSSetShaderResources(4, 1, NoSrv);
+        Ctx->OMSetRenderTargets(0, nullptr, nullptr);
     }
 };
 
 PreviewRenderer::PreviewRenderer(ID3D11Device* Dev) : P(std::make_unique<Impl>(Dev)) {}
 PreviewRenderer::~PreviewRenderer() = default;
 bool PreviewRenderer::Ok() const { return P->Ok; }
-void PreviewRenderer::SetLighting(const PreviewLighting& L) { P->Lighting = L; }
+void PreviewRenderer::SetLighting(const PreviewLighting& L)
+{
+    if (P->Lighting == L) return;
+    P->Lighting = L;
+    P->LightingGeneration++;   // the still frames' key (PreviewPost::Begin): not the struct's bytes, it holds a string
+}
+void PreviewRenderer::SetQuality(const PreviewQuality& Q) { if (P->Post) P->Post->SetQuality(Q); }
+const PreviewQuality& PreviewRenderer::Quality() const
+{
+    static const PreviewQuality Legacy = PreviewQuality::Legacy();
+    return P->Post ? P->Post->Quality() : Legacy;
+}
+void PreviewRenderer::Invalidate() { if (P->Post) P->Post->Invalidate(); }
+
+void PreviewRenderer::RenderStill(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mesh, const PreviewCamera& Cam, PreviewTarget& T,
+                                  const float Background[4])
+{
+    const int Frames = std::max(1, Quality().StillSamples);
+    for (int i = 0; i < Frames; i++) Render(Ctx, Mesh, Cam, T, Background);
+}
 
 void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mesh, const PreviewCamera& Cam, PreviewTarget& T,
                              const float Background[4])
 {
     if (!P->Ok || !T.HdrRTV) return;
+    // PreviewPost hook 1: the target's MSAA, the still's next frame (none when it is whole)
+    const PreviewPostFrame Frame = P->Post->Begin(Ctx, Mesh, Cam, T, Background, &P->LightingGeneration, sizeof(P->LightingGeneration));
+    if (Frame.Skip) return;
     // The HDR target holds linear light: the background is cleared to what the display transform
     // (exposure included) turns back into the colour asked for.
     const PreviewLighting& L = P->Lighting;
@@ -900,14 +1022,17 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
     P->ToneMap->SetExposure(L.Exposure);
     Ctx->ClearRenderTargetView(T.HdrRTV.Get(), Clear);
     Ctx->ClearDepthStencilView(T.DSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0);
+    // the environment behind the model, over an opaque background only (a transparent capture keeps its alpha)
+    if (L.Backdrop && Background[3] >= 1.0f) P->DrawBackdrop(Ctx, Cam, T, L);
 
     if (Mesh && Mesh->Valid)
     {
         const XMVECTOR Eye = XMLoadFloat3(&Cam.Eye), At = XMLoadFloat3(&Cam.Target), Up = XMLoadFloat3(&Cam.Up);
         // CoD's world is right-handed (X forward, Y left, Z up): a right-handed view and projection,
         // as the FX preview's. A left-handed pair here showed every model and map mirrored.
-        P->Effect->SetMatrices(XMMatrixIdentity(), XMMatrixLookAtRH(Eye, At, Up),
-                               XMMatrixPerspectiveFovRH(Cam.Fov, (float)T.W / (float)T.H, Cam.Near, Cam.Far));
+        const XMMATRIX View = XMMatrixLookAtRH(Eye, At, Up);
+        const XMMATRIX Proj = XMMatrixPerspectiveFovRH(Cam.Fov, (float)T.W / (float)T.H, Cam.Near, Cam.Far);
+        P->Effect->SetMatrices(XMMatrixIdentity(), View, P->Post->Jitter(Frame, Proj, T));   // PreviewPost hook 2: sub-pixel jitter
         // Three-point light riding with the camera: a warm key above-left, a cool fill low right,
         // a rim from behind. Each is a direction the light travels (from its position to the model).
         const XMVECTOR Fwd = XMVector3Normalize(XMVectorSubtract(At, Eye));
@@ -917,12 +1042,16 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
             return XMVector3Normalize(XMVectorNegate(XMVectorAdd(XMVectorAdd(XMVectorScale(Fwd, F), XMVectorScale(Right, R)), XMVectorScale(CamUp, U))));
         };
         const float K = L.Lights;
-        P->Effect->SetLightDirection(0, From(-1.0f, -0.8f, 0.9f));
+        const XMVECTOR KeyDir = From(-1.0f, -0.8f, 0.9f);
+        P->Effect->SetLightDirection(0, KeyDir);
         P->Effect->SetLightDiffuseColor(0, XMVectorSet(1.30f * K, 1.24f * K, 1.15f * K, 0));
         P->Effect->SetLightDirection(1, From(-1.0f, 1.0f, -0.1f));
         P->Effect->SetLightDiffuseColor(1, XMVectorSet(0.22f * K, 0.25f * K, 0.30f * K, 0));
         P->Effect->SetLightDirection(2, From(1.0f, 0.4f, 0.8f));
         P->Effect->SetLightDiffuseColor(2, XMVectorSet(0.8f * K, 0.8f * K, 0.85f * K, 0));
+        P->Shadows->RenderMaps(Ctx, *Mesh, KeyDir, L.Shadow, K);   // the key light's depth map (sets its own targets)
+        // PreviewPost hook 3: depth/normal prepass and XeGTAO, the occlusion bound for the pass below (t40, b6)
+        P->Post->Occlusion(Ctx, Frame, *Mesh, View, Cam, T, *P->Effect, P->Layout.Get(), P->MaterialCB.Get(), *P->States);
 
         D3D11_VIEWPORT Vp{}; Vp.Width = (float)T.W; Vp.Height = (float)T.H; Vp.MaxDepth = 1.0f;
         Ctx->RSSetViewports(1, &Vp);
@@ -930,6 +1059,7 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
         Ctx->OMSetRenderTargets(1, Rtv, T.DSV.Get());
         Ctx->RSSetState(P->States->CullNone());
 
+        P->Env->Apply(Ctx, *P->Effect, L);   // environment: its cubes on the effect, b4, t24
         P->Effect->Apply(Ctx);
         Ctx->PSSetShader(P->PS.Get(), nullptr, 0);
         Ctx->IASetInputLayout(P->Layout.Get());
@@ -939,12 +1069,13 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
         Ctx->IASetIndexBuffer(Mesh->IB.Get(), DXGI_FORMAT_R32_UINT, 0);
         Ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        const SceneConstants Scene{ 0.45f, (float)T.Samples, 0.0f, L.Specular ? 0.0f : 1.0f };
+        const SceneConstants Scene{ kIblScale * L.EnvIntensity, (float)T.Samples, 0.0f, L.Specular ? 0.0f : 1.0f };   // environment: intensity
         Ctx->UpdateSubresource(P->SceneCB.Get(), 0, nullptr, &Scene, 0, 0);
         ID3D11Buffer* Cbs[] = { P->MaterialCB.Get(), P->SceneCB.Get() };
         Ctx->PSSetConstantBuffers(1, 2, Cbs);
         ID3D11SamplerState* Samplers[] = { P->States->AnisotropicWrap(), P->States->LinearClamp() };   // 16x anisotropic
         Ctx->PSSetSamplers(0, 2, Samplers);
+        P->Shadows->Bind(Ctx);
 
         // Opaque first, then cutouts (their coverage comes from the shader), then blended surfaces.
         const PreviewGpuMaterial Untextured;
@@ -974,6 +1105,7 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
             }
             if (Layer) Ctx->RSSetState(P->States->CullNone());
         }
+        P->Shadows->DrawGround(Ctx, Cam, (float)T.W / (float)T.H);   // the shadow catcher, over the background
     }
 
     if (T.Samples > 1) Ctx->ResolveSubresource(T.HdrResolved.Get(), 0, T.Hdr.Get(), 0, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -1001,10 +1133,13 @@ void PreviewRenderer::Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mes
         ToneMapSource = T.StraightSRV.Get();
     }
 
+    if (L.Bloom) ToneMapSource = P->Bloom->Apply(Ctx, ToneMapSource, T.W, T.H, L.BloomStrength, L.Exposure);   // bloom
+
     ID3D11RenderTargetView* Out[] = { T.OutputRTV.Get() };
     Ctx->OMSetRenderTargets(1, Out, nullptr);
     P->ToneMap->SetHDRSourceTexture(ToneMapSource);
     P->ToneMap->Process(Ctx);
+    P->Post->End(Ctx, Frame, T);   // PreviewPost hook 4: SMAA, the frame added to the still
     ID3D11ShaderResourceView* None[21] = {};
     Ctx->PSSetShaderResources(0, 21, None);
     Ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -1024,7 +1159,7 @@ bool PreviewRenderer::Capture(ID3D11Device* Dev, ID3D11DeviceContext* Ctx, const
     PreviewTarget Target;
     if (!Target.Resize(Dev, W, H)) return false;
     const float Transparent[4] = { 0, 0, 0, 0 };
-    Render(Ctx, &Mesh, Cam, Target, Transparent);
+    RenderStill(Ctx, &Mesh, Cam, Target, Transparent);   // PreviewPost: every frame of the still
     return Target.Output && SUCCEEDED(CaptureTexture(Dev, Ctx, Target.Output.Get(), Out));
 }
 
@@ -1035,7 +1170,8 @@ bool SavePreviewTargetPng(ID3D11Device* Dev, ID3D11DeviceContext* Ctx, const Pre
     return SavePreviewPng(*Shot.GetImage(0, 0, 0), OutPngPath);
 }
 
-bool RenderModelGPU(const std::vector<std::string>& SemodelPaths, const std::string& OutPngPath, int Size)
+bool RenderModelGPU(const std::vector<std::string>& SemodelPaths, const std::string& OutPngPath, int Size,
+                    const PreviewLighting& Lighting, int Turntable, const PreviewQuality* Quality)
 {
     if (Size < 16) Size = 16;
 
@@ -1053,42 +1189,111 @@ bool RenderModelGPU(const std::vector<std::string>& SemodelPaths, const std::str
     if (FAILED(Hr)) return false;
 
     PreviewRenderer Renderer(Dev.Get());
+    Renderer.SetLighting(Lighting);
+    Renderer.SetQuality(Quality ? *Quality : LoadPreviewQuality());   // PreviewPost: the viewport's settings
     const PreviewGpuMesh Mesh = UploadPreviewMesh(Dev.Get(), Geo);
     PreviewTarget Target;
     if (!Renderer.Ok() || !Mesh.Valid || !Target.Resize(Dev.Get(), Size, Size)) return false;
 
-    // Framing robust to outliers (a map's skybox): the mean vertex as the center, the 90th
-    // percentile distance as the framing radius, the true maximum only for the far plane.
-    XMVECTOR CenterSum = XMVectorZero();
-    for (UINT i = 0; i < VertexCount; i++)
-        CenterSum = XMVectorAdd(CenterSum, XMVectorSet(Geo.Pos[i * 3], Geo.Pos[i * 3 + 1], Geo.Pos[i * 3 + 2], 0));
-    const XMVECTOR Center = XMVectorScale(CenterSum, 1.0f / std::max(1u, VertexCount));
-    std::vector<float> Dists(VertexCount);
-    float TrueMaxRadius = 1e-4f;
-    for (UINT i = 0; i < VertexCount; i++)
+    // Framing: the framing box (the whole model; a map's skybox left out, PreviewFramingBox) and, with
+    // the ground and the key light's shadow on, the ground's shadow area (the box's corners cast along
+    // the key light onto the ground, as far as the ground's fade starts), every point inside the view
+    float Lo[3], Hi[3];
+    PreviewFramingBox(Geo.Pos.data(), VertexCount, Lo, Hi);
+    const XMVECTOR BoxLo = XMVectorSet(Lo[0], Lo[1], Lo[2], 0), BoxHi = XMVectorSet(Hi[0], Hi[1], Hi[2], 0);
+    const XMVECTOR Center = XMVectorScale(XMVectorAdd(BoxLo, BoxHi), 0.5f);
+    const float Radius = std::max(1e-4f, 0.5f * XMVectorGetX(XMVector3Length(XMVectorSubtract(BoxHi, BoxLo))));
+    // the ground's own numbers (PreviewShadows::RenderMaps): its height and size from the whole mesh's box
+    const float GroundZ = Mesh.BoxMin.z;
+    const float GroundSize = XMVectorGetX(XMVector3Length(XMVectorSubtract(XMLoadFloat3(&Mesh.BoxMax), XMLoadFloat3(&Mesh.BoxMin))));
+    const bool CastShadow = Lighting.Shadow.Ground && Lighting.Shadow.Shadows && Lighting.Lights > 0.0f;
+    const float TrueMaxRadius = std::max(Radius, Mesh.Radius);
+    std::vector<XMVECTOR> Samples;   // at most ~8k vertices, clamped into the framing box
     {
-        const XMVECTOR Pt = XMVectorSet(Geo.Pos[i * 3], Geo.Pos[i * 3 + 1], Geo.Pos[i * 3 + 2], 0);
-        Dists[i] = XMVectorGetX(XMVector3Length(XMVectorSubtract(Pt, Center)));
-        TrueMaxRadius = std::max(TrueMaxRadius, Dists[i]);
+        const size_t Step = std::max<size_t>(1, VertexCount / 8192);
+        for (size_t v = 0; v < VertexCount; v += Step)
+            Samples.push_back(XMVectorClamp(XMVectorSet(Geo.Pos[v * 3], Geo.Pos[v * 3 + 1], Geo.Pos[v * 3 + 2], 0), BoxLo, BoxHi));
     }
-    float Radius = TrueMaxRadius;
-    if (VertexCount >= 20)
+    constexpr size_t ShadowStep = 4;   // a quarter of them cast onto the ground
+
+    // Yaw turns the view about the up axis (Z): a turntable's frames
+    const auto CameraAt = [&](float Yaw) {
+        PreviewCamera Cam;
+        Cam.Fov = XMConvertToRadians(32.0f);
+        const XMVECTOR Fwd = XMVector3Transform(XMVector3Normalize(XMVectorSet(-0.55f, -0.8f, -0.32f, 0)), XMMatrixRotationZ(Yaw)); // camera -> model
+        const XMVECTOR Right = XMVector3Normalize(XMVector3Cross(Fwd, XMVectorSet(0, 0, 1, 0)));
+        const XMVECTOR Up = XMVector3Cross(Right, Fwd);
+        // the model's own points (a box's corners would leave a wide margin around anything round),
+        // each pulled into the framing box: an outlier counts as far as the box goes
+        std::vector<XMVECTOR> Points;
+        const size_t ModelPoints = Samples.size();
+        Points.reserve(ModelPoints + ModelPoints / ShadowStep + 1);
+        for (const XMVECTOR& P : Samples) Points.push_back(P);
+        if (CastShadow)
+        {
+            // the key light as Render places it (riding with the camera): the way it travels
+            const XMVECTOR Key = XMVector3Normalize(XMVectorSubtract(XMVectorAdd(Fwd, XMVectorScale(Right, 0.8f)), XMVectorScale(Up, 0.9f)));
+            const float Kz = XMVectorGetZ(Key);
+            const XMVECTOR Mid = XMVectorSetZ(Center, GroundZ);
+            const float Reach = 0.9f * GroundSize;
+            for (size_t k = 0; k < ModelPoints && Kz < -0.05f; k += ShadowStep)
+            {
+                const XMVECTOR P = Points[k];
+                XMVECTOR S = XMVectorAdd(P, XMVectorScale(Key, (GroundZ - XMVectorGetZ(P)) / Kz));
+                const XMVECTOR Off = XMVectorSubtract(S, Mid);
+                const float Len = XMVectorGetX(XMVector3Length(Off));
+                if (Len > Reach) S = XMVectorAdd(Mid, XMVectorScale(Off, Reach / Len));
+                Points.push_back(S);
+            }
+        }
+        // the target at the middle of the points across the view, then the distance at which they all fit
+        float Mn[2] = { FLT_MAX, FLT_MAX }, Mx[2] = { -FLT_MAX, -FLT_MAX };
+        for (const XMVECTOR& P : Points)
+        {
+            const XMVECTOR Q = XMVectorSubtract(P, Center);
+            const float X = XMVectorGetX(XMVector3Dot(Q, Right)), Y = XMVectorGetX(XMVector3Dot(Q, Up));
+            Mn[0] = std::min(Mn[0], X); Mx[0] = std::max(Mx[0], X);
+            Mn[1] = std::min(Mn[1], Y); Mx[1] = std::max(Mx[1], Y);
+        }
+        const XMVECTOR Target = XMVectorAdd(Center, XMVectorAdd(XMVectorScale(Right, (Mn[0] + Mx[0]) * 0.5f), XMVectorScale(Up, (Mn[1] + Mx[1]) * 0.5f)));
+        const float Tan = std::tan(Cam.Fov * 0.5f) / 1.07f;   // a margin around the points
+        float Dist = Radius * 0.1f;
+        for (const XMVECTOR& P : Points)
+        {
+            const XMVECTOR Q = XMVectorSubtract(P, Target);
+            const float X = std::abs(XMVectorGetX(XMVector3Dot(Q, Right))), Y = std::abs(XMVectorGetX(XMVector3Dot(Q, Up)));
+            const float Z = XMVectorGetX(XMVector3Dot(Q, Fwd));   // toward the camera when negative
+            Dist = std::max(Dist, std::max(X, Y) / Tan - Z);
+        }
+        XMStoreFloat3(&Cam.Eye, XMVectorSubtract(Target, XMVectorScale(Fwd, Dist)));
+        XMStoreFloat3(&Cam.Target, Target);
+        Cam.Near = std::max((Dist - 3.0f * Radius) * 0.5f, Radius * 0.02f);
+        Cam.Far = Dist + 2.0f * TrueMaxRadius + GroundSize;
+        return Cam;
+    };
+
+    // transparent, unless the environment is to be behind the model (--backdrop: an opaque image)
+    const float Back[4] = { 0, 0, 0, Lighting.Backdrop ? 1.0f : 0.0f };
+    if (Turntable <= 0)
     {
-        const size_t P90 = (size_t)(Dists.size() * 0.90);
-        std::nth_element(Dists.begin(), Dists.begin() + P90, Dists.end());
-        Radius = std::max(1e-4f, Dists[P90]);
+        Renderer.RenderStill(Ctx.Get(), &Mesh, CameraAt(0.0f), Target, Back);
+        return SavePreviewTargetPng(Dev.Get(), Ctx.Get(), Target, OutPngPath);
     }
-
-    PreviewCamera Cam;
-    Cam.Fov = XMConvertToRadians(32.0f);
-    const float Dist = (Radius / std::tan(Cam.Fov * 0.5f)) * 1.12f;
-    const XMVECTOR Dir = XMVector3Normalize(XMVectorSet(-0.55f, -0.8f, -0.32f, 0)); // camera -> model
-    XMStoreFloat3(&Cam.Eye, XMVectorSubtract(Center, XMVectorScale(Dir, Dist)));
-    XMStoreFloat3(&Cam.Target, Center);
-    Cam.Near = Radius * 0.05f;
-    Cam.Far = std::max(Dist + Radius * 2.0f, TrueMaxRadius * 1.05f);
-
-    const float Transparent[4] = { 0, 0, 0, 0 };
-    Renderer.Render(Ctx.Get(), &Mesh, Cam, Target, Transparent);
-    return SavePreviewTargetPng(Dev.Get(), Ctx.Get(), Target, OutPngPath);
+    // the views tiled into a near-square sheet, as the software turntable's (RenderModelTurntable)
+    const int Cols = std::max(1, (int)std::ceil(std::sqrt((double)Turntable))), Rows = (Turntable + Cols - 1) / Cols, Pad = 6;
+    ScratchImage Sheet;
+    if (FAILED(Sheet.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, Cols * Size + (Cols + 1) * Pad, Rows * Size + (Rows + 1) * Pad, 1, 1))) return false;
+    std::memset(Sheet.GetPixels(), 0, Sheet.GetPixelsSize());
+    const Image& To = *Sheet.GetImage(0, 0, 0);
+    for (int f = 0; f < Turntable; f++)
+    {
+        Renderer.RenderStill(Ctx.Get(), &Mesh, CameraAt(XM_2PI * f / Turntable), Target, Back);
+        ScratchImage Shot;
+        if (FAILED(CaptureTexture(Dev.Get(), Ctx.Get(), Target.Output.Get(), Shot))) return false;
+        const Image& From = *Shot.GetImage(0, 0, 0);
+        const int Ox = Pad + (f % Cols) * (Size + Pad), Oy = Pad + (f / Cols) * (Size + Pad);
+        for (int y = 0; y < Size; y++)
+            std::memcpy(To.pixels + (size_t)(Oy + y) * To.rowPitch + (size_t)Ox * 4, From.pixels + (size_t)y * From.rowPitch, (size_t)Size * 4);
+    }
+    return SavePreviewPng(To, OutPngPath);
 }

@@ -1,0 +1,21 @@
+{
+  "_doc": "Per-path exemptions for tools/safety_gate.py: check (or gate-* matcher) -> repo-relative globs. Byte-level code (crypto, hashes, codecs, bit readers, the zone memory views) walks raw bytes by nature; it is exempt from pointer arithmetic only. A file leaves this list when it moves to std::span / ByteView / BinaryReader.",
+  "exempt": {
+    "cppcoreguidelines-pro-bounds-pointer-arithmetic": [
+      "src/Core/Core/Salsa20.cpp",
+      "src/Core/Core/SHA1.cpp",
+      "src/Core/Core/Hashing.cpp",
+      "src/Core/Core/Compression.cpp",
+      "src/Core/Core/Encryption.cpp",
+      "src/Core/Core/HalfFloats.cpp",
+      "src/GrayWolf/GrayWolf/CerberusCrypto.cpp",
+      "src/GrayWolf/GrayWolf/WorldWar2Crypto.cpp",
+      "src/GrayWolf/GrayWolf/Games/T7/Bo3MovieSalsa20.cpp",
+      "src/GrayWolf/GrayWolf/VCDiff.cpp",
+      "src/GrayWolf/GrayWolf/CoDIWIDecoder.cpp",
+      "src/GrayWolf/GrayWolf/PackedXAnim.h",
+      "src/GrayWolf/GrayWolf/Games/Common/MeshDecode.cpp",
+      "src/GrayWolf/GrayWolf/ZoneMemory.h"
+    ]
+  }
+}

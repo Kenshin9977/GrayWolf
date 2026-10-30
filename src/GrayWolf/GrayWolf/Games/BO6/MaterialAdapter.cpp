@@ -19,20 +19,21 @@ namespace
         return M.BySemantic(Base + Layer * Stride + S);
     }
 
-    class BlackOps6Materials final : public Materials::IAdapter
+    using Materials::Role;
+    class BlackOps6Materials final : public Materials::SemanticAdapter
     {
     public:
-        const char* Name() const override { return "bo6"; }
-        Materials::Description Describe(const Materials::Source& M) const override
+        BlackOps6Materials()
+            : SemanticAdapter("bo6", {
+                  { Base + Color, Role::Albedo },     { 44, Role::Albedo },
+                  { Base + Nog, Role::Normal },       { 45, Role::Normal },
+                  { Base + Nog, Role::Gloss, 0 },     { 45, Role::Gloss, 0 },
+                  { Base + Nog, Role::Occlusion, 2 }, { 45, Role::Occlusion, 2 },
+                  { Base + Emissive, Role::Emissive },
+              }) {}
+    protected:
+        void Refine(const Materials::Source& M, Materials::Description& D, bool) const override
         {
-            using Materials::Role;
-            Materials::Description D = Materials::DescribeBySemantic(M, {
-                { Base + Color, Role::Albedo },     { 44, Role::Albedo },
-                { Base + Nog, Role::Normal },       { 45, Role::Normal },
-                { Base + Nog, Role::Gloss, 0 },     { 45, Role::Gloss, 0 },
-                { Base + Nog, Role::Occlusion, 2 }, { 45, Role::Occlusion, 2 },
-                { Base + Emissive, Role::Emissive },
-            });
             D.NormalEnc = Materials::NormalEncoding::AG;
             if (!IwMaterialAlpha::Apply(M, At(M, 0, OpacityMap), D))
                 if (const auto* Op = At(M, 0, OpacityMap))
@@ -62,7 +63,6 @@ namespace
             }
             // a terrain's material layers (Games/IW/IwTerrain)
             IwTerrain::DescribeLayers(M, D);
-            return D;
         }
     };
     const BlackOps6Materials Adapter;

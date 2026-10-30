@@ -3,6 +3,7 @@
 #include "IwInstall.h"
 
 #include "ExportNaming.h"
+#include "ZipInflate.h"
 #include <miniz/miniz.h>
 
 #include <algorithm>
@@ -135,12 +136,7 @@ bool Install::Read(const std::string& Path, std::vector<uint8_t>& Out) const
     const auto It = Winner.find(Path);
     if (It == Winner.end()) return false;
     Archive& Z = *Zips[It->second];
-    const mz_uint F = WinnerIndex.at(Path);
-    std::lock_guard<std::mutex> Guard(Z.Lock);
-    mz_zip_archive_file_stat Stat;
-    if (!mz_zip_reader_file_stat(&Z.Zip, F, &Stat)) return false;
-    Out.resize((size_t)Stat.m_uncomp_size);
-    if (Out.empty()) return true;
-    return mz_zip_reader_extract_to_mem(&Z.Zip, F, Out.data(), Out.size(), 0) != 0;
+    // the archive read under its lock, inflated beside the other threads' reads
+    return ZipInflate::Extract(&Z.Zip, WinnerIndex.at(Path), Out, Z.Lock);
 }
 }

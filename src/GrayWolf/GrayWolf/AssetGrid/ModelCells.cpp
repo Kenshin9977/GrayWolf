@@ -4,6 +4,7 @@
 #include "GridServices.h"
 #include "ModelPreview.h"      // LoadPreviewGeometry(Glb), LoadRigGeometry, PreviewGeometry
 #include "ModelPreviewGPU.h"   // UploadPreviewMesh, PreviewRenderer
+#include "PreviewD3D.h"
 #include "SkeletalPreview.h"   // EvaluateSkeletonPose
 #include "GpuSkinning.h"       // the anim cells' skinning
 
@@ -58,7 +59,7 @@ namespace
         const ImVec2 C(Max.x - R * 2.0f, Max.y - R * 2.0f);
         const float T = (float)Time * 6.0f;
         DL->PathArcTo(C, R, T, T + 4.2f, 16);
-        DL->PathStroke(IM_COL32(120, 170, 230, 220), 0, 2.0f);
+        DL->PathStroke(IM_COL32(245, 165, 36, 220), 0, 2.0f);
     }
 
     struct RigModel
@@ -95,6 +96,11 @@ struct ModelCellRenderer::Impl
 
         std::shared_ptr<const PreviewGpuMesh> Mesh;
         bool MeshFailed = false;
+        // the maps its materials name that were not on disk when Mesh was read (an export writes a
+        // model before the images it pulls): looked for again now and then, Mesh read again once
+        // they are all there; no still kept on disk meanwhile
+        std::vector<std::string> Missing;
+        double LookAgainAt = 0;
 
         // the cell's own render target (what it shows), rendered through the shared scratch target
         ComPtr<ID3D11Texture2D> Live;
@@ -194,8 +200,28 @@ struct ModelCellRenderer::Impl
                     FramePreviewForTurn(Geo, Map ? MapPitch : ModelPitch, *Mesh, Map);
                 }
                 const bool Valid = Mesh && Mesh->Valid;
-                S->Jobs.PostUi([this, Path, Mesh, Valid] {
-                    if (Cell* C = Find(Path)) { if (Valid) C->Mesh = Mesh; else C->MeshFailed = true; }
+                S->Jobs.PostUi([this, Path, Mesh, Valid, Missing = std::move(Geo.MissingMaps)]() mutable {
+                    if (Cell* C = Find(Path)) { if (Valid) { C->Mesh = Mesh; C->Missing = std::move(Missing); } else C->MeshFailed = true; }
+                });
+            };
+        });
+    }
+
+    // A mesh read while some of its maps were not on disk: those looked for again every few
+    // seconds while it is seen, and once they are all there, the mesh read again (its picture and
+    // its still made anew).
+    void LookForMissing(AssetCellContext& X, Cell& C)
+    {
+        if (C.Missing.empty() || !C.Mesh || X.Time < C.LookAgainAt) return;
+        C.LookAgainAt = X.Time + 3.0;
+        GridServices* S = &X.Services;
+        X.Services.Jobs.Want("missing|" + C.Path, 0, false, [this, S, Path = C.Path, Files = C.Missing] {
+            return [this, S, Path, Files](const GridJobs::StaleFn&) {
+                std::error_code Ec;
+                for (const std::string& F : Files)
+                    if (!std::filesystem::exists(F, Ec)) return;
+                S->Jobs.PostUi([this, Path] {
+                    if (Cell* C = Find(Path)) { C->Mesh.reset(); C->Missing.clear(); C->StillFromDisk = false; }
                 });
             };
         });
@@ -271,11 +297,8 @@ struct ModelCellRenderer::Impl
         if (C.Live && C.LivePixels == Pixels) return true;
         if (C.Live) { S.Retire(C.Live); S.Retire(C.LiveSRV); }
         C.Live.Reset(); C.LiveSRV.Reset(); C.LiveValid = false;
-        D3D11_TEXTURE2D_DESC Td{}; Td.Width = Pixels; Td.Height = Pixels; Td.MipLevels = 1; Td.ArraySize = 1;
-        Td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; Td.SampleDesc.Count = 1; Td.Usage = D3D11_USAGE_DEFAULT; Td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        if (FAILED(S.Dev->CreateTexture2D(&Td, nullptr, &C.Live)) || FAILED(S.Dev->CreateShaderResourceView(C.Live.Get(), nullptr, &C.LiveSRV)))
+        if (!PreviewD3D::Sampled(S.Dev, Pixels, Pixels, DXGI_FORMAT_R8G8B8A8_UNORM, C.Live, C.LiveSRV))
         {
-            C.Live.Reset(); C.LiveSRV.Reset();
             return false;
         }
         C.LivePixels = Pixels;
@@ -368,7 +391,7 @@ struct ModelCellRenderer::Impl
         if (!RenderInto(S, *C.Mesh, Yaw, ModelPitch, Pixels, C.Live.Get())) return;
         C.LiveValid = true;
         C.LastRender = Now;
-        if (!C.StillFromDisk) KeepStill(S, C, ("model" + LightKey).c_str(), C.Live.Get());
+        if (!C.StillFromDisk && C.Missing.empty()) KeepStill(S, C, ("model" + LightKey).c_str(), C.Live.Get());
     }
 
     // The rig's mesh with this cell's own vertex buffer, which the skinning writes.
@@ -419,10 +442,8 @@ struct ModelCellRenderer::Impl
     void RenderMap(GridServices& S, Cell& C)
     {
         ComPtr<ID3D11Texture2D> Tex;
-        D3D11_TEXTURE2D_DESC Td{}; Td.Width = MapStillPixels; Td.Height = MapStillPixels; Td.MipLevels = 1; Td.ArraySize = 1;
-        Td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; Td.SampleDesc.Count = 1; Td.Usage = D3D11_USAGE_DEFAULT; Td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         ComPtr<ID3D11ShaderResourceView> Srv;
-        if (FAILED(S.Dev->CreateTexture2D(&Td, nullptr, &Tex)) || FAILED(S.Dev->CreateShaderResourceView(Tex.Get(), nullptr, &Srv))) return;
+        if (!PreviewD3D::Sampled(S.Dev, MapStillPixels, MapStillPixels, DXGI_FORMAT_R8G8B8A8_UNORM, Tex, Srv)) return;
         if (!RenderInto(S, *C.Mesh, StartYaw, MapPitch, MapStillPixels, Tex.Get())) return;
         C.Still = Srv;
         KeepStill(S, C, ("map" + LightKey).c_str(), Tex.Get());
@@ -442,13 +463,21 @@ void ModelCellRenderer::SetTurning(bool On) { P->Turning = On; }
 
 void ModelCellRenderer::SetLighting(const PreviewLighting& L)
 {
-    const PreviewLighting& O = P->Lighting;
-    if (L.Exposure == O.Exposure && L.Lights == O.Lights && L.Specular == O.Specular) return;
-    P->Lighting = L;
-    const PreviewLighting Default;
-    char Key[64] = {};
-    if (L.Exposure != Default.Exposure || L.Lights != Default.Lights || L.Specular != Default.Specular)
-        snprintf(Key, sizeof(Key), "|e%.2f|l%.2f|s%d", L.Exposure, L.Lights, L.Specular ? 1 : 0);
+    // what a cell draws of the viewport's lighting: no shadow nor ground (cost, the cached stills), no
+    // backdrop (a cell keeps the grid's own background). Compared as such: the viewport's shadow
+    // settings alone must not redraw every cell each frame.
+    PreviewLighting Cell = L;
+    Cell.Shadow = {};
+    Cell.Backdrop = false;
+    Cell.BackdropBlur = PreviewLighting{}.BackdropBlur;
+    if (Cell == P->Lighting) return;
+    P->Lighting = Cell;
+    // the stills cached under no key were drawn with the defaults of before the showcase look (the
+    // procedural sky, the lights whole): any other lighting, today's defaults included, is in the key
+    char Key[160] = {};
+    if (!(Cell == PreviewLighting::Legacy()))
+        snprintf(Key, sizeof(Key), "|e%.2f|l%.2f|s%d|%s|r%.0f|i%.2f|b%.2f", L.Exposure, L.Lights, L.Specular ? 1 : 0,
+                 L.Environment.c_str(), L.EnvRotation, L.EnvIntensity, L.Bloom ? L.BloomStrength : 0.0f);
     P->LightKey = Key;
     P->LightGen++;
     // every picture again: the turning ones at their next render, the stills (maps) from the cache or a new render
@@ -477,6 +506,7 @@ void ModelCellRenderer::Draw(AssetCellContext& X, const AssetGridItem& A, ImDraw
     {
         P->WantStill(X, C, ("model" + P->LightKey).c_str());
         P->WantMesh(X, C);
+        P->LookForMissing(X, C);
         Loading = !C.MeshFailed && !C.LiveValid;
     }
     else if (A.Kind == AssetKind::Map)

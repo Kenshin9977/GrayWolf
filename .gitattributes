@@ -68,3 +68,6 @@
 # (git invokes it directly, not via an explicit `bash script.sh`) and for tools/*.sh.
 .githooks/* text eol=lf
 tools/*.sh text eol=lf
+
+# the model preview's baked environments (BC6H cubes)
+*.dds binary

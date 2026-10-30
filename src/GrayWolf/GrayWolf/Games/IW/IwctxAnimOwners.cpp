@@ -589,7 +589,7 @@ namespace IwctxAnimOwners
                         Seq++;
                         continue;
                     }
-                    for (const std::string Arch : { Sc.value("subclass", ""), Sc.value("animset", "") })
+                    for (const std::string& Arch : { Sc.value("subclass", ""), Sc.value("animset", "") })
                         if (const auto It = ByArchetype.find(NameHash(Arch)); !Arch.empty() && It != ByArchetype.end())
                             for (const size_t C : It->second)
                             {

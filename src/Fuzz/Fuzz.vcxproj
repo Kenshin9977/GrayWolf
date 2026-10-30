@@ -74,7 +74,37 @@
       <ObjectFileName>$(IntDir)Games\%(RecursiveDir)</ObjectFileName>
       <AdditionalIncludeDirectories>$(GwApp);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <!-- the app's other source folders, as GrayWolf.vcxproj compiles them (the root files call into them) -->
+    <ClCompile Include="$(GwApp)AssetGrid\*.cpp">
+      <ObjectFileName>$(IntDir)AssetGrid\</ObjectFileName>
+      <AdditionalIncludeDirectories>$(GwApp);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="$(GwApp)PreviewPost\*.cpp">
+      <ObjectFileName>$(IntDir)PreviewPost\</ObjectFileName>
+      <AdditionalIncludeDirectories>$(GwApp);$(IntDir)PreviewPostShaders;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <FxCompile Include="$(GwApp)PreviewPost\Shaders\*_cs.hlsl">
+      <ShaderType>Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="$(GwApp)PreviewPost\Shaders\*_vs.hlsl">
+      <ShaderType>Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="$(GwApp)PreviewPost\Shaders\*_ps.hlsl">
+      <ShaderType>Pixel</ShaderType>
+    </FxCompile>
     <ClCompile Include="FuzzTargets.cpp" />
   </ItemGroup>
+  <ItemDefinitionGroup>
+    <FxCompile>
+      <ShaderModel>5.0</ShaderModel>
+      <EntryPointName>main</EntryPointName>
+      <VariableName>g_%(Filename)</VariableName>
+      <HeaderFileOutput>$(IntDir)PreviewPostShaders\%(Filename).h</HeaderFileOutput>
+      <ObjectFileOutput />
+      <DisableOptimizations>false</DisableOptimizations>
+      <EnableDebuggingInformation>false</EnableDebuggingInformation>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </FxCompile>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -24,12 +24,12 @@ void IWZone::ExportPakSounds(const DiskGame::Context& C, DiskGame::Totals& T, co
         Add(VirtualGameSession::Address((uint64_t)I.Pos), AliasName, Unique, Found);
         Lists.emplace_back(I.Pos, AliasName);
     }
-    PAKCache Packages;
-    Packages.LoadPackageCache(Install);
+    auto Packages = std::make_shared<PAKCache>();
+    Packages->LoadPackageCache(Install);
     IWPakSounds::WriteOptions Options;
     Options.EmptyFileFails = EmptyFileFails;
     Options.Language = GameWorldWar2::LanguageOfZone(FastFilePath());
-    IWPakSounds::Write(Found, &Packages, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
+    IWPakSounds::Write(Found, std::move(Packages), C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
 
     if (!SoundAliasCsv::Wanted(C)) return;
     SoundAliasCsv::Rows Rows;

@@ -68,11 +68,17 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
         ->group("Shared options");
     App.add_option("--language", Options.Language,
                    "english|french|german|italian|spanish|russian|polish: CoD1/CoD2, the localized archives that "
-                   "replace the base ones' files (english: none, the base wins)")
+                   "replace the base ones' files (english: none, the base wins; auto: as --languages)")
+        ->group("Shared options");
+    App.add_option("--languages", Options.Languages,
+                   "all|auto|<lang>,...: the languages exported (default all). auto: the install's, as Battle.net's "
+                   ".product.db or Steam's app manifest says (all when neither does); en,fr...: those, auto among them "
+                   "(auto,en). Content of no language is always exported; a zone named alone whatever its language")
         ->group("Shared options");
     App.add_option("--audio-format", Options.AudioFormat,
-                   "wav|flac|opus: sounds (wav: as the game keeps them, or decoded; flac: lossless; opus: the game's own "
-                   "Opus packets kept as they are, any other sound encoded)")
+                   "opus|wav|flac: sounds (opus, the default: small and lossy, the game's own Opus packets kept as "
+                   "they are, any other sound encoded; wav: lossless, as the game keeps them, or decoded; flac: "
+                   "lossless, compressed)")
         ->transform(CLI::IsMember({ "wav", "flac", "opus" }, CLI::ignore_case))
         ->group("Shared options");
     App.add_option("--unit", Options.Unit, "Centimeter|Meter|Inch (model export scale)")->group("Shared options");

@@ -80,11 +80,7 @@ std::string ProcessReader::ReadNullTerminatedString(uintptr_t Offset)
         }
         return Result;
     }
-#ifdef _DEBUG
-    throw new std::exception("No image attached");
-#else
-    throw new std::exception("");
-#endif
+    throw std::runtime_error("No image attached");
 }
 
 int8_t* ProcessReader::Read(uintptr_t Offset, uintptr_t Length, uintptr_t& Result)

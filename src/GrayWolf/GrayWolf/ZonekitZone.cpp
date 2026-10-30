@@ -22,6 +22,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -39,10 +40,7 @@ ZonekitZone::ZonekitZone(std::string FastFilePath)
 
 ZonekitZone* ZonekitZone::Serving = nullptr;
 
-ZonekitZone::~ZonekitZone()
-{
-    if (Serving == this) Serving = nullptr;
-}
+ZonekitZone::~ZonekitZone() = default;
 
 std::vector<std::string> ZonekitZone::InlineStrings(ByteView Z, int64_t First, uint64_t Count, int SlotSize,
                                                     uint64_t Marker)
@@ -78,22 +76,22 @@ namespace
     };
 }
 
-std::unique_ptr<CoDPackageCache> ZonekitZone::SharedPackages(std::shared_ptr<CoDPackageCache> Packages)
+std::shared_ptr<CoDPackageCache> ZonekitZone::SharedPackages(std::shared_ptr<CoDPackageCache> Packages)
 {
-    return std::make_unique<Shared>(std::move(Packages));
+    return std::make_shared<Shared>(std::move(Packages));
 }
 
-void ZonekitZone::ServePackages(bool On, const std::function<std::unique_ptr<CoDPackageCache>()>& Make)
+void ZonekitZone::ServePackages(bool On, const std::function<std::shared_ptr<CoDPackageCache>()>& Make)
 {
-    if (On == PackagesServed) return;
-    if (On)
-    {
-        SavedPackages = std::move(CoDAssets::GamePackageCache);
-        CoDAssets::GamePackageCache = Make();
-    }
-    else
-        CoDAssets::GamePackageCache = std::move(SavedPackages);
-    PackagesServed = On;
+    if (On == ServedPackages.has_value()) return;
+    if (On) ServedPackages.emplace(CoDAssets::GamePackageCache, Make());
+    else ServedPackages.reset();
+}
+
+void ZonekitZone::BeginServing()
+{
+    ServingThis.emplace(Serving, this);
+    if (Held) ServePackages(true, [this] { return Held; });
 }
 
 std::string ZonekitZone::SlotString(uint64_t Index)
@@ -311,9 +309,12 @@ bool ZonekitZone::Open(std::string& Error)
         Steps.emplace_back(Step, std::chrono::duration<double>(Now - Start).count());
         Start = Now;
     };
+    // what the run asks for, unless more than a partial open takes: the whole zone
+    const DiskGame::Selection* Want = DiskGame::PartialScope::Wanted();
+    if (Want != nullptr && Want->size() > Partially().Assets) Want = nullptr;
     // a run asking only for images the zone's resume index holds whole: served from it, the zone
     // not read (a model's textures in another zone)
-    if (const DiskGame::Selection* Want = DiskGame::PartialScope::Wanted(); Want != nullptr && OpensPartially() && Heads().Size > 0)
+    if (Want != nullptr && OpensPartially() && Heads().Size > 0)
         if (const std::vector<std::string> Sources = SourceFiles(); !Sources.empty())
             if ((Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error)) != nullptr &&
                 OpenFromHeads(*Want, ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Sources), Lap))
@@ -331,7 +332,7 @@ bool ZonekitZone::Open(std::string& Error)
         if (!Sources.empty()) ResumeFile = ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Sources);
         if (ResumeFile.empty()) ResumeFile = ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Bytes);
         Lap("resume_name");
-        if (const DiskGame::Selection* Want = DiskGame::PartialScope::Wanted())
+        if (Want != nullptr)
         {
             if (OpenPartially(*Want, ResumeFile, Lap)) return true;
             Lap("partial_fell_back");
@@ -356,13 +357,14 @@ bool ZonekitZone::Open(std::string& Error)
     Lap("links");
     const VirtualGameSession::Handlers H = Handlers();
     Session = std::make_unique<VirtualGameSession>(std::move(Taken), LiveGame(), ZoneMemory::Copy(Bytes), H, Rules().PointerSize);
-    Serving = this;
+    BeginServing();
     Relocate(L);
     Lap("relocate");
     Fixups();
     Lap("fixups");
-    // the resume index a later partial open reads (one of an older format written again)
-    if (!ResumeFile.empty() && !R.Resume.empty() && !ResumeIndex::IsCurrent(ResumeFile))
+    // the resume index a later partial open reads (one of an older format written again, one
+    // without the heads its game keeps now, or one that did not list an asset the zone defines)
+    if (!ResumeFile.empty() && !R.Resume.empty() && (!ResumeIndex::IsCurrent(ResumeFile) || !HeadsKept(ResumeFile) || DefinesAny(Unlisted)))
     {
         WriteResume(ResumeFile);
         Lap("resume_index");
@@ -375,14 +377,23 @@ bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::stri
     ZoneResume Z;
     if (!ResumeIndex::Load(File, Z)) return false;
     Lap("resume_read");
-    // an index without a type the game counts is from before it did: read whole
+    // an index without a type the game counts is from before it did: read whole; so is one
+    // without the heads the game keeps (Heads)
     for (const std::string& T : Ranked())
         if (!Z.Ranked.count(T)) return false;
+    if (!HeadsKept(File)) return false;
+    // an asset the index does not list (one written before the names it has now) is read whole
     std::vector<size_t> Targets;
     for (const auto& A : Want)
         if (const size_t P = Z.Find(A.K, A.Name); P != SIZE_MAX) Targets.push_back(P);
-        else Counters["partial_not_indexed"]++;
-    if (Targets.empty()) return false;
+        else Unlisted.push_back(A);
+    const PartialLimits Limits = Partially();
+    if (!Unlisted.empty())
+    {
+        Counters["partial_not_indexed"] += Unlisted.size();
+        return false;
+    }
+    if (Targets.empty() || Targets.size() > Limits.Walks) return false;
     ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
     Rs.StartOffset = LayoutOffset();
     ResolveHints H;
@@ -391,7 +402,7 @@ bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::stri
     H.ByHash = &Z.ByHash;
     // the asked assets, then every asset their links reach (a cap: a composite reaching most of
     // the zone is read whole)
-    constexpr size_t AtMost = 4000;
+    const size_t AtMost = Limits.Walks;
     bool Ok = true;
     ZoneTables::ZoneResult M;
     ZoneTables::WalkOnLargeStack([&] {
@@ -427,12 +438,28 @@ bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::stri
     Lap("copy");
     Session = std::make_unique<VirtualGameSession>(std::move(Taken), Game, std::move(Served), Hd, Rules().PointerSize);
     Lap("session");
-    Serving = this;
+    BeginServing();
     Relocate(L);
     Lap("relocate");
     Fixups();
     Lap("fixups");
     return true;
+}
+
+bool ZonekitZone::DefinesAny(const std::vector<DiskGame::AssetId>& Assets) const
+{
+    if (Assets.empty()) return false;
+    std::vector<std::pair<DiskGame::AssetId, int64_t>> Named;
+    DefinesAt(Named);
+    std::set<std::pair<DiskGame::Kind, std::string>> Here;
+    for (const auto& [A, Pos] : Named) Here.emplace(A.K, ExportNaming::Lower(A.Name));
+    return std::any_of(Assets.begin(), Assets.end(), [&](const DiskGame::AssetId& A) { return Here.count({ A.K, ExportNaming::Lower(A.Name) }) > 0; });
+}
+
+bool ZonekitZone::HeadsKept(const std::string& ResumeFile) const
+{
+    ResumeIndex::Heads Kept;
+    return Heads().Size == 0 || Kept.Open(ResumeIndex::HeadsFile(ResumeFile));
 }
 
 void ZonekitZone::WriteResume(const std::string& File) const
@@ -469,14 +496,15 @@ void ZonekitZone::WriteResume(const std::string& File) const
     }
     for (const std::string& T : Ranked()) Z.Ranked[T] = AllOf(T.c_str());
     ResumeIndex::Save(File, Z);
-    // the images an export reads in their record alone (and the data it points at), as served
+    // the images an export reads in their record alone (and the data it points at), as served;
+    // as loaded with their own reads after them (Spec.Reads)
     if (const HeadSpec Spec = Heads(); Spec.Size > 0)
     {
         std::map<int64_t, std::string> Records;
-        const ByteView Img = Image();
+        const ByteView Img = Spec.Reads ? Zone() : Image();
         for (const auto& I : R.Instances)
         {
-            if (!OwnerIs(I, Spec.Type) || I.Pos + Spec.Size > (int64_t)Img.size()) continue;
+            if (!OwnerIs(I, Spec.Type) || I.Pos < 0 || I.Pos + Spec.Size > (int64_t)Img.size()) continue;
             const ByteView Head = Img.subspan((size_t)I.Pos, (size_t)Spec.Size);
             std::string Record(reinterpret_cast<const char*>(Head.data()), Head.size());
             bool Whole = true;
@@ -493,12 +521,49 @@ void ZonekitZone::WriteResume(const std::string& File) const
                 Record.append(reinterpret_cast<const char*>(&Length), 4);
                 if (Length != ~0u) Record.append(reinterpret_cast<const char*>(Img.data()) + From, Length);
             }
+            // each later read of its type within it (its children's are theirs): their count, then
+            // each one's size and bytes
+            if (Spec.Reads && Whole)
+            {
+                std::vector<uint32_t> Own;
+                uint64_t Total = 0;
+                for (uint32_t K = I.FirstRead + 1; Whole && K < I.EndRead; K++)
+                    if (R.Owners[K] == I.Owner)
+                    {
+                        const int64_t N = R.Reads[K], From = R.ReadPos[K];
+                        Total += N < 0 ? 0 : (uint64_t)N;
+                        Whole = N >= 0 && From >= 0 && From + N <= (int64_t)Img.size() && Total <= Spec.ReadsMax;
+                        Own.push_back(K);
+                    }
+                const uint32_t Count = (uint32_t)Own.size();
+                Record.append(reinterpret_cast<const char*>(&Count), 4);
+                for (const uint32_t K : Own)
+                    if (Whole)
+                    {
+                        Record.append(reinterpret_cast<const char*>(&R.Reads[K]), 8);
+                        Record.append(reinterpret_cast<const char*>(Img.data()) + R.ReadPos[K], (size_t)R.Reads[K]);
+                    }
+            }
             if (Whole) Records.emplace(I.Pos, std::move(Record));
         }
+        // (Spec.Reads) a name of several images is kept when they all are, the same bytes: the
+        // whole zone's export writes each one
         std::map<uint64_t, std::pair<std::string, std::string>> Kept;
+        std::set<uint64_t> Unsure;
         for (const auto& [A, Pos] : Named)
-            if (const auto It = Records.find(Pos); A.K == DiskGame::Kind::Image && It != Records.end())
-                Kept.try_emplace(ResumeIndex::NameHash(A.K, A.Name), A.Name, It->second);
+        {
+            if (A.K != DiskGame::Kind::Image) continue;
+            const uint64_t Hash = ResumeIndex::NameHash(A.K, A.Name);
+            const auto It = Records.find(Pos);
+            if (It == Records.end())
+            {
+                if (Spec.Reads) Unsure.insert(Hash);
+                continue;
+            }
+            const auto [Had, New] = Kept.try_emplace(Hash, A.Name, It->second);
+            if (Spec.Reads && !New && Had->second.second != It->second) Unsure.insert(Hash);
+        }
+        for (const uint64_t Hash : Unsure) Kept.erase(Hash);
         ResumeIndex::SaveHeads(ResumeIndex::HeadsFile(File), Kept);
     }
 }
@@ -514,10 +579,24 @@ ZonekitZone::HeadSpec ZonekitZone::ModernIwHeads()
 }
 
 void ZonekitZone::WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& File, const uint8_t* Data, size_t Size,
-                                 const char* Written)
+                                 const char* Written, ExportWriters::SoundSink* Sink)
 {
-    const std::string Format = ExportWriters::SoundFormatSetting(), Out = ExportWriters::SoundFileName(File, Format);
+    const std::string Format = Sink ? Sink->Format() : ExportWriters::SoundFormatSetting(), Out = ExportWriters::SoundFileName(File, Format);
     const fs::path Path = (C.KindDir(DiskGame::Kind::Sound) / fs::path(std::u8string(Out.begin(), Out.end()))).make_preferred();
+    if (Sink != nullptr)
+    {
+        Sink->Write(ExportWriters::SoundSource::OfFile(Data, Size, File), Path,
+                    [this, &T, File, Counted = std::string(Written)](bool Ok, const std::string& Why, const std::string& Crash) {
+                        if (Ok)
+                        {
+                            T.Kinds[DiskGame::Kind::Sound].Written++;
+                            SoundFileCounts[Counted]++;
+                        }
+                        else
+                            T.Fail(Name(), DiskGame::Kind::Sound, File, Crash.empty() ? Why : Crash);
+                    });
+        return;
+    }
     std::string Why;
     if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Data, Size, File), Path, Format, &Why))
     {
@@ -526,6 +605,13 @@ void ZonekitZone::WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T
     }
     else
         T.Fail(Name(), DiskGame::Kind::Sound, File, Why);
+}
+
+void ZonekitZone::FinishSoundFiles(ExportWriters::SoundSink& Sink)
+{
+    Sink.Finish();
+    for (const auto& [Key, N] : SoundFileCounts) Counter(Key) += N;
+    SoundFileCounts.clear();
 }
 
 DiskGame::Weight ZonekitZone::ModernIwImageWeight(int64_t Pos, uint32_t (*Dxgi)(uint8_t Format)) const
@@ -572,11 +658,23 @@ bool ZonekitZone::OpenFromHeads(const DiskGame::Selection& Want, const std::stri
     R = ZoneTables::ZoneResult();
     R.OwnerNames = { Spec.Type };
     ResolvedLinks L;
+    // a read of the walk of those images alone, owned by their type
+    const auto Read = [this](int64_t Size, int64_t Pos) {
+        R.Reads.push_back(Size);
+        R.Owners.push_back(0);
+        R.ReadPos.push_back(Pos);
+        R.ReadMem.push_back(-1);
+    };
+    // (Spec.Reads) the zone's head left empty: a reader may read it there (Black Ops 4's string table)
+    if (Spec.Reads) Bytes.resize(0x20);
     for (const auto& [Name, Record] : Use)
     {
         const int64_t Pos = ((int64_t)Bytes.size() + 15) & ~(int64_t)15;
         Bytes.resize((size_t)Pos);
         Bytes.insert(Bytes.end(), Record.begin(), Record.begin() + Spec.Size);
+        ZoneTables::ZoneResult::Instance I;
+        I.FirstRead = (uint32_t)R.Reads.size();
+        if (Spec.Reads) Read(Spec.Size, Pos);
         size_t At = (size_t)Spec.Size;
         for (const auto& D : Spec.Data)
         {
@@ -592,13 +690,33 @@ bool ZonekitZone::OpenFromHeads(const DiskGame::Selection& Want, const std::stri
             At += Length;
             L.Links.emplace_back(Pos + D.At, Data);
         }
+        if (Spec.Reads)
+        {
+            uint32_t Count = 0;
+            if (At + 4 > Record.size()) return false;
+            std::memcpy(&Count, Record.data() + At, 4);
+            At += 4;
+            for (uint32_t K = 0; K < Count; K++)
+            {
+                int64_t Size = 0;
+                if (At + 8 > Record.size()) return false;
+                std::memcpy(&Size, Record.data() + At, 8);
+                At += 8;
+                if (Size < 0 || At + (uint64_t)Size > Record.size()) return false;
+                const int64_t Data = ((int64_t)Bytes.size() + 15) & ~(int64_t)15;
+                Bytes.resize((size_t)Data);
+                Bytes.insert(Bytes.end(), Record.begin() + At, Record.begin() + At + Size);
+                At += (size_t)Size;
+                Read(Size, Data);
+            }
+        }
         if (Spec.NameAt >= 0)
         {
             L.Links.emplace_back(Pos + Spec.NameAt, (int64_t)Bytes.size());
             Bytes.insert(Bytes.end(), Name.begin(), Name.end());
             Bytes.push_back(0);
         }
-        ZoneTables::ZoneResult::Instance I;
+        I.EndRead = (uint32_t)R.Reads.size();
         I.Pos = Pos;
         I.End = Pos + Spec.Size;
         R.Instances.push_back(I);
@@ -612,7 +730,7 @@ bool ZonekitZone::OpenFromHeads(const DiskGame::Selection& Want, const std::stri
     const ICoDGame& Game = LiveGame();
     Lap("live_game");
     Session = std::make_unique<VirtualGameSession>(std::move(Taken), Game, ZoneMemory::Copy(Bytes), Hd, Rules().PointerSize);
-    Serving = this;
+    BeginServing();
     Relocate(L);
     Fixups();
     Lap("fixups");
@@ -1008,7 +1126,8 @@ bool ZonekitZone::Park()
 {
     if (!Session) return false;
     Served(false);
-    if (Serving == this) Serving = nullptr;
+    ServedPackages.reset();
+    ServingThis.reset();
     ParkedImage = Session->Release();
     Session.reset();
     return true;
@@ -1018,7 +1137,7 @@ void ZonekitZone::Resume()
 {
     if (Session) return;
     Session = std::make_unique<VirtualGameSession>(VirtualGameSession::Acquire(), LiveGame(), std::move(ParkedImage), Handlers(), Rules().PointerSize);
-    Serving = this;
+    BeginServing();
     Served(true);
 }
 
@@ -1086,10 +1205,31 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             return true;
         };
     }
+    // the models' files written by a pool while the next model is read; a model whose files then
+    // fail is counted as ExportModel's failures are
+    std::optional<ExportWriters::ModelFilesOnPool> Files;
+    if (K == DiskGame::Kind::Model) Files.emplace();
+    std::vector<bool> Counted(Assets.size(), false);   // as written
+    const auto Settle = [&]() {
+        if (!Files) return;
+        size_t Last = SIZE_MAX;
+        for (const auto& [Tag, Why] : Files->Finish())
+        {
+            if (Tag == Last || !Counted[Tag]) continue;   // one failure per model, counted once
+            Last = Tag;
+            Kt.Written--;
+            T.Fail(ZoneName, K, Assets[Tag].second, Why);
+        }
+        Files.reset();
+    };
     for (size_t N = 0; N < Assets.size(); N++)
     {
         const auto& [Pos, Name] = Assets[N];
-        if (!C.Advance(N, Assets.size(), Name)) return;
+        if (!C.Advance(N, Assets.size(), Name))
+        {
+            Settle();
+            return;
+        }
         Kt.Seen++;
         std::string Crash;
         int Code = -1;
@@ -1099,9 +1239,10 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             Model.AssetName = ExportNaming::SafeFileName(Name);   // it names the files ("mv/x" is a folder)
             Model.AssetPointer = Live().Addr((uint64_t)Pos);
             const std::string Dir = (fs::path(C.KindDir(K)) / Model.AssetName).string();
-            std::error_code Ec;
-            fs::create_directories(Dir, Ec);
+            ExportWriters::MakeDirs(Dir);
+            Files->Owner(N);
             Code = ExportWriters::ExportModel(Model, Dir, Tex, Crash);
+            Counted[N] = Code == static_cast<int>(ExportGameResult::Success);
         }
         else
         {
@@ -1115,6 +1256,7 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             Counter("models_without_lods")++;   // the game's own model has no geometry: nothing to write
         else T.Fail(ZoneName, K, Name, "code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
     }
+    Settle();
     C.Advance(Assets.size(), Assets.size());
     if (NotImage) T.Fail(ZoneName, K, "", std::to_string(NotImage) + " texture slots point at no image, left out");
     if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);

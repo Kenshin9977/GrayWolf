@@ -4,6 +4,7 @@
 #include "Games/CODOL/SealedFastFile.h"
 
 #include "FastFile.h"
+#include "FastFile.Internal.h"
 
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -224,6 +225,46 @@ bool Codol::DecryptFastFile(ByteView File, ZoneBytes& Zone, std::string& Error)
     {
         Error = "the first block is not the IWffs100 header once decrypted";
         return false;
+    }
+
+    // Fast path: the blocks that check out, in order up to the first one that does not, inflated
+    // whole by libdeflate. It succeeds exactly when the streaming loop below does (the stream ends
+    // in blocks that check out), with the same bytes; on a failure, that loop runs for its error.
+    {
+        std::vector<uint8_t> Packed;
+        Packed.reserve((Blocks - 1) * BlockSize);
+        uint8_t Digest[HashSize];
+        bool Checked = true;
+        for (size_t Group = 1, I = 1; I < Blocks && Checked; Group++)
+        {
+            const size_t HashAt = HeaderHashes + HashSize * Group;
+            if (HashAt + HashSize > BlockSize) break;
+            const uint8_t* Expected = Head.data() + HashAt;
+            std::memcpy(Hashes.data(), Body + I * BlockSize, BlockSize);
+            if (!CounterMode(Aes.H, Expected, Hashes.data(), BlockSize) || !Sha256(A.Sha, Hashes.data(), BlockSize, Digest) ||
+                std::memcmp(Digest, Expected, HashSize) != 0)
+                break;
+            I++;
+            for (size_t K = 0; K < BlocksPerHashBlock && I < Blocks; K++, I++)
+            {
+                const uint8_t* Entry = Hashes.data() + HashSize * K;
+                const size_t At = Packed.size();
+                Packed.resize(At + BlockSize);
+                std::memcpy(Packed.data() + At, Body + I * BlockSize, BlockSize);
+                if (!CounterMode(Aes.H, Entry, Packed.data() + At, BlockSize) || !Sha256(A.Sha, Packed.data() + At, BlockSize, Digest) ||
+                    std::memcmp(Digest, Entry, HashSize) != 0)
+                {
+                    Packed.resize(At);
+                    Checked = false;
+                    break;
+                }
+            }
+        }
+        std::string Unused;
+        size_t Used = 0;
+        if (!Packed.empty() && FastFileInternal::InflateInPlace(ByteView(Packed.data(), Packed.size()), Zone, Unused, &Used))
+            return true;
+        Zone.clear();
     }
 
     mz_stream Z = {};

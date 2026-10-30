@@ -149,7 +149,8 @@ namespace ThumbCache
         if (Dir.empty() || !A.Path) return {};
         uint64_t H = 0xcbf29ce484222325ull;
         const auto Mix = [&H](const std::string& S) { for (unsigned char c : S) { H ^= (uint8_t)tolower(c); H *= 0x100000001b3ull; } H ^= '|'; H *= 0x100000001b3ull; };
-        Mix(*A.Path); Mix(std::to_string(A.Written)); Mix(std::to_string(A.SizeBytes)); Mix(Variant); Mix("v1");
+        // v2: v1 kept stills of models read before their maps were written (white, never replaced)
+        Mix(*A.Path); Mix(std::to_string(A.Written)); Mix(std::to_string(A.SizeBytes)); Mix(Variant); Mix("v2");
         char Name[32];
         snprintf(Name, sizeof(Name), "%016llx.png", (unsigned long long)H);
         return (Dir / Name).string();

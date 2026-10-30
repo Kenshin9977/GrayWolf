@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "ProcessReader.h"
@@ -36,20 +38,24 @@ typedef std::string(*LoadStringHandler)(uint64_t Index);
 class CoDAssets
 {
 public:
+    // Shared, as what the globals below hold is: a scope sets one (Scoped) to an object a cache
+    // elsewhere owns too, which may replace its own meanwhile; the global keeps it alive while set.
+
     // The game's memory as its readers see it: a relocated zone (VirtualGameSession)
-    static std::unique_ptr<ProcessReader> GameInstance;
+    static std::shared_ptr<ProcessReader> GameInstance;
     static std::shared_ptr<spdlog::logger> Log;
-    // The live readers of the game being read, if any (ICoDGame.h)
+    // The live readers of the game being read, if any (ICoDGame.h): a registered game, a static
+    // that lives as long as the process
     static const ICoDGame* Game;
     // That game's flags, if any
     static SupportedGameFlags GameFlags;
 
-    static std::unique_ptr<AssetPool> GameAssets;
+    static std::shared_ptr<AssetPool> GameAssets;
     // The game's package cache, if any
-    static std::unique_ptr<CoDPackageCache> GamePackageCache;
-    static std::unique_ptr<CoDPackageCache> OnDemandCache;
+    static std::shared_ptr<CoDPackageCache> GamePackageCache;
+    static std::shared_ptr<CoDPackageCache> OnDemandCache;
     // The game's cdn downloader, if any
-    static std::unique_ptr<CoDCDNDownloader> CDNDownloader;
+    static std::shared_ptr<CoDCDNDownloader> CDNDownloader;
     static LoadXImageHandler GameXImageHandler;
     static LoadStringHandler GameStringHandler;
     static WraithNameIndex AssetNameCache;
@@ -62,4 +68,23 @@ public:
     static std::string GetHashedName(const std::string& type, const uint64_t hash);
     // Gets a string hash. If one is not found, a default value is used.
     static std::string GetHashedString(const std::string& type, const uint64_t hash);
+
+    // One of the globals above set to Value for a scope, its previous value back when the scope
+    // ends (an exception too): a served zone's, a kind's export's. Value is held here as well, so
+    // what the scope set stays alive while set even if the code inside replaces the global.
+    // Scopes nest: they end in the reverse order they began.
+    template <class T>
+    class Scoped
+    {
+    public:
+        Scoped(T& Global, std::type_identity_t<T> Value) : Global(Global), Installed(Value), Saved(std::exchange(Global, std::move(Value))) {}
+        ~Scoped() { Global = std::move(Saved); }
+        Scoped(const Scoped&) = delete;
+        Scoped& operator=(const Scoped&) = delete;
+
+    private:
+        T& Global;
+        T Installed;
+        T Saved;
+    };
 };

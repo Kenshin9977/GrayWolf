@@ -91,7 +91,7 @@ namespace
         {
             if (!Have) ImGui::SetTooltip("Blender not found: install it, or set blender.exe in Settings > Blender");
             else if (S.Blend) ImGui::SetTooltip("Opens %s", S.Map.Blend.c_str());
-            else ImGui::SetTooltip("Imports the map in Blender (its _import.py) and saves it as\n%s:\nthe next time, that .blend opens directly",
+            else ImGui::SetTooltip("Imports the map into Blender (its _import.py) and saves it as\n%s:\nnext time, that .blend opens directly",
                                    S.Map.Blend.c_str());
         }
         if (S.Blend)
@@ -121,13 +121,13 @@ void DrawBlenderSettingsMenu()
     {
         if (!PathLoaded || !ImGui::IsAnyItemActive()) SetBuf(PathBuf, sizeof(PathBuf), SettingsManager::GetSetting("blender_path", ""));
         PathLoaded = true;
-        ImGui::TextUnformatted("blender.exe (empty: detected)");
+        ImGui::TextUnformatted("blender.exe (leave empty to detect it)");
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 30.0f);
-        ImGui::InputTextWithHint("##blenderpath", "detected: BLENDER, Program Files, Steam, registry, PATH", PathBuf, sizeof(PathBuf));
+        ImGui::InputTextWithHint("##blenderpath", "Detected from BLENDER, Program Files, Steam, registry, PATH", PathBuf, sizeof(PathBuf));
         if (ImGui::IsItemDeactivatedAfterEdit()) SettingsManager::SetSetting("blender_path", PathBuf);
         bool Pending = false;
         const Blender::Exe B = BlenderExe(&Pending);
-        if (ImGui::Button("Browse..."))
+        if (ImGui::Button("Browse\xE2\x80\xA6"))
         {
             const std::string Start = B.Path.substr(0, std::min(B.Path.size(), B.Path.find_last_of("\\/")));
             UiAsync::PickOpenFile("blender.exe", "Select blender.exe", { { L"Blender", L"blender.exe;blender-launcher.exe" } }, Start);
@@ -140,8 +140,8 @@ void DrawBlenderSettingsMenu()
             PathBuf[0] = 0;
         }
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Forget the path above: find Blender by itself");
-        if (Pending) ImGui::TextDisabled("looking for Blender...");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Clear the path above and find Blender automatically");
+        if (Pending) ImGui::TextDisabled("Looking for Blender\xE2\x80\xA6");
         else if (B.Path.empty()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Blender not found");
         else ImGui::TextDisabled("Using %s (%s)", B.Path.c_str(), B.From.c_str());
         ImGui::EndMenu();
@@ -178,7 +178,7 @@ void DrawMapsInBlender(const std::string& Folder)
     ImGui::Separator();
     ImGui::TextUnformatted("Maps");
     ImGui::SameLine();
-    ImGui::TextDisabled("(open the exported maps in Blender: imported once, then saved as a .blend beside the .glb)");
+    ImGui::TextDisabled("(Open exported maps in Blender: imported once, then saved as a .blend beside the .glb)");
     const float Row = ImGui::GetFrameHeightWithSpacing();
     const float Height = Row * (float)std::min<size_t>(Maps.size(), 6) + Row;
     const ImGuiTableFlags Flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_ScrollY;
@@ -199,7 +199,7 @@ void DrawMapsInBlender(const std::string& Folder)
         Buttons(S);
         ImGui::TableSetColumnIndex(2);
         if (const std::string R = ResultOf(S.Map.Blend); !R.empty()) ImGui::TextDisabled("%s", R.c_str());
-        else ImGui::TextDisabled(S.Blend ? ".blend saved" : "not imported yet");
+        else ImGui::TextDisabled(S.Blend ? ".blend saved" : "Not imported yet");
     }
     ImGui::EndTable();
 }

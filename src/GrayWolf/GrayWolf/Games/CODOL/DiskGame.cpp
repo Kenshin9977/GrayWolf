@@ -586,9 +586,12 @@ namespace
             }
             size_t N = 0;
             const size_t All = Loaded.size() + Streamed.size();
+            // read here, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
+            const auto Done = [&] { FinishSoundFiles(Sink); };
             for (const auto& [F, Snd] : Loaded)
             {
-                if (!C.Advance(N++, All, F)) return;
+                if (!C.Advance(N++, All, F)) return Done();
                 if (!C.Wants(Kind::Sound, F)) continue;
                 if (F[0] == ',')   // a name-only header: another zone holds the sound
                 {
@@ -601,7 +604,7 @@ namespace
                 if (Size == 0 || Data < 0 || (uint64_t)Data + Size > Z.size() || (Codec != 1 && Codec != 0x11))
                 {
                     Counter("sounds_loaded_unread_format_" + std::to_string(Codec))++;
-                    T.Fail(Name(), Kind::Sound, F, "no payload in a known format");
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "no payload in a known format"); });
                     continue;
                 }
                 std::vector<uint8_t> Wav;
@@ -609,13 +612,13 @@ namespace
                      (uint16_t)At<uint32_t>(Z, Snd + 0x14), (uint16_t)At<uint32_t>(Z, Snd + 0x24), Z.data() + Data, Size);
                 std::string File = F;
                 if (File.size() < 4 || ExportNaming::Lower(File.substr(File.size() - 4)) != ".wav") File += ".wav";
-                WriteSoundFile(C, T, File, Wav.data(), Wav.size(), Codec == 0x11 ? "sounds_loaded_ima_adpcm" : "sounds_loaded_pcm");
+                WriteSoundFile(C, T, File, Wav.data(), Wav.size(), Codec == 0x11 ? "sounds_loaded_ima_adpcm" : "sounds_loaded_pcm", &Sink);
             }
             std::string Error;
             const auto Archives = Archives_(Error);
             for (const auto& F : Streamed)
             {
-                if (!C.Advance(N++, All, F)) return;
+                if (!C.Advance(N++, All, F)) return Done();
                 const std::string Rel = F.substr(std::string("main/sound/").size());
                 if (!C.Wants(Kind::Sound, Rel)) continue;
                 Kt.Seen++;
@@ -633,12 +636,13 @@ namespace
                 if (L == nullptr || !Archives->Read(*L, Data, Error))
                 {
                     Counter("sounds_streamed_missing")++;
-                    T.Fail(Name(), Kind::Sound, Rel, Archives ? "unread from the archives: " + Error : "archives not opened: " + Error);
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, Rel, Archives ? "unread from the archives: " + Error : "archives not opened: " + Error); });
                     continue;
                 }
                 Codol::UnwrapFile(F, Data);
-                WriteSoundFile(C, T, Rel, Data.data(), Data.size(), "sounds_streamed");
+                WriteSoundFile(C, T, Rel, Data.data(), Data.size(), "sounds_streamed", &Sink);
             }
+            Done();
         }
     };
 

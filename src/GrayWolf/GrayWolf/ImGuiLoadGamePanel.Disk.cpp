@@ -17,6 +17,7 @@
 #include "WraithX.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // OpenPopupEx: the Languages list dropped down by ui-record
 
 #include <algorithm>
 #include <chrono>
@@ -162,7 +163,7 @@ void LoadGamePanel::DoListDiskZones()
     const std::string Install = GameBuf;
     {
         std::lock_guard<std::mutex> Lk(Mutex);
-        Status = "reading the zone list...";
+        Status = "reading the zone list\xE2\x80\xA6";
         // another game's index is not this one's
         DiskIndex.reset();
         DiskAssets.reset();
@@ -181,7 +182,7 @@ void LoadGamePanel::DoListDiskZones()
         std::string Why;
         const auto Step = [&](size_t Done, size_t Count) {
             std::lock_guard<std::mutex> Lk(Mutex);
-            Status = "reading the level names from the game's strings (" + std::to_string(Done) + "/" + std::to_string(Count) + " zones)...";
+            Status = "reading the map names from the game's text (" + std::to_string(Done) + "/" + std::to_string(Count) + " zones)\xE2\x80\xA6";
         };
         if (const auto Found = DiskGame::LevelNames::For(*Game, Options, Install, Step, Why))
             for (size_t i = 0; i < Names.size(); i++) Named += !(Levels[i] = Found->Of(Names[i])).empty();
@@ -198,7 +199,7 @@ void LoadGamePanel::DoListDiskZones()
         for (size_t i = 0; i < DiskZoneNames.size(); i++)
             DiskZoneFlags[i] = Saved.find("," + DiskZoneNames[i] + ",") != std::string::npos;
         DiskZonesFor = ListedFor(*Game, Options);
-        Status = Ok ? std::to_string(DiskZoneNames.size()) + " zones" + (Named ? ", " + std::to_string(Named) + " named levels" : "")
+        Status = Ok ? std::to_string(DiskZoneNames.size()) + " zones" + (Named ? ", " + std::to_string(Named) + " named maps" : "")
                     : Error;
     }
     ReadZoneCounts(*Game, Options, Install);
@@ -316,8 +317,6 @@ void LoadGamePanel::DoIndexDiskZones()
             LastRun.ZoneErrors = { Error };
         }
     }
-    // then the size estimate's samples, from the zones picked
-    if (Ix && !DiskCancel.load()) MeasureSizes(Game, Options, Install, *Ix);
 }
 
 void LoadGamePanel::DoMeasureMissing()
@@ -438,7 +437,7 @@ void LoadGamePanel::DoDiskExport()
     std::string Kinds;
     for (const auto& [K, V] : T.Kinds)
         if (V.Written) Kinds += (Kinds.empty() ? "" : ", ") + KindCount(K, V.Written);
-    LastRun.Detail = (Kinds.empty() ? std::string("nothing written") : Kinds + " written") + " in " + Clock(Seconds) + "  \xC2\xB7  " + C.OutRoot;
+    LastRun.Detail = (Kinds.empty() ? std::string("Nothing written") : Kinds + " written") + " in " + Clock(Seconds) + "  \xC2\xB7  " + C.OutRoot;
     DiskStall.clear();
     DiskFraction = 1.0f;
     DiskExportedTo = C.OutRoot;
@@ -491,7 +490,7 @@ void LoadGamePanel::DrawZoneTab()
     }
     const float Buttons = ImGui::CalcTextSize("Rescan").x + ImGui::GetStyle().FramePadding.x * 2 + ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetNextItemWidth(-Buttons);
-    ImGui::InputTextWithHint("##diskzonefilter", "filter by map or zone name, e.g. nuketown", DiskZoneFilterBuf, sizeof(DiskZoneFilterBuf));
+    ImGui::InputTextWithHint("##diskzonefilter", "Filter by map or zone name, e.g. nuketown", DiskZoneFilterBuf, sizeof(DiskZoneFilterBuf));
     if (ImGui::IsItemDeactivatedAfterEdit()) Persist();
     ImGui::SameLine();
     if (ImGui::Button("Rescan##diskzones")) StartWork(ListLabel, &LoadGamePanel::DoListDiskZones);
@@ -508,9 +507,9 @@ void LoadGamePanel::DrawZoneTab()
     if (!Counted)
     {
         ImGui::SameLine();
-        ImGui::TextDisabled("  what each zone holds:");
+        ImGui::TextDisabled("  Asset counts per zone:");
         ImGui::SameLine();
-        if (ImGui::SmallButton("List it (index the install)"))
+        if (ImGui::SmallButton("Index the install"))
         {
             DiskCancel.store(false);
             DiskStartedAt = ImGui::GetTime();
@@ -623,7 +622,7 @@ void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)
                 {
                     std::string Tip;
                     for (const auto& [K, N] : Counts) Tip += (Tip.empty() ? "" : "\n") + KindCount(K, N);
-                    ImGui::SetTooltip("%s\n(what the install index lists: the assets this zone holds whole)", Tip.c_str());
+                    ImGui::SetTooltip("%s\n(from the install index: the assets stored in this zone)", Tip.c_str());
                 }
             }
             ImGui::TableSetColumnIndex(3);
@@ -648,9 +647,9 @@ void LoadGamePanel::DrawOptions()
     ImGui::SetNextItemWidth(-(BrowseW + ImGui::GetStyle().ItemSpacing.x));
     ImGui::InputText("##diskoutdir", DiskOutBuf, sizeof(DiskOutBuf));
     if (ImGui::IsItemDeactivatedAfterEdit()) Persist();
-    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("Written to %s", Target.c_str());
+    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("Exports go to %s", Target.c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Browse##diskout"))
+    if (ImGui::Button("Browse\xE2\x80\xA6##diskout"))
         UiAsync::PickFolder("loadgame.output", "Select where to export to", AbsoluteFolder(DiskOutBuf));
     // the last runs' log: phases timed, slowest assets, stalls (DiskGame::Export)
     DiskGame::Context Out;
@@ -673,7 +672,7 @@ void LoadGamePanel::DrawOptions()
     PathTip(Target);
     ImGui::SameLine();
     ImGui::BeginDisabled(!HasRunLog);
-    if (ImGui::SmallButton("Export log##diskout")) UiAsync::OpenInShell(RunLog);
+    if (ImGui::SmallButton("Open export log##diskout")) UiAsync::OpenInShell(RunLog);
     ImGui::EndDisabled();
     PathTip(RunLog);
     ImGui::SameLine();
@@ -683,8 +682,8 @@ void LoadGamePanel::DrawOptions()
 
     // the kinds the game's readers export, in even columns: the assets, then the data dumps folded
     // under one node; the others named in a tooltip
-    ImGui::TextUnformatted("Zone export writes");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("What an export By zone / map writes; By asset writes what is picked");
+    ImGui::TextUnformatted("Kinds exported by zone");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Used when exporting by zone / map; by asset exports what you picked");
     const std::set<DiskGame::Kind> Exported = Disk->Kinds();
     const auto KindBoxes = [&](bool Research, int Columns) {
         if (!ImGui::BeginTable(Research ? "##diskdumpkinds" : "##diskkinds", Columns, ImGuiTableFlags_SizingStretchSame)) return;
@@ -722,8 +721,10 @@ void LoadGamePanel::DrawOptions()
     {
         if (Folded) ImGui::SameLine();
         ImGui::TextDisabled("(%zu kinds not exported for %s)", std::count(Missing.begin(), Missing.end(), '\n') + 1, Disk->Title());
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Not exported yet (its readers have no exporter for them):\n%s", Missing.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Not supported for this game yet:\n%s", Missing.c_str());
     }
+
+    DrawLanguages();
 
     // the game's settings, each while one of the kinds it concerns is ticked or picked
     std::set<DiskGame::Kind> Picked;
@@ -761,11 +762,11 @@ void LoadGamePanel::DrawOptions()
     if (!ExportByAsset)
     {
         ImGui::Separator();
-        ImGui::TextUnformatted("Names");
+        ImGui::TextUnformatted("Name filter");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
         ImGui::BeginDisabled(!Disk->FiltersByName());
-        ImGui::InputTextWithHint("##disknamefilter", "all assets, or a,b: names containing a or b", DiskNameFilterBuf, sizeof(DiskNameFilterBuf));
+        ImGui::InputTextWithHint("##disknamefilter", "All assets, or a,b: names containing a or b", DiskNameFilterBuf, sizeof(DiskNameFilterBuf));
         if (ImGui::IsItemDeactivatedAfterEdit()) Persist();
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -776,6 +777,101 @@ void LoadGamePanel::DrawOptions()
     // the maps exported to this folder, each opened in Blender
     DrawMapsInBlender(Target);
     ImGui::PopStyleVar(2);
+}
+
+// The languages exported: the install's (auto), all, or a set; the install's as its launcher says
+void LoadGamePanel::DrawLanguages()
+{
+    const std::string Folder = GameBuf;
+    const Languages::Detected Found = InstallLanguage.Get(Folder, 10.0, [Folder] { return Languages::OfInstall(Folder); });
+    // the saved option as words: "auto", "all", codes
+    const std::string Saved = SettingsManager::GetSetting(Languages::SettingKey, Languages::GuiDefault);
+    std::vector<std::string> Words;
+    {
+        std::stringstream In(ExportNaming::Lower(Saved));
+        for (std::string W; std::getline(In, W, ',');)
+        {
+            W.erase(0, W.find_first_not_of(' '));
+            W.erase(W.find_last_not_of(' ') + 1);
+            if (W == "auto" || W == "all") Words.push_back(W);
+            else if (std::string C = Languages::CodeOf(W); !C.empty()) Words.push_back(C);
+        }
+    }
+    const auto Has = [&](const std::string& W) { return std::find(Words.begin(), Words.end(), W) != Words.end(); };
+    const bool All = Has("all") || Words.empty();
+    const bool Auto = Has("auto");
+    const std::string Own = Found.Main().empty() ? std::string() : Languages::NameOf(Found.Main());
+    const auto Save = [&](std::vector<std::string> W) {
+        std::string Text;
+        for (const auto& Each : W)
+            if (!Each.empty()) Text += (Text.empty() ? "" : ",") + Each;
+        SettingsManager::SetSetting(Languages::SettingKey, Text.empty() ? std::string("all") : Text);
+    };
+
+    // what is exported, in a few words
+    std::string Preview;
+    if (All || (Auto && Own.empty())) Preview = "All languages";
+    else
+    {
+        if (Auto) Preview = Own + " (the install's)";
+        for (const auto& W : Words)
+            if (W != "auto" && !(Auto && W == Found.Main())) Preview += (Preview.empty() ? "" : " + ") + Languages::NameOf(W);
+    }
+    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Languages");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The localized sounds and zones exported (voices, subtitles); what belongs to no language is always exported.\n"
+                          "A zone you pick is exported whatever its language.");
+    ImGui::SameLine(ImGui::GetFontSize() * 12.0f);
+    ImGui::SetNextItemWidth(200);
+    if (std::exchange(OpenLanguages, false)) ImGui::OpenPopupEx(ImHashStr("##ComboPopup", 0, ImGui::GetID("##disklanguages")));
+    if (ImGui::BeginCombo("##disklanguages", Preview.c_str(), ImGuiComboFlags_HeightLarge))
+    {
+        const std::string AutoLabel = Own.empty() ? std::string("The install's (not known: all)") : "The install's: " + Own;
+        if (ImGui::Selectable(AutoLabel.c_str(), Auto && Words.size() == 1)) Save({ "auto" });
+        if (ImGui::Selectable("All languages", All)) Save({ "all" });
+        ImGui::Separator();
+        ImGui::TextDisabled("Or these:");
+        bool AutoOn = Auto && !All;
+        if (ImGui::Checkbox(("The install's" + (Own.empty() ? std::string() : " (" + Own + ")") + "##langauto").c_str(), &AutoOn))
+        {
+            std::vector<std::string> W;
+            if (AutoOn) W.push_back("auto");
+            for (const auto& Each : Words)
+                if (Each != "auto" && Each != "all") W.push_back(Each);
+            Save(W);
+        }
+        for (const Languages::Language& L : Languages::All())
+        {
+            bool On = !All && Has(L.Code);
+            const bool Installed = std::find(Found.Installed.begin(), Found.Installed.end(), L.Code) != Found.Installed.end();
+            const std::string Label = std::string(L.Name) + (Installed ? "  (installed)" : "") + "##lang" + L.Code;
+            if (ImGui::Checkbox(Label.c_str(), &On))
+            {
+                std::vector<std::string> W;
+                for (const auto& Each : Words)
+                    if (Each != "all" && Each != L.Code) W.push_back(Each);
+                if (On) W.push_back(L.Code);
+                Save(W);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (Own.empty()) ImGui::TextDisabled("install: not known");
+    else ImGui::TextDisabled("install: %s", Languages::Describe(Found).c_str());
+    if (ImGui::IsItemHovered())
+    {
+        std::string Installed;
+        for (const auto& L : Found.Installed) Installed += (Installed.empty() ? "" : ", ") + Languages::NameOf(L);
+        if (Found.Source.empty())
+            ImGui::SetTooltip("Neither Battle.net's .product.db nor a Steam app manifest names this install's language:\n"
+                              "\"the install's\" exports every language");
+        else
+            ImGui::SetTooltip("As %s's files say (%s)%s%s", Found.Source.c_str(), Found.Raw.c_str(),
+                              Installed.empty() ? "" : "\nInstalled: ", Installed.c_str());
+    }
 }
 
 // The last export's result: what was written (open it, show it in Assets), then what did not go
@@ -799,12 +895,12 @@ void LoadGamePanel::DrawLastRun()
         ImGui::TextDisabled("%s", R.Detail.c_str());
         if (Ok)
         {
-            if (ImGui::Button("Show in Assets")) ShowAssets.store(true);
+            if (ImGui::Button("Show in Library")) ShowAssets.store(true);
             ImGui::SameLine();
         }
         if (ImGui::Button("Open folder")) UiAsync::OpenInShell(R.OutDir);
         ImGui::SameLine();
-        if (ImGui::Button("Export log")) UiAsync::OpenInShell(R.RunLog);
+        if (ImGui::Button("Open export log")) UiAsync::OpenInShell(R.RunLog);
         ImGui::SameLine();
         if (ImGui::Button("Dismiss")) Dismiss = true;
         if (!Lines.empty() && ImGui::TreeNode("Details##lastrun"))
@@ -827,7 +923,7 @@ void LoadGamePanel::DrawLastRun()
             ImGui::TextUnformatted(R.ZoneErrors.front().c_str());
             ImGui::PopTextWrapPos();
             if (R.ZoneErrors.size() > 1) ImGui::TextDisabled("and %zu more (see the export log)", R.ZoneErrors.size() - 1);
-            if (ImGui::SmallButton("Copy the error"))
+            if (ImGui::SmallButton("Copy errors"))
             {
                 std::string All;
                 for (const auto& E : R.ZoneErrors) All += E + "\n";
@@ -865,12 +961,18 @@ void LoadGamePanel::StartExport()
             std::lock_guard<std::mutex> Lock(Mutex);
             Ix = DiskIndex;
         }
+        // each from its first zone of the run's languages (or of none), else its first zone
+        DiskGame::ExportOptions Options = DiskOptions(*Disk, GameBuf);
+        Languages::Choice Spoken;
+        std::string Why;
+        if (!DiskGame::RunLanguages(*Disk, Options, std::string(), Spoken, Why)) Spoken = Languages::Choice();
         std::set<size_t> Zones;
         for (const auto& A : AssetPicks)
         {
             ExportKinds.insert(A.K);
             const auto In = Ix->DefinedIn(A);
-            if (!In.empty()) Zones.insert(In.front());
+            const auto Kept = std::find_if(In.begin(), In.end(), [&](size_t Z) { return Spoken.Wants(Disk->LanguageOfZone(Ix->Zones()[Z])); });
+            if (!In.empty()) Zones.insert(Kept != In.end() ? *Kept : In.front());
         }
         for (const size_t Z : Zones) DiskZonesToExport.push_back(Ix->Zones()[Z]);
         ExportOnly = std::make_shared<DiskGame::Selection>(AssetPicks);
@@ -903,9 +1005,9 @@ void LoadGamePanel::DrawExportBar()
     {
         Picked = AssetPicks.empty() ? std::string("Nothing picked yet")
                                     : Thousands(AssetPicks.size()) + (AssetPicks.size() == 1 ? " asset picked" : " assets picked");
-        Note = "their images, materials and other dependencies come along, from whichever zone holds them";
+        Note = "Their images, materials and other dependencies are exported too, from whichever zone holds them";
         if (!HaveIndex) Why = "Index the install above to pick assets, or export a whole map by zone";
-        else if (AssetPicks.empty()) Why = "Tick assets in the list to export them";
+        else if (AssetPicks.empty()) Why = "Pick assets in the list to export them";
         Ready = HaveIndex && !AssetPicks.empty();
     }
     else
@@ -917,7 +1019,7 @@ void LoadGamePanel::DrawExportBar()
             if (DiskKindFlags[i] && Exported.count(DiskGame::Kinds[i].Id)) Kinds += (Kinds.empty() ? "" : ", ") + DiskGame::KindFolder(DiskGame::Kinds[i].Id);
         Picked = Zones == 0 ? std::string("Nothing picked yet") : Thousands(Zones) + (Zones == 1 ? " zone picked" : " zones picked");
         Note = Kinds.empty() ? std::string("no kind ticked") : Kinds;
-        if (Zones == 0) Why = "Tick a map or a zone above to export it";
+        if (Zones == 0) Why = "Pick a map or a zone above to export it";
         else if (Kinds.empty()) Why = "Tick at least one kind of asset in Formats & options";
         Ready = Zones > 0 && !Kinds.empty();
     }
@@ -956,13 +1058,12 @@ void LoadGamePanel::DrawExportBar()
     OpenOptions = false;
     ImGui::SameLine();
     ImGui::BeginDisabled(!Ready);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.44f, 0.69f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.52f, 0.80f, 1.0f));
+    if (Ready) Theme::PushPrimary();   // not ready: a plain button, the accent kept for what can be done
     const std::string Label = ExportByAsset && !AssetPicks.empty()
         ? "Export " + Thousands(AssetPicks.size()) + (AssetPicks.size() == 1 ? " asset" : " assets")
         : std::string("Export");
     if (ImGui::Button((Label + "###diskexport").c_str(), ImVec2(ExportWidth, Tall))) StartExport();
-    ImGui::PopStyleColor(2);
+    if (Ready) Theme::PopPrimary();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 
@@ -1025,9 +1126,16 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
         }
         for (DiskGame::Kind K : P.Kinds) Key += std::to_string((int)K) + ",";
         Key += "|" + std::to_string(ExportNaming::Fnv1a(std::string(reinterpret_cast<const char*>(Zones.data()), Zones.size() * sizeof(size_t))));
+        // the languages exported: the saved choice, "auto" as the install's launcher says (read on a worker)
+        const std::string Folder = GameBuf;
+        const Languages::Detected Found = InstallLanguage.Get(Folder, 10.0, [Folder] { return Languages::OfInstall(Folder); });
+        Languages::Choice Spoken;
+        std::string Why;
+        if (!Languages::Resolve(SettingsManager::GetSetting(Languages::SettingKey, Languages::GuiDefault), Found, Spoken, Why)) Spoken = Languages::Choice();
+        Key += "|" + Spoken.Text();
         if (Ix && Key != PickWeightsFor)
         {
-            PickWeights = Sizes::WeighPicks(*Ix, Zones, P.Kinds, P.Formats);
+            PickWeights = Sizes::WeighPicks(*Ix, Zones, P.Kinds, P.Formats, Spoken);
             PickWeightsFor = Key;
         }
         P.Weights = PickWeights;
@@ -1036,11 +1144,12 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
     const uint64_t Free = FreeSpace.Get(Target, 5.0, [Target] { return Sizes::FreeBytes(Target); });
     std::string Size;
     Sizes::Estimate E;
+    // the kinds ticked that neither the index's weights nor a sample estimate: named, measured
+    // only when asked (a sample is a real export, a level's minutes long)
+    std::set<DiskGame::Kind> Missing;
     if (Have && P.Zones > 0 && !P.Kinds.empty())
     {
         E = Sizes::Compute(Samples, P);
-        // the kinds ticked with no sample yet: measured now (once per set), named meanwhile
-        std::set<DiskGame::Kind> Missing;
         std::string Names;
         for (const auto& [K, R] : E.Kinds)
             if (R.Unknown)
@@ -1049,19 +1158,9 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
                 Names += (Names.empty() ? "" : ", ") + DiskGame::KindFolder(K);
             }
         const bool Measuring = Busy.load() && BusyLabel == SizesLabel;
-        std::string Tried = Disk->Id();
-        for (DiskGame::Kind K : Missing) Tried += "," + std::to_string((int)K);
-        if (!Missing.empty() && !Busy.load() && Tried != MeasureTried)
-        {
-            MeasureTried = Tried;
-            MeasureMissing = Missing;
-            DiskCancel.store(false);
-            DiskStartedAt = ImGui::GetTime();
-            StartWork(SizesLabel, &LoadGamePanel::DoMeasureMissing);
-        }
         if (Missing.size() < E.Kinds.size()) Size = (E.Approx ? "\xE2\x89\x88 " : "") + Sizes::Text(E.Bytes);
         if (!Missing.empty())
-            Size += (Size.empty() ? "" : " + ") + Names + (Measuring ? " (measuring...)" : " (not measured)");
+            Size += (Size.empty() ? "" : " + ") + Names + (Measuring ? " (measuring\xE2\x80\xA6)" : " (not estimated)");
     }
     const bool Over = !Size.empty() && Free > 0 && E.Bytes > Free, Near = !Size.empty() && Free > 0 && E.Bytes > Free / 10 * 8;
     const std::string Line = (Size.empty() ? std::string() : Size + "  ·  ") + "to " + Target +
@@ -1072,8 +1171,7 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
     {
         std::string Tip;
         if (Size.empty())
-            Tip = "The size estimate needs the install index's counts and a small sample of each kind\n"
-                  "exported for real from the picked zones: indexing the install does both";
+            Tip = "The size estimate needs the install index's counts and sizes: index the install";
         else
         {
             Tip = "What the export would write, kind by kind (\xE2\x89\x88: an approximation):\n";
@@ -1081,17 +1179,36 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
                 Tip += "\n" + DiskGame::KindFolder(K) + ": " + (R.Unknown ? std::string("?") : (R.Approx ? "\xE2\x89\x88 " : "") + Sizes::Text(R.Bytes)) +
                        "\n    " + R.Basis;
             Tip += "\n\nImages and sounds: what the install index weighed of each (its size, its format), each once.\n"
-                   "Other kinds: the index's counts times a sample of each kind exported for real (another\n"
-                   "format converted by a typical ratio). What the assets need from other zones, pulled as\n"
-                   "dependencies, comes on top.";
+                   "Other kinds: the index's counts times a sample of each kind exported for real, taken only\n"
+                   "when you ask (\"Estimate the rest\"; another format converted by a typical ratio). What the\n"
+                   "assets need from other zones, pulled as dependencies, comes on top.";
         }
         ImGui::SetTooltip("%s", Tip.c_str());
     }
-    // an index of before the weights: indexed again, the images and sounds are its own sizes
-    const bool Unweighed = std::any_of(P.Weights.begin(), P.Weights.end(), [](const auto& W) { return W.second.Assets > 0 && W.second.Known == 0; });
-    if (Unweighed && !Busy.load())
+    // what would make the estimate whole, each on demand and on its own line (beside the wrapped
+    // text above, a button would sit under "Formats & options" and take its clicks)
+    bool Unweighed = false;
     {
-        ImGui::SameLine();
+        std::lock_guard<std::mutex> Lock(Mutex);
+        Unweighed = DiskIndex && !DiskIndex->Weighed;   // an index of before the weights
+    }
+    if (Busy.load() || (Missing.empty() && !Unweighed)) return;
+    if (!Missing.empty())
+    {
+        if (ImGui::SmallButton("Estimate the rest"))
+        {
+            MeasureMissing = Missing;
+            DiskCancel.store(false);
+            DiskStartedAt = ImGui::GetTime();
+            StartWork(SizesLabel, &LoadGamePanel::DoMeasureMissing);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Exports a sample of each kind not estimated yet to a temporary folder and measures it:\n"
+                              "seconds per kind, minutes for a map (a whole level is exported)");
+        if (Unweighed) ImGui::SameLine();
+    }
+    if (Unweighed)
+    {
         if (ImGui::SmallButton("Index again for exact sizes"))
         {
             DiskCancel.store(false);
@@ -1099,7 +1216,7 @@ void LoadGamePanel::DrawEstimate(const std::string& Target)
             StartWork(IndexLabel, &LoadGamePanel::DoIndexDiskZones);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The install index was made before it weighed each image and sound: made again (a few minutes),\n"
+            ImGui::SetTooltip("This index was built before image and sound sizes were recorded: rebuilt (a few minutes),\n"
                               "the estimate adds up their own sizes instead of sampling a few");
     }
 }
@@ -1117,5 +1234,5 @@ void LoadGamePanel::DrawDiskProgress()
     if (BusyLabel == ExportLabel) ImGui::TextDisabled("%s elapsed  \xC2\xB7  %s", Clock(ImGui::GetTime() - DiskStartedAt).c_str(), DiskEtaText.c_str());
     else ImGui::TextDisabled("%s elapsed", Clock(ImGui::GetTime() - DiskStartedAt).c_str());
     if (!DiskStall.empty()) ImGui::TextColored(Amber, "%s", DiskStall.c_str());
-    if (DiskCancel.load()) ImGui::TextDisabled("stopping after the current step...");
+    if (DiskCancel.load()) ImGui::TextDisabled("Stopping after the current step\xE2\x80\xA6");
 }

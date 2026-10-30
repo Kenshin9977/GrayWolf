@@ -2,10 +2,11 @@
 """tools/run_clang_tidy.py - opt-in clang-tidy static analysis over GrayWolf source files.
 
 Not part of the normal build. Drives clang-tidy.exe directly against a compile_commands.json it
-writes itself (the flags VS's native clang-tidy integration uses), never through MSBuild: a
-RunCodeAnalysisOnce + SelectedFiles build recompiles whatever else MSBuild thinks is stale and
-aborts on any broken file before the selected file is analysed, and it shares x64/Dev with
-concurrent `tools/build.sh` runs.
+writes itself, never through MSBuild: a RunCodeAnalysisOnce + SelectedFiles build recompiles
+whatever else MSBuild thinks is stale and aborts on any broken file before the selected file is
+analysed, and it shares x64/Dev with concurrent `tools/build.sh` runs. The command line is
+safety_gate.py's (the project's /std:c++20, vcpkg's includes before DirectXShaderCompiler's,
+whose miniz.h has no zip API; Core's files with Core's own flags), so both parse alike.
 
 Known limitation: a translation unit that includes resource.h (UTF-16 LE with BOM, e.g. through
 MainWindow.h or the *Settings.h headers) fails to parse under clang; such files are reported as
@@ -15,18 +16,24 @@ Checks/config come from .clang-tidy at the repo root.
 
 Usage:
     python tools/run_clang_tidy.py                  # representative sample (default file list)
-    python tools/run_clang_tidy.py file1.cpp ...     # specific GrayWolf/GrayWolf-relative files
-    python tools/run_clang_tidy.py --all             # every *.cpp in GrayWolf/GrayWolf (slow)
+    python tools/run_clang_tidy.py file1.cpp ...     # files relative to src/GrayWolf/GrayWolf
+                                                     # (Games/T8/DiskGame.cpp) or to the repo
+    python tools/run_clang_tidy.py --all             # every .cpp of GrayWolf (Games/, AssetGrid/,
+                                                     # PreviewPost/ included) and Core (slow)
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from safety_gate import CORE, GW, SKIP, compile_command  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROJ_DIR = REPO_ROOT / "src" / "GrayWolf" / "GrayWolf"
 OUT_FILE = REPO_ROOT / "tools" / "clang-tidy-report.log"
 
 DEFAULT_FILES = [
@@ -50,31 +57,23 @@ def find_clang_tidy() -> str:
     return "clang-tidy"
 
 
-def build_command(vcpkg_root: str, target_file: str) -> str:
-    # The command line VS's EnableClangTidyCodeAnalysis integration writes for every
-    # GrayWolf/GrayWolf .cpp; only the source file changes between entries.
-    return (
-        '"C:\\WINDOWS\\system32\\CL.exe" /c '
-        '/I..\\OatInterop /I..\\..\\Core\\Core /I..\\..\\External\\DirectXShaderCompiler\\include '
-        f'/I"{vcpkg_root}\\installed\\x64-windows-static-md\\include" '
-        f'/I"{vcpkg_root}\\installed\\x64-windows\\include" '
-        "/nologo /W3 /WX- /diagnostics:column /Od "
-        "/D CODE_ANALYSIS /D _UNICODE /D UNICODE /D _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS "
-        "/D CASCLIB_NO_AUTO_LINK_LIBRARY /D CASCLIB_UNICODE /D CASCLIB_DETECT_UNICODE_MISMATCHES "
-        "/D FLAC__NO_DLL /EHa /MD /GS /fp:precise /std:c++17 "
-        '/Fo"x64\\Dev\\\\" /Gd /TP --target=amd64-pc-windows-msvc /utf-8 '
-        f'"{target_file}"'
-    )
+def resolve(name: str) -> Path:
+    """A file named relative to src/GrayWolf/GrayWolf, else to the repo, else as given."""
+    for base in (GW, REPO_ROOT):
+        p = base / name
+        if p.exists():
+            return p.resolve()
+    return Path(name).resolve()
 
 
 def main() -> int:
     args = sys.argv[1:]
     if args == ["--all"]:
-        files = sorted(p.name for p in PROJ_DIR.glob("*.cpp"))
+        files = [p for root in (GW, CORE) for p in sorted(root.rglob("*.cpp")) if not SKIP.search(p.as_posix())]
     elif args:
-        files = args
+        files = [resolve(a) for a in args]
     else:
-        files = DEFAULT_FILES
+        files = [resolve(f) for f in DEFAULT_FILES]
 
     vcpkg_root = os.environ.get("VCPKG_ROOT", "")
     if not vcpkg_root:
@@ -84,32 +83,21 @@ def main() -> int:
     db_dir = REPO_ROOT / "tools" / "_clang_tidy_db"
     db_dir.mkdir(exist_ok=True)
     entries = []
-    target_paths = []
     for f in files:
-        abs_path = str(PROJ_DIR / f)
-        target_paths.append(abs_path)
-        entries.append(
-            {
-                "directory": str(PROJ_DIR),
-                "command": build_command(vcpkg_root, abs_path),
-                "file": abs_path,
-            }
-        )
+        cmd, directory = compile_command(f, vcpkg_root)
+        entries.append({"directory": str(directory), "command": cmd, "file": str(f)})
     (db_dir / "compile_commands.json").write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     clang_tidy = find_clang_tidy()
-    cmd = [clang_tidy, f"-p={db_dir}", "--config-file", str(REPO_ROOT / ".clang-tidy")] + target_paths
+    cmd = [clang_tidy, f"-p={db_dir}", "--config-file", str(REPO_ROOT / ".clang-tidy")] + [str(f) for f in files]
 
-    print(f"Running: {clang_tidy} against {len(target_paths)} file(s)...", file=sys.stderr)
+    print(f"Running: {clang_tidy} against {len(files)} file(s)...", file=sys.stderr)
     result = subprocess.run(cmd, capture_output=True, text=True)
     OUT_FILE.write_text(result.stdout + result.stderr, encoding="utf-8")
 
     print(f"Report written to tools/{OUT_FILE.name}", file=sys.stderr)
     print("", file=sys.stderr)
     print("Findings by check:", file=sys.stderr)
-    import re
-    from collections import Counter
-
     counts = Counter()
     for line in (result.stdout + result.stderr).splitlines():
         m = re.search(r"\[([a-zA-Z0-9._,-]+)\]\s*$", line)

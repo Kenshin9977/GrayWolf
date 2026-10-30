@@ -5,6 +5,7 @@
 
 #include "CoDIWITranslator.h"
 #include "ExportNaming.h"
+#include "CoDAssets.h"
 #include "ExportWriters.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IwClassic/IwClassicAnimOwners.h"
@@ -13,6 +14,7 @@
 #include <miniz/miniz.h>
 #include "SettingsManager.h"
 #include "Strings.h"
+#include "ZipInflate.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -94,10 +96,11 @@ namespace Iw64
             [this](uint64_t A) {
                 // a header as it is: the fx and material kinds name it and need it from where it is
                 // defined, whichever kinds ran before (MaterialDefinedAt, MaterialImagesElsewhere)
-                auto Defined = std::exchange(MaterialDefinedAt, nullptr);
-                auto Elsewhere = std::exchange(MaterialImagesElsewhere, nullptr);
-                XMaterial_t M = ReadXMaterial(A, *Game.Readers);
-                MaterialDefinedAt = std::move(Defined), MaterialImagesElsewhere = std::move(Elsewhere);
+                XMaterial_t M = [&] {
+                    const CoDAssets::Scoped NoDefined(MaterialDefinedAt, nullptr);
+                    const CoDAssets::Scoped NoElsewhere(MaterialImagesElsewhere, nullptr);
+                    return ReadXMaterial(A, *Game.Readers);
+                }();
                 const int64_t Techset = Off(At<uint64_t>(Image(), Off(A) + Game.Readers->MaterialTextureTable - 8));
                 if (Techset >= 0) M.TechsetName = StringAt(At<uint64_t>(Image(), Techset));
                 return M;
@@ -112,13 +115,6 @@ namespace Iw64
                              } },
                             { "scriptfile", [this](int64_t Pos, Scripts::Script& S) { return ReadScriptFile(Pos, S); } } });
         });
-    }
-
-    IwDiskZone::~IwDiskZone()
-    {
-        if (!IsServed()) return;
-        MaterialDefinedAt = nullptr;
-        MaterialImagesElsewhere = nullptr;
     }
 
     void IwDiskZone::ReadMaterials()
@@ -136,17 +132,17 @@ namespace Iw64
 
     void IwDiskZone::Served(bool On)
     {
-        MaterialDefinedAt = nullptr;
-        MaterialImagesElsewhere = nullptr;
+        ElsewhereServed.reset();
+        DefinedServed.reset();
         if (!On) return;
-        MaterialDefinedAt = [this](const std::string& Name) -> uint64_t {
+        DefinedServed.emplace(MaterialDefinedAt, [this](const std::string& Name) -> uint64_t {
             ReadMaterials();
             const auto It = Materials.find(ExportNaming::Lower(Name));
             return It == Materials.end() ? 0 : Live().Addr((uint64_t)It->second);
-        };
-        MaterialImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+        });
+        ElsewhereServed.emplace(MaterialImagesElsewhere, [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
             return MaterialsElsewhere != nullptr && MaterialsElsewhere->Find(Name, Out);
-        };
+        });
     }
 
     void IwDiskZone::BookMaterialsElsewhere()
@@ -330,27 +326,30 @@ namespace Iw64
             }
             if (C.Wants(DiskGame::Kind::Sound, N) && Seen.insert(ExportNaming::Lower(N)).second) Found.push_back(I.Pos);
         }
-        const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
+        // read here in the zone's order, decoded and written by the sink's pool
+        ExportWriters::SoundSink Sink;
+        const std::string Extension = ExportWriters::SoundExtension(Sink.Format());
         const std::string Dir = C.KindDir(DiskGame::Kind::Sound);
         for (size_t N = 0; N < Found.size(); N++)
         {
             const int64_t Pos = Found[N];
             const std::string Full = AssetName(DiskGame::Kind::Sound, Pos);
             if (!C.Advance(N, Found.size(), Full)) break;
-            Kt.Seen++;
+            Sink.Locked([&] { Kt.Seen++; });
             CoDSound_t Sound;
             Sound.AssetName = ExportNaming::SafeFileName(fs::path(Full).replace_extension().string());
             if (!LoadedSound(VirtualGameSession::Address((uint64_t)Pos), Sound))
             {
                 Counter("sounds_not_pcm16")++;
-                T.Fail(Name(), DiskGame::Kind::Sound, Full, "not 16-bit PCM");
+                Sink.Locked([&] { T.Fail(Name(), DiskGame::Kind::Sound, Full, "not 16-bit PCM"); });
                 continue;
             }
-            std::string Crash;
-            const int Code = ExportWriters::ExportSound(Sound, Dir, Extension, Crash);
-            if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-            else T.Fail(Name(), DiskGame::Kind::Sound, Full, std::format("code {} {}", Code, Crash.c_str()));
+            Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
+                if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+                else T.Fail(Name(), DiskGame::Kind::Sound, Full, std::format("code {} {}", Code, Crash.c_str()));
+            });
         }
+        Sink.Finish();
         ExportStreamedSounds(C, T);
         if (SoundAliasCsv::Wanted(C)) ExportSoundAliases(C, T);
     }
@@ -481,7 +480,10 @@ namespace Iw64
             ByArchive[It->second.first].emplace_back(It->second.second, Rel);
         }
         size_t Done = 0;
-        const std::string Format = ExportWriters::SoundFormatSetting();
+        // extracted here, archive by archive; decoded and written by the sink's pool
+        ExportWriters::SoundSink Sink;
+        const std::string Format = Sink.Format();
+        size_t Streamed = 0;   // the zone's counters are this thread's: added once the sink is done
         for (auto& [Archive, Files] : ByArchive)
         {
             mz_zip_archive Zip;
@@ -491,21 +493,35 @@ namespace Iw64
             for (const auto& [Entry, Rel] : Files)
             {
                 if (!C.Advance(Done++, Wanted.size(), Rel)) break;
-                Kt.Seen++;
+                Sink.Locked([&] { Kt.Seen++; });
                 const fs::path P = Out / fs::path(ExportWriters::SoundFileName(Rel, Format)).make_preferred();
                 std::error_code Ec;
-                if (fs::exists(P, Ec)) { Kt.Known++; continue; }
-                size_t Size = 0;
-                void* Data = mz_zip_reader_extract_to_heap(&Zip, Entry, &Size, 0);
-                std::string Why = "streamed file not extracted";
-                const bool Ok = Data != nullptr &&
-                                ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(static_cast<const uint8_t*>(Data), Size, Rel), P, Format, &Why);
-                if (Data != nullptr) mz_free(Data);
-                if (Ok) { Kt.Written++; Counter("sounds_streamed")++; }
-                else T.Fail(Name(), DiskGame::Kind::Sound, Rel, Why);
+                if (fs::exists(P, Ec))
+                {
+                    Sink.Locked([&] { Kt.Known++; });
+                    continue;
+                }
+                mz_zip_archive_file_stat Stat;
+                const bool Known = mz_zip_reader_file_stat(&Zip, Entry, &Stat) != 0;
+                const size_t Size = Known ? (size_t)Stat.m_uncomp_size : 0;
+                std::shared_ptr<uint8_t[]> Data(new (std::nothrow) uint8_t[Size ? Size : 1]);
+                if (!Known || Data == nullptr || !ZipInflate::Extract(&Zip, Entry, Data.get(), Size))
+                {
+                    Sink.Locked([&] { T.Fail(Name(), DiskGame::Kind::Sound, Rel, "streamed file not extracted"); });
+                    continue;
+                }
+                // the extracted bytes kept until written, then freed
+                Sink.Write(ExportWriters::SoundSource::OfFile(Data.get(), Size, Rel), P,
+                           [this, &Kt, &T, &Streamed, Rel](bool Ok, const std::string& Why, const std::string& Crash) {
+                               if (Ok) { Kt.Written++; Streamed++; }
+                               else T.Fail(Name(), DiskGame::Kind::Sound, Rel, Crash.empty() ? Why : Crash);
+                           },
+                           std::shared_ptr<const void>(Data));
             }
             mz_zip_reader_end(&Zip);
         }
+        Sink.Finish();
+        if (Streamed) Counter("sounds_streamed") += Streamed;
     }
 
     bool IwDiskZone::Payload(uint64_t Pointer, uint32_t N, bool Packed, uint32_t Size, std::vector<uint8_t>& Out) const

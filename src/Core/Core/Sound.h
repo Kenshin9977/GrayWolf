@@ -52,6 +52,10 @@ public:
     // Encodes interleaved 16bit PCM as FLAC (any channel count FLAC takes, 1 to 8)
     static bool EncodePCMToFLAC(const std::vector<int16_t>& Samples, uint32_t ChannelsCount, uint32_t SampleRate, const std::string& OutputFile);
 
+    // Decodes a FLAC file (with its header) to the bytes of a 16bit PCM WAV file (the header as
+    // its STREAMINFO says), in memory; Wav holds what was decoded even when it returns false
+    static bool DecodeFLACToWav(int8_t* SoundBuffer, uint64_t SoundSize, std::vector<uint8_t>& Wav);
+
     // Decodes a FLAC file (with its header) to interleaved 16bit PCM
     static bool DecodeFLACToPCM(int8_t* SoundBuffer, uint64_t SoundSize, std::vector<int16_t>& Samples, uint32_t& ChannelsCount, uint32_t& SampleRate);
 

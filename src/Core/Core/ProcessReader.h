@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -47,11 +48,7 @@ public:
             ReadVirtual(reinterpret_cast<uint8_t*>(&ResultValue), Offset, sizeof(ResultValue));
             return ResultValue;
         }
-#ifdef _DEBUG
-        throw new std::exception("No image attached");
-#else
-        throw new std::exception("");
-#endif
+        throw std::runtime_error("No image attached");
     }
     std::string ReadNullTerminatedString(uintptr_t Offset);
 

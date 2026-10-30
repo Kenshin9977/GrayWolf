@@ -8,6 +8,8 @@
 #include "UiAsync.h"           // the folder dialogs
 #include "SettingsManager.h"   // the list or the grid
 #include "FxPreviewCells.h"    // an effect in its grid cell
+#include "ImGuiTheme.h"        // icons, pills
+#include "GameBadges.h"        // a game's icon and title
 
 #include "imgui.h"
 #include <nlohmann/json.hpp>   // filter presets
@@ -202,17 +204,22 @@ namespace ShellUi
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted("Game");
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(Em * 9.0f);
-            if (ImGui::BeginCombo("##game", A.GameFilter.empty() ? "All games" : A.GameFilter.c_str()))
+            ImGui::SetNextItemWidth(Em * 11.0f);
+            const std::string Shown = A.GameFilter.empty() ? "All games" : GameBadges::ShortTitle(A.GameFilter);
+            if (ImGui::BeginCombo("##game", Shown.c_str()))
             {
                 if (ImGui::Selectable("All games", A.GameFilter.empty())) A.GameFilter.clear();
                 for (const auto& G : A.Games)
-                    if (ImGui::Selectable(G.c_str(), A.GameFilter == G)) A.GameFilter = G;
+                {
+                    ImGui::PushID(G.c_str());
+                    if (ImGui::Selectable(GameBadges::ShortTitle(G).c_str(), A.GameFilter == G)) A.GameFilter = G;
+                    ImGui::PopID();
+                }
                 ImGui::EndCombo();
             }
             ImGui::SameLine();
             ImGui::Checkbox("Group by game", &A.GroupByGame);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each game's assets together (the same asset from two games side by side otherwise)");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each game's assets together (off: the same asset from two games side by side)");
         }
 
         // Any folder of exported assets, in place of the current list or added to it, and what is listed.
@@ -221,19 +228,20 @@ namespace ShellUi
             const auto& Shown = S.Catalog.ShownFolders;
             // the dialog runs on its own thread: its answer is collected on the frame it closes
             const std::string StartIn = Shown.empty() ? std::string() : Shown.back();
-            if (ImGui::Button("Open folder...")) UiAsync::PickFolder("assets.open", "Select a folder of exported assets", StartIn);
+            if (Theme::IconLabelButton(Theme::Icon::FolderOpen, "Open folder\xE2\x80\xA6")) UiAsync::PickFolder("assets.open", "Select a folder of exported assets", StartIn);
             if (std::string Dir; UiAsync::Picked("assets.open", Dir)) OpenFolder(S, Dir, true);
-            ImGui::SameLine();
-            if (ImGui::Button("Add folder...")) UiAsync::PickFolder("assets.add", "Select a folder of exported assets to add", StartIn);
+            ImGui::SameLine(0, 2);
+            if (Theme::IconButton("add", Theme::Icon::Add, "Add a folder to the ones already listed"))
+                UiAsync::PickFolder("assets.add", "Select a folder of exported assets to add", StartIn);
             if (std::string Dir; UiAsync::Picked("assets.add", Dir)) OpenFolder(S, Dir, false);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keep the assets listed and add this folder's");
             ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
             if (S.Catalog.Walking())
             {
                 const std::string Dir = S.Catalog.WalkedDir();
-                ImGui::TextDisabled("scanning %s\xE2\x80\xA6  %zu files", Dir.c_str(), S.Catalog.Seen());
+                ImGui::TextDisabled("Scanning %s\xE2\x80\xA6  %zu files", Dir.c_str(), S.Catalog.Seen());
             }
-            else if (Shown.empty()) ImGui::TextDisabled("no folder open");
+            else if (Shown.empty()) ImGui::TextDisabled("No folder open");
             else if (Shown.size() == 1) ImGui::TextDisabled("%s", Shown[0].c_str());
             else ImGui::TextDisabled("%s (+%d more)", Shown.back().c_str(), (int)Shown.size() - 1);
             if (Shown.size() > 1 && ImGui::IsItemHovered())
@@ -254,42 +262,33 @@ namespace ShellUi
             if (HasText) Reserve += BtnW + Sp;              // "x" clear button
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - Reserve);
-            ImGui::InputTextWithHint("##filter", "Search assets by name\xE2\x80\xA6  (Ctrl+F, Esc clears)",
-                                     A.Filter, sizeof(A.Filter), ImGuiInputTextFlags_EscapeClearsAll);
+            static const std::string Hint = std::string(Theme::Icon::Search) + "  Search assets by name\xE2\x80\xA6  (Ctrl+F, Esc clears)";
+            ImGui::InputTextWithHint("##filter", Hint.c_str(), A.Filter, sizeof(A.Filter), ImGuiInputTextFlags_EscapeClearsAll);
             if (HasText)
             {
-                ImGui::SameLine();
-                if (ImGui::Button("\xC3\x97", ImVec2(BtnW, 0))) A.Filter[0] = '\0';
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear filter");
+                ImGui::SameLine(0, 2);
+                if (Theme::IconButton("clear", Theme::Icon::Close, "Clear the search")) A.Filter[0] = '\0';
             }
-            ImGui::SameLine();
-            if (ImGui::Button("?", ImVec2(BtnW, 0))) OpenHelp = true;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Filter syntax help");
+            ImGui::SameLine(0, 2);
+            if (Theme::IconButton("help", Theme::Icon::Help, "Search syntax")) OpenHelp = true;
+            (void)BtnW;
         }
 
-        // Type selector — segmented "pills" (cleaner than default tabs). Active = accent fill,
-        // inactive = flat + muted, all equal width.
+        // Type selector: a row of pills, each its kind's icon and name; the active one in the accent
         void DrawTypeTabs(AssetsTab& A)
         {
             const float Em = ImGui::GetFontSize();
             // Indices 4/5 (Anims/Maps) come after 0-3 to keep TypeFilter's meanings (1=Models, 2=Images, 3=Audio).
-            static const char* Segs[] = { "All", "Models", "Images", "Audio", "Anims", "Maps", "FX" };
-            const ImVec4 AccOn(0.24f, 0.40f, 0.60f, 1.0f), AccOnHov(0.30f, 0.48f, 0.70f, 1.0f);
-            const ImVec4 Flat(1,1,1,0.04f), FlatHov(1,1,1,0.10f);
-            const ImVec4 Muted = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
-            const float SegW = Em * 4.4f;
+            static const std::string Segs[] = { "All",
+                std::string(Theme::Icon::Model) + "  Models", std::string(Theme::Icon::Image) + "  Images",
+                std::string(Theme::Icon::Audio) + "  Audio", std::string(Theme::Icon::Anim) + "  Anims",
+                std::string(Theme::Icon::Map) + "  Maps", std::string(Theme::Icon::Fx) + "  FX" };
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Em * 0.9f);
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, ImGui::GetStyle().ItemSpacing.y));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, ImGui::GetStyle().ItemSpacing.y));
             for (int i = 0; i < 7; i++)
             {
-                const bool On = (A.TypeFilter == i);
                 if (i > 0) ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Button,        On ? AccOn    : Flat);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, On ? AccOnHov : FlatHov);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,  On ? AccOnHov : FlatHov);
-                if (!On) ImGui::PushStyleColor(ImGuiCol_Text, Muted);
-                if (ImGui::Button(Segs[i], ImVec2(SegW, 0))) A.TypeFilter = i;
-                ImGui::PopStyleColor(On ? 3 : 4);
+                if (Theme::Pill(Segs[i].c_str(), A.TypeFilter == i)) A.TypeFilter = i;
             }
             ImGui::PopStyleVar(2);
         }
@@ -299,8 +298,8 @@ namespace ShellUi
         // joined in one bordered box.
         void DrawNumericFilters(AssetsTab& A)
         {
-            if (!ImGui::CollapsingHeader("Numeric filters", ImGuiTreeNodeFlags_DefaultOpen)) return;
             const float Em = ImGui::GetFontSize();
+            ImGui::SeparatorText("Ranges");
             ImGui::TextDisabled("0 = no limit");
             const ImVec4 Cell   = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
             const ImVec4 CellHi(Cell.x + 0.06f, Cell.y + 0.06f, Cell.z + 0.07f, 1.0f);
@@ -341,24 +340,45 @@ namespace ShellUi
             RangeRow("Mats",   &A.fMinMats,   &A.fMaxMats,   1);
             RangeRow("Size KB",&A.fMinKB,     &A.fMaxKB,     64);
             ImGui::Spacing();
-            if (ImGui::SmallButton("Reset numeric")) { A.fMinBones=A.fMaxBones=A.fMinMeshes=A.fMaxMeshes=A.fMinMats=A.fMaxMats=A.fMinKB=A.fMaxKB=0; }
+            if (ImGui::SmallButton("Reset ranges")) { A.fMinBones=A.fMaxBones=A.fMinMeshes=A.fMaxMeshes=A.fMinMats=A.fMaxMats=A.fMinKB=A.fMaxKB=0; }
         }
 
         void DrawPresets(AssetsTab& A)
         {
-            if (!ImGui::CollapsingHeader("Filter presets")) return;
+            ImGui::SeparatorText("Presets");
             static char PresetName[64] = "";
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70.0f);
-            ImGui::InputTextWithHint("##presetname", "preset name", PresetName, sizeof(PresetName));
+            ImGui::InputTextWithHint("##presetname", "Preset name", PresetName, sizeof(PresetName));
             ImGui::SameLine();
             if (ImGui::Button("Save", ImVec2(64, 0)) && PresetName[0]) SavePreset(A, PresetName);
-            if (A.Presets.empty()) ImGui::TextDisabled("no saved presets");
+            if (A.Presets.empty()) ImGui::TextDisabled("No saved presets");
             for (const auto& P : A.Presets)
             {
                 ImGui::PushID(P.c_str());
                 if (ImGui::SmallButton("Load")) LoadPreset(A, P);
                 ImGui::SameLine(); ImGui::TextUnformatted(P.c_str());
                 ImGui::PopID();
+            }
+        }
+
+        // The game shown, then a Filters button (its count of filters set) opening the rest: the model
+        // textures hidden, the numeric ranges, the presets
+        void DrawFilters(ShellState& S)
+        {
+            AssetsTab& A = S.Assets;
+            DrawGameFilter(S);
+            if (A.Games.size() >= 2 || !A.GameFilter.empty()) ImGui::SameLine();
+            const int Set = (A.HideModelTextures ? 1 : 0) + (A.fMinBones > 0) + (A.fMaxBones > 0) + (A.fMinMeshes > 0) + (A.fMaxMeshes > 0)
+                          + (A.fMinMats > 0) + (A.fMaxMats > 0) + (A.fMinKB > 0) + (A.fMaxKB > 0);
+            char Label[64];
+            snprintf(Label, sizeof(Label), Set ? "%s  Filters (%d)###filters" : "%s  Filters###filters", Theme::Icon::Sliders, Set);
+            if (Theme::Pill(Label, Set > 0)) ImGui::OpenPopup("filters_popup");
+            if (ImGui::BeginPopup("filters_popup"))
+            {
+                ImGui::Checkbox("Hide model textures (the models' _images folders)", &A.HideModelTextures);
+                DrawNumericFilters(A);
+                DrawPresets(A);
+                ImGui::EndPopup();
             }
         }
 
@@ -369,14 +389,13 @@ namespace ShellUi
             const float Sp = ImGui::GetStyle().ItemSpacing.x;
             {
                 // List | Grid, and the grid's cell size
-                const auto Seg = [&](const char* Label, bool On) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, On ? ImVec4(0.24f, 0.40f, 0.60f, 1.0f) : ImVec4(1, 1, 1, 0.04f));
-                    const bool Hit = ImGui::SmallButton(Label);
-                    ImGui::PopStyleColor();
+                const auto Seg = [&](const char* Id, const char* Glyph, const char* Tip, bool On) {
+                    const bool Hit = Theme::IconButton(Id, Glyph, Tip, On);
                     ImGui::SameLine(0, 2);
                     return Hit && !On;
                 };
-                if (Seg("List", !A.GridView) | Seg("Grid", A.GridView))
+                if (Seg("list", Theme::Icon::List, "List: one row per asset, sortable columns", !A.GridView)
+                    | Seg("grid", Theme::Icon::Grid, "Grid: a picture of each asset", A.GridView))
                 {
                     A.GridView = !A.GridView;
                     SettingsManager::SetSetting("assets_view", A.GridView ? "grid" : "list");
@@ -386,6 +405,8 @@ namespace ShellUi
                     A.Grid = std::make_unique<AssetGrid>(S.Dev.Get(), S.Ctx.Get());
                     A.Grid->SetRenderer(AssetKind::Fx, MakeFxCells());
                     A.Grid->SetAnimRig(A.GridRig);
+                    A.Grid->SetGameBadge([Dev = S.Dev](ImDrawList* DL, const std::string& Game, const ImVec2& Min, float Side) { GameBadges::Draw(DL, Dev.Get(), Game, Min, Side); },
+                                         [](const std::string& Game) { return GameBadges::Title(Game); });
                     A.Grid->SetAnimRigResolver([Rigs = S.Rigs](const std::string& Anim, std::vector<std::string>& Paths) {
                         AnimRigs::Pick Pick;
                         if (!Rigs->PickFor(Anim, Pick)) return false;
@@ -398,15 +419,16 @@ namespace ShellUi
                 ImGui::SameLine(0, Sp);
                 if (A.GridView) { A.Grid->DrawSizeSlider(); ImGui::SameLine(); }
             }
-            ImGui::TextDisabled(A.GridView ? "%d / %d assets" : "%d / %d assets  (click a header to sort)", (int)A.View.size(), (int)S.Catalog.Models.size());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%d / %d assets", (int)A.View.size(), (int)S.Catalog.Models.size());
             if (!S.MultiSel.empty())
             {
                 ImGui::SameLine();
-                ImGui::TextDisabled("\xC2\xB7  %d picked (Ctrl+click to build a set)", (int)S.MultiSel.size());
+                ImGui::TextDisabled("\xC2\xB7  %d selected (Ctrl+click to add)", (int)S.MultiSel.size());
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Merge")) LoadMerged(S, S.MultiSel);
+                if (ImGui::SmallButton("View together")) LoadMerged(S, S.MultiSel);
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Clear picks")) S.MultiSel.clear();
+                if (ImGui::SmallButton("Clear selection")) S.MultiSel.clear();
             }
             ImGui::Separator();
         }
@@ -437,7 +459,7 @@ namespace ShellUi
                 CopySelection(S, false);
         }
 
-        // A row's or a cell's click: Ctrl+click builds a pick set for "Merge" without disturbing the
+        // A row's or a cell's click: Ctrl+click builds a selection for "View together" without disturbing the
         // live preview; a plain click previews normally and starts a fresh pick set.
         void ClickAsset(ShellState& S, int idx)
         {
@@ -505,7 +527,7 @@ namespace ShellUi
                 | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable;
             if (!ImGui::BeginTable("assets", 9, TFlags, ImVec2(0.0f, 0.0f), 0.0f)) return;
             ImGui::TableSetupColumn("Name",   ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, Em * 12.0f);
-            ImGui::TableSetupColumn("Game",   ImGuiTableColumnFlags_WidthFixed, Em * 4.5f);
+            ImGui::TableSetupColumn("Game",   ImGuiTableColumnFlags_WidthFixed, Em * 9.0f);
             ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, Em * 3.4f);
             ImGui::TableSetupColumn("Bones",  ImGuiTableColumnFlags_WidthFixed, Em * 3.6f);
             ImGui::TableSetupColumn("Meshes", ImGuiTableColumnFlags_WidthFixed, Em * 3.6f);
@@ -550,7 +572,16 @@ namespace ShellUi
                 if (ImGui::Selectable(M.Name.c_str(), S.Selected == idx || S.MultiSel.count(idx) != 0, ImGuiSelectableFlags_SpanAllColumns))
                     ClickAsset(S, idx);
                 AssetContextMenu(S, idx);
-                ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(M.Game.c_str());
+                ImGui::TableSetColumnIndex(1);
+                if (!M.Game.empty())
+                {
+                    const float Side = ImGui::GetTextLineHeight();
+                    GameBadges::Draw(ImGui::GetWindowDrawList(), S.Dev.Get(), M.Game, ImGui::GetCursorScreenPos(), Side);
+                    ImGui::Dummy(ImVec2(Side, Side));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(GameBadges::ShortTitle(M.Game).c_str());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", GameBadges::Title(M.Game).c_str());
+                }
                 ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("%s", Ty);
                 ImGui::TableSetColumnIndex(3); if (M.Kind == 0 || M.Kind == 3) ImGui::Text("%u", M.Bones);
                 ImGui::TableSetColumnIndex(4); if (M.Kind == 0 || M.Kind == 4) ImGui::Text("%u", M.Meshes);
@@ -577,15 +608,11 @@ namespace ShellUi
         // opened on a folder (ui <dir>): its assets tab comes first, not Load Game's
         static int FramesShown = 0;
         if (FramesShown++ == 1 && !S.ModelsDir.empty()) ImGui::SetNextWindowFocus();
-        ImGui::Begin("Assets");
+        ImGui::Begin(Theme::LibraryWindow);
         DrawFolderBar(S);
         DrawSearchBox(A, OpenHelp);
         DrawTypeTabs(A);
-        DrawGameFilter(S);
-        if (A.TypeFilter == 0 || A.TypeFilter == 2)
-            ImGui::Checkbox("Hide model textures (the _images of 3D models)", &A.HideModelTextures);
-        DrawNumericFilters(A);
-        DrawPresets(A);
+        DrawFilters(S);
 
         // Built with the last known sort before keyboard nav reads it, so Up/Down walk what is on
         // screen; again once BeginTable has this frame's sort (only if a header was just clicked).

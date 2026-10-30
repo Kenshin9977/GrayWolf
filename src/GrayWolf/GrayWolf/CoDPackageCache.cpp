@@ -78,7 +78,7 @@ void CoDPackageCache::SetLoadedState()
     std::lock_guard<std::mutex> Lock(CacheMutex);
 
 #ifdef _DEBUG
-    printf("SetLoadedState(): Cache loaded %d objects.\n", (uint32_t)CacheObjects.size());
+    printf("SetLoadedState(): Cache loaded %zu objects.\n", CacheObjects.size());
 #endif
 
     HasLoaded = true;

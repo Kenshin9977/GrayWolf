@@ -8,6 +8,7 @@
 #include "SettingsManager.h"
 
 #include "imgui.h"
+#include "ImGuiTheme.h"   // the accent, icons
 
 #include <cmath>
 #include <cstdio>
@@ -41,6 +42,8 @@ namespace LoadGameUi
         O.Install = Install;
         for (const DiskGame::Setting* S : Game.AllSettings())
             O.Settings[S->Key] = SettingsManager::GetSetting(SettingKey(Game, *S), S->Default);
+        // the languages exported, for every game: the install's by default
+        O.Languages = SettingsManager::GetSetting(Languages::SettingKey, Languages::GuiDefault);
         return O;
     }
 
@@ -58,6 +61,8 @@ namespace LoadGameUi
     inline std::string ListedFor(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& O)
     {
         std::string Key = std::string(Game.Id()) + "|" + O.Install;
+        // not the languages: they change no zone list (CoD1/CoD2 rank the same archives by them),
+        // and a list read again drops the zones picked
         for (const auto& [K, V] : O.Settings) Key += "|" + K + "=" + V;
         return Key;
     }

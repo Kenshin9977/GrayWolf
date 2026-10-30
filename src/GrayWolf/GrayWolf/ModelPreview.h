@@ -57,6 +57,8 @@ struct PreviewGeometry
     // Model files' materials, parallel to Materials (whose Rgba is then left empty); sources
     // without them (.glb, live) keep a plain diffuse in Materials.
     std::vector<PreviewMaterial> MaterialMaps;
+    // the maps those materials name whose files are not on disk (an export still writing them)
+    std::vector<std::string> MissingMaps;
 
     std::vector<PreviewBone> Bones; // bind-pose skeleton (empty if the source had none, e.g. a map)
     // Flattened PREVIEW_MAX_BONE_INFLUENCES-per-vertex skin weights, parallel to Bones above. An unused
@@ -159,3 +161,9 @@ bool RenderModelsToPNG(const std::vector<std::string>& SemodelPaths, const std::
 // contact-sheet PNG. Returns false if nothing could be drawn.
 bool RenderModelTurntable(const std::vector<std::string>& SemodelPaths, const std::string& OutPngPath,
                           int Size = 256, int Frames = 8);
+
+// The box a still render frames (render-model, software and --gpu): the vertices' bounds, except on
+// an axis where a few far vertices (under 0.5% of them) reach further out than the rest spans (a
+// map's skybox, a stray piece): there the box stops at the 0.5th / 99.5th percentile. An ordinary
+// mesh gets its whole bounds. Pos: 3 floats a vertex.
+void PreviewFramingBox(const float* Pos, size_t VertexCount, float Lo[3], float Hi[3]);

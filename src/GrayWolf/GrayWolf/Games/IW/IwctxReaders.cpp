@@ -173,7 +173,9 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
 {
     using DiskGame::Kind;
     auto& Kt = T.Kinds[Kind::Sound];
-    const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
+    // read here in the zone's order, decoded and written by the sink's pool
+    ExportWriters::SoundSink Sink;
+    const std::string Extension = ExportWriters::SoundExtension(Sink.Format());
     std::set<std::string> Done;
     for (size_t N = 0; N < Sounds.size(); N++)
     {
@@ -192,12 +194,15 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
         const std::string Dir = (std::filesystem::path(C.KindDir(Kind::Sound)) / Sound.FullPath).string();
         std::error_code Ec;
         std::filesystem::create_directories(Dir, Ec);
-        std::string Crash;
         SoundWhy.clear();
-        const int Code = ExportWriters::ExportSound(Sound, Dir, Extension, Crash);
-        if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-        else T.Fail(Zone, Kind::Sound, E.Full, "code " + std::to_string(Code) + " " + (Crash.empty() ? SoundWhy : Crash));
+        // a sound not read is reported on this thread (SoundWhy, thread local, says why); one not
+        // written, on the pool's
+        Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [&Kt, &T, &Zone, Full = E.Full](int Code, const std::string& Crash) {
+            if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+            else T.Fail(Zone, Kind::Sound, Full, "code " + std::to_string(Code) + " " + (Crash.empty() ? SoundWhy : Crash));
+        });
     }
+    Sink.Finish();
 }
 
 std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string& ProfileDir, size_t ListSize)

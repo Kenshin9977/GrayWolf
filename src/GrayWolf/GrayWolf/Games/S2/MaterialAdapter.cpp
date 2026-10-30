@@ -1,7 +1,6 @@
 #include "stdafx.h"
 
 #include "MaterialDescription.h"
-#include "CoDAssets.h"
 
 // WWII materials (MaterialDescription.h): the semantics the live reader names. Unlike AW's, the
 // specular map (34ECCCB3) is not a specular colour with gloss in alpha; measured over the 733
@@ -13,22 +12,13 @@
 // gloss b; the occlusion is its own map (6001F931, the images named "_occ").
 namespace
 {
-    class S2Materials final : public Materials::IAdapter
-    {
-    public:
-        const char* Name() const override { return "ww2"; }
-        Materials::Description Describe(const Materials::Source& M) const override
-        {
-            using Materials::Role;
-            return Materials::DescribeBySemantic(M, {
-                { 0xA0AB1041, Role::Albedo },
-                { 0x59D30D0F, Role::Normal },
-                { 0x34ECCCB3, Role::Metalness, 0 },
-                { 0x34ECCCB3, Role::Gloss, 2 },
-                { 0x6001F931, Role::Occlusion, 0 },
-            });
-        }
-    };
-    const S2Materials Adapter;
+    using Materials::Role;
+    const Materials::SemanticAdapter Adapter("ww2", {
+        { 0xA0AB1041, Role::Albedo },
+        { 0x59D30D0F, Role::Normal },
+        { 0x34ECCCB3, Role::Metalness, 0 },
+        { 0x34ECCCB3, Role::Gloss, 2 },
+        { 0x6001F931, Role::Occlusion, 0 },
+    });
     const Materials::AdapterRegistration Registered("S2", Adapter);
 }

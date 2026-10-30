@@ -729,24 +729,30 @@ namespace
             auto& Kt = T.Kinds[Kind::Sound];
             const auto List = Assets(Kind::Sound, C);
             const std::string Dir = C.KindDir(Kind::Sound);
-            std::vector<uint8_t> Bytes;
+            // inflated here in the list's order, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
             for (size_t N = 0; N < List.size(); N++)
             {
                 const auto& A = List[N];
                 if (!C.Advance(N, List.size(), A.Name)) return;
                 Kt.Seen++;
-                if (!Files->Read(A.Path, Bytes))
+                auto Bytes = std::make_shared<std::vector<uint8_t>>();
+                if (!Files->Read(A.Path, *Bytes))
                 {
-                    T.Fail(ZoneName, Kind::Sound, A.Name, "does not inflate");
+                    Sink.Locked([&] { T.Fail(ZoneName, Kind::Sound, A.Name, "does not inflate"); });
                     continue;
                 }
-                const std::string Format = ExportWriters::SoundFormatSetting();
+                const std::string& Format = Sink.Format();
                 const std::string File = A.Name + Extension(A.Path);
                 const fs::path Out = fs::path(Dir) / ExportWriters::SoundFileName(File, Format);
-                std::string Why;
-                if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Bytes.data(), Bytes.size(), File), Out, Format, &Why)) Kt.Written++;
-                else T.Fail(ZoneName, Kind::Sound, A.Name, Why + " " + Out.string());
+                Sink.Write(ExportWriters::SoundSource::OfFile(Bytes->data(), Bytes->size(), File), Out,
+                           [this, &Kt, &T, Name = A.Name, Out](bool Ok, const std::string& Why, const std::string& Crash) {
+                               if (Ok) Kt.Written++;
+                               else T.Fail(ZoneName, Kind::Sound, Name, (Crash.empty() ? Why : Crash) + " " + Out.string());
+                           },
+                           Bytes);
             }
+            Sink.Finish();
             C.Advance(List.size(), List.size());
         }
 
@@ -1643,17 +1649,36 @@ namespace
     };
 
     // CoD1 and CoD2 shipped in these languages; an install holds the base (English) and at most one
-    // localization (localization.txt names it)
+    // localization (localization.txt names it). auto: as the run's languages say (LanguageOf)
     const DiskGame::Setting Language{ "language", "Language",
-        { { "english", "English" }, { "french", "French" }, { "german", "German" }, { "italian", "Italian" },
-          { "spanish", "Spanish" }, { "russian", "Russian" }, { "polish", "Polish" } },
-        "english", { Kind::Model, Kind::Anim, Kind::Image, Kind::Sound, Kind::Map, Kind::Localize, Kind::WeaponStats } };
+        { { "auto", "As the export languages" }, { "english", "English" }, { "french", "French" }, { "german", "German" },
+          { "italian", "Italian" }, { "spanish", "Spanish" }, { "russian", "Russian" }, { "polish", "Polish" } },
+        "auto", { Kind::Model, Kind::Anim, Kind::Image, Kind::Sound, Kind::Map, Kind::Localize, Kind::WeaponStats } };
+
+    // The language whose localized archives win in the install Folder: the setting, else (auto) the
+    // first of the run's languages (ExportOptions::Languages) the game shipped in other than English;
+    // English (the base wins) for every language
+    std::string LanguageOf(const DiskGame::ExportOptions& O, const std::string& Folder)
+    {
+        std::string Set = Language.Of(O);
+        if (Set != "auto") return Set;
+        const std::string Option = O.Languages.empty() ? std::string(Languages::CliDefault) : O.Languages;
+        Languages::Choice Wanted;
+        std::string Why;
+        if (!Languages::Resolve(Option, ExportNaming::Lower(Option).find("auto") != std::string::npos ? Languages::OfInstall(Folder) : Languages::Detected(),
+                                Wanted, Why) ||
+            Wanted.Every)
+            return "english";
+        for (const auto& [Value, Label] : Language.Values)
+            if (Value != "auto" && Value != "english" && Wanted.Codes.count(Languages::CodeOf(Value))) return Value;
+        return "english";
+    }
 
     // The install of a zone: the one the run names, else the folder the archive is in.
     std::shared_ptr<Install> InstallOf(const GameRow& Row, const std::string& Zone, const DiskGame::ExportOptions& O, std::string& Error)
     {
         const std::string Folder = !O.Install.empty() ? O.Install : fs::path(Zone).parent_path().string();
-        return Install::Open(Folder, Row.Extension, Language.Of(O), Error);
+        return Install::Open(Folder, Row.Extension, LanguageOf(O, Folder), Error);
     }
 }
 
@@ -1672,12 +1697,12 @@ bool ArchiveGame::Zones(const std::string& Input, const DiskGame::ExportOptions&
                         std::string& Error) const
 {
     std::error_code Ec;
-    if (fs::is_directory(Input, Ec)) Out = Install::Archives(Input, Row.Extension, Language.Of(Options));
+    if (fs::is_directory(Input, Ec)) Out = Install::Archives(Input, Row.Extension, LanguageOf(Options, Input));
     else if (fs::exists(Input, Ec)) Out.push_back(Input);
     else if (!Options.Install.empty())
     {
         // an archive's name within the install
-        for (const auto& P : Install::Archives(Options.Install, Row.Extension, Language.Of(Options)))
+        for (const auto& P : Install::Archives(Options.Install, Row.Extension, LanguageOf(Options, Options.Install)))
             if (ExportNaming::Lower(fs::path(P).filename().string()) == ExportNaming::Lower(Input)) Out.push_back(P);
     }
     if (Out.empty()) Error = std::string("no ") + Row.Extension + " archive in " + Input;
@@ -1688,7 +1713,7 @@ bool ArchiveGame::ListZones(const std::string& InstallFolder, const DiskGame::Ex
                             std::string& Error) const
 {
     std::error_code Ec;
-    for (const auto& P : Install::Archives(InstallFolder, Row.Extension, Language.Of(Options)))
+    for (const auto& P : Install::Archives(InstallFolder, Row.Extension, LanguageOf(Options, InstallFolder)))
         Names.push_back(fs::relative(P, InstallFolder, Ec).string());
     if (Names.empty()) Error = std::string("no ") + Row.Extension + " archive in " + InstallFolder;
     return !Names.empty();
@@ -1705,7 +1730,8 @@ std::unique_ptr<DiskGame::IDiskZone> ArchiveGame::Open(const std::string& Zone, 
         Error = Zone + " is not an archive of the install " + I->Folder();
         return nullptr;
     }
-    return std::make_unique<ArchiveZone>(Row, std::move(I), A, Language.Of(Options));
+    const std::string Lang = LanguageOf(Options, I->Folder());
+    return std::make_unique<ArchiveZone>(Row, std::move(I), A, Lang);
 }
 }
 
@@ -1730,7 +1756,7 @@ void IW12::ArchiveGame::AnimOwners(const DiskGame::ExportOptions& Options, const
         std::string Error;
         const auto I = InstallOf(Row, Z.Zone, Options, Error);
         if (!I) continue;
-        const std::string Key = I->Folder() + "|" + Language.Of(Options);
+        const std::string Key = I->Folder() + "|" + LanguageOf(Options, I->Folder());
         std::shared_ptr<const IwClassicAnimOwners::Facts> F;
         {
             std::lock_guard<std::mutex> G(Lock);

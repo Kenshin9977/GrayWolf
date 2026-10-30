@@ -8,7 +8,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -133,6 +135,12 @@ void SettingsManager::SaveSettings()
     {
         return;
     }
+    // A run told to leave the user's settings alone (`mcp` and the children it starts): memory only
+    char ReadOnly[8] = {};
+    if (GetEnvironmentVariableA("GRAYWOLF_SETTINGS_READONLY", ReadOnly, sizeof(ReadOnly)) > 0 && ReadOnly[0] != '0')
+    {
+        return;
+    }
     // Written beside it then renamed over it: a reader (another GrayWolf) never sees a half
     // written file
     const auto Temp = SettingsFileName + "." + std::to_string(GetCurrentProcessId()) + ".tmp";
@@ -163,6 +171,12 @@ std::string SettingsManager::GetSetting(const std::string& Key, const std::strin
     }
     SettingsCache.insert(std::make_pair(Key, UnModifyValue(Key, Default)));
     return Default;
+}
+
+float SettingsManager::GetSettingFloat(const std::string& Key, float Default, float Lo, float Hi)
+{
+    const std::string V = GetSetting(Key, "");
+    return V.empty() ? Default : std::clamp((float)std::atof(V.c_str()), Lo, Hi);
 }
 
 void SettingsManager::SetSetting(const std::string& Key, const std::string& Value)

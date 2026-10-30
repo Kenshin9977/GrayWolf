@@ -2,6 +2,8 @@
 
 #include "WraithAnim.h"
 
+#include <string_view>
+
 WraithAnim::WraithAnim()
 {
     AssetType = WraithAssetType::Animation;
@@ -54,7 +56,13 @@ const uint32_t WraithAnim::FrameCount() const
 
 const uint32_t WraithAnim::BoneCount() const
 {
-    return (uint32_t)Bones().size();
+    // Bones()' names counted where they are, not copied into a set of strings
+    std::unordered_set<std::string_view> Unique;
+    for (const auto& Frames : AnimationPositionKeys) Unique.insert(Frames.first);
+    for (const auto& Frames : AnimationRotationKeys) Unique.insert(Frames.first);
+    for (const auto& Frames : AnimationScaleKeys) Unique.insert(Frames.first);
+    for (const auto& Modifiers : AnimationBoneModifiers) Unique.insert(Modifiers.first);
+    return (uint32_t)Unique.size();
 }
 
 const std::unordered_set<std::string> WraithAnim::Bones() const
@@ -93,7 +101,7 @@ const uint32_t WraithAnim::NotificationCount() const
     return Result;
 }
 
-void WraithAnim::AddTranslationKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z)
+void WraithAnim::AddTranslationKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z)
 {
     WraithAnimFrame<Vector3> NewFrame;
     NewFrame.Frame = Frame;
@@ -101,7 +109,7 @@ void WraithAnim::AddTranslationKey(const std::string Bone, uint32_t Frame, float
     AnimationPositionKeys[Bone].push_back(NewFrame);
 }
 
-void WraithAnim::AddRotationKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z, float W)
+void WraithAnim::AddRotationKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z, float W)
 {
     WraithAnimFrame<Quaternion> NewFrame;
     NewFrame.Frame = Frame;
@@ -109,7 +117,7 @@ void WraithAnim::AddRotationKey(const std::string Bone, uint32_t Frame, float X,
     AnimationRotationKeys[Bone].push_back(NewFrame);
 }
 
-void WraithAnim::AddScaleKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z)
+void WraithAnim::AddScaleKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z)
 {
     WraithAnimFrame<Vector3> NewFrame;
     NewFrame.Frame = Frame;
@@ -117,7 +125,7 @@ void WraithAnim::AddScaleKey(const std::string Bone, uint32_t Frame, float X, fl
     AnimationScaleKeys[Bone].push_back(NewFrame);
 }
 
-void WraithAnim::AddBlendShapeKey(const std::string Shape, uint32_t Frame, float X, float Y, float Z)
+void WraithAnim::AddBlendShapeKey(const std::string& Shape, uint32_t Frame, float X, float Y, float Z)
 {
     WraithAnimFrame<Vector3> NewFrame;
     NewFrame.Frame = Frame;
@@ -125,12 +133,12 @@ void WraithAnim::AddBlendShapeKey(const std::string Shape, uint32_t Frame, float
     AnimationBlendShapeWeightKeys[Shape].push_back(NewFrame);
 }
 
-void WraithAnim::AddNoteTrack(const std::string Notification, uint32_t Frame)
+void WraithAnim::AddNoteTrack(const std::string& Notification, uint32_t Frame)
 {
     AnimationNotetracks[Notification].push_back(Frame);
 }
 
-void WraithAnim::AddBoneModifier(const std::string Bone, WraithAnimationType Modifier)
+void WraithAnim::AddBoneModifier(const std::string& Bone, WraithAnimationType Modifier)
 {
     AnimationBoneModifiers[Bone] = Modifier;
 }

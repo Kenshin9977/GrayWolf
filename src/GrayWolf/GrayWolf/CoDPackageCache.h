@@ -5,6 +5,7 @@
 #include <string>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -71,6 +72,20 @@ public:
     virtual std::unique_ptr<uint8_t[]> ExtractPackageObject(uint64_t CacheID, int32_t Size, uint32_t& ResultSize) { return nullptr; }
     // Returns a cache object (nullptr if not found)
     virtual std::unique_ptr<uint8_t[]> ExtractPackageObject(const std::string& PackageName, uint64_t AssetOffset, uint64_t AssetSize, size_t& ResultSize) { return nullptr; }
+
+    // ExtractPackageObject in two halves: the read now, on the calling thread (a caller reading in
+    // disk order), and what the returned function does, any thread, once (decompress: what a
+    // package does without its file). By default both are done now and the function hands the result.
+    using PackageObjectFinish = std::function<std::unique_ptr<uint8_t[]>(uint32_t& ResultSize)>;
+    virtual PackageObjectFinish ReadPackageObject(uint64_t CacheID, int32_t Size)
+    {
+        uint32_t ReadSize = 0;
+        auto Data = std::make_shared<std::unique_ptr<uint8_t[]>>(ExtractPackageObject(CacheID, Size, ReadSize));
+        return [Data, ReadSize](uint32_t& ResultSize) {
+            ResultSize = *Data ? ReadSize : 0;
+            return std::move(*Data);
+        };
+    }
 
     // Hashes a cache object id if needed
     virtual uint64_t HashPackageID(const std::string& Value) { return 0; }

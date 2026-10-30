@@ -1,28 +1,12 @@
 #include "stdafx.h"
 
 #include "MaterialDescription.h"
-#include "CoDAssets.h"
 
 // Advanced Warfare materials (MaterialDescription.h): the semantic hashes the live
 // reader names (GameAdvancedWarfare::ReadXMaterial): colour, normal, and the specular map,
 // rgb the specular colour and alpha the gloss.
 namespace
 {
-    class S1Materials final : public Materials::IAdapter
-    {
-    public:
-        const char* Name() const override { return "aw"; }
-        Materials::Description Describe(const Materials::Source& M) const override
-        {
-            using Materials::Role;
-            return Materials::DescribeBySemantic(M, {
-                { 0xA0AB1041, Role::Albedo },
-                { 0x59D30D0F, Role::Normal },
-                { 0x34ECCCB3, Role::Specular },
-                { 0x34ECCCB3, Role::Gloss, 3 },
-            });
-        }
-    };
-    const S1Materials Adapter;
+    const Materials::SemanticAdapter Adapter("aw", Materials::SpecularGlossTable());
     const Materials::AdapterRegistration Registered("S1", Adapter);
 }

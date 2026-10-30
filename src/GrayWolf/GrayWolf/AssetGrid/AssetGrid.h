@@ -103,6 +103,10 @@ public:
     // or ModelPath for every anim when set; with neither, anims show an icon.
     void SetAnimRigResolver(std::function<bool(const std::string& AnimPath, std::vector<std::string>& Paths)> Resolve);
     void SetAnimRig(const std::string& ModelPath);
+    // How a cell shows its game (AssetGridItem::Game): drawn in a Side square at Min, and named in the
+    // tooltip. Unset: the game's id as text.
+    void SetGameBadge(std::function<void(struct ImDrawList* DL, const std::string& Game, const struct ImVec2& Min, float Side)> Draw,
+                      std::function<std::string(const std::string& Game)> Title);
 
     // Every visible cell shows its final picture and no job is queued.
     bool Settled() const;
@@ -113,6 +117,8 @@ private:
     std::unique_ptr<GridServices> Services;
     std::shared_ptr<IAssetCellRenderer> Renderers[AssetKind::Count];
     std::shared_ptr<class ModelCellRenderer> Models;
+    std::function<void(struct ImDrawList*, const std::string&, const struct ImVec2&, float)> DrawGame;
+    std::function<std::string(const std::string&)> GameTitle;
     float Size = 128.0f, AutoScroll = 0;
     int LastColumns = 1, LastVisible = 0;
     uint64_t Frame = 0;

@@ -36,7 +36,6 @@ namespace Iw64
     {
     public:
         IwDiskZone(const std::string& Path, const GameInfo& G);
-        ~IwDiskZone() override;
         // the string tables, the .arena rawfiles (the multiplayer map list), the GSC source and
         // animtrees, MW3's compiled scripts' strings (<name>.gscsource): Games/IwClassic/IwClassicAnimOwners.h
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override;
@@ -89,6 +88,10 @@ namespace Iw64
         // are read (the index may be built then, this zone's session parked meanwhile).
         void BookMaterialsElsewhere();
         bool BooksTried = false;
+        // the readers' lookups into Materials and the books while the zone is served (after what
+        // they read: they end first)
+        std::optional<CoDAssets::Scoped<decltype(MaterialDefinedAt)>> DefinedServed;
+        std::optional<CoDAssets::Scoped<decltype(MaterialImagesElsewhere)>> ElsewhereServed;
     };
 
     // The IDiskGame of one title: its zones are the unsigned fast files (IWffu100) of the input

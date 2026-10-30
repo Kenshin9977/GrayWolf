@@ -11,6 +11,7 @@ struct CliOptions
     bool ExportAll = false;
     bool SelfTest = false;
     bool ListInstalls = false;     // list-installs
+    bool Mcp = false;              // mcp: the MCP server over stdio (CliCommands.Mcp.cpp)
     std::string DecompressFF;
     std::string Identify;
     std::string Bo4DecryptHex;   // hex bytes, e.g. "bd07feccafb0b4a900" (ID+Size+ciphertext+NUL)
@@ -47,6 +48,12 @@ struct CliOptions
     std::string Bo4ExportRawStringsDiskIn;  // bo4-export-rawstrings-disk <in.bin> <outfile>: offline dialogue/rawstring export
     std::string Bo4ExportRawStringsDiskOut;
     std::string RenderModel;
+    // render-model --gpu: --env <id>, --env-rotation <deg>, --env-intensity <x>, --bloom <strength>, --lights <x>,
+    // --backdrop, --backdrop-blur <0..1> (PreviewLighting); empty / < 0: the viewport's default
+    std::string PreviewEnv;
+    float PreviewEnvRotation = 0, PreviewEnvIntensity = 1, PreviewBloom = -1, PreviewLights = -1;   // --lights: the three lights' strength
+    bool PreviewBackdrop = false;
+    float PreviewBackdropBlur = -1;
     // render-fx <fx json>: an effect at --time seconds (--frames N at --fps: a sequence and its
     // sheet), --size px, --seed n, --forward-up, --fx-images "dir;dir" (FxPreviewCli.cpp)
     std::string RenderFx, FxImages;
@@ -57,7 +64,7 @@ struct CliOptions
     std::string DumpGlb;     // --dump-glb: print a .glb's PreviewGeometry stats (LoadPreviewGeometryGlb)
     bool DumpGlbThumb = false;   // dump-glb --thumb: the asset grid's budget instead of the viewport's
     std::string RenderGlbPng; // --render-glb-png <in.glb>: headless PNG render, --out sets the path
-    std::string AudioFormat; // "wav" (default), "flac" or "opus" (setting exportsnd, ExportWriters::WriteSound)
+    std::string AudioFormat; // "opus" (default), "wav" or "flac" (setting exportsnd, ExportWriters::WriteSound)
     std::string ModelFormat; // --model-format: cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, comma list
     std::string AnimFormat;  // --anim-format: cast|seanim|xanim_export|none, comma list
     std::string ImageFormat; // --image-format: png|tga|dds (sets exportimg)
@@ -71,10 +78,15 @@ struct CliOptions
     std::string MapCollision;// --map-collision: on|off, the map's collision also as <map>_collision.json (off)
     std::string Decompile;   // --decompile[=on|off]: compiled scripts also decompiled (off)
     std::string MapTextures; // --map-textures: full|2k|1k, map textures above it copied smaller (full)
-    std::string Language;    // --language: english|french|...: CoD1/CoD2, whose localized archives win (english)
+    std::string Language;    // --language: auto|english|french|...: CoD1/CoD2, whose localized archives win (auto: --languages')
+    std::string Languages;   // --languages: all|auto|en,fr...: the languages exported (DiskGame::ExportOptions::Languages; all)
     std::string Unit;        // --unit: Centimeter|Meter|Inch (model export scale)
     std::string NormalMap;   // --normal-map: none|opengl (flip normal-map green for Blender/DCC)
     int Turntable = 0;       // --turntable N: render N views around the model into one contact sheet
+    bool NoShadows = false, NoGround = false;   // render-model --gpu: --no-shadows, --no-ground
+    float ShadowSoftness = -1;  // --shadow-softness 0..1 (< 0: the default)
+    std::string RenderQuality; // render-model --quality ao=0,msaa=8,smaa=1,still_samples=32: over the viewport's settings (--gpu)
+    int RenderSize = 0;        // render-model --render-size N: the image's (a turntable view's) side in pixels (512, 256)
     std::string PreviewWindow; // --preview-window <parts>: open an interactive D3D11 orbit viewer
     std::string Ui;            // --ui <models-dir>: open the ImGui+D3D11 asset browser shell
     std::string UiGridShot;    // ui-grid-shot <dir>: the shell offscreen, the Assets grid timed, the frame saved (--out)

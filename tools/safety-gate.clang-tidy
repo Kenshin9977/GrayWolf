@@ -1,0 +1,23 @@
+# Pointer-safety gate: the clang-tidy half of tools/safety_gate.py (the other half is safety-gate.query).
+# Run on changed lines only (-line-filter from the diff), so existing debt never blocks; every check
+# here is an error on a changed line. Per-path exemptions: tools/safety-gate.json. A justified
+# exception in place: // NOLINT(<check>): <why>  (NOLINTNEXTLINE / NOLINTBEGIN..END for a block).
+Checks: >
+  -*,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-no-malloc,
+  modernize-make-unique,
+  modernize-make-shared,
+  cppcoreguidelines-avoid-non-const-global-variables,
+  cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  bugprone-dangling-handle,
+  bugprone-use-after-move,
+  bugprone-return-const-ref-from-parameter,
+  clang-diagnostic-dangling*,
+  clang-diagnostic-return-stack-address
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'src[/\\](GrayWolf[/\\]GrayWolf|Core[/\\]Core)[/\\]'
+CheckOptions:
+  cppcoreguidelines-avoid-non-const-global-variables.AllowInternalLinkage: false
+  bugprone-dangling-handle.HandleClasses: 'std::basic_string_view;std::span;std::experimental::basic_string_view'
+FormatStyle: none

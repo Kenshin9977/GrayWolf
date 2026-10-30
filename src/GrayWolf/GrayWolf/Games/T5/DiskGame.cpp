@@ -23,6 +23,7 @@
 #include "Image.h"
 #include "IWDCache.h"
 #include "MapLive.h"
+#include "ZipInflate.h"
 #include <miniz/miniz.h>
 #include "ZonekitZone.h"
 #include "WmaSounds.h"
@@ -127,12 +128,8 @@ namespace
         {
             const auto It = Files.find(ExportNaming::ForwardSlashes(ExportNaming::Lower(Path)));
             if (It == Files.end()) return false;
-            std::lock_guard<std::mutex> G(Lock);
-            mz_zip_archive* Zip = Archives[It->second.first].get();
-            mz_zip_archive_file_stat Stat;
-            if (!mz_zip_reader_file_stat(Zip, It->second.second, &Stat) || Stat.m_uncomp_size == 0) return false;
-            Out.resize((size_t)Stat.m_uncomp_size);
-            return mz_zip_reader_extract_to_mem(Zip, It->second.second, Out.data(), Out.size(), 0) != 0;
+            // the archive read under the lock, inflated beside the other threads' reads
+            return ZipInflate::Extract(Archives[It->second.first].get(), It->second.second, Out, Lock) && !Out.empty();
         }
 
     private:
@@ -155,7 +152,7 @@ namespace
     class Bo1Zone final : public TreyarchLevelZone
     {
     public:
-        Bo1Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir)), Weapons(Path)
+        Bo1Zone(const std::string& Path, std::string InstallDir) : TreyarchLevelZone(Path), Install(std::move(InstallDir)), Mod(Iw3Family::ModFolderOf(Path)), Weapons(Path)
         {
             // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
             Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
@@ -239,6 +236,7 @@ namespace
 
     private:
         std::string Install;
+        std::string Mod;
         OatWeapons::Source Weapons;
         std::shared_ptr<IWDCache> Iwd;
 
@@ -248,7 +246,7 @@ namespace
         {
             if (Install.empty()) return;
             ServePackages(On, [this] {
-                if (!Iwd) Iwd = Iw3Family::IwdPackagesOf(Install);
+                if (!Iwd) Iwd = Iw3Family::IwdPackagesOf(Install, Mod);
                 return SharedPackages(Iwd);
             });
         }
@@ -285,7 +283,7 @@ namespace
         void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override
         {
             if (K != DiskGame::Kind::Image || Install.empty()) return;
-            const auto Packages = Iw3Family::IwdPackagesOf(Install);
+            const auto Packages = Iw3Family::IwdPackagesOf(Install, Mod);
             const std::string N = AssetName(DiskGame::Kind::Image, Pos);
             PackageCacheObject O;
             if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
@@ -295,7 +293,7 @@ namespace
         {
             if (!Install.empty())
             {
-                if (!Iwd) Iwd = Iw3Family::IwdPackagesOf(Install);
+                if (!Iwd) Iwd = Iw3Family::IwdPackagesOf(Install, Mod);
                 uint32_t Size = 0;
                 auto Data = Iwd->ExtractPackageObject(Iwd->HashPackageID(ImageName), Size);
                 if (Data)
@@ -485,9 +483,12 @@ namespace
             }
             size_t N = 0;
             const size_t All = Loaded.size() + Streamed.size();
+            // read here, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
+            const auto Done = [&] { FinishSoundFiles(Sink); };
             for (const auto& [F, Snd] : Loaded)
             {
-                if (!C.Advance(N++, All, F)) return;
+                if (!C.Advance(N++, All, F)) return Done();
                 if (!C.Wants(Kind::Sound, F)) continue;
                 const uint32_t Size = At<uint32_t>(Z, Snd + LoadedDataSize);
                 const int64_t Data = Off(PointerAt(Snd + LoadedData));
@@ -496,7 +497,7 @@ namespace
                     WrapLoaded(Snd, Z.data() + Data, Size, Wrapped))
                 {
                     Kt.Seen++;
-                    WriteSoundFile(C, T, F, Wrapped.data(), Wrapped.size(), "sounds_loaded_wrapped");
+                    WriteSoundFile(C, T, F, Wrapped.data(), Wrapped.size(), "sounds_loaded_wrapped", &Sink);
                     continue;
                 }
                 if (Size < 12 || Data < 0 || (uint64_t)Data + Size > Z.size() || std::memcmp(Z.data() + Data, "RIFF", 4) != 0 ||
@@ -508,11 +509,11 @@ namespace
                     continue;
                 }
                 Kt.Seen++;
-                WriteSoundFile(C, T, F, Z.data() + Data, Size, "sounds_loaded");
+                WriteSoundFile(C, T, F, Z.data() + Data, Size, "sounds_loaded", &Sink);
             }
             for (const auto& F : Streamed)
             {
-                if (!C.Advance(N++, All, F)) return;
+                if (!C.Advance(N++, All, F)) return Done();
                 if (Loaded.count(F) || !C.Wants(Kind::Sound, F) || Install.empty()) continue;
                 Kt.Seen++;
                 // the IWD's block MS-ADPCM decoded to PCM16, or an entry that is a RIFF already
@@ -523,11 +524,12 @@ namespace
                 if (Payload == nullptr)
                 {
                     Counter("sounds_iwd_missing")++;
-                    T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives");
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives"); });
                 }
                 else
-                    WriteSoundFile(C, T, F, Payload->data(), Payload->size(), "sounds_iwd");
+                    WriteSoundFile(C, T, F, Payload->data(), Payload->size(), "sounds_iwd", &Sink);
             }
+            Done();
         }
 
         bool RawfileBytes(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes)

@@ -134,6 +134,10 @@ namespace
             std::vector<int64_t> Found;
             for (const auto& I : Walk().Instances)
                 if (OwnerIs(I, "loaded_sound") && At<uint32_t>(Z, I.Pos + LoadedSize) != 0) Found.push_back(I.Pos);
+            // decoded and written by the sink's pool, from the zone's bytes (there until it finishes)
+            ExportWriters::SoundSink Sink;
+            const std::shared_ptr<const void> InZone(Z.data(), [](const void*) {});
+            size_t Loaded = 0;   // the zone's counters are this thread's: added once the sink is done
             for (size_t N = 0; N < Found.size(); N++)
             {
                 const int64_t Pos = Found[N];
@@ -147,20 +151,24 @@ namespace
                 if (Data < 0 || Data + (int64_t)Size > (int64_t)Z.size() || std::memcmp(Z.data() + Data, "RIFF", 4) != 0)
                 {
                     Counter("sounds_loaded_unread")++;
-                    T.Fail(Name(), Kind::Sound, Full, "no RIFF data after its name");
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, Full, "no RIFF data after its name"); });
                     continue;
                 }
                 const fs::path Out = Root / fs::path(LoadedSoundFile(Full)).make_preferred();
-                std::string Why;
-                if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Z.data() + Data, Size, Full), Out.string(),
-                                              ExportWriters::SoundFormatSetting(), &Why))
-                {
-                    Kt.Written++;
-                    Counter("sounds_loaded")++;
-                }
-                else
-                    T.Fail(Name(), Kind::Sound, Full, Why);
+                Sink.Write(ExportWriters::SoundSource::OfFile(Z.data() + Data, Size, Full), Out.string(),
+                           [this, &Kt, &T, &Loaded, Full](bool Ok, const std::string& Why, const std::string& Crash) {
+                               if (Ok)
+                               {
+                                   Kt.Written++;
+                                   Loaded++;
+                               }
+                               else
+                                   T.Fail(Name(), Kind::Sound, Full, Crash.empty() ? Why : Crash);
+                           },
+                           InZone);
             }
+            Sink.Finish();
+            if (Loaded) Counter("sounds_loaded") += Loaded;
         }
 
     private:

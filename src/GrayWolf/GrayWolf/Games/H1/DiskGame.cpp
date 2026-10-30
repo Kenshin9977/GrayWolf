@@ -159,11 +159,6 @@ namespace
             // 0x128 (the h1 tables f36c7d0 and f375ba0, x64-zt's H1 structs.hpp)
             ExportsIwEffects(IwEffects::ModernWarfareRemastered(), GameModernWarfareRM::ReadXMaterial, 0x128);
         }
-        ~MwrZone() override
-        {
-            if (IsServed()) GameModernWarfareRM::ImagesElsewhere = nullptr;
-        }
-
         // the material headers the books filled, and those they did not
         void Measures(DiskGame::Totals& T) const override
         {
@@ -231,6 +226,8 @@ namespace
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         std::vector<int64_t> Loaded;   // images whose pixels are in the zone
         IWMaterialBooks::Lookup Books;
+        // the readers' lookup into Books while the zone is served (after Books: it ends first)
+        std::optional<CoDAssets::Scoped<decltype(GameModernWarfareRM::ImagesElsewhere)>> ImagesServed;
     };
 
     std::unique_ptr<XImageDDS> MwrZone::DiskImage(const XImage_t& Image)
@@ -272,14 +269,11 @@ namespace
 
     void MwrZone::Served(bool On)
     {
-        if (!On)
-        {
-            GameModernWarfareRM::ImagesElsewhere = nullptr;
-            return;
-        }
-        GameModernWarfareRM::ImagesElsewhere = [this](const std::string& Header, std::vector<std::pair<uint32_t, std::string>>& Out) {
+        ImagesServed.reset();
+        if (!On) return;
+        ImagesServed.emplace(GameModernWarfareRM::ImagesElsewhere, [this](const std::string& Header, std::vector<std::pair<uint32_t, std::string>>& Out) {
             return Books.Find(!Header.empty() && Header[0] == ',' ? Header.substr(1) : Header, Out);
-        };
+        });
     }
 
     void MwrZone::Fixups()

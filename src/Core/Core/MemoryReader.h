@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 class MemoryReader
@@ -46,11 +47,7 @@ public:
                 return ResultValue;
             }
         }
-#ifdef _DEBUG
-        throw new std::exception("No stream is open");
-#else
-        throw new std::exception("");
-#endif
+        throw std::runtime_error("No stream is open");
     }
     template <class T>
     T Read(uint64_t Offset)
@@ -60,11 +57,7 @@ public:
             SetPosition(Offset);
             return Read<T>();
         }
-#ifdef _DEBUG
-        throw new std::exception("No stream is open");
-#else
-        throw new std::exception("");
-#endif
+        throw std::runtime_error("No stream is open");
     }
     void Read(uint64_t Length, int8_t* Result);
     std::string ReadNullTerminatedString();

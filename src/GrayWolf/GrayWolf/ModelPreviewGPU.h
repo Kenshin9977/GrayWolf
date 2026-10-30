@@ -4,9 +4,13 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
+#include "PreviewShadows.h"   // PreviewShadowSettings
+
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "PreviewPost/PreviewPost.h"   // PreviewQuality (ambient occlusion, SMAA, still accumulation)
 
 struct PreviewGeometry;
 namespace DirectX { class ScratchImage; }
@@ -74,6 +78,7 @@ struct PreviewGpuMesh
     // a sample of the vertices (at most 4096) a view is fitted to (FitPreviewCamera); none when the
     // framing above is the one to keep (FramePreviewForTurn: a map)
     std::vector<DirectX::XMFLOAT3> FitPoints;
+    DirectX::XMFLOAT3 BoxMin{}, BoxMax{};   // the vertices' bounds (the ground's height, the shadow's fit)
     UINT VertexCount = 0, TriCount = 0, TexCount = 0;
     bool Valid = false;
 };
@@ -117,15 +122,52 @@ struct PreviewTarget
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> HdrRTV, StraightRTV, OutputRTV;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> DSV;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> HdrSRV, StraightSRV, OutputSRV;
+    // PreviewPost: the MSAA samples asked for (Samples: what the device gave), the textures' version
+    // (one more each time Resize makes them), the post passes' own textures and still
+    UINT WantSamples = 4;
+    uint64_t Generation = 0;
+    std::shared_ptr<struct PreviewPostTarget> Post;
     bool Resize(ID3D11Device* Dev, int NewW, int NewH);
 };
 
-// The viewer's lighting controls; the defaults are the renderer's own look.
+// The viewport's background (display colour, opaque): a light neutral grey, seen where the backdrop
+// is off (the ground's shadow reads on it, a dark model stands out)
+inline constexpr float kPreviewBackground[4] = { 0.40f, 0.40f, 0.41f, 1.0f };
+
+// The viewer's lighting controls; the defaults are the renderer's own look (the viewport's showcase:
+// the procedural studio sky, the three lights at half so they shape the model without drowning the
+// environment, a light bloom, the sky behind the model as a clean studio gradient).
 struct PreviewLighting
 {
     float Exposure = 0.0f;      // stops
-    float Lights = 1.0f;        // the three lights' strength
+    float Lights = 0.5f;        // the three lights' strength
     bool Specular = true;       // false: every surface a plain dielectric (F0 0.04, colour whole)
+    // ---- environment and bloom (PreviewEnvironment.h, PreviewPost.h)
+    std::string Environment = "studio";   // the image based light: "studio" (procedural) or a baked one's id
+    float EnvRotation = 0.0f;   // degrees about the up axis
+    float EnvIntensity = 1.0f;  // the image based light's strength
+    bool Bloom = true;
+    float BloomStrength = 0.15f;
+    // The environment drawn behind the model, blurred (its radiance cube at roughness BackdropBlur),
+    // turned and scaled as it lights: only over an opaque background (the viewport; not a transparent
+    // capture), before the model and the ground (whose shadow darkens it).
+    bool Backdrop = true;
+    float BackdropBlur = 0.5f;
+    // ---- end environment and bloom
+    PreviewShadowSettings Shadow;   // the key light's shadow and the ground (PreviewShadows.h)
+    bool operator==(const PreviewLighting&) const = default;
+
+    // The defaults before the showcase look (the lights whole, no bloom, no backdrop): the asset
+    // grid's stills cached under no lighting key were drawn that way.
+    static PreviewLighting Legacy()
+    {
+        PreviewLighting L;
+        L.Lights = 1.0f;
+        L.Bloom = false;
+        L.BloomStrength = 0.3f;
+        L.Backdrop = false;
+        return L;
+    }
 };
 
 // The one model renderer every preview uses (offscreen PNG, the orbit window, the asset browser).
@@ -140,6 +182,14 @@ public:
     PreviewRenderer& operator=(const PreviewRenderer&) = delete;
     bool Ok() const;
     void SetLighting(const PreviewLighting& L);
+    // PreviewPost: ambient occlusion, anti-aliasing, still accumulation (PreviewQuality::Legacy() until set).
+    // Invalidate: the mesh changed in a way the still cannot see (its vertex buffer rewritten in place).
+    void SetQuality(const PreviewQuality& Q);
+    const PreviewQuality& Quality() const;
+    void Invalidate();
+    // Render repeated until the still is whole (once without still accumulation): a capture's image.
+    void RenderStill(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mesh, const PreviewCamera& Cam, PreviewTarget& T,
+                     const float Background[4]);
 
     // Draws Mesh (or only the background) into T. Background alpha 0 leaves it transparent.
     void Render(ID3D11DeviceContext* Ctx, const PreviewGpuMesh* Mesh, const PreviewCamera& Cam, PreviewTarget& T,
@@ -163,5 +213,7 @@ bool SavePreviewTargetPng(ID3D11Device* Dev, ID3D11DeviceContext* Ctx, const Pre
 
 // Renders one or more .semodel parts to a PNG with the renderer above on an offscreen device
 // (hardware, else WARP so it runs headless). False if the model can't be loaded or the render fails.
-// Requires WraithX::InitializeAPI first (WIC, for the PNG encode).
-bool RenderModelGPU(const std::vector<std::string>& SemodelPaths, const std::string& OutPngPath, int Size = 512);
+// Requires WraithX::InitializeAPI first (WIC, for the PNG encode). Turntable > 0: that many views around
+// the model, Size each, on one sheet. Quality: the settings' (LoadPreviewQuality) when null.
+bool RenderModelGPU(const std::vector<std::string>& SemodelPaths, const std::string& OutPngPath, int Size = 512,
+                    const PreviewLighting& Lighting = {}, int Turntable = 0, const PreviewQuality* Quality = nullptr);

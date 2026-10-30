@@ -32,6 +32,13 @@ void AddBo3Commands(CliCommandBuilders& B);            // Games/T7/CliCommands.B
 void AddBo4StringCommands(CliCommandBuilders& B);      // Games/T8/CliCommands.Bo4Strings.cpp
 void AddGameCommands(CliCommandBuilders& B);           // GameCommand.cpp: the games' own (GameCommand.h)
 void AddDiskExportCommands(CliCommandBuilders& B);     // DiskGame.Cli.cpp: disk-export and its aliases
+void AddMcpCommands(CliCommandBuilders& B);            // CliCommands.Mcp.cpp: mcp
+
+// mcp: GrayWolf's tools served to an AI agent over stdio (Model Context Protocol, McpServer.h).
+int RunMcp(const CliOptions& Options);
+// True when this run is `GrayWolf.exe mcp`: decided before CLI11 parses, since that run must not
+// attach to the parent's console (its stdout is the protocol's pipe).
+bool IsMcpRun(int argc, char** argv);
 
 int RunSelfTest(const CliOptions& Options);
 int RunListInstalls(const CliOptions& Options);

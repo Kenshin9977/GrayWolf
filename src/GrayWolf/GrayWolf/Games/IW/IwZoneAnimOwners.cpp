@@ -445,7 +445,7 @@ namespace IwZoneAnimOwners
                 // the zone's models named after it: its name first (zombie_ghost_animclass:
                 // zombie_ghost_green), else a body holding its name (dog_animclass: mp_fullbody_dog_a)
                 std::string Stem = N;
-                if (const size_t P = Stem.find("_animclass"); P != std::string::npos) Stem = Stem.substr(0, P);
+                if (const size_t P = Stem.find("_animclass"); P != std::string::npos) Stem.resize(P);
                 std::vector<std::string> Named, Near;
                 for (const auto& M : Models)
                     if (M == Stem || Starts(M, Stem + "_")) Named.push_back(M);
@@ -635,7 +635,7 @@ namespace IwZoneAnimOwners
                 for (const auto& [N, Strings] : It->second)
                 {
                     std::string Stem = N;
-                    if (const size_t P = Stem.find("_animclass"); P != std::string::npos) Stem = Stem.substr(0, P);
+                    if (const size_t P = Stem.find("_animclass"); P != std::string::npos) Stem.resize(P);
                     ::AnimOwners::Owner O;
                     for (const Facts* F : Sources)
                         if (const auto C = F->ClassModels.find(N); O.Models.empty() && C != F->ClassModels.end())

@@ -216,7 +216,7 @@ namespace
         }
         std::string Of(const Brush& B, const BrushSide& S) const
         {
-            const std::string M = ExportNaming::Lower(S.Material);
+            std::string M = ExportNaming::Lower(S.Material);
             if (RadiantTool(M)) return M;
             constexpr uint32_t Solid = 0x1, Glass = 0x10, CanShootClip = 0x40, MissileClip = 0x80, VehicleClip = 0x200,
                                ItemClip = 0x400, SkyFlag = 0x800, NoSight = 0x1000, ClipShot = 0x2000, PlayerClip = 0x10000,

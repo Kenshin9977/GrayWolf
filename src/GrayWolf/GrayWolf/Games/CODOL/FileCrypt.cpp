@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "Games/CODOL/FileCrypt.h"
+#include "ZipInflate.h"
 
 #include <bcrypt.h>
 #include <miniz/miniz.h>
@@ -83,8 +84,8 @@ bool Codol::UnwrapFile(const std::string& Name, std::vector<uint8_t>& Data)
     }
     if (Plain.empty() || Plain[0] != 0x78) return false;
     std::vector<uint8_t> Out(Unpacked);
-    mz_ulong Got = Unpacked;
-    if (mz_uncompress(Out.data(), &Got, Plain.data(), (mz_ulong)Plain.size()) != MZ_OK || Got != Unpacked) return false;
+    size_t Got = 0;
+    if (!ZipInflate::Zlib(Plain.data(), Plain.size(), Out.data(), Out.size(), Got) || Got != Unpacked) return false;
     Data = std::move(Out);
     return true;
 }

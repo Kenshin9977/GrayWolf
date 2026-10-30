@@ -191,13 +191,12 @@ namespace
         {
             BookMaterialsElsewhere();
             // (an engine image, $identitynormalmap, is no zone's to write)
-            GameGhosts::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+            const CoDAssets::Scoped Using(GameGhosts::ImagesElsewhere, [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
                 if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Find(Name, Out)) return false;
                 std::erase_if(Out, [](const auto& I) { return I.second.starts_with('$'); });
                 return true;
-            };
+            });
             Work();
-            GameGhosts::ImagesElsewhere = nullptr;
         }
     };
 

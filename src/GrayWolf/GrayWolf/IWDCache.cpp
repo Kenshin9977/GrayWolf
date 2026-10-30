@@ -5,6 +5,7 @@
 #include "Hashing.h"
 #include "FileSystems.h"
 #include "Strings.h"
+#include "ZipInflate.h"
 
 #include <filesystem>
 #include <miniz/miniz.h>
@@ -20,15 +21,18 @@ IWDCache::~IWDCache()
 void IWDCache::LoadPackageCache(const std::string& BasePath)
 {
     CoDPackageCache::LoadPackageCache(BasePath);
+    LoadArchives(BasePath);
+    this->SetLoadedState();
+}
 
+void IWDCache::LoadArchives(const std::string& Dir)
+{
     std::error_code Ec;
-    for (const auto& File : std::filesystem::directory_iterator(BasePath, Ec))
+    for (const auto& File : std::filesystem::directory_iterator(Dir, Ec))
     {
         if (File.is_regular_file(Ec) && Strings::ToLower(File.path().extension().string()) == ".iwd")
             this->LoadPackage(File.path().string());
     }
-
-    this->SetLoadedState();
 }
 
 bool IWDCache::LoadPackage(const std::string& FilePath)
@@ -96,7 +100,7 @@ std::unique_ptr<uint8_t[]> IWDCache::ExtractPackageObject(uint64_t CacheID, uint
         auto ResultBuffer = std::make_unique<uint8_t[]>(CacheInfo.UncompressedSize);
 
         // Offset is the entry index
-        if (mz_zip_reader_extract_to_mem(&ZipArchive, (mz_uint)CacheInfo.Offset, ResultBuffer.get(), CacheInfo.UncompressedSize, 0))
+        if (ZipInflate::Extract(&ZipArchive, (mz_uint)CacheInfo.Offset, ResultBuffer.get(), CacheInfo.UncompressedSize))
         {
             mz_zip_reader_end(&ZipArchive);
             ResultSize = (uint32_t)CacheInfo.UncompressedSize;

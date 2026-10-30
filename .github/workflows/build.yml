@@ -145,6 +145,7 @@ jobs:
             src/GrayWolf/x64/Release/*.exe
             src/GrayWolf/x64/Release/*.dll
             src/GrayWolf/x64/Release/zonekit/
+            src/GrayWolf/x64/Release/environments/
           if-no-files-found: warn
 
   # on Linux (half the Windows minutes): the analysis keeps --platform=win64 --library=windows

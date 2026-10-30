@@ -2,6 +2,7 @@
 #include "ByteView.h"
 
 #include "Games/CODOL/IfsArchive.h"
+#include "ZipInflate.h"
 
 #include <miniz/miniz.h>
 
@@ -397,8 +398,8 @@ namespace Ifs
                     return false;
                 }
                 std::vector<uint8_t> Plain(Want);
-                mz_ulong Got = (mz_ulong)Want;
-                if (mz_uncompress(Plain.data(), &Got, Sector.data() + 1, (mz_ulong)(Sector.size() - 1)) != MZ_OK)
+                size_t Got = 0;
+                if (!ZipInflate::Zlib(Sector.data() + 1, Sector.size() - 1, Plain.data(), Want, Got))
                 {
                     Error = E.Name + ": a sector does not inflate";
                     return false;

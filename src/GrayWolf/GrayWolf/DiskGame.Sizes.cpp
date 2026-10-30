@@ -511,7 +511,7 @@ uint64_t Written(const Sample& S)
 std::string FormatsNow()
 {
     std::string S = std::string(ImageKey) + "=" + Strings::ToUpper(SettingsManager::GetSetting(ImageKey, "PNG")) + ";" + SoundKey + "=" +
-                    Strings::ToUpper(SettingsManager::GetSetting(SoundKey, "WAV"));
+                    Strings::ToUpper(SettingsManager::GetSetting(SoundKey, "OPUS"));
     for (const auto* Family : { &ModelFormats, &AnimFormats })
         for (const auto& F : *Family) S += std::string(";") + F.Key + "=" + SettingsManager::GetSetting(F.Key, "false");
     for (const char* K : { "exportalllods", "exportmodelimg" }) S += std::string(";") + K + "=" + SettingsManager::GetSetting(K, "false");
@@ -903,7 +903,7 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
 }
 
 std::map<Kind, Weighed> WeighPicks(const ZoneIndex& Ix, const std::vector<size_t>& Zones, const std::set<Kind>& Kinds,
-                                   const std::string& Formats)
+                                   const std::string& Formats, const Languages::Choice& Spoken)
 {
     std::map<Kind, Weighed> Out;
     std::unordered_set<uint64_t> Seen;
@@ -918,6 +918,8 @@ std::map<Kind, Weighed> WeighPicks(const ZoneIndex& Ix, const std::vector<size_t
         {
             const AssetId& A = Assets[I];
             if ((A.K != Kind::Image && A.K != Kind::Sound) || !Kinds.count(A.K)) continue;
+            // a sound of a language the run does not export (its name's first folder)
+            if (A.K == Kind::Sound && !Spoken.Every && !Spoken.Wants(Languages::OfAssetName(A.Name))) continue;
             if (!Seen.insert(ExportNaming::Fnv1a(ExportNaming::Lower(A.Name), 0xcbf29ce484222325ull ^ (uint64_t)A.K)).second) continue;
             Weighed& W = Out[A.K];
             W.Assets++;

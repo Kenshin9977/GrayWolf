@@ -17,25 +17,24 @@ namespace
 {
     constexpr uint32_t Color = 0x47, Nog = 0x48, OpacityMap = 0x4a;
 
-    class BlackOps7Materials final : public Materials::IAdapter
+    using Materials::Role;
+    class BlackOps7Materials final : public Materials::SemanticAdapter
     {
     public:
-        const char* Name() const override { return "bo7"; }
-        Materials::Description Describe(const Materials::Source& M) const override
+        // a material without these slots (no semantics, a map's): the names and the readers' hints
+        BlackOps7Materials()
+            : SemanticAdapter("bo7", {
+                  { Color, Role::Albedo },
+                  { Nog, Role::Normal },
+                  { Nog, Role::Gloss, 0 },
+                  { Nog, Role::Occlusion, 2 },
+              }, Unmatched::Names) {}
+    protected:
+        void Refine(const Materials::Source& M, Materials::Description& D, bool BySemantic) const override
         {
-            using Materials::Role;
-            Materials::Description D = Materials::DescribeBySemantic(M, {
-                { Color, Role::Albedo },
-                { Nog, Role::Normal },
-                { Nog, Role::Gloss, 0 },
-                { Nog, Role::Occlusion, 2 },
-            });
-            if (!D.Normal.Empty()) D.NormalEnc = Materials::NormalEncoding::AG;
-            // a material without these slots (no semantics, a map's): the names and the readers' hints
-            if (D.Albedo.Empty() && D.Normal.Empty()) D = Materials::DefaultAdapter().Describe(M);
+            if (BySemantic && !D.Normal.Empty()) D.NormalEnc = Materials::NormalEncoding::AG;
             IwMaterialAlpha::Apply(M, M.BySemantic(OpacityMap), D);
             IwTerrain::DescribeLayers(M, D);
-            return D;
         }
     };
     const BlackOps7Materials Adapter;

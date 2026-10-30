@@ -309,13 +309,6 @@ namespace
                 for (const auto& [K, V] : N.Named()) Counter(K) += V;
             });
         }
-        ~IW7Zone() override
-        {
-            if (!IsServed()) return;
-            GameInfiniteWarfare::ImagesElsewhere = nullptr;
-            GameInfiniteWarfare::DetailsElsewhere = nullptr;
-        }
-
         // the material headers the common zones' book filled, and those it did not
         void Measures(DiskGame::Totals& T) const override
         {
@@ -348,19 +341,17 @@ namespace
         void Fixups() override;
         void Served(bool On) override
         {
-            if (!On)
-            {
-                GameInfiniteWarfare::ImagesElsewhere = nullptr;
-                GameInfiniteWarfare::DetailsElsewhere = nullptr;
-                return;
-            }
-            GameInfiniteWarfare::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); };
-            GameInfiniteWarfare::DetailsElsewhere = [this](const std::string& Name, std::string& Techset, int& SortKey) {
+            DetailsServed.reset();
+            ImagesServed.reset();
+            if (!On) return;
+            ImagesServed.emplace(GameInfiniteWarfare::ImagesElsewhere,
+                                 [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); });
+            DetailsServed.emplace(GameInfiniteWarfare::DetailsElsewhere, [this](const std::string& Name, std::string& Techset, int& SortKey) {
                 IWMaterialBooks::Extra E;
                 if (!Books.Details(Name, E)) return false;
                 Techset = E.Techset, SortKey = E.SortKey;
                 return true;
-            };
+            });
         }
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;   // with the images
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
@@ -421,6 +412,9 @@ namespace
         std::unordered_map<int64_t, std::array<StreamRecord, StreamLevels>> Levels;   // image position -> levels
         IWMaterialBooks::Lookup Books;
         IwBeside::Set Beside;   // a campaign level's transient zones (TransientsBeside)
+        // the readers' lookups into Books while the zone is served (after Books: they end first)
+        std::optional<CoDAssets::Scoped<decltype(GameInfiniteWarfare::ImagesElsewhere)>> ImagesServed;
+        std::optional<CoDAssets::Scoped<decltype(GameInfiniteWarfare::DetailsElsewhere)>> DetailsServed;
 
         // A campaign level's transient zones, <level>_<part>_tr.ff beside it, each walked alone
         // (Games/IW/IwBesideZones.h): their gfxworld_transient_zone (number i32 8, count u32 0xc,

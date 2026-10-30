@@ -232,8 +232,13 @@
     <ClCompile Include="ModelPreviewGPU.cpp" />
     <!-- the effects preview: model, simulation, renderer, CLI, panel -->
     <ClCompile Include="FxPreview*.cpp" />
+    <ClCompile Include="PreviewEnvironment.cpp" />
+    <ClCompile Include="PreviewEnvironmentUi.cpp" />
     <ClCompile Include="PreviewLoader.cpp" />
+    <ClCompile Include="PreviewBloom.cpp" />
+    <ClCompile Include="PreviewD3D.cpp" />
     <ClCompile Include="PreviewTextures.cpp" />
+    <ClCompile Include="PreviewShadows.cpp" />
     <ClCompile Include="MaterialDescription.cpp" />
     <ClCompile Include="CastMaterials.cpp" />
     <ClCompile Include="MapCastWriter.cpp" />
@@ -259,6 +264,7 @@
     <ClCompile Include="GdtWriter.cpp" />
     <ClCompile Include="MaterialGdt.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
+    <ClCompile Include="Languages.cpp" />
     <ClCompile Include="XboxPackages.cpp" />
     <ClCompile Include="LauncherIcons.cpp" />
     <ClCompile Include="NameDbUpdater.cpp" />
@@ -280,11 +286,14 @@
     <ClCompile Include="IPAKCache.cpp" />
     <ClCompile Include="IPAKSupport.cpp" />
     <ClCompile Include="IWDCache.cpp" />
+    <ClCompile Include="ZipInflate.cpp" />
     <ClCompile Include="IWDSupport.cpp" />
     <ClCompile Include="CliSupport.cpp" />
     <ClCompile Include="CliCommands.Misc.cpp" />
     <ClCompile Include="CliCommands.AssetExport.cpp" />
     <ClCompile Include="CliCommands.Tools.cpp" />
+    <ClCompile Include="CliCommands.Mcp.cpp" />
+    <ClCompile Include="McpServer.cpp" />
     <ClCompile Include="CliCommands.Casc.cpp" />
     <ClCompile Include="CliCommands.ZoneWalk.cpp" />
     <ClCompile Include="MemoryBudget.cpp" />
@@ -309,6 +318,7 @@
     <ClInclude Include="CliCommandOptions.h" />
     <ClInclude Include="CliSupport.h" />
     <ClInclude Include="CliCommands.h" />
+    <ClInclude Include="McpServer.h" />
     <ClInclude Include="MemoryBudget.h" />
     <ClInclude Include="ZoneTableWalker.h" />
     <ClInclude Include="AppLog.h" />
@@ -365,8 +375,13 @@
     <ClInclude Include="AssetPreview.h" />
     <ClInclude Include="ModelPreview.h" />
     <ClInclude Include="ModelPreviewGPU.h" />
+    <ClInclude Include="PreviewEnvironment.h" />
+    <ClInclude Include="PreviewEnvironmentUi.h" />
     <ClInclude Include="PreviewLoader.h" />
+    <ClInclude Include="PreviewBloom.h" />
+    <ClInclude Include="PreviewD3D.h" />
     <ClInclude Include="PreviewTextures.h" />
+    <ClInclude Include="PreviewShadows.h" />
     <ClInclude Include="MaterialDescription.h" />
     <ClInclude Include="CastMaterials.h" />
     <ClInclude Include="MapCastWriter.h" />
@@ -395,6 +410,7 @@
     <ClInclude Include="GdtWriter.h" />
     <ClInclude Include="MaterialGdt.h" />
     <ClInclude Include="GameInstalls.h" />
+    <ClInclude Include="Languages.h" />
     <ClInclude Include="XboxPackages.h" />
     <ClInclude Include="LauncherIcons.h" />
     <ClInclude Include="NameDbUpdater.h" />
@@ -414,6 +430,7 @@
     <ClInclude Include="IPAKCache.h" />
     <ClInclude Include="IPAKSupport.h" />
     <ClInclude Include="IWDCache.h" />
+    <ClInclude Include="ZipInflate.h" />
     <ClInclude Include="IWDSupport.h" />
     <ClInclude Include="PAKCache.h" />
     <ClInclude Include="PAKSupport.h" />
@@ -443,6 +460,37 @@
   <ItemGroup>
     <Manifest Include="GrayWolf.manifest" />
   </ItemGroup>
+  <!-- The model viewport's quality passes (PreviewPost\PreviewPost.h): XeGTAO, SMAA, still frames. Their
+       shaders are compiled by fxc into headers PreviewPost.cpp includes (one entry, main, a file). -->
+  <ItemGroup>
+    <ClCompile Include="PreviewPost\*.cpp">
+      <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(IntDir)PreviewPostShaders;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClInclude Include="PreviewPost\*.h" />
+    <FxCompile Include="PreviewPost\Shaders\*_cs.hlsl">
+      <ShaderType>Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="PreviewPost\Shaders\*_vs.hlsl">
+      <ShaderType>Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="PreviewPost\Shaders\*_ps.hlsl">
+      <ShaderType>Pixel</ShaderType>
+    </FxCompile>
+    <None Include="PreviewPost\Shaders\*.hlsli;PreviewPost\ThirdParty\**\*" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <FxCompile>
+      <ShaderModel>5.0</ShaderModel>
+      <EntryPointName>main</EntryPointName>
+      <VariableName>g_%(Filename)</VariableName>
+      <HeaderFileOutput>$(IntDir)PreviewPostShaders\%(Filename).h</HeaderFileOutput>
+      <ObjectFileOutput />
+      <DisableOptimizations>false</DisableOptimizations>
+      <EnableDebuggingInformation>false</EnableDebuggingInformation>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </FxCompile>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
@@ -464,5 +512,13 @@
       <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\preview_rigs.json" />
     </ItemGroup>
     <Copy SourceFiles="@(ZonekitProfile)" DestinationFiles="@(ZonekitProfile->'$(OutDir)zonekit\profiles\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <!-- Ship the model preview's baked environments (cubes, their NOTICE) next to the exe:
+       PreviewEnvironment.h reads <exe dir>\environments. -->
+  <Target Name="CopyPreviewEnvironments" AfterTargets="Build">
+    <ItemGroup>
+      <PreviewEnvironment Include="$(MSBuildProjectDirectory)\..\Resources\environments\*.dds;$(MSBuildProjectDirectory)\..\Resources\environments\NOTICE.txt" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PreviewEnvironment)" DestinationFolder="$(OutDir)environments" SkipUnchangedFiles="true" />
   </Target>
 </Project>

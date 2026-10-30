@@ -50,21 +50,24 @@ namespace
     // dozens of .xpak files and indexing them is the slow part. A Game Pass copy splits the zone
     // folder across its packages (the MP maps' DLC holds no base.xpak): the same folder in the
     // game's other packages too.
-    XPAKCache& PackagesFor(const std::string& FastFilePath)
+    // Shared: a zone of another folder opened meanwhile (the install index built, a material book
+    // read while a model is exported) or on another thread replaces the folder's packages, and
+    // whoever still reads the previous ones keeps them alive until done.
+    std::shared_ptr<XPAKCache> PackagesFor(const std::string& FastFilePath)
     {
         static std::mutex Lock;
         static std::string Dir;
-        static std::unique_ptr<XPAKCache> Cache;
+        static std::shared_ptr<XPAKCache> Cache;
         std::lock_guard<std::mutex> Guard(Lock);
         const std::string Want = fs::path(FastFilePath).parent_path().string();
         if (!Cache || Dir != Want)
         {
-            Cache = std::make_unique<XPAKCache>();
+            Cache = std::make_shared<XPAKCache>();
             Cache->LoadPackagesIn(Want);
             for (const auto& Other : XboxPackages::SameFolderInGame(Want)) Cache->LoadPackagesIn(Other);
             Dir = Want;
         }
-        return *Cache;
+        return Cache;
     }
 
     class T7Zone final : public ZonekitZone
@@ -170,12 +173,16 @@ namespace
         template <class F>
         void WithPackages(F&& Body)
         {
-            XPAKCache& Cache = PackagesFor(FastFilePath());
-            auto Saved = std::move(CoDAssets::GamePackageCache);
-            CoDAssets::GamePackageCache = std::unique_ptr<CoDPackageCache>(&Cache);
+            Packages();
+            const CoDAssets::Scoped Using(CoDAssets::GamePackageCache, HeldPackages);
             Body();
-            CoDAssets::GamePackageCache.release();
-            CoDAssets::GamePackageCache = std::move(Saved);
+        }
+        // the packages beside the zone, held by it once asked (its folder's; weighed per image)
+        mutable std::shared_ptr<XPAKCache> HeldPackages;
+        XPAKCache& Packages() const
+        {
+            if (!HeldPackages) HeldPackages = PackagesFor(FastFilePath());
+            return *HeldPackages;
         }
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         // the images with pixels (a package or inline), once per name, that Wants
@@ -259,7 +266,7 @@ namespace
         Counter("images_without_pixels") += WithoutPixels;
         Kt.Seen += Images.size();
         std::string Report;
-        const size_t Written = Bo3WriteZoneImages(Zone(), Images, PackagesFor(FastFilePath()), C.KindDir(DiskGame::Kind::Image), "",
+        const size_t Written = Bo3WriteZoneImages(Zone(), Images, Packages(), C.KindDir(DiskGame::Kind::Image), "",
                                                   Report, [&](size_t Done, size_t Count) {
                                                       return Done < Images.size() ? C.Advance(Done, Count, Images[Done].Name) : C.Advance(Done, Count);
                                                   });
@@ -280,7 +287,7 @@ namespace
     void T7Zone::Described(std::vector<Bo3ZoneImage>& Images, size_t& WithoutPixels,
                            const std::function<bool(const std::string&)>& Wants) const
     {
-        XPAKCache& Cache = PackagesFor(FastFilePath());
+        XPAKCache& Cache = Packages();
         // every image instance the walk read (zone-level and inside materials), each once
         std::set<std::string> Names;
         for (const auto& I : Walk().Instances)
@@ -312,7 +319,7 @@ namespace
         // one its package gives); inline pixels, as many as the zone holds (all its mips). Its
         // format byte is the DXGI format (CoDRawImageTranslator::TranslateBC)
         Bo3ZoneImage Image;
-        if (K != DiskGame::Kind::Image || !Bo3DescribeZoneImage(Zone(), (size_t)Pos, PackagesFor(FastFilePath()), Image, fs::path(FastFilePath()).stem().string()))
+        if (K != DiskGame::Kind::Image || !Bo3DescribeZoneImage(Zone(), (size_t)Pos, Packages(), Image, fs::path(FastFilePath()).stem().string()))
             return;
         W = Image.PixelOffset != 0 ? DiskGame::Sizes::ImageWeight(Image.Size, Image.Width, Image.Height)
                                    : DiskGame::Sizes::ImageWeight(Image.Width, Image.Height, Image.Format, 1, 1);

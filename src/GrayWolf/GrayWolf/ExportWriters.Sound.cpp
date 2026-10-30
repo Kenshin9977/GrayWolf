@@ -246,20 +246,27 @@ namespace
         const std::string Narrow = Path.string();
         if (std::filesystem::path(Narrow) == Path) return Write(Narrow);
         std::error_code Ec;
-        const std::filesystem::path Tmp = std::filesystem::temp_directory_path(Ec) /
+        // a folder per thread (sounds are written by a pool), the file's own name kept: an Ogg
+        // stream's serial comes from it
+        const std::filesystem::path TmpDir = std::filesystem::temp_directory_path(Ec) /
+            ("graywolf_sound_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetCurrentThreadId()));
+        std::filesystem::create_directories(TmpDir, Ec);
+        const std::filesystem::path Tmp = TmpDir /
             ("graywolf_sound_" + std::to_string(std::hash<std::wstring>()(Path.filename().wstring())) + Path.extension().string());
-        if (!Write(Tmp.string())) return false;
-        std::filesystem::copy_file(Tmp, Path, std::filesystem::copy_options::overwrite_existing, Ec);
+        const bool Wrote = Write(Tmp.string());
+        if (Wrote) std::filesystem::copy_file(Tmp, Path, std::filesystem::copy_options::overwrite_existing, Ec);
         std::error_code Ignored;
         std::filesystem::remove(Tmp, Ignored);
-        return !Ec;
+        std::filesystem::remove(TmpDir, Ignored);
+        return Wrote && !Ec;
     }
 }
 
 std::string SoundFormatSetting()
 {
-    const std::string F = Strings::ToUpper(SettingsManager::GetSetting("exportsnd", "WAV"));
-    return F == "FLAC" || F == "OPUS" ? F : "WAV";
+    // Opus by default (small, lossy); WAV and FLAC lossless
+    const std::string F = Strings::ToUpper(SettingsManager::GetSetting("exportsnd", "OPUS"));
+    return F == "WAV" || F == "FLAC" ? F : "OPUS";
 }
 
 std::string SoundExtension(const std::string& Format, const std::string& SourceExtension, bool KeptUnderWav)
@@ -313,6 +320,11 @@ DrySounds::~DrySounds()
     DryRun = std::move(Previous);
 }
 
+bool DrySoundsActive()
+{
+    return (bool)DryRun;
+}
+
 bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const std::string& Format, std::string* Why)
 {
     if (DryRun)
@@ -320,6 +332,7 @@ bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const s
         DryRun(S, Path);
         return true;
     }
+    ExportWriters::Claim(Path);   // before any file of it: a skip check (HasFile) then asks the disk
     const std::string F = Strings::ToUpper(Format);
     const std::string Ext = Lower(S.Extension);
     const bool IsFile = S.Is == SoundSource::Form::File;
@@ -334,8 +347,7 @@ bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const s
         if (Why) *Why = "no data";
         return false;
     }
-    std::error_code Ec;
-    std::filesystem::create_directories(Path.parent_path(), Ec);
+    ExportWriters::MakeDirs(Path.parent_path());
 
     // WMA, with an ffmpeg (WmaSounds.h): decoded to a PCM WAV, then written as one (a .wav under WAV)
     if (IsFile && WmaSounds::IsWma(S.Data, S.Size) && WmaSounds::Available())

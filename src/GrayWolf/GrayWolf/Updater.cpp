@@ -11,6 +11,7 @@
 
 #include <bcrypt.h>
 #include <winhttp.h>
+#include <tlhelp32.h>
 
 #include <atomic>
 #include <filesystem>
@@ -347,6 +348,39 @@ namespace
             if (I + 1 < Tries) Sleep(250);
         }
         return false;
+    }
+
+    // The GrayWolf.exe processes running from Dir but this one (an `mcp` server lives as long as its
+    // client, an export, another window): the exe and zonekit\ cannot be replaced under them.
+    std::vector<DWORD> RunningFrom(const fs::path& Dir)
+    {
+        std::vector<DWORD> Found;
+        const std::wstring Exe = (Dir / "GrayWolf.exe").lexically_normal().wstring();
+        HANDLE Snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (Snap == INVALID_HANDLE_VALUE) return Found;
+        PROCESSENTRY32W E{};
+        E.dwSize = sizeof(E);
+        for (BOOL More = Process32FirstW(Snap, &E); More; More = Process32NextW(Snap, &E))
+        {
+            if (E.th32ProcessID == GetCurrentProcessId() || _wcsicmp(E.szExeFile, L"GrayWolf.exe") != 0) continue;
+            HANDLE Proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, E.th32ProcessID);
+            if (!Proc) continue;
+            wchar_t Path[MAX_PATH * 4] = {};
+            DWORD Size = MAX_PATH * 4;
+            if (QueryFullProcessImageNameW(Proc, 0, Path, &Size) && _wcsicmp(fs::path(Path).lexically_normal().c_str(), Exe.c_str()) == 0)
+                Found.push_back(E.th32ProcessID);
+            CloseHandle(Proc);
+        }
+        CloseHandle(Snap);
+        return Found;
+    }
+
+    std::string StillRunning(const fs::path& Dir, const std::vector<DWORD>& Pids)
+    {
+        std::string List;
+        for (DWORD Pid : Pids) List += (List.empty() ? "" : ", ") + std::to_string(Pid);
+        return std::format("GrayWolf is still running from {} (process {}; an MCP server, `GrayWolf.exe mcp`, runs as long as "
+                           "its client): close it, then update again", U8(Dir), List);
     }
 
     // Removes one of our own working folders (never a link: a dev worktree's package_index is one).
@@ -754,6 +788,12 @@ Status StageApp(const Config& C, const Asset& App, std::string& StageDir, std::s
 
 bool LaunchApply(const Config& C, const std::string& StageDir, bool Relaunch, std::string& Message)
 {
+    // Refused while another GrayWolf runs from AppDir: the helper waits for this process only.
+    if (const auto Others = RunningFrom(P(C.AppDir)); !Others.empty())
+    {
+        Message = StillRunning(P(C.AppDir), Others);
+        return false;
+    }
     // The helper is a copy of this exe: it runs from .update\apply while GrayWolf.exe is replaced.
     wchar_t Self[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, Self, MAX_PATH);
@@ -805,6 +845,19 @@ int ApplyStaged(const std::string& StageDir, const std::string& TargetDir, uint3
                 return 3;
             }
         }
+    }
+    // Another GrayWolf from the target (an MCP server started since): wait a little, then leave
+    // everything as it is (the stage stays, for the next try).
+    for (int Tries = 0;; Tries++)
+    {
+        const auto Others = RunningFrom(Target);
+        if (Others.empty()) break;
+        if (Tries == 120)
+        {
+            Report += "result=error\nreason=" + StillRunning(Target, Others) + "\n";
+            return 3;
+        }
+        Sleep(1000);
     }
 
     // Top-level folders (zonekit\) are replaced whole, top-level files one by one; the user's data

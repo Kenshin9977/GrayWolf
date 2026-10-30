@@ -20,40 +20,25 @@ namespace fs = std::filesystem;
 
 namespace IWPakSounds
 {
-    PackagesInUse::PackagesInUse(CoDPackageCache* Packages) : Saved(std::move(CoDAssets::GamePackageCache))
-    {
-        CoDAssets::GamePackageCache = std::unique_ptr<CoDPackageCache>(Packages);
-    }
-
-    PackagesInUse::~PackagesInUse()
-    {
-        CoDAssets::GamePackageCache.release();
-        CoDAssets::GamePackageCache = std::move(Saved);
-    }
 
     std::string Extension()
     {
         return ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
     }
 
-    void Write(std::vector<CoDAsset_t*>& Found, CoDPackageCache* Packages, const DiskGame::Context& C, DiskGame::Totals& T,
+    void Write(std::vector<CoDAsset_t*>& Found, std::shared_ptr<CoDPackageCache> Packages, const DiskGame::Context& C, DiskGame::Totals& T,
                const std::string& Zone, const Counters& Counter, const WriteOptions& Options)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Sound];
-        const PackagesInUse Using(Packages);
-        struct LanguageInUse
-        {
-            std::string Saved;
-            explicit LanguageInUse(const std::string& L) : Saved(std::exchange(GameWorldWar2::SoundLanguage, L)) {}
-            ~LanguageInUse() { GameWorldWar2::SoundLanguage = Saved; }
-            LanguageInUse(const LanguageInUse&) = delete;
-            LanguageInUse& operator=(const LanguageInUse&) = delete;
-        } const Language(Options.Language);
+        const CoDAssets::Scoped Using(CoDAssets::GamePackageCache, std::move(Packages));
+        const CoDAssets::Scoped Language(GameWorldWar2::SoundLanguage, Options.Language);
         const std::string Extension = IWPakSounds::Extension();
         const std::string Dir = C.KindDir(DiskGame::Kind::Sound);
         const auto Success = static_cast<int>(ExportGameResult::Success);
         std::set<std::string> Names;
         ExportWriters::SoundFiles Files;
+        // read here (the swapped globals are this thread's), decoded and written by the sink's pool
+        ExportWriters::SoundSink Sink;
         if (C.OnSoundHeader) T.Counters["sound_headers"] = 1;
         bool Going = true;   // until cancelled; the rest is only freed
         for (size_t N = 0; N < Found.size(); N++)
@@ -101,20 +86,24 @@ namespace IWPakSounds
                     continue;
                 }
                 Counter(Sound->IsFileEntry ? "sounds_streamed" : "sounds_loaded")++;
-                std::string Crash;
-                fs::path File;
-                const int Code = Files.Write(*Sound, Dir, Extension, Crash, &File);                std::error_code Ec;
-                if (Code == Success && Options.EmptyFileFails && fs::exists(File, Ec) && fs::file_size(File, Ec) == 0)
-                    T.Fail(Zone, DiskGame::Kind::Sound, Sound->AssetName, std::format("empty file ({}, package {}, offset {:x}, size {})",
-                        Sound->IsFileEntry ? "pak" : "zone", (unsigned)Sound->PackageIndex, (unsigned long long)Sound->AssetPointer, (unsigned long long)Sound->AssetSize));
-                else if (Code == Success) Kt.Written++;
-                else T.Fail(Zone, DiskGame::Kind::Sound, Sound->AssetName, std::format("code {} {} ({}, package {}, offset {:x}, size {}, localized {})",
-                    Code, Crash.c_str(), Sound->IsFileEntry ? "streamed" : "loaded", (unsigned)Sound->PackageIndex,
-                    (unsigned long long)Sound->AssetPointer, (unsigned long long)Sound->AssetSize, Sound->IsLocalized ? 1 : 0));
+                Files.Write(Sink, CoDAssets::Game, *Sound, Dir, Extension,
+                            [&Kt, &T, &Zone, Empty = Options.EmptyFileFails, Asset = Sound->AssetName, Streamed = Sound->IsFileEntry,
+                             Package = (unsigned)Sound->PackageIndex, Pointer = (unsigned long long)Sound->AssetPointer,
+                             Size = (unsigned long long)Sound->AssetSize, Localized = Sound->IsLocalized ? 1 : 0](
+                                int Code, const std::string& Crash, const fs::path& File) {
+                                std::error_code Ec;
+                                if (Code == Success && Empty && fs::exists(File, Ec) && fs::file_size(File, Ec) == 0)
+                                    T.Fail(Zone, DiskGame::Kind::Sound, Asset, std::format("empty file ({}, package {}, offset {:x}, size {})",
+                                        Streamed ? "pak" : "zone", Package, Pointer, Size));
+                                else if (Code == Success) Kt.Written++;
+                                else T.Fail(Zone, DiskGame::Kind::Sound, Asset, std::format("code {} {} ({}, package {}, offset {:x}, size {}, localized {})",
+                                    Code, Crash.c_str(), Streamed ? "streamed" : "loaded", Package, Pointer, Size, Localized));
+                            });
             }
             delete Sound;
         }
         Found.clear();
+        Sink.Finish();
         if (Files.Renamed) Counter("sounds_renamed") += Files.Renamed;
         if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
     }

@@ -180,6 +180,34 @@ namespace Materials
         int Channel = 0;
     };
     Description DescribeBySemantic(const Source& Material, const std::vector<SemanticRole>& Table);
+    // The IW engine's colorMap, normalMap and specularMap (rgb the specular colour, alpha the gloss):
+    // the pre-PBR games', Ghosts' and Advanced Warfare's table.
+    const std::vector<SemanticRole>& SpecularGlossTable();
+
+    // The adapter of a game whose materials give each texture a semantic: its table read
+    // (DescribeBySemantic), the names read instead when the game says so and the table matched
+    // nothing (a material with no semantics: a map's, an older exporter's), then what the game adds.
+    // A game with a table only is an instance; one that adds more derives and overrides the hooks.
+    class SemanticAdapter : public IAdapter
+    {
+    public:
+        enum class Unmatched { Empty, Names };   // what a material the table does not match is described by
+        SemanticAdapter(const char* Name, std::vector<SemanticRole> Table, Unmatched Else = Unmatched::Empty)
+            : AdapterName(Name), Rows(std::move(Table)), Else(Else) {}
+        const char* Name() const final { return AdapterName; }
+        Description Describe(const Source& Material) const final;
+    protected:
+        // the table for this material (a game whose slots depend on its images builds it here)
+        virtual std::vector<SemanticRole> TableFor(const Source&) const { return Rows; }
+        // whether the table described the material: a colour or a normal map found
+        virtual bool Matched(const Description& D) const { return !D.Albedo.Empty() || !D.Normal.Empty(); }
+        // what the game adds (alpha, tints, layers...); BySemantic false when the names described it
+        virtual void Refine(const Source&, Description&, bool /*BySemantic*/) const {}
+    private:
+        const char* AdapterName;
+        std::vector<SemanticRole> Rows;
+        Unmatched Else;
+    };
 
     // What a format with a colour factor only (glTF's baseColorFactor) multiplies the colour map by:
     // the colour tint whole, its mask left out (exact where the mask is 1, as on a white colour map),

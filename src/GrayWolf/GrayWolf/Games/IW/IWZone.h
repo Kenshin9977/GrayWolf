@@ -188,7 +188,14 @@ protected:
     // Size bytes, a quaternion at 4, the origin at 20, the model at 32 unless Pose says otherwise
     // (the destroyed one at Destroyed, -1: none), placed as dynent_<list>_<k>
     void AddDynamicEntities(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const char* Clip, int64_t Counts,
-                            int64_t Lists, int64_t Size, int64_t Destroyed = -1, const DynPoseLayout& Pose = {});
+                            int64_t Lists, int64_t Size, int64_t Destroyed, const DynPoseLayout& Pose);
+    // with the default pose (an overload: clang builds no `= {}` of a nested struct with member
+    // initializers inside the enclosing class)
+    void AddDynamicEntities(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const char* Clip, int64_t Counts,
+                            int64_t Lists, int64_t Size, int64_t Destroyed = -1)
+    {
+        AddDynamicEntities(Scene, Models, Clip, Counts, Lists, Size, Destroyed, DynPoseLayout());
+    }
     void AddPrimaryLights(Maps::MapScene& Scene, const LightLayout& L, const char* ComType = "com_map");
 
     // Writes every LOD's surface pointer as that fixup does; Elsewhere gives the surfaces of a LOD

@@ -311,9 +311,10 @@ namespace
     std::mutex ExportedImageMutex;
     std::unordered_map<std::string, std::string> ExportedImages;
 
+    // The skip checks below ask ExportWriters::HasFile: in a folder this run made, a file no writer
+    // has claimed is known absent without a stat (a fresh export: every check).
     bool ShouldExportAnim(const std::string& ExportPath)
     {
-        std::error_code Ec;
         auto SkipPrevAnims = SettingsManager::GetSetting("skipprevanim") == "true";
 
         if (!SkipPrevAnims)
@@ -321,11 +322,11 @@ namespace
 
         bool Result = false;
 
-        if (SettingsManager::GetSetting("export_directxanim") == "true" && !std::filesystem::is_regular_file(ExportPath, Ec))
+        if (SettingsManager::GetSetting("export_directxanim") == "true" && !ExportWriters::HasFile(ExportPath))
             Result = true;
-        if (SettingsManager::GetSetting("export_seanim") == "true" && !std::filesystem::is_regular_file(ExportPath + ".seanim", Ec))
+        if (SettingsManager::GetSetting("export_seanim") == "true" && !ExportWriters::HasFile(ExportPath + ".seanim"))
             Result = true;
-        if (SettingsManager::GetSetting("export_castanim") == "true" && !std::filesystem::is_regular_file(ExportPath + ".cast", Ec))
+        if (SettingsManager::GetSetting("export_castanim") == "true" && !ExportWriters::HasFile(ExportPath + ".cast"))
             Result = true;
 
         return Result;
@@ -336,7 +337,6 @@ namespace
     // .cast carries the same material slots.
     bool ShouldExportModel(const std::string& ExportPath, const Materials::Sidecar* Expected = nullptr)
     {
-        std::error_code Ec;
         auto SkipPrevModels = SettingsManager::GetSetting("skipprevmodel") == "true";
 
         if (!SkipPrevModels)
@@ -344,23 +344,23 @@ namespace
 
         bool Result = Expected != nullptr && !Materials::SidecarHolds(ExportPath + ".materials.json", *Expected);
 
-        if (SettingsManager::GetSetting("export_xmexport") == "true" && !std::filesystem::is_regular_file(ExportPath + ".XMODEL_EXPORT", Ec))
+        if (SettingsManager::GetSetting("export_xmexport") == "true" && !ExportWriters::HasFile(ExportPath + ".XMODEL_EXPORT"))
             Result = true;
-        if (SettingsManager::GetSetting("export_smd") == "true" && !std::filesystem::is_regular_file(ExportPath + ".smd", Ec))
+        if (SettingsManager::GetSetting("export_smd") == "true" && !ExportWriters::HasFile(ExportPath + ".smd"))
             Result = true;
-        if (SettingsManager::GetSetting("export_obj") == "true" && !std::filesystem::is_regular_file(ExportPath + ".obj", Ec))
+        if (SettingsManager::GetSetting("export_obj") == "true" && !ExportWriters::HasFile(ExportPath + ".obj"))
             Result = true;
-        if (SettingsManager::GetSetting("export_ma") == "true" && !std::filesystem::is_regular_file(ExportPath + ".ma", Ec))
+        if (SettingsManager::GetSetting("export_ma") == "true" && !ExportWriters::HasFile(ExportPath + ".ma"))
             Result = true;
-        if (SettingsManager::GetSetting("export_xna") == "true" && !std::filesystem::is_regular_file(ExportPath + ".mesh.ascii", Ec))
+        if (SettingsManager::GetSetting("export_xna") == "true" && !ExportWriters::HasFile(ExportPath + ".mesh.ascii"))
             Result = true;
-        if (SettingsManager::GetSetting("export_semodel") == "true" && !std::filesystem::is_regular_file(ExportPath + ".semodel", Ec))
+        if (SettingsManager::GetSetting("export_semodel") == "true" && !ExportWriters::HasFile(ExportPath + ".semodel"))
             Result = true;
-        if (SettingsManager::GetSetting("export_gltf") == "true" && !std::filesystem::is_regular_file(ExportPath + ".gltf", Ec))
+        if (SettingsManager::GetSetting("export_gltf") == "true" && !ExportWriters::HasFile(ExportPath + ".gltf"))
             Result = true;
-        if (SettingsManager::GetSetting("export_glb") == "true" && !std::filesystem::is_regular_file(ExportPath + ".glb", Ec))
+        if (SettingsManager::GetSetting("export_glb") == "true" && !ExportWriters::HasFile(ExportPath + ".glb"))
             Result = true;
-        if (SettingsManager::GetSetting("export_castmdl") == "true" && !std::filesystem::is_regular_file(ExportPath + ".cast", Ec))
+        if (SettingsManager::GetSetting("export_castmdl") == "true" && !ExportWriters::HasFile(ExportPath + ".cast"))
             Result = true;
         return Result;
     }
@@ -490,6 +490,8 @@ namespace
                          const std::vector<CastMaterialSlots>* Materials = nullptr,
                          const std::vector<::Materials::Description>* Described = nullptr)
     {
+        // every file below is named after this base: claimed before any exists (ShouldExportModel)
+        ExportWriters::Claim(std::filesystem::path(ExportPath) / Model->AssetName);
         if (Described != nullptr)
             for (auto& Material : Model->Materials)
                 for (const auto& D : *Described)
@@ -639,6 +641,32 @@ namespace
         try { Materials::WriteSidecar(ModelFileBase + ".materials.json", D.Sidecar); }
         catch (const std::exception&) {}
     }
+
+    thread_local const LiveExport::ModelFileJobs* ModelFiles = nullptr;
+
+    // A translated LOD's files and sidecar: now, or a job of the installed ModelFileJobs (the model
+    // and its description moved into it; the settings are the run's, the same on any thread)
+    void WriteLodFiles(std::unique_ptr<WraithModel> Model, const std::string& ExportPath, DescribedLod Described)
+    {
+        const std::string Base = (std::filesystem::path(ExportPath) / Model->AssetName).string();
+        if (ModelFiles == nullptr)
+        {
+            WriteModelFiles(Model, ExportPath, Described.CastSlots(), Described.Ok ? &Described.Sidecar.Materials : nullptr);
+            WriteSidecar(Described, Base);
+            return;
+        }
+        struct Job
+        {
+            std::unique_ptr<WraithModel> Model;
+            std::string ExportPath, Base;
+            DescribedLod Described;
+        };
+        auto J = std::make_shared<Job>(Job{ std::move(Model), ExportPath, Base, std::move(Described) });
+        (*ModelFiles)(Base, [J]() {
+            WriteModelFiles(J->Model, J->ExportPath, J->Described.CastSlots(), J->Described.Ok ? &J->Described.Sidecar.Materials : nullptr);
+            WriteSidecar(J->Described, J->Base);
+        });
+    }
 }
 
 void LiveExport::ForgetWrittenImages()
@@ -690,6 +718,9 @@ ExportGameResult LiveExport::ExportWraithAnim(WraithAnim& Anim, const std::strin
     // Note: DirectXAnim below is always exported in game units (inches), the
     // "unit" setting only applies to the DCC formats further down
 
+    // every file below is named after this base: claimed before any exists (ShouldExportAnim)
+    ExportWriters::Claim(std::filesystem::path(ExportPath) / Anim.AssetName);
+
     if (SettingsManager::GetSetting("export_directxanim") == "true")
     {
         auto XAnimVer = (SettingsManager::GetSetting("directxanim_ver") == "17") ? XAnimRawVersion::WorldAtWar : XAnimRawVersion::BlackOps;
@@ -711,6 +742,13 @@ ExportGameResult LiveExport::ExportWraithAnim(WraithAnim& Anim, const std::strin
         Cast::ExportCastAnim(Anim, (std::filesystem::path(ExportPath) / (Anim.AssetName + ".cast")).string());
     }
     return ExportGameResult::Success;
+}
+
+const LiveExport::ModelFileJobs* LiveExport::WriteModelFilesWith(const ModelFileJobs* Jobs)
+{
+    const ModelFileJobs* Was = ModelFiles;
+    ModelFiles = Jobs;
+    return Was;
 }
 
 ExportGameResult LiveExport::ExportWraithModel(std::unique_ptr<WraithModel>& Model, const std::string& ExportPath,
@@ -761,18 +799,16 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
 
             for (uint32_t i = 0; i < LodCount; i++)
             {
-                const DescribedLod Described = DescribeLod(GenericModel->ModelLods[i]);
+                DescribedLod Described = DescribeLod(GenericModel->ModelLods[i]);
                 if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + std::format("_LOD{}", i))).string(),
                                       Described.Ok ? &Described.Sidecar : nullptr))
                 {
                     auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, i);
 
-                    Result->AssetName += std::format("_LOD{}", i);
-
                     if (Result != nullptr)
                     {
-                        WriteModelFiles(Result, ExportPath, Described.CastSlots(), Described.Ok ? &Described.Sidecar.Materials : nullptr);
-                        WriteSidecar(Described, (std::filesystem::path(ExportPath) / Result->AssetName).string());
+                        Result->AssetName += std::format("_LOD{}", i);
+                        WriteLodFiles(std::move(Result), ExportPath, std::move(Described));
                     }
                     else
                     {
@@ -795,18 +831,16 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
                     LodIndexSuffix = std::format("_LOD{}", BiggestLodIndex);
                 }
 
-                const DescribedLod Described = DescribeLod(GenericModel->ModelLods[BiggestLodIndex]);
+                DescribedLod Described = DescribeLod(GenericModel->ModelLods[BiggestLodIndex]);
                 if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + LodIndexSuffix)).string(),
                                       Described.Ok ? &Described.Sidecar : nullptr))
                 {
-                    const auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, BiggestLodIndex);
-
-                    Result->AssetName += LodIndexSuffix;
+                    auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, BiggestLodIndex);
 
                     if (Result != nullptr)
                     {
-                        WriteModelFiles(Result, ExportPath, Described.CastSlots(), Described.Ok ? &Described.Sidecar.Materials : nullptr);
-                        WriteSidecar(Described, (std::filesystem::path(ExportPath) / Result->AssetName).string());
+                        Result->AssetName += LodIndexSuffix;
+                        WriteLodFiles(std::move(Result), ExportPath, std::move(Described));
                     }
                     else
                     {
@@ -938,8 +972,7 @@ void PrepareTextures(XModel_t& GenericModel, const std::string& ExportPath, cons
 
     if (ExportImages)
     {
-        std::error_code Ec;
-        std::filesystem::create_directories(ImagesPath, Ec);
+        ExportWriters::MakeDirs(ImagesPath);
     }
 
     if (ImageSetting == "DDS")
@@ -966,10 +999,9 @@ void PrepareTextures(XModel_t& GenericModel, const std::string& ExportPath, cons
 
                 if (ExportMaterialFolders && ExportImages)
                 {
-                    std::error_code Ec;
                     CompleteImagesPath = (std::filesystem::path(ImagesPath) / Material.MaterialName).string();
                     CompleteImageRelativePath = (std::filesystem::path(ImageRelativePath) / Material.MaterialName).string() + "\\\\";
-                    std::filesystem::create_directories(CompleteImagesPath, Ec);
+                    ExportWriters::MakeDirs(CompleteImagesPath);
                 }
 
                 if (ExportImageNames)
@@ -990,7 +1022,10 @@ void PrepareTextures(XModel_t& GenericModel, const std::string& ExportPath, cons
                 for (auto& Image : Material.Images)
                 {
                     // Append the relative path and image extension here, since we are done with these images
-                    Image.ImageName = CompleteImageRelativePath + Image.ImageName + ImageExtension;
+                    std::string Full;
+                    Full.reserve(CompleteImageRelativePath.size() + Image.ImageName.size() + ImageExtension.size());
+                    Full.append(CompleteImageRelativePath).append(Image.ImageName).append(ImageExtension);
+                    Image.ImageName = std::move(Full);
                 }
             }
         }

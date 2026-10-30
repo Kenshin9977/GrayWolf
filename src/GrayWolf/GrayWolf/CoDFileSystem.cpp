@@ -24,7 +24,8 @@ void CoDFileSystem::CloseFile(HANDLE handle)
 
 std::unique_ptr<uint8_t[]> CoDFileSystem::Read(HANDLE handle, const size_t size)
 {
-	auto result = std::make_unique<uint8_t[]>(size);
+	// all of it read, else none returned: not zeroed first
+	auto result = std::make_unique_for_overwrite<uint8_t[]>(size);
 
 	if (Read(handle, result.get(), 0, size) != size)
 	{

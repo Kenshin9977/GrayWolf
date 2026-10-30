@@ -169,7 +169,7 @@ void LoadGamePanel::DrawAssetTab()
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "No zone of %s found in this folder", Disk->Title());
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextUnformatted(Why.c_str());
-        ImGui::TextDisabled("Pick the game's install folder with \"Change game\" above, or another reader under \"Read with\".");
+        ImGui::TextDisabled("Choose the game's install folder with \"Change game\" above, or another game under \"Read with\".");
         ImGui::PopTextWrapPos();
         return;
     }
@@ -184,8 +184,7 @@ void LoadGamePanel::DrawAssetTab()
                     "Then you search and pick assets by name.", Thousands(ZoneCount).c_str());
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.44f, 0.69f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.52f, 0.80f, 1.0f));
+        Theme::PushPrimary();
         if (Busy.load() && BusyLabel == IndexLabel)
         {
             std::string Step;
@@ -202,8 +201,8 @@ void LoadGamePanel::DrawAssetTab()
             DiskStartedAt = ImGui::GetTime();
             StartWork(IndexLabel, &LoadGamePanel::DoIndexDiskZones);
         }
-        ImGui::PopStyleColor(2);
-        ImGui::TextDisabled("a few minutes the first time, kept for next time  \xC2\xB7  the game is never launched");
+        Theme::PopPrimary();
+        ImGui::TextDisabled("A few minutes the first time, then kept  \xC2\xB7  the game is never launched");
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::TextDisabled("Just want a whole map?");
@@ -219,12 +218,16 @@ void LoadGamePanel::DrawAssetTab()
     const ImVec2 Room = ImGui::GetContentRegionAvail();
     const bool Wide = Room.x > ImGui::GetFontSize() * 50.0f;
     const float Pane = std::min(ImGui::GetFontSize() * 22.0f, Room.x * 0.38f);
-    ImGui::BeginChild("##assetlist", Wide ? ImVec2(-Pane - ImGui::GetStyle().ItemSpacing.x, 0) : ImVec2(0, Room.y * 0.62f));
+    // nothing clicked or picked yet: the list takes the room, a line under it says what to do
+    const bool ShowPane = (AssetFocus >= 0 && AssetFocus < (int)Rows->Rows.size()) || !AssetPicks.empty();
+    ImGui::BeginChild("##assetlist", !ShowPane ? ImVec2(0, -ImGui::GetTextLineHeightWithSpacing())
+                                     : Wide    ? ImVec2(-Pane - ImGui::GetStyle().ItemSpacing.x, 0)
+                                               : ImVec2(0, Room.y * 0.62f));
     {
         // the search, "picked only", the kinds as chips with their counts
         const std::string PickedLabel = "Picked only (" + Thousands(AssetPicks.size()) + ")";
         ImGui::SetNextItemWidth(-(ImGui::CalcTextSize(PickedLabel.c_str()).x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x * 2));
-        ImGui::InputTextWithHint("##assetquery", "search by name: ak47, zombie, nuketown...", AssetQueryBuf, sizeof(AssetQueryBuf));
+        ImGui::InputTextWithHint("##assetquery", "Search by name: ak47, zombie, nuketown\xE2\x80\xA6", AssetQueryBuf, sizeof(AssetQueryBuf));
         ImGui::SameLine();
         ImGui::Checkbox(PickedLabel.c_str(), &AssetPickedOnly);
         const float Right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
@@ -253,7 +256,7 @@ void LoadGamePanel::DrawAssetTab()
             if (!On) ImGui::PopStyleColor(2);
         }
         if (AssetHitsTotal > AssetHits.size())
-            ImGui::TextDisabled("%s results in %s zones: the first %s shown, search for more of the name to narrow it",
+            ImGui::TextDisabled("%s results in %s zones: showing the first %s, type more of the name to narrow it",
                                 Thousands(AssetHitsTotal).c_str(), Thousands(AssetHitZones).c_str(), Thousands(AssetHits.size()).c_str());
         else
             ImGui::TextDisabled("%s results in %s zones", Thousands(AssetHitsTotal).c_str(), Thousands(AssetHitZones).c_str());
@@ -305,6 +308,11 @@ void LoadGamePanel::DrawAssetTab()
         }
     }
     ImGui::EndChild();
+    if (!ShowPane)
+    {
+        ImGui::TextDisabled("Tick an asset to pick it for export; click its name to see where it is stored, double-click to preview it.");
+        return;
+    }
     if (Wide) ImGui::SameLine();
 
     // the side pane: the asset clicked (where it is, pick it, preview it), then what is picked
@@ -321,7 +329,7 @@ void LoadGamePanel::DrawAssetTab()
         ImGui::TextDisabled("%s", DiskGame::KindName(A.K));
         ImGui::Spacing();
         const auto In = Ix->DefinedIn(A);
-        ImGui::TextDisabled(In.size() == 1 ? "Held whole in" : "Held whole in %zu zones", In.size());
+        ImGui::TextDisabled(In.size() == 1 ? "Stored in" : "Stored in %zu zones", In.size());
         {
             std::lock_guard<std::mutex> Lock(Mutex);
             for (size_t k = 0; k < In.size() && k < 6; k++)
@@ -345,7 +353,7 @@ void LoadGamePanel::DrawAssetTab()
         if (A.K == DiskGame::Kind::Anim && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("An animation is not previewed: exported alone, it has no model to play on");
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextDisabled("Preview exports it alone to a temporary folder and shows it in the Viewport (double-click a row does too). "
+        ImGui::TextDisabled("Preview exports it alone to a temporary folder and shows it in the Viewport (or double-click its row). "
                             "Its images and materials come along, from whichever zone holds them.");
         ImGui::PopTextWrapPos();
     }
@@ -421,6 +429,8 @@ void LoadGamePanel::Script(const std::string& StepJson)
         if (const int R = Row(St["preview"].get<std::string>()); R >= 0) StartPreview(Asset(R));
     if (St.contains("export") && St["export"].get<bool>()) StartExport();
     if (St.contains("options")) OpenOptions = St["options"].get<bool>();
+    if (St.contains("languages")) SettingsManager::SetSetting(Languages::SettingKey, St["languages"].get<std::string>());
+    if (St.contains("languages_open")) OpenLanguages = St["languages_open"].get<bool>();
     if (St.contains("index") && St["index"].get<bool>() && !Busy.load())
     {
         DiskCancel.store(false);
@@ -471,7 +481,7 @@ void LoadGamePanel::DoPreview()
         if (P.FromWatchdog) return;
         std::lock_guard<std::mutex> Lock(Mutex);
         DiskFraction = P.Count ? (float)P.Done / (float)P.Count : DiskFraction;
-        DiskStep = "preview: " + A.Name + (P.Current ? " (" + DiskGame::KindFolder(*P.Current) + ")" : std::string(" (reading the zone)"));
+        DiskStep = "Preview: " + A.Name + (P.Current ? " (" + DiskGame::KindFolder(*P.Current) + ")" : std::string(" (reading the zone)"));
     }, &DiskCancel);
     SettingsManager::ClearRunSetting("exportimg");
     size_t Written = 0;

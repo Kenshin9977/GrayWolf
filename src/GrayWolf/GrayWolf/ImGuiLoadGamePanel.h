@@ -43,7 +43,8 @@ public:
     bool ConsumeShowAssets() { return ShowAssets.exchange(false); }
     // ui-record's "loadgame" step (JSON): tab ("asset"/"zone"), query, focus (an asset's name), pick
     // (names), zones (zone names ticked), preview (a name), export, index, options (the popup
-    // opened), dismiss (each true)
+    // opened), dismiss (each true), languages (the languages exported: "auto", "all", "auto,en"),
+    // languages_open (true: their list dropped down, in the options popup)
     void Script(const std::string& StepJson);
     // A worker runs or is about to (the zone list not read yet): ui-record holds its frames meanwhile
     bool Working();
@@ -74,6 +75,10 @@ private:
     // while no game is read) and the install index's state.
     void DrawGameCard(ID3D11Device* Dev);
     void DrawSetup(ID3D11Device* Dev);
+    // While no game is read: the detected installs as tiles (icon, title, launcher), one click each
+    void DrawInstallTiles(ID3D11Device* Dev);
+    // The game folder typed or browsed to, and the "Read with" choice under it
+    void DrawFolderField();
     // The two ways to pick: by asset (the install index searched) and by zone or map
     void DrawAssetTab();
     void DrawZoneTab();
@@ -81,6 +86,8 @@ private:
     // not); the last export's result above it
     void DrawExportBar();
     void DrawOptions();
+    // The languages exported (Languages::SettingKey), beside the install's as its launcher says
+    void DrawLanguages();
     void DrawLastRun();
     // The index and its rows for search: kept by ReadZoneCounts, under Mutex
     void KeepIndex(std::unique_ptr<DiskGame::ZoneIndex> Ix);
@@ -103,14 +110,13 @@ private:
     void ReadZoneCounts(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install);
     // The zone list's table: a zone's tick, its level name, its asset count; sortable, filtered
     void DrawZoneTable(std::vector<uint32_t>& Visible);
-    // Worker, after the counts: a sample of each kind exported and measured (DiskGame::Sizes)
+    // Worker: a sample of each kind exported and measured (DiskGame::Sizes)
     void MeasureSizes(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install,
                       const DiskGame::ZoneIndex& Ix, const std::set<DiskGame::Kind>* Only = nullptr);
-    // Worker: MeasureSizes for the kinds ticked that have no sample yet (MeasureMissing), the
-    // others kept; started once per such set by DrawEstimate
+    // Worker: MeasureSizes for the kinds ticked that have no estimate (MeasureMissing), the others
+    // kept; started by DrawEstimate's "Estimate the rest", never by itself
     void DoMeasureMissing();
     std::set<DiskGame::Kind> MeasureMissing;
-    std::string MeasureTried;   // the game and kinds last started, not started again
     // the install index's weights of what is picked (Sizes::WeighPicks), and the picks, kinds and
     // formats they are for: worked out again when one of those changes
     std::map<DiskGame::Kind, DiskGame::Sizes::Weighed> PickWeights;
@@ -144,6 +150,8 @@ private:
     bool GameEditing = false;      // the game folder's field has the keyboard
     // the output folder exists, its export log too: looked up on a worker, never by the frame
     UiAsync::Cached<std::pair<bool, bool>> OutputState;
+    // the install's languages as its launcher's files say (Languages::OfInstall), read on a worker
+    UiAsync::Cached<Languages::Detected> InstallLanguage;
     std::string InstallDiskId;     // the disk reader the detected install names (GameInstalls)
     std::string InstallPath;       // that install's folder: its reader holds while the folder is unchanged
 
@@ -202,6 +210,7 @@ private:
     int ZoneGroup = 0;                           // 0 all, 1 maps, 2 shared, 3 languages
     float BarHeight = 120.0f;                    // the export bar's height, last frame's
     bool OpenOptions = false;
+    bool OpenLanguages = false;   // the Languages list dropped down at its next draw (ui-record)
     bool DrewIndicator = false;                  // a spinner or progress bar this frame (ShowedProgress)                    // "Formats & options" opened on the next frame (ui-record)
     std::string AssetPicksFor;                   // the zone list (DiskZonesFor) AssetPicks were made in
     // what the asset tab's export runs with, snapshotted for the worker

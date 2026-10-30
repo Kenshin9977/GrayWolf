@@ -14,10 +14,6 @@ WraithBone::WraithBone()
     IsCosmetic = false;
 }
 
-WraithBone::~WraithBone()
-{
-}
-
 WraithFace::WraithFace()
 {
     Index1 = 0;
@@ -32,10 +28,6 @@ WraithFace::WraithFace(uint32_t Vert1, uint32_t Vert2, uint32_t Vert3)
     Index3 = Vert3;
 }
 
-WraithFace::~WraithFace()
-{
-}
-
 WraithVertexWeight::WraithVertexWeight()
 {
     BoneIndex = 0;
@@ -48,18 +40,10 @@ WraithVertexWeight::WraithVertexWeight(uint32_t Bone, float Value)
     Weight = Value;
 }
 
-WraithVertexWeight::~WraithVertexWeight()
-{
-}
-
 WraithVertex::WraithVertex()
 {
     Position = Vector3(0, 0, 0);
     Normal = Vector3(0, 0, 0);
-}
-
-WraithVertex::~WraithVertex()
-{
 }
 
 uint32_t WraithVertex::WeightCount() const
@@ -73,10 +57,6 @@ uint32_t WraithVertex::UVLayerCount() const
 }
 
 WraithSubmesh::WraithSubmesh()
-{
-}
-
-WraithSubmesh::~WraithSubmesh()
 {
 }
 
@@ -149,16 +129,12 @@ WraithMaterial::WraithMaterial()
     SpecularMapName = "";
 }
 
-WraithMaterial::WraithMaterial(const std::string Name, const std::string Diffuse, const std::string Normal, const std::string Specular)
+WraithMaterial::WraithMaterial(const std::string& Name, const std::string& Diffuse, const std::string& Normal, const std::string& Specular)
 {
     MaterialName = Name;
     DiffuseMapName = Diffuse;
     NormalMapName = Normal;
     SpecularMapName = Specular;
-}
-
-WraithMaterial::~WraithMaterial()
-{
 }
 
 const WraithMaterial WraithMaterial::DefaultMaterial = WraithMaterial("wraith_no_material", "", "", "");

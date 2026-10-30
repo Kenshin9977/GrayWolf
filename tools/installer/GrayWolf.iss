@@ -64,4 +64,5 @@ Filename: "{app}\GrayWolf.exe"; Description: "{cm:LaunchProgram,GrayWolf}"; Flag
 Type: filesandordirs; Name: "{app}\.update"
 Type: filesandordirs; Name: "{app}\package_index"
 Type: filesandordirs; Name: "{app}\zonekit"
+Type: filesandordirs; Name: "{app}\environments"
 Type: files; Name: "{app}\*.log"

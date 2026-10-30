@@ -122,6 +122,11 @@ namespace
 
         if (ResultSize == DataSize && KeyData != nullptr)
         {
+            if (IsRotationKeyType(Animation->RotationType))
+            {
+                auto& Frames = Anim->AnimationRotationKeys[Tag];
+                Frames.reserve(Frames.size() + FrameCount + 1);
+            }
             const auto Keys = (const TKey*)KeyData;
             for (uint32_t f = 0; f < (FrameCount + 1); f++)
             {
@@ -166,6 +171,11 @@ namespace
 
         if (ResultSize == DataSize && KeyData != nullptr)
         {
+            if (Animation->TranslationType == AnimationKeyTypes::MinSizeTable)
+            {
+                auto& Frames = Anim->AnimationPositionKeys[TagNames[BoneID]];
+                Frames.reserve(Frames.size() + FrameCount + 1);
+            }
             const auto Components = (const TComponent*)KeyData;
             for (uint32_t f = 0; f < (FrameCount + 1); f++)
             {
@@ -252,6 +262,7 @@ std::unique_ptr<WraithAnim> CoDXAnimTranslator::TranslateXAnim(const std::unique
         if (Animation->BoneTypeSize > 0) { BoneTypeSize = Animation->BoneTypeSize; }
 
         std::vector<std::string> TagNames;
+        TagNames.reserve(Animation->TotalBoneCount);
         for (uint32_t i = 0; i < Animation->TotalBoneCount; i++)
         {
             uint64_t BoneID = 0;

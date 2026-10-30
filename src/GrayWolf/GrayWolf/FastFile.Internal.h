@@ -15,6 +15,7 @@
 #include <format>
 #include <miniz/miniz.h>
 #include <libdeflate.h>
+#include "Compression.h"   // Inflater
 #include <algorithm>
 #include <memory>
 #include "SHA1.h"
@@ -39,8 +40,7 @@ namespace FastFileInternal
 {
     // The zlib streams from Data on, one after the other while one starts (0x78), appended to
     // Out: an update patch's VCDIFF (Black Ops 4 and Cold War .fd). FastFile.Treyarch.cpp.
-    bool InflateZLibStreams(const uint8_t* Data, size_t Size, std::vector<uint8_t>& Out,
-                            std::string& Error);
+    bool InflateZLibStreams(const uint8_t* Data, size_t Size, ZoneBytes& Out, std::string& Error);
 
 
     // The most a zlib or LZ4 block inflates to (zlib's ~1032:1 bounds LZ4's ~255:1): a header
@@ -225,14 +225,6 @@ namespace FastFileInternal
         }
     }
 
-    // The thread's libdeflate decompressor (about twice zlib's speed on the zones, miniz's too)
-    inline libdeflate_decompressor* Inflater()
-    {
-        thread_local std::unique_ptr<libdeflate_decompressor, decltype(&libdeflate_free_decompressor)> D(libdeflate_alloc_decompressor(),
-                                                                                                         libdeflate_free_decompressor);
-        return D.get();
-    }
-
     // One zlib stream at the start of Source (a raw deflate one when Raw) appended to Out. Its size
     // unknown: inflated whole into Guess bytes (0: four times the input, at least 1 MB), twice as
     // many while they are too few, up to what the input can inflate to. Used: the input bytes it took.
@@ -246,14 +238,42 @@ namespace FastFileInternal
             // (not zeroed: only the bytes inflated are copied)
             std::unique_ptr<uint8_t[]> Buffer(new uint8_t[Room]);
             size_t In = 0, Got = 0;
-            const libdeflate_result R = Raw ? libdeflate_deflate_decompress_ex(Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got)
-                                            : libdeflate_zlib_decompress_ex(Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got);
+            const libdeflate_result R = Raw ? libdeflate_deflate_decompress_ex(Compression::Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got)
+                                            : libdeflate_zlib_decompress_ex(Compression::Inflater(), Source.data(), Source.size(), Buffer.get(), Room, &In, &Got);
             if (R == LIBDEFLATE_SUCCESS)
             {
                 Out.insert(Out.end(), Buffer.get(), Buffer.get() + Got);
                 if (Used != nullptr) *Used = In;
                 return true;
             }
+            if (R != LIBDEFLATE_INSUFFICIENT_SPACE || Room >= Most)
+            {
+                Error = R == LIBDEFLATE_INSUFFICIENT_SPACE ? "the stream inflates past what its input can" : "the stream did not inflate (bad or cut short)";
+                return false;
+            }
+            Room = std::min(Room * 2, Most);
+        }
+    }
+
+    // One zlib stream at the start of Source inflated straight into Out's end (InflateAppend's
+    // sizes): no buffer of its own nor a copy of what it inflates (the room a ZoneBytes grows by is
+    // its section's zero pages, only what is inflated written)
+    inline bool InflateInPlace(ByteView Source, ZoneBytes& Out, std::string& Error, size_t* Used)
+    {
+        const size_t Most = Source.size() * MaxInflateRatio + 64;
+        size_t Room = std::min(std::max<size_t>(Source.size() * 4, 1 << 20), Most);
+        for (const size_t Had = Out.size();;)
+        {
+            Out.resize(Had + Room);
+            size_t In = 0, Got = 0;
+            const libdeflate_result R = libdeflate_zlib_decompress_ex(Compression::Inflater(), Source.data(), Source.size(), Out.data() + Had, Room, &In, &Got);
+            if (R == LIBDEFLATE_SUCCESS)
+            {
+                Out.resize(Had + Got);
+                *Used = In;
+                return true;
+            }
+            Out.resize(Had);
             if (R != LIBDEFLATE_INSUFFICIENT_SPACE || Room >= Most)
             {
                 Error = R == LIBDEFLATE_INSUFFICIENT_SPACE ? "the stream inflates past what its input can" : "the stream did not inflate (bad or cut short)";

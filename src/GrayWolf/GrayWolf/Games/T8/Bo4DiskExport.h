@@ -81,6 +81,15 @@ namespace Bo4DiskExport
     VirtualGameSession::Handlers LiveHandlers();
     void ServeZone(ByteView Zone, const ZoneAssets& Assets);
     void EndServe();
+    // ServeZone for as long as it lives, EndServe when it ends (an exception's unwinding too)
+    class ServedZone
+    {
+    public:
+        ServedZone(ByteView Zone, const ZoneAssets& Assets) { ServeZone(Zone, Assets); }
+        ~ServedZone() { EndServe(); }
+        ServedZone(const ServedZone&) = delete;
+        ServedZone& operator=(const ServedZone&) = delete;
+    };
     // An asset's name from BO4's name index, or <prefix>_<hash>.
     std::string LiveName(uint64_t Hash, const char* Prefix);
 

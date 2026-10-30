@@ -5,6 +5,7 @@
 #include "Bo3ZoneSounds.h"
 
 #include "ExportNaming.h"
+#include "Languages.h"
 #include "SABSupport.h"
 #include "DBGameFiles.h"
 #include "CoDAssetType.h"
@@ -213,11 +214,13 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
     }
 
     // Locale subfolders ("all", "en", ...) plus the root itself - same shape
-    // GameBlackOps3::LoadAssets' own disk scan uses.
+    // GameBlackOps3::LoadAssets' own disk scan uses; a language the run does not export left out
+    // (Languages::Scope)
     std::vector<fs::path> LocaleDirs{ SoundRoot };
     for (const auto& Sub : fs::directory_iterator(SoundRoot, Ec))
     {
-        if (!Ec && Sub.is_directory(Ec)) LocaleDirs.push_back(Sub.path());
+        if (!Ec && Sub.is_directory(Ec) && Languages::Scope::Current().WantsSpelling(Sub.path().filename().string()))
+            LocaleDirs.push_back(Sub.path());
     }
 
     // Every bank whose stem matches the zone (case-insensitive), across every locale dir, BOTH
@@ -262,6 +265,17 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
     std::map<std::string, std::pair<uint32_t, uint32_t>> WrittenPaths;
     std::string BankFailures;
     Naming Named;
+    // the entries read here in bank order, decoded and written by the sink's pool; Written,
+    // WriteFailed and WrittenKeys under its lock
+    ExportWriters::SoundSink Sink(Format);
+    const auto Remember = [&WrittenKeys, &OutDir](auto Key, const std::string& Path) {
+        if (WrittenKeys && Key != 0)
+        {
+            std::string Rel = fs::path(Path).lexically_relative(OutDir).string();
+            std::replace(Rel.begin(), Rel.end(), '/', '\\');
+            WrittenKeys->emplace(Key, std::move(Rel));
+        }
+    };
 
     for (const auto& Bank : Banks)
     {
@@ -303,17 +317,9 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
                 Collisions++;
             }
             OutPath = OutPathStr;
-            const auto Remember = [&] {
-                if (WrittenKeys && E.Key != 0)
-                {
-                    std::string Rel = fs::path(OutPathStr).lexically_relative(OutDir).string();
-                    std::replace(Rel.begin(), Rel.end(), '/', '\\');
-                    WrittenKeys->emplace(E.Key, std::move(Rel));
-                }
-            };
             if (!WrittenPaths.emplace(Lower(OutPathStr), std::make_pair(E.Key, E.Size)).second)
             {
-                Remember();
+                Sink.Locked([&] { Remember(E.Key, OutPathStr); });
                 DedupSkipped++;
                 continue;
             }
@@ -327,7 +333,7 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
                 H.Stored = E.Size;
                 H.Rate = E.FrameRate, H.Channels = E.Channels, H.Frames = E.FrameCount;
                 Headers(H);
-                Written++;
+                Sink.Locked([&] { Written++; });
                 continue;
             }
             std::error_code MkEc;
@@ -352,16 +358,20 @@ size_t Bo3ExportZoneSounds(const std::string& FastFilePath, const std::string& O
                 continue;
             }
 
-            const bool Ok = ExportWriters::WriteSound(ExportWriters::SourceOf(*Decoded), OutPath, Format);
-
-            if (Ok)
-            {
-                Written++;
-                Remember();
-            }
-            else WriteFailed++;
+            const auto Source = ExportWriters::SourceOf(*Decoded);
+            Sink.Write(Source, OutPath,
+                       [&Written, &WriteFailed, &Remember, Key = E.Key, OutPathStr](bool Ok, const std::string&, const std::string&) {
+                           if (Ok)
+                           {
+                               Written++;
+                               Remember(Key, OutPathStr);
+                           }
+                           else WriteFailed++;
+                       },
+                       std::shared_ptr<const XSound>(std::move(Decoded)));
         }
     }
+    Sink.Finish();
 
     Report = std::format(
         "result=ok\nbanks={}\ncandidates={}\nmatched={}\nsounds_exported={}\n"

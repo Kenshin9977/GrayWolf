@@ -348,11 +348,10 @@ namespace
         void WithMaterialsElsewhere(const std::function<void()>& Work)
         {
             BookMaterialsElsewhere();
-            GameModernWarfare6::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
+            const CoDAssets::Scoped Using(GameModernWarfare6::ImagesElsewhere, [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
                 return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return CoDAssets::GetHashedName("ximage", H); });
-            };
+            });
             Work();
-            GameModernWarfare6::ImagesElsewhere = nullptr;
         }
 
         // the live material reader (MW6XMaterialMP 0x78: its images by their slots), the usages its
@@ -503,7 +502,9 @@ namespace
         void ExportSounds(const Context& C, Totals& T)
         {
             auto& Kt = T.Kinds[Kind::Sound];
-            const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
+            // read here in the zone's order, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
+            const std::string Extension = ExportWriters::SoundExtension(Sink.Format());
             const std::string Dir = C.KindDir(Kind::Sound);
             std::vector<int64_t> Found;
             for (const auto& I : Walk().Instances)
@@ -530,11 +531,12 @@ namespace
                 Sound.FrameCount = S.FrameCount;
                 Sound.ChannelsCount = S.ChannelCount;
                 Sound.IsFileEntry = false;
-                std::string Crash;
-                const int Code = ExportWriters::ExportSound(Sound, Dir, Extension, Crash);
-                if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-                else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
+                Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
+                    if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+                    else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
+                });
             }
+            Sink.Finish();
         }
     };
 
@@ -1079,7 +1081,8 @@ namespace
                                                   std::string& Error) const override
         {
             // the packages the live readers stream meshes, image levels and sounds from (--install)
-            if (!Options.Install.empty() && TreyarchPackages::Open<XSUBCache>(Options.Install) == nullptr)
+            auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
+            if (!Options.Install.empty() && Packages == nullptr)
             {
                 Error = "could not open the packages of " + Options.Install;
                 return nullptr;
@@ -1087,6 +1090,7 @@ namespace
             // a campaign zone: one under sp23\ (a copy elsewhere reads as multiplayer)
             const std::string Folder = Strings::ToLower(fs::path(Path).parent_path().filename().string());
             auto Zone = std::make_unique<MWIIIZone>(Path, Folder == "sp23");
+            Zone->ServesPackages(std::move(Packages));
             Zone->SetInstall(this, Options, Options.Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;

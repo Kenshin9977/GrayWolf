@@ -1127,12 +1127,14 @@ namespace
             // the packages the readers stream mesh and image data from: --install, else the install
             // the fast file sits in
             const std::string Install = !Options.Install.empty() ? Options.Install : InstallOf(Path);
-            if (!Install.empty() && TreyarchPackages::Open<XSUBCache>(Install) == nullptr)
+            auto Packages = Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Install);
+            if (!Install.empty() && Packages == nullptr)
             {
                 Error = "could not open the packages of " + Install;
                 return nullptr;
             }
             auto Zone = std::make_unique<BlackOps6Zone>(Path, Campaign);
+            Zone->ServesPackages(std::move(Packages));
             Zone->SetInstall(this, Options, Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;

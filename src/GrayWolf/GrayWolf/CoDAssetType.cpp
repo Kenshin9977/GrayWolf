@@ -91,11 +91,11 @@ XMaterial_t::XMaterial_t(uint32_t ImageCount)
     Images.reserve(ImageCount);
 }
 
-XImage_t::XImage_t(ImageUsageType Usage, uint32_t Hash, uint64_t Pointer, const std::string& Name)
+XImage_t::XImage_t(ImageUsageType Usage, uint32_t Hash, uint64_t Pointer, std::string Name)
 {
     ImageUsage = Usage;
     ImagePtr = Pointer;
-    ImageName = Name;
+    ImageName = std::move(Name);
     SemanticHash = Hash;
 }
 

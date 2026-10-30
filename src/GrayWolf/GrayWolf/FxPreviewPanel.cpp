@@ -171,7 +171,7 @@ void FxPreviewPanel::Draw()
     const ImGuiIO& Io = ImGui::GetIO();
     if (!I.Scene)
     {
-        ImGui::TextDisabled("%s", I.Error.empty() ? "reading the effect\xE2\x80\xA6" : ("could not read this effect: " + I.Error).c_str());
+        ImGui::TextDisabled("%s", I.Error.empty() ? "Reading the effect\xE2\x80\xA6" : ("Could not read this effect: " + I.Error).c_str());
         return;
     }
     FxPreview::Scene& S = *I.Scene;
@@ -201,10 +201,10 @@ void FxPreviewPanel::Draw()
     if (ImGui::Button("Restart")) I.Restart();
     ImGui::SameLine();
     ImGui::Checkbox("Loop", &I.Loop);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Start again after %.2fs (the effect's run)", Duration / 1000.0);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Restart after %.2fs (the effect's length)", Duration / 1000.0);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
-    ImGui::SliderFloat("##speed", &I.Speed, 0.05f, 4.0f, "speed %.2fx", ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("##speed", &I.Speed, 0.05f, 4.0f, "Speed %.2fx", ImGuiSliderFlags_Logarithmic);
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) I.Speed = 1.0f;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Playback speed (right-click: 1x)");
     ImGui::SameLine();
@@ -213,10 +213,10 @@ void FxPreviewPanel::Draw()
         I.Seed = I.Seed * 1664525u + 1013904223u;
         I.Apply();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Other random draws: where, how big, how long each particle lives");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("New random draws: each particle's position, size and lifetime");
     ImGui::SameLine();
     if (ImGui::Checkbox("Forward up", &I.ForwardUp)) I.Apply();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Turn the effect so its forward axis (X) points up: an impact on the ground.\n"
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Turn the effect so its forward axis (X) points up, like an impact on the ground.\n"
                                                   "Off: as authored, Z up.");
     ImGui::SameLine();
     ImGui::Checkbox("Grid", &I.Grid);
@@ -235,7 +235,7 @@ void FxPreviewPanel::Draw()
         ImGui::SameLine();
         ImGui::TextDisabled("\xC2\xB7  %zu without image", I.Renderer.TexturesMissing());
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Materials whose image is not among the exported ones (drawn as a soft dot).\n"
+            ImGui::SetTooltip("Materials whose image was not exported (drawn as a soft dot).\n"
                               "Export the images with the effects (--type fx,image), and the zone that defines\n"
                               "them (a common zone) into a folder beside this one.");
     }
@@ -245,7 +245,7 @@ void FxPreviewPanel::Draw()
     const int W = (int)std::max(16.0f, Avail.x), H = (int)std::max(16.0f, Avail.y);
     if (!I.Target.Resize(I.Dev.Get(), W, H) || !I.Renderer.Ok())
     {
-        ImGui::TextDisabled("could not make the view");
+        ImGui::TextDisabled("Could not create the view");
         return;
     }
     I.Renderer.SetTextures(S.Textures);

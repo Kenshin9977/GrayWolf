@@ -256,6 +256,7 @@ holds for that run only.
 `GrayWolf.exe <command> --help` for each one.
 
 - `list-installs`: the Call of Duty installs found on this machine.
+- `mcp`: GrayWolf for AI agents (below).
 - `identify`: a game or an asset from its name or hash. `coverage`: what one fast file gives,
   per asset type.
 - Containers: `casc-list`, `casc-extract`, `xpak-index`, `xsub-index`, `xsub-extract`,
@@ -266,6 +267,26 @@ holds for that run only.
   searchable index of an export and saved filters.
 - Names: `update`, `update-name-db` (the community [cod-name-db](https://github.com/echo000/cod-name-db)),
   `import-hash-csv`.
+
+## For AI agents (MCP)
+
+`GrayWolf.exe mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server over
+stdio: an agent (Claude Code, Claude Desktop, any MCP client) lists the installs, their zones,
+finds which zone defines an asset, estimates and runs exports (Black Ops III mod tools files
+included), follows or cancels a background export, and gets a rendered preview of a model.
+
+```
+claude mcp add graywolf -- "C:\path\to\GrayWolf.exe" mcp
+```
+
+Claude Desktop, in `claude_desktop_config.json`:
+`"mcpServers": { "graywolf": { "command": "C:\\path\\to\\GrayWolf.exe", "args": ["mcp"] } }`.
+
+Exports go under `%LOCALAPPDATA%\GrayWolf\mcp` unless `--out <dir>`, the `GRAYWOLF_MCP_OUT`
+variable or `"mcp_out"` in `graywolf.json` says otherwise; nothing is written anywhere else, an
+install is never written to, no game is started and the server never goes online. One export
+runs at a time. While a client keeps the server running, GrayWolf cannot update itself: close
+the client first.
 
 ## Opening a map in Blender
 
@@ -293,7 +314,9 @@ in the background:
   installed apps list shows the new version.
 - From the command line: `GrayWolf.exe update` updates the packages and reports a newer
   GrayWolf; `--check` only reports; `--app` also installs the newer GrayWolf.
-  Exports and other commands never go online.
+  Exports and other commands never go online. The program is not replaced while another
+  GrayWolf runs from the same folder (another window, an export, an `mcp` server): the update
+  says which process to close.
 
 To turn the check off, untick **Settings > Updates > Check at startup**, set
 `"auto_update": "false"` in `graywolf.json`, or set the environment variable
@@ -310,7 +333,13 @@ It uses [OpenAssetTools](https://github.com/Laupetin/OpenAssetTools) for the `*-
 [acts](https://github.com/ate47/atian-cod-tools) and [gsc-tool](https://github.com/xensik/gsc-tool)
 to decompile scripts, [cod-luajit-decompiler](https://github.com/Nico-Posada/cod-luajit-decompiler)
 and [CoDLuaDecompiler](https://github.com/Nico-Posada/CoDLuaDecompiler) to decompile Lua files,
-and [FFmpeg](https://ffmpeg.org) to decode WMA sounds.
+and [FFmpeg](https://ffmpeg.org) to decode WMA sounds. The model preview's environments
+(`environments\`) are baked from [Poly Haven](https://polyhaven.com) HDRIs, CC0 (public domain):
+Studio Small 09 and Empty Warehouse 01 by Sergej Majboroda, Kloofendal Overcast and Kloofendal 48d
+Partly Cloudy by Greg Zaal (`environments\NOTICE.txt`). The model viewport's ambient occlusion is
+Intel's [XeGTAO](https://github.com/GameTechDev/XeGTAO) and its optional anti-aliasing filter
+[SMAA](https://github.com/iryoku/smaa) (both MIT; their licenses are beside their sources in
+`src/GrayWolf/GrayWolf/PreviewPost/ThirdParty`).
 
 GrayWolf is distributed under the GNU General Public License v3.0, as the projects it comes from;
 see [LICENSE](LICENSE).

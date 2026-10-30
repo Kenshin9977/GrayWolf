@@ -15,19 +15,6 @@ class CoDAsset_t;
 // when localized), read through CoDAssets' package cache.
 namespace IWPakSounds
 {
-    // CoDAssets' package cache, which the live readers stream mesh and sound data from, set to a
-    // cache the caller keeps for this object's lifetime
-    class PackagesInUse
-    {
-    public:
-        explicit PackagesInUse(CoDPackageCache* Packages);
-        ~PackagesInUse();
-        PackagesInUse(const PackagesInUse&) = delete;
-        PackagesInUse& operator=(const PackagesInUse&) = delete;
-
-    private:
-        std::unique_ptr<CoDPackageCache> Saved;
-    };
 
     struct WriteOptions
     {
@@ -42,9 +29,9 @@ namespace IWPakSounds
     // The zone's counter of a name (sounds_streamed, sounds_loaded: the sounds met of each)
     using Counters = std::function<size_t&(const std::string& Name)>;
 
-    // Writes the sounds the alias readers found (CoDSound_t) with Packages as the package cache,
-    // then frees them all, cancelled or not. A loaded sound with no samples is a name-only header
-    // another zone holds the samples of: counted as a reference.
-    void Write(std::vector<CoDAsset_t*>& Found, CoDPackageCache* Packages, const DiskGame::Context& C, DiskGame::Totals& T,
+    // Writes the sounds the alias readers found (CoDSound_t) with Packages as CoDAssets' package
+    // cache, then frees them all, cancelled or not. A loaded sound with no samples is a name-only
+    // header another zone holds the samples of: counted as a reference.
+    void Write(std::vector<CoDAsset_t*>& Found, std::shared_ptr<CoDPackageCache> Packages, const DiskGame::Context& C, DiskGame::Totals& T,
                const std::string& Zone, const Counters& Counter, const WriteOptions& Options = WriteOptions());
 }

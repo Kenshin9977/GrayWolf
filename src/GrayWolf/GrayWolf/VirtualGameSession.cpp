@@ -35,27 +35,21 @@ VirtualGameSession::VirtualGameSession(std::unique_lock<std::mutex> Taken, const
 
 VirtualGameSession::VirtualGameSession(std::unique_lock<std::mutex> Taken, const ICoDGame& Game, ZoneMemory::Copy Image,
                                        const Handlers& H, int PointerSize)
-    : Lock(std::move(Taken)), Bytes(std::move(Image)), Ptr(PointerSize == 4 ? 4 : 8), Origin_(PointerSize == 4 ? Base32 : Base)
+    : Lock(std::move(Taken)), Bytes(std::move(Image)), Ptr(PointerSize == 4 ? 4 : 8), Origin_(PointerSize == 4 ? Base32 : Base),
+      ServedGame(CoDAssets::Game, &Game), Strings(CoDAssets::GameStringHandler, H.Strings),
+      Images(CoDAssets::GameXImageHandler, H.Images != nullptr ? H.Images : CoDAssets::GameXImageHandler),
+      Instance(CoDAssets::GameInstance, Attached(Bytes, Origin_))
 {
-    SavedGame = CoDAssets::Game;
-    SavedInstance = std::move(CoDAssets::GameInstance);
-    SavedStrings = CoDAssets::GameStringHandler;
-    SavedImages = CoDAssets::GameXImageHandler;
-
-    CoDAssets::Game = &Game;
-    CoDAssets::GameStringHandler = H.Strings;
-    if (H.Images != nullptr) CoDAssets::GameXImageHandler = H.Images;
-    CoDAssets::GameInstance = std::make_unique<ProcessReader>();
-    CoDAssets::GameInstance->AttachVirtual(Bytes.data(), Bytes.size(), Origin_);
 }
 
-VirtualGameSession::~VirtualGameSession()
+std::shared_ptr<ProcessReader> VirtualGameSession::Attached(ZoneMemory::Copy& Bytes, uint64_t Origin)
 {
-    CoDAssets::GameInstance = std::move(SavedInstance);
-    CoDAssets::Game = SavedGame;
-    CoDAssets::GameStringHandler = SavedStrings;
-    CoDAssets::GameXImageHandler = SavedImages;
+    auto Reader = std::make_shared<ProcessReader>();
+    Reader->AttachVirtual(Bytes.data(), Bytes.size(), Origin);
+    return Reader;
 }
+
+VirtualGameSession::~VirtualGameSession() = default;
 
 void VirtualGameSession::Poke(uint64_t Field, uint64_t Address)
 {

@@ -59,6 +59,7 @@ namespace Iw3Family
 
     private:
         std::string Install;
+        std::string Mod; // a mod's folder, its .iwd archives read first
         std::shared_ptr<IWDCache> Iwd;
 
         void Serve(bool On);

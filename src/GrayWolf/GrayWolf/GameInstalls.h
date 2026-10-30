@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "Languages.h"
+
 // The Call of Duty games installed on this machine, for the Load Game panel and the CLI. One table
 // of titles (GameInstalls.cpp) says, per game, how it is recognised (Steam app ids, an exe in its
 // folder) and which disk reader (DiskGame id) reads it.
@@ -16,6 +18,9 @@ namespace GameInstalls
         int Year = 0;           // release year, the list's order
         std::string DiskId;     // the disk reader (DiskGame::Find), "" when none
         std::string Source;     // "Steam", "Battle.net" or "installer" (uninstall keys), "Xbox" (Game Pass), "folder" (found on disk, no launcher)
+        // the language it is played in and those installed, as its launcher's files say
+        // (Languages::OfInstall: Battle.net, Steam); none known for the others
+        Languages::Detected Language;
     };
 
     // Steam's app manifests first (every library in libraryfolders.vdf: the app id names the game,
@@ -27,5 +32,4 @@ namespace GameInstalls
     // The game's own exe for a folder picked to read (its icon is the game's): a marker exe of the
     // table in the folder or in one of its two parents (an install given as its zone or cod24
     // folder); "" when none is there
-    std::string GameExe(const std::string& Folder);
-}
+    std::string GameExe(const std::string& Folder);}

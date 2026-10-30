@@ -596,6 +596,7 @@ bool ZoneIndex::LoadMapped(const std::string& Path, const std::string& Key)
         M->At<FileSlot>(H.PartSlotsAt, H.PartSlotCount) == nullptr)
         return false;
     if (!Key.empty() && M->Text(H.KeyAt, H.KeyLength) != Key) return false;
+    Weighed = H.Version != 1;
     const FileZone* Z = M->At<FileZone>(H.ZonesAt, H.ZoneCount);
     Names.clear();
     Sizes.clear();

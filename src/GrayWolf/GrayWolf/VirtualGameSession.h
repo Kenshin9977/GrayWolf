@@ -74,8 +74,12 @@ private:
     ZoneMemory::Copy Bytes;
     int Ptr = 8;
     uint64_t Origin_ = Base;
-    const ICoDGame* SavedGame;
-    std::unique_ptr<ProcessReader> SavedInstance;
-    LoadStringHandler SavedStrings;
-    LoadXImageHandler SavedImages;
+    // CoDAssets' state while the session lives (after the lock and the bytes, which it needs)
+    CoDAssets::Scoped<const ICoDGame*> ServedGame;
+    CoDAssets::Scoped<LoadStringHandler> Strings;
+    CoDAssets::Scoped<LoadXImageHandler> Images;
+    CoDAssets::Scoped<std::shared_ptr<ProcessReader>> Instance;
+
+    // a reader over the served bytes, which it must not outlive: CoDAssets' alone holds it
+    static std::shared_ptr<ProcessReader> Attached(ZoneMemory::Copy& Bytes, uint64_t Origin);
 };

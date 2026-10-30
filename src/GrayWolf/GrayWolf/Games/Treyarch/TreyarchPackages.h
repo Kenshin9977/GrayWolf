@@ -7,8 +7,9 @@
 
 class CoDPackageCache;
 
-// The Treyarch titles' streamed-data packages in a Battle.net CASC install, opened as CoDAssets'
-// package cache, which the live model, image and sound readers take streamed data from. Each game
+// The Treyarch titles' streamed-data packages in a Battle.net CASC install, which the live model,
+// image and sound readers take streamed data from (CoDAssets' package cache while a zone holding
+// them is served: ZonekitZone::ServesPackages). Each game
 // names its own package format: Black Ops 4 its .xpak (XPAKCache), Cold War its .xsub (XSUBCache).
 namespace TreyarchPackages
 {
@@ -30,11 +31,13 @@ namespace TreyarchPackages
 
     using Factory = std::unique_ptr<CoDPackageCache> (*)();
 
-    // nullptr if the install cannot be opened. Loaded synchronously, once per install and format.
-    CoDPackageCache* Open(const std::string& Install, const char* Format, Factory Make);
+    // nullptr if the install cannot be opened. Loaded synchronously, once per install and format:
+    // the last one opened is kept here, and what a caller got stays alive while it holds it (an
+    // Open of another install meanwhile replaces only the one kept here)
+    std::shared_ptr<CoDPackageCache> Open(const std::string& Install, const char* Format, Factory Make);
 
     template <class Cache>
-    CoDPackageCache* Open(const std::string& Install)
+    std::shared_ptr<CoDPackageCache> Open(const std::string& Install)
     {
         return Open(Install, typeid(Cache).name(), []() -> std::unique_ptr<CoDPackageCache> { return std::make_unique<Cache>(); });
     }

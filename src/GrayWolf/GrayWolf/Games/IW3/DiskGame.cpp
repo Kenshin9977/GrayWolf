@@ -7,6 +7,7 @@
 // +0x28, its size at +0xc), its XFile is 0x2c bytes, its aliases 0x5c.
 
 #include "DiskGame.h"
+#include "CoDAssets.h"
 #include "ExportWriters.h"
 #include "GameModernWarfare.h"
 #include "Games/IwClassic/IwClassicAnimOwners.h"
@@ -122,7 +123,9 @@ namespace
         void ExportLoadedSounds(const Context& C, Totals& T) override
         {
             auto& Kt = T.Kinds[Kind::Sound];
-            const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
+            // read here in the zone's order, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
+            const std::string Extension = ExportWriters::SoundExtension(Sink.Format());
             const std::string Dir = C.KindDir(Kind::Sound);
             std::vector<int64_t> Found;
             for (const auto& I : Walk().Instances)
@@ -142,7 +145,7 @@ namespace
                 {
                     // not 16-bit PCM (an ADPCM sound): written behind a PCM header it would be noise
                     Counter("sounds_not_pcm")++;
-                    T.Fail(Name(), Kind::Sound, Full, std::format("format {}, {} bits", Format, Bits));
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, Full, std::format("format {}, {} bits", Format, Bits)); });
                     continue;
                 }
                 CoDSound_t Sound;
@@ -155,11 +158,12 @@ namespace
                 Sound.FrameCount = At<uint32_t>(Image(), Pos + SoundSamples);
                 Sound.IsFileEntry = false;
                 Sound.DataType = SoundDataTypes::WAV_NeedsHeader;
-                std::string Crash;
-                const int Code = ExportWriters::ExportSound(Sound, Dir, Extension, Crash);
-                if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-                else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
+                Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
+                    if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+                    else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
+                });
             }
+            Sink.Finish();
         }
 
     private:

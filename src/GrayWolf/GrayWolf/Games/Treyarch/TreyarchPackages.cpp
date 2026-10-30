@@ -2,7 +2,7 @@
 
 #include "Games/Treyarch/TreyarchPackages.h"
 
-#include "CoDAssets.h"
+#include "CoDFileSystem.h"
 #include "CoDPackageCache.h"
 #include "ExportNaming.h"
 
@@ -92,20 +92,22 @@ namespace TreyarchPackages
         return !Out.empty();
     }
 
-    CoDPackageCache* Open(const std::string& Install, const char* Format, Factory Make)
+    std::shared_ptr<CoDPackageCache> Open(const std::string& Install, const char* Format, Factory Make)
     {
-        // kept as CoDAssets' package cache: the live model/image code reads streamed data from there
+        // not CoDAssets' package cache: that one is the served zone's, set under the session lock
+        // (this runs on the index's workers too, while a served zone's readers read it)
         static std::mutex Lock;
         static std::string Opened;
+        static std::shared_ptr<CoDPackageCache> Kept;
         std::lock_guard<std::mutex> Guard(Lock);
         const std::string Key = Install + '\n' + Format;
-        if (CoDAssets::GamePackageCache && Opened == Key) return CoDAssets::GamePackageCache.get();
-        auto C = Make();
+        if (Kept && Opened == Key) return Kept;
+        std::shared_ptr<CoDPackageCache> C = Make();
         C->LoadPackageCacheAsync(Install);
         C->WaitForPackageCacheLoad();
         if (C->GetFileSystem() == nullptr) return nullptr;
-        CoDAssets::GamePackageCache = std::move(C);
+        Kept = std::move(C);
         Opened = Key;
-        return CoDAssets::GamePackageCache.get();
+        return Kept;
     }
 }

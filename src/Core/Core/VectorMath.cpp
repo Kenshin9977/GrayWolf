@@ -31,10 +31,6 @@ Vector2::Vector2(float XCoord, float YCoord)
     Y = YCoord;
 }
 
-Vector2::~Vector2()
-{
-}
-
 Vector3::Vector3()
 {
     X = 0;
@@ -47,10 +43,6 @@ Vector3::Vector3(float XCoord, float YCoord, float ZCoord)
     X = XCoord;
     Y = YCoord;
     Z = ZCoord;
-}
-
-Vector3::~Vector3()
-{
 }
 
 Vector3 Vector3::operator+(const Vector3& Value) const
@@ -103,10 +95,6 @@ Vector3 Vector3::GetNormalized() const
 Matrix::Matrix()
 {
     for (int i = 0; i < 16; i++) { Data[i] = (i % 5) ? 0.0f : 1.0f; }
-}
-
-Matrix::~Matrix()
-{
 }
 
 Matrix Matrix::operator/(float Value) const
@@ -261,10 +249,6 @@ Quaternion::Quaternion(float XCoord, float YCoord, float ZCoord, float WCoord)
     Y = YCoord;
     Z = ZCoord;
     W = WCoord;
-}
-
-Quaternion::~Quaternion()
-{
 }
 
 Quaternion Quaternion::operator*(const Quaternion& Value) const

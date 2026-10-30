@@ -593,15 +593,17 @@ const XMaterial_t GameBlackOps4::ReadXMaterial(uint64_t MaterialPointer)
     // Mask the name (some bits are used for other stuffs)
     MaterialData.NamePtr &= 0xFFFFFFFFFFFFFFF;
     XMaterial_t Result(MaterialData.ImageCount);
-    Result.MaterialName = std::format("xmaterial_{:x}", MaterialData.NamePtr);
-
-    if (AssetNameCache.NameDatabase.find(MaterialData.NamePtr) != AssetNameCache.NameDatabase.end())
-        Result.MaterialName = FileSystems::GetFileNamePurgeExtensions(AssetNameCache.NameDatabase[MaterialData.NamePtr]);
+    const auto& Names = AssetNameCache.NameDatabase;
+    if (const auto Named = Names.find(MaterialData.NamePtr); Named != Names.end())
+        Result.MaterialName = FileSystems::GetFileNamePurgeExtensions(Named->second);
+    else
+        Result.MaterialName = std::format("xmaterial_{:x}", MaterialData.NamePtr);
 
     // The slots: image pointer, semantic, name hash. A header with no image (a disk export's
     // material another zone defines) takes its slots from that zone (ImagesElsewhere).
     struct Slot { uint64_t ImagePtr; uint32_t Semantic; uint64_t Hash; };
     std::vector<Slot> Slots;
+    Slots.reserve(MaterialData.ImageCount);
     for (uint32_t m = 0; m < MaterialData.ImageCount; m++)
     {
         auto ImageInfo = CoDAssets::GameInstance->Read<BO4XMaterialImage>(MaterialData.ImageTablePtr + m * sizeof(BO4XMaterialImage));
@@ -627,17 +629,18 @@ const XMaterial_t GameBlackOps4::ReadXMaterial(uint64_t MaterialPointer)
     {
         for (const auto& [Hash, Semantic] : Elsewhere.Images) Slots.push_back({ ExportWriters::ImageElsewhere, Semantic, Hash });
         if (Elsewhere.Techset != 0) Result.TechsetName = std::format("{:x}", Elsewhere.Techset);
-        if (!Elsewhere.Constants.empty()) Result.Constants.assign(1, std::move(Elsewhere.Constants));
+        if (!Elsewhere.Constants.empty())
+        {
+            Result.Constants.clear();
+            Result.Constants.push_back(std::move(Elsewhere.Constants));
+        }
     }
 
     for (const auto& S : Slots)
     {
-        auto ImageName = std::format("ximage_{:x}", S.Hash);
-
-        if (AssetNameCache.NameDatabase.find(S.Hash) != AssetNameCache.NameDatabase.end())
-            ImageName = AssetNameCache.NameDatabase[S.Hash];
-
-        Result.Images.emplace_back(GameReaders::TreyarchSemanticUsage(S.Semantic), S.Semantic, S.ImagePtr, ImageName);
+        const auto Named = Names.find(S.Hash);
+        Result.Images.emplace_back(GameReaders::TreyarchSemanticUsage(S.Semantic), S.Semantic, S.ImagePtr,
+                                   Named != Names.end() ? Named->second : std::format("ximage_{:x}", S.Hash));
     }
 
     return Result;
@@ -709,11 +712,13 @@ void GameBlackOps4::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_pt
 
         ResultModel->PrepareSubmeshes((uint32_t)ModelLOD.Submeshes.size());
 
-        auto Vertices = std::make_unique<std::vector<std::pair<uint32_t, Vector3>>[]>(MeshInfo.VertexCount);
+        // each vertex's blend shape deltas, when the mesh has shapes
+        std::vector<std::vector<std::pair<uint32_t, Vector3>>> Vertices;
         bool HasShapes = false;
 
         if (MeshInfo.BlendShapeCount != 0 && MeshInfo.BlendShapeCount <= 256)
         {
+            Vertices.resize(MeshInfo.VertexCount);
             uint32_t Indexes[256];
             for (uint32_t i = 0; i < MeshInfo.BlendShapeCount; i++)
             {
@@ -732,6 +737,9 @@ void GameBlackOps4::LoadXModel(const XModelLod_t& ModelLOD, const std::unique_pt
                 MeshReader.SetPosition((uint64_t)MeshInfo.BlendShapesOffset + Offsets[i]);
                 auto VertexIndex = MeshReader.Read<uint32_t>();
                 auto ShapeCount = MeshReader.Read<uint32_t>();
+                // as many as the buffer can hold
+                Vertices[VertexIndex].reserve(Vertices[VertexIndex].size() +
+                                              std::min<size_t>(ShapeCount, (MeshReader.GetLength() - MeshReader.GetPosition()) / sizeof(Bo4GfxBlendShapeVert)));
 
                 for (uint32_t j = 0; j < ShapeCount; j++)
                 {
@@ -876,7 +884,7 @@ std::string GameBlackOps4::DecryptString(uint8_t* InputBuffer, uint8_t InputLeng
     case 20: Unmask(InputBuffer, InputLength, 628241558, Rotate::Left,
         [](uint32_t& k, uint8_t i) { k += DecryptionTable[i % 0x74 + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return k - 106; }); break;
     case 22: Unmask(InputBuffer, InputLength, 889284759, Rotate::Left,
-        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x67 + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return -105 * k; }); break;
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[i % 0x67 + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return 0u - 105u * k; }); break;
     case 23: Unmask(InputBuffer, InputLength, 960823304, Rotate::Right,
         [](uint32_t& k, uint8_t i) { k *= i; }, [](uint32_t k) -> uint8_t { return k + 8; }); break;
     case 24: Unmask(InputBuffer, InputLength, 609355846, Rotate::None,
@@ -902,7 +910,7 @@ std::string GameBlackOps4::DecryptString(uint8_t* InputBuffer, uint8_t InputLeng
     case 40: Unmask(InputBuffer, InputLength, 2187474786, Rotate::Right,
         [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[(k & 0x1F) + 314 * (i % 0xB)]; }, [](uint32_t k) -> uint8_t { return k ^ 98; }); break;
     case 41: Unmask(InputBuffer, InputLength, 912361108, Rotate::None,
-        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[(i & 1) + 314 * (k % 3)]; }, [](uint32_t k) -> uint8_t { return -108 * k; }); break;
+        [](uint32_t& k, uint8_t i) { k *= DecryptionTable[(i & 1) + 314 * (k % 3)]; }, [](uint32_t k) -> uint8_t { return 0u - 108u * k; }); break;
     case 43: Unmask(InputBuffer, InputLength, 1614283080, Rotate::Left,
         [](uint32_t& k, uint8_t i) { k ^= DecryptionTable[i % 0x5F + 314 * (k % 6)]; }, [](uint32_t k) -> uint8_t { return 72 * k; }); break;
     case 44: Unmask(InputBuffer, InputLength, 310931476, Rotate::Left,

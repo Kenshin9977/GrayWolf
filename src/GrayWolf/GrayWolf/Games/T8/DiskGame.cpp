@@ -55,7 +55,7 @@ namespace
     const DiskGame::Setting UiRes{ "ui_res", "UI textures", { { "4k", "4K" }, { "1080", "1080p" }, { "all", "both" } },
                                    "4k", { DiskGame::Kind::Image } };
 
-    CoDPackageCache* Packages(const ExportOptions& Options)
+    std::shared_ptr<CoDPackageCache> Packages(const ExportOptions& Options)
     {
         return Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
     }
@@ -68,10 +68,11 @@ namespace
     class Bo4Zone final : public ZonekitZone
     {
     public:
-        Bo4Zone(const std::string& Path, CoDPackageCache* P, std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common)
+        Bo4Zone(const std::string& Path, std::shared_ptr<CoDPackageCache> P, std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common)
             : ZonekitZone(Path), Pkg(P), Common(std::move(Common))
         {
             using namespace DiskGame;
+            ServesPackages(std::move(P));
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             // without --install, the models whose mesh is in the packages are left out (Unwritable),
@@ -172,13 +173,6 @@ namespace
                 });
             });
         }
-        ~Bo4Zone() override
-        {
-            if (!Serving) return;   // never served (unopened): the served zone is another's
-            Bo4DiskExport::EndServe();
-            GameBlackOps4::ImagesElsewhere = nullptr;
-        }
-
         // the material headers the common zones' books filled, and those they did not
         void Measures(DiskGame::Totals& T) const override
         {
@@ -247,13 +241,32 @@ namespace
         }
         // its readers and DescribeZone work from the walk's instances: a partial walk serves them
         bool OpensPartially() const override { return true; }
+        // what a partial open walks decides, not how many assets are asked: a map's dependencies
+        // ask core_common for ~1,000-2,300 models and images, which reach 2,300-4,300 of its
+        // 108,868 assets, walked in 0.2-0.4 s where the whole zone takes 4.5-6 s (Release). A few
+        // assets reaching much cost more a walk: 50 spread over the zone reach 13,000 in 4.3 s,
+        // hence a cap on the walks
+        PartialLimits Partially() const override { return { SIZE_MAX, 8000 }; }
+        // an image (0x88, the profile's image table) as DescribeZone reads it: its record and its own
+        // reads (its in-zone pixels, its mips' records), which find its data, not its pointers. Its
+        // pixels kept up to 64 KB, an image with more read from its zone: 256 KB would make
+        // core_common's heads 59 MB instead of 54, 4k_core_ui's 85 instead of 11
+        HeadSpec Heads() const override
+        {
+            HeadSpec S;
+            S.Type = "image";
+            S.Size = 0x88;
+            S.Reads = true;
+            S.ReadsMax = 64 << 10;
+            return S;
+        }
 
     private:
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T)
         {
             using DiskGame::Kind;
             const auto S = Bo4DiskExport::ExportImages(Zone(), Assets, C.KindDir(Kind::Image),
-                [&](const std::string& N) { return C.Wants(Kind::Image, N); }, Pkg,
+                [&](const std::string& N) { return C.Wants(Kind::Image, N); }, Pkg.get(),
                 [&](size_t Done, size_t Count, const std::string& N) { return C.Advance(Done, Count, N); },
                 [&](const std::string& N) { C.Needs(Kind::Image, N); });
             auto& Kt = T.Kinds[DiskGame::Kind::Image];
@@ -303,7 +316,7 @@ namespace
                 return;
             }
             WraithX::InitializeAPI();
-            const auto S = Bo4DiskExport::ExportSounds(Pkg, Name(), C.KindDir(DiskGame::Kind::Sound),
+            const auto S = Bo4DiskExport::ExportSounds(Pkg.get(), Name(), C.KindDir(DiskGame::Kind::Sound),
                 [&](const std::string& N) { return C.Wants(DiskGame::Kind::Sound, N); },
                 [&](size_t Done, size_t Count, const std::string& N) { return C.Advance(Done, Count, N); },
                 C.OnSoundHeader);
@@ -383,16 +396,12 @@ namespace
         }
         void Served(bool On) override
         {
-            Serving = On;
-            if (!On)
-            {
-                Bo4DiskExport::EndServe();
-                GameBlackOps4::ImagesElsewhere = nullptr;
-                return;
-            }
-            Bo4DiskExport::ServeZone(Zone(), Assets);
+            ElsewhereServed.reset();
+            LiveServed.reset();
+            if (!On) return;
+            LiveServed.emplace(Zone(), Assets);
             // a material header takes its images from the common zone that defines it
-            GameBlackOps4::ImagesElsewhere = [this](uint64_t Hash, GameBlackOps4::MaterialElsewhere& Out) {
+            ElsewhereServed.emplace(GameBlackOps4::ImagesElsewhere, [this](uint64_t Hash, GameBlackOps4::MaterialElsewhere& Out) {
                 for (const auto& Book : Common)
                     if (const auto It = Book->find(Hash); It != Book->end())
                     {
@@ -404,7 +413,7 @@ namespace
                     }
                 NotBooked.insert(Hash);
                 return false;
-            };
+            });
         }
         std::string AssetName(DiskGame::Kind K, int64_t Pos) const override
         {
@@ -463,11 +472,13 @@ namespace
         std::string EntityString();
 
     private:
-        CoDPackageCache* Pkg = nullptr;
+        std::shared_ptr<CoDPackageCache> Pkg;
         Bo4DiskExport::ZoneAssets Assets;
         std::vector<std::shared_ptr<const Bo4DiskExport::MaterialBook>> Common;
         std::set<uint64_t> Booked, NotBooked;   // material headers met, filled or not
-        bool Serving = false;
+        // the readers pointed at this zone while it is served (after what they read: they end first)
+        std::optional<Bo4DiskExport::ServedZone> LiveServed;
+        std::optional<CoDAssets::Scoped<decltype(GameBlackOps4::ImagesElsewhere)>> ElsewhereServed;
     };
 
     // GfxWorld (gfxworld, 0x1ab0): the fields C2M's BO4 reader uses, their places from the
@@ -719,7 +730,7 @@ namespace
                    std::string& Error) const override
         {
             size_t Skipped = 0;
-            return Bo4DiskExport::Zones(Input, Packages(Options), CacheDir(Options, "greyhound_bo4ff"), UiRes.Of(Options),
+            return Bo4DiskExport::Zones(Input, Packages(Options).get(), CacheDir(Options, "greyhound_bo4ff"), UiRes.Of(Options),
                                         Out, Skipped, Error);
         }
 
@@ -727,13 +738,13 @@ namespace
         bool ListZones(const std::string& Install, const ExportOptions& Options, std::vector<std::string>& Names,
                        std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XPAKCache>(Install);
+            const auto P = TreyarchPackages::Open<XPAKCache>(Install);
             if (P == nullptr)
             {
                 Error = "cannot open the packages under " + Install;
                 return false;
             }
-            for (auto& N : TreyarchPackages::ListFastFiles(P))
+            for (auto& N : TreyarchPackages::ListFastFiles(P.get()))
                 if (Bo4DiskExport::KeepZoneForUiRes(N, UiRes.Of(Options))) Names.push_back(std::move(N));
             if (Names.empty()) Error = "no fast file in " + Install;
             return !Names.empty();
@@ -743,14 +754,14 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install), Install, Names, CacheDir(Options, "greyhound_bo4ff"), Out, Error);
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install).get(), Install, Names, CacheDir(Options, "greyhound_bo4ff"), Out, Error);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options,
                                                   std::string& Error) const override
         {
             // the common zones' materials first, each read alone (and once: kept in the cache)
-            auto Common = Bo4DiskExport::CommonMaterials(Path, Packages(Options), CacheDir(Options, "greyhound_bo4ff"),
+            auto Common = Bo4DiskExport::CommonMaterials(Path, Packages(Options).get(), CacheDir(Options, "greyhound_bo4ff"),
                                                          CacheDir(Options, "greyhound_bo4mat"));
             auto Zone = std::make_unique<Bo4Zone>(Path, Packages(Options), std::move(Common));
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);

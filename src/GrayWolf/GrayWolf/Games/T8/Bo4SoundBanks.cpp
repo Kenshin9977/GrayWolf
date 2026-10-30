@@ -8,6 +8,7 @@
 #include "ExportNaming.h"
 #include "FileSystems.h"
 #include "ICoDGame.h"
+#include "Languages.h"
 #include "WraithNameIndex.h"
 
 #include <algorithm>
@@ -170,8 +171,10 @@ namespace
 
 uint64_t Hash(const std::string& Path)
 {
-    std::string S = ExportNaming::Lower(Path);
-    std::replace(S.begin(), S.end(), '/', '\\');
+    // a buffer kept per thread: a sound phase hashes hundreds of thousands of paths
+    thread_local std::string S;
+    S.assign(Path);
+    for (char& C : S) C = C == '/' ? '\\' : (char)std::tolower((unsigned char)C);
     return ExportNaming::Fnv1a(S) & KeyMask;
 }
 
@@ -191,9 +194,16 @@ Zone Read(CoDFileSystem& FS, const std::string& ZoneName)
     }
     std::sort(Z.Banks.begin(), Z.Banks.end(), [](const Bank& A, const Bank& B) { return ExportNaming::Lower(A.File) < ExportNaming::Lower(B.File); });
 
+    // the run's languages: a bank of another is not read
+    const Languages::Choice& Wanted = Languages::Scope::Current();
     std::vector<Entry> All;
     for (size_t B = 0; B < Z.Banks.size(); B++)
     {
+        if (Z.Banks[B].Language != "all" && !Wanted.WantsSpelling(Z.Banks[B].Language))
+        {
+            Z.OtherLanguages++;
+            continue;
+        }
         std::string Why;
         if (!ReadBank(FS, Z.Banks[B], B, All, Why) || !Why.empty()) Z.Failures.push_back(Z.Banks[B].File + ": " + Why);
     }
@@ -234,7 +244,7 @@ std::string NameOf(uint64_t Key, const std::string& Language)
 
 std::string Folder(const std::string& Name, const std::string& Language)
 {
-    const std::string Dir = FileSystems::GetDirectoryName(Name);
+    std::string Dir = FileSystems::GetDirectoryName(Name);
     if (Language.empty() || Language == "all") return Dir;
     std::string Out = Language;
     bool First = true;

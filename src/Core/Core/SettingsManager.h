@@ -27,6 +27,8 @@ public:
 
     static std::string GetSetting(const std::string& Key, const std::string& Default = "");
     static void SetSetting(const std::string& Key, const std::string& Value);
+    // A number setting: Default when unset, else its value held to [Lo, Hi]
+    static float GetSettingFloat(const std::string& Key, float Default, float Lo, float Hi);
     // Sets a setting for this run only (a command line flag): read before the saved value, never
     // written to the settings file; a later SetSetting of the key replaces it
     static void SetRunSetting(const std::string& Key, const std::string& Value);
