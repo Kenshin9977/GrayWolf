@@ -2,8 +2,10 @@
 
 #include "ExportWriters.h"
 
+#include "CoDAssetType.h"
 #include "CoDXModelTranslator.h"
 #include "ExportNaming.h"
+#include "ICoDGame.h"
 #include "Image.h"
 #include "SettingsManager.h"
 #include "Strings.h"
@@ -25,16 +27,115 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
+#include <cwctype>
 
 namespace ExportWriters
 {
-    bool WriteBytes(const std::filesystem::path& P, const uint8_t* Data, size_t Size)
+    namespace
+    {
+        // A folder this run made or wrote into, by its path as given (normal form, lower case).
+        // Created: this run made it, so it was empty then and holds since only what this run's
+        // writers put there, each file named first (Claim): a name never claimed is not there.
+        struct Folder
+        {
+            bool Made = false, Created = false;
+            std::unordered_set<std::wstring> Claimed;   // file names, or bases an extension follows (lower case)
+        };
+        std::mutex DirsLock;
+        std::unordered_map<std::wstring, Folder>& Folders()
+        {
+            static std::unordered_map<std::wstring, Folder> All;
+            return All;
+        }
+
+        std::filesystem::path NormalDir(const std::filesystem::path& Dir)
+        {
+            std::filesystem::path N = Dir.lexically_normal();
+            if (!N.has_filename() && N.has_relative_path()) N = N.parent_path();   // "a\b\" is "a\b"
+            return N;
+        }
+
+        std::wstring LowerKey(std::wstring S)
+        {
+            for (wchar_t& C : S) C = (wchar_t)towlower(C);
+            return S;
+        }
+
+        // MayExist's answer, the lock held
+        bool MayExistLocked(const std::wstring& DirKey, const std::wstring& Name)
+        {
+            const auto It = Folders().find(DirKey);
+            if (It == Folders().end() || !It->second.Created) return true;
+            const auto& Claimed = It->second.Claimed;
+            if (Claimed.count(Name)) return true;
+            // a base claimed for every file named after it ("x_LOD0" for "x_LOD0.semodel", ".materials.json")
+            for (size_t Dot = Name.find(L'.'); Dot != std::wstring::npos; Dot = Name.find(L'.', Dot + 1))
+                if (Claimed.count(Name.substr(0, Dot))) return true;
+            return false;
+        }
+    }
+
+    bool MakeDirs(const std::filesystem::path& Dir)
+    {
+        if (Dir.empty()) return true;
+        const std::filesystem::path Normal = NormalDir(Dir);
+        const std::wstring Key = LowerKey(Normal.native());
+        {
+            std::lock_guard<std::mutex> G(DirsLock);
+            if (const auto It = Folders().find(Key); It != Folders().end() && It->second.Made) return true;
+        }
+        // the parent first, through this same set: create_directories would ask about every folder of
+        // the path again for each new folder (one CreateDirectoryW each, through the file system
+        // filters). Its failure is not ours: as create_directories, the folder itself decides.
+        const std::filesystem::path Parent = Normal.parent_path();
+        if (Parent.has_relative_path() && Parent != Normal) MakeDirs(Parent);
+        std::error_code Ec;
+        const bool Created = std::filesystem::create_directory(Normal, Ec);
+        if (!Created && !std::filesystem::is_directory(Normal, Ec)) return false;
+        std::lock_guard<std::mutex> G(DirsLock);
+        Folder& F = Folders()[Key];
+        if (!F.Made) F.Made = true, F.Created = Created;   // a racing thread that found it there: not ours to vouch for
+        return true;
+    }
+
+    void ForgetDirs()
+    {
+        std::lock_guard<std::mutex> G(DirsLock);
+        Folders().clear();
+    }
+
+    bool MayExist(const std::filesystem::path& File)
+    {
+        const std::wstring DirKey = LowerKey(NormalDir(File.parent_path()).native()), Name = LowerKey(File.filename().native());
+        std::lock_guard<std::mutex> G(DirsLock);
+        return MayExistLocked(DirKey, Name);
+    }
+
+    bool Claim(const std::filesystem::path& File)
+    {
+        const std::wstring DirKey = LowerKey(NormalDir(File.parent_path()).native()), Name = LowerKey(File.filename().native());
+        std::lock_guard<std::mutex> G(DirsLock);
+        const bool Was = MayExistLocked(DirKey, Name);
+        // kept even for a folder not made yet: the thread making it may find it Created after this
+        Folders()[DirKey].Claimed.insert(Name);
+        return Was;
+    }
+
+    bool HasFile(const std::filesystem::path& File)
     {
         std::error_code Ec;
-        std::filesystem::create_directories(P.parent_path(), Ec);
+        return MayExist(File) && std::filesystem::is_regular_file(File, Ec);
+    }
+
+    bool WriteBytes(const std::filesystem::path& P, const uint8_t* Data, size_t Size)
+    {
+        Claim(P);   // before the file exists: a skip check (HasFile) then asks the disk
+        MakeDirs(P.parent_path());
         std::ofstream O(P, std::ios::binary);
         if (Size) O.write(reinterpret_cast<const char*>(Data), (std::streamsize)Size);
         return (bool)O;
@@ -153,71 +254,117 @@ bool WriteImage(const XImageDDS& Dds, const std::string& Path, const std::string
                                      Dds.ImagePatchType, BuiltIn ? 4 : 0);
 }
 
-struct ImageSink::State
+struct WorkerPool::State
 {
-    struct Job
-    {
-        std::unique_ptr<XImageDDS> Dds;
-        std::string Path;
-    };
-    unsigned Workers = 0;
-    std::mutex QueueLock, StatsLock;
+    std::mutex QueueLock;
     std::condition_variable HasJob, HasRoom;
-    std::deque<Job> Queue;
+    std::deque<std::function<void()>> Queue;
+    size_t MaxQueued = 64;
     bool Finished = false;
-    static constexpr size_t MaxQueued = 64;
-    std::vector<std::thread> Pool;
-    std::vector<std::tuple<std::string, std::string, size_t>> Links;   // link, target, tag
-    ImageSinkStats Stats;
+    std::vector<std::thread> Threads;
 };
 
-ImageSink::ImageSink(std::string Format) : St(std::make_unique<State>()), Fmt(std::move(Format))
+unsigned WorkerPool::DefaultWorkers()
 {
-    Ext = ImageExtension(Fmt);
-    UseDedup = !EnvSet("GH_NODEDUP", "GH_BO4_NODEDUP");
-    St->Workers = std::max(1u, std::min(8u, std::thread::hardware_concurrency() / 2));
     char Env[16] = {};
-    if (EnvValue("GH_CONVERT_THREADS", "GH_BO4_CONVERT_THREADS", Env, sizeof(Env))) St->Workers = (unsigned)atoi(Env);
-    Times().Workers = St->Workers;
+    if (EnvValue("GH_CONVERT_THREADS", "GH_BO4_CONVERT_THREADS", Env, sizeof(Env))) return (unsigned)atoi(Env);
+    // physical cores (SMT siblings count once); half of them, 70% past 12, so the machine stays usable
+    unsigned Cores = 0;
+    DWORD Bytes = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &Bytes);
+    std::vector<uint8_t> Info(Bytes);
+    if (Bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data()), &Bytes))
+        for (DWORD At = 0; At < Bytes; At += reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data() + At)->Size)
+            Cores++;
+    if (Cores == 0) Cores = std::max(1u, std::thread::hardware_concurrency() / 2);
+    return std::max(1u, Cores > 12 ? Cores * 7 / 10 : Cores / 2);
+}
+
+WorkerPool::WorkerPool(unsigned Workers, size_t MaxQueued) : St(std::make_unique<State>())
+{
+    St->MaxQueued = std::max<size_t>(1, MaxQueued);
     State* S = St.get();
-    const std::string F = Fmt;
-    for (unsigned K = 0; K < S->Workers; K++)
-        S->Pool.emplace_back([S, F]() {
+    for (unsigned K = 0; K < Workers; K++)
+        S->Threads.emplace_back([S]() {
             // the WIC fallback (a PNG fpng cannot take) needs COM on the thread that calls it. Never
-            // CoUninitialize here: tearing the process's MTA down after one sink left DirectXTex's
+            // CoUninitialize here: tearing the process's MTA down after one pool left DirectXTex's
             // cached WIC factory dangling for the next.
             CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             for (;;)
             {
-                State::Job J;
+                std::function<void()> Job;
                 {
                     std::unique_lock<std::mutex> L(S->QueueLock);
                     S->HasJob.wait(L, [S]() { return !S->Queue.empty() || S->Finished; });
                     if (S->Queue.empty()) break;
-                    J = std::move(S->Queue.front());
+                    Job = std::move(S->Queue.front());
                     S->Queue.pop_front();
                 }
                 S->HasRoom.notify_one();
-                const auto Start = std::chrono::steady_clock::now();
-                const bool Ok = J.Dds && Put(*J.Dds, J.Path, F);
-                Times().ConvertUs += Micros(Start);
-                Times().Converted++;
-                std::lock_guard<std::mutex> G(S->StatsLock);
-                if (Ok) S->Stats.Written++; else S->Stats.Failed++;
+                Job();
             }
         });
 }
 
-ImageSink::~ImageSink()
+WorkerPool::~WorkerPool()
+{
+    Drain();
+}
+
+unsigned WorkerPool::Workers() const
+{
+    return (unsigned)St->Threads.size();
+}
+
+void WorkerPool::Post(std::function<void()> Job)
+{
+    if (St->Threads.empty())
+    {
+        Job();
+        return;
+    }
+    {
+        std::unique_lock<std::mutex> L(St->QueueLock);
+        const auto Room = [this]() { return St->Queue.size() < St->MaxQueued; };
+        if (!Room())
+        {
+            // timed only when it blocks: the pool is what this thread waits on
+            const auto Start = std::chrono::steady_clock::now();
+            St->HasRoom.wait(L, Room);
+            Times().QueueWaitUs += Micros(Start);
+        }
+        St->Queue.push_back(std::move(Job));
+    }
+    St->HasJob.notify_one();
+}
+
+void WorkerPool::Drain()
 {
     {
         std::lock_guard<std::mutex> L(St->QueueLock);
         St->Finished = true;
     }
     St->HasJob.notify_all();
-    for (auto& T : St->Pool)
+    for (auto& T : St->Threads)
         if (T.joinable()) T.join();
 }
+
+struct ImageSink::State
+{
+    std::mutex StatsLock;
+    std::vector<std::tuple<std::string, std::string, size_t>> Links;   // link, target, tag
+    ImageSinkStats Stats;
+    WorkerPool Pool;   // last: destroyed (drained) first, while its jobs' stats are still there
+};
+
+ImageSink::ImageSink(std::string Format) : St(std::make_unique<State>()), Fmt(std::move(Format))
+{
+    Ext = ImageExtension(Fmt);
+    UseDedup = !EnvSet("GH_NODEDUP", "GH_BO4_NODEDUP");
+    Times().Workers = St->Pool.Workers();
+}
+
+ImageSink::~ImageSink() = default;
 
 bool ImageSink::LinkIfKnown(uint64_t Key, const std::string& Path, size_t Tag)
 {
@@ -232,42 +379,38 @@ bool ImageSink::LinkIfKnown(uint64_t Key, const std::string& Path, size_t Tag)
 
 void ImageSink::Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path)
 {
-    State::Job J{std::move(Dds), Path};
-    if (St->Workers == 0)
-    {
+    // a std::function is copyable: the image goes in shared
+    St->Pool.Post([S = St.get(), F = Fmt, D = std::shared_ptr<XImageDDS>(std::move(Dds)), Path]() {
         const auto Start = std::chrono::steady_clock::now();
-        const bool Ok = J.Dds && Put(*J.Dds, J.Path, Fmt);
+        const bool Ok = D && Put(*D, Path, F);
         Times().ConvertUs += Micros(Start);
         Times().Converted++;
-        if (Ok) St->Stats.Written++; else St->Stats.Failed++;
-        return;
-    }
-    {
-        std::unique_lock<std::mutex> L(St->QueueLock);
-        const auto Room = [this]() { return St->Queue.size() < State::MaxQueued; };
-        if (!Room())
-        {
-            // timed only when it blocks: the pool is what this thread waits on
-            const auto Start = std::chrono::steady_clock::now();
-            St->HasRoom.wait(L, Room);
-            Times().QueueWaitUs += Micros(Start);
-        }
-        St->Queue.push_back(std::move(J));
-    }
-    St->HasJob.notify_one();
+        std::lock_guard<std::mutex> G(S->StatsLock);
+        if (Ok) S->Stats.Written++; else S->Stats.Failed++;
+    });
+}
+
+void ImageSink::Write(std::function<std::unique_ptr<XImageDDS>()> Build, const std::string& Path)
+{
+    St->Pool.Post([S = St.get(), F = Fmt, B = std::move(Build), Path]() {
+        const auto Start = std::chrono::steady_clock::now();
+        std::unique_ptr<XImageDDS> D;
+        try { D = B(); }
+        catch (const std::exception&) {}
+        if (!D) return;
+        const bool Ok = Put(*D, Path, F);
+        Times().ConvertUs += Micros(Start);
+        Times().Converted++;
+        std::lock_guard<std::mutex> G(S->StatsLock);
+        if (Ok) S->Stats.Written++; else S->Stats.Failed++;
+    });
 }
 
 ImageSinkStats ImageSink::Finish(const std::function<std::unique_ptr<XImageDDS>(size_t)>& Rebuild, size_t& Missing,
                                  const std::function<uint64_t(size_t)>& KeyOf)
 {
-    {
-        std::lock_guard<std::mutex> L(St->QueueLock);
-        St->Finished = true;
-    }
-    St->HasJob.notify_all();
     const auto Drain = std::chrono::steady_clock::now();
-    for (auto& T : St->Pool)
-        if (T.joinable()) T.join();
+    St->Pool.Drain();
     Times().DrainUs += Micros(Drain);
 
     // Every file this sink wrote now exists: make the links.
@@ -319,8 +462,7 @@ bool WriteStringTable(const std::string& DataDir, const std::string& Name, uint3
     std::string File = ExportNaming::SafeFileName(Name);
     if (File.size() < 4 || ExportNaming::Lower(File.substr(File.size() - 4)) != ".csv") File += ".csv";
     const std::filesystem::path Dir = std::filesystem::path(DataDir) / "stringtables";
-    std::error_code Ec;
-    std::filesystem::create_directories(Dir, Ec);
+    MakeDirs(Dir);
     std::ofstream Out(Dir / File, std::ios::binary | std::ios::trunc);
     if (!Out) return false;
     for (uint32_t Row = 0; Row < Rows; Row++)
@@ -531,7 +673,7 @@ size_t PngCopies(const std::vector<std::pair<std::string, std::string>>& SourceT
             Done++;
             continue;
         }
-        fs::create_directories(fs::path(Target).parent_path(), Ec);
+        MakeDirs(fs::path(Target).parent_path());
         if (ExportNaming::Lower(fs::path(Source).extension().string()) == ".png")
         {
             const std::wstring W = Strings::ToUnicodeString(Target);
@@ -595,7 +737,7 @@ size_t UnsignedDdsCopies(const std::vector<std::pair<std::string, std::string>>&
         std::memcpy(Data.data() + 128, &R->To, 4);
         for (size_t At = Header; At + R->Block <= Data.size(); At += R->Block)
             for (const size_t B : R->Bytes) Data[At + B] = (char)(Data[At + B] ^ 0x80);
-        fs::create_directories(fs::path(Target).parent_path(), Ec);
+        MakeDirs(fs::path(Target).parent_path());
         std::ofstream Out(Target, std::ios::binary | std::ios::trunc);
         Out.write(Data.data(), (std::streamsize)Data.size());
         if (Out) Done++;
@@ -682,7 +824,7 @@ size_t ResizedDdsCopies(const std::vector<std::pair<std::string, std::string>>& 
             }
             Final = &Out;
         }
-        fs::create_directories(fs::path(Target).parent_path(), Ec);
+        MakeDirs(fs::path(Target).parent_path());
         if (SUCCEEDED(SaveToDDSFile(Final->GetImages(), Final->GetImageCount(), Final->GetMetadata(), DDS_FLAGS_NONE,
                                     Strings::ToUnicodeString(Target).c_str())))
             Done++;
@@ -696,6 +838,81 @@ size_t ResizedDdsCopies(const std::vector<std::pair<std::string, std::string>>& 
 int ExportModel(const CoDModel_t& Model, const std::string& Dir, const ModelTextures& Textures, std::string& Crash)
 {
     return Guarded([&]() { return ModelSeh(&Model, &Dir, &Textures); }, Crash);
+}
+
+namespace
+{
+    int ModelFilesSeh(const std::function<void()>* Job)
+    {
+        __try
+        {
+            (*Job)();
+            return 0;
+        }
+        __except (NoteCrash(GetExceptionInformation())) { return -1; }
+    }
+}
+
+struct ModelFilesOnPool::State
+{
+    std::mutex Lock;
+    std::condition_variable Done;
+    std::set<std::string> Busy;   // the Keys being written
+    std::vector<std::pair<size_t, std::string>> Failed;
+    size_t Tag = 0;
+    LiveExport::ModelFileJobs Post;
+    const LiveExport::ModelFileJobs* Was = nullptr;   // the thread's before this one
+    bool Installed = false;
+    // a few models queued: one may weigh hundreds of MB
+    WorkerPool Pool{ WorkerPool::DefaultWorkers(), 8 };
+};
+
+ModelFilesOnPool::ModelFilesOnPool() : St(std::make_unique<State>())
+{
+    State* S = St.get();
+    S->Post = [S](const std::string& Key, std::function<void()> Job) {
+        {
+            // the same files written twice in a run (one name twice in a zone): one after the other,
+            // the last as it would be written now
+            std::unique_lock<std::mutex> L(S->Lock);
+            S->Done.wait(L, [&]() { return !S->Busy.count(Key); });
+            S->Busy.insert(Key);
+        }
+        S->Pool.Post([S, Key, Tag = S->Tag, Job = std::move(Job)]() {
+            std::string Crash;
+            const int Code = Guarded([&]() { return ModelFilesSeh(&Job); }, Crash);
+            {
+                std::lock_guard<std::mutex> L(S->Lock);
+                if (Code != 0) S->Failed.emplace_back(Tag, "code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
+                S->Busy.erase(Key);
+            }
+            S->Done.notify_all();
+        });
+    };
+    S->Was = LiveExport::WriteModelFilesWith(&S->Post);
+    S->Installed = true;
+}
+
+ModelFilesOnPool::~ModelFilesOnPool()
+{
+    Finish();
+}
+
+void ModelFilesOnPool::Owner(size_t Tag)
+{
+    St->Tag = Tag;
+}
+
+std::vector<std::pair<size_t, std::string>> ModelFilesOnPool::Finish()
+{
+    if (St->Installed) LiveExport::WriteModelFilesWith(St->Was);
+    St->Installed = false;
+    St->Pool.Drain();
+    std::vector<std::pair<size_t, std::string>> Out;
+    std::lock_guard<std::mutex> L(St->Lock);
+    Out.swap(St->Failed);
+    std::sort(Out.begin(), Out.end());
+    return Out;
 }
 
 int ExportComposite(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& Dir, const ModelTextures& Textures,
@@ -717,11 +934,220 @@ int ExportSound(const CoDSound_t& Sound, const std::string& Dir, const std::stri
 
 namespace
 {
+    // One sound for a SoundSink's pool: its source, the bytes it points into (Keep), where it goes
+    struct SoundJob
+    {
+        SoundSource Source;
+        std::shared_ptr<const void> Keep;
+        std::filesystem::path Path;
+        std::string Format;
+        bool AsRead = false;   // the bytes as they are (ICoDGame::SoundsAsRead, an empty sound)
+        bool Ok = false;
+        std::string Why;
+    };
+
+    void WriteSoundJob(SoundJob* J)
+    {
+        J->Ok = J->AsRead ? WriteBytes(J->Path, J->Source.Data, J->Source.Size) : WriteSound(J->Source, J->Path, J->Format, &J->Why);
+    }
+
+    int WriteSoundJobSeh(SoundJob* J)
+    {
+        __try { WriteSoundJob(J); return 0; }
+        __except (NoteCrash(GetExceptionInformation())) { return -1; }
+    }
+
+    void ReadSoundInto(const ICoDGame* Game, const CoDSound_t* Sound, std::unique_ptr<XSound>* Out)
+    {
+        *Out = Game->ReadXSound(Sound);
+    }
+
+    int ReadSoundSeh(const ICoDGame* Game, const CoDSound_t* Sound, std::unique_ptr<XSound>* Out)
+    {
+        __try { ReadSoundInto(Game, Sound, Out); return 0; }
+        __except (NoteCrash(GetExceptionInformation())) { return -1; }
+    }
+}
+
+struct SoundSink::State
+{
+    std::mutex DoneLock;   // the callbacks, one at a time
+    // the files being written (lower case): a second sound to the same file waits for the first,
+    // so that the last one met is the file left, as when they were written one after the other
+    std::mutex PathsLock;
+    std::condition_variable PathDone;
+    std::unordered_set<std::wstring> InFlight;
+    WorkerPool Pool;       // last: destroyed (drained) first, while the locks are still there
+
+    // J written on the pool (inline under a DrySounds); Then(code of the guarded write, Crash)
+    // under DoneLock
+    static std::wstring KeyOf(const std::filesystem::path& Path)
+    {
+        std::wstring Key = Path.lexically_normal().native();
+        for (wchar_t& C : Key) C = (wchar_t)towlower(C);
+        return Key;
+    }
+
+    void Run(std::shared_ptr<SoundJob> J, std::function<void(int Code, const std::string& Crash)> Then, bool Inline = false)
+    {
+        std::wstring Key = KeyOf(J->Path);
+        {
+            std::unique_lock<std::mutex> L(PathsLock);
+            PathDone.wait(L, [&]() { return !InFlight.count(Key); });
+            InFlight.insert(Key);
+        }
+        auto Job = [this, J = std::move(J), Then = std::move(Then), Key = std::move(Key)]() {
+            std::string Crash;
+            const int Code = Guarded([&]() { return WriteSoundJobSeh(J.get()); }, Crash);
+            if (Code < 0) J->Ok = false;
+            // the bytes freed before waiting on a lock
+            J->Keep.reset();
+            {
+                std::lock_guard<std::mutex> L(PathsLock);
+                InFlight.erase(Key);
+            }
+            PathDone.notify_all();
+            if (!Then) return;
+            std::lock_guard<std::mutex> G(DoneLock);
+            Then(Code, Crash);
+        };
+        if (Inline || DrySoundsActive()) Job();
+        else Pool.Post(std::move(Job));
+    }
+};
+
+SoundSink::SoundSink(std::string Format) : St(std::make_unique<State>()), Fmt(std::move(Format))
+{
+    SkipPrevious = SettingsManager::GetSetting("skipprevsound") == "true";
+}
+
+SoundSink::~SoundSink()
+{
+    Finish();
+}
+
+void SoundSink::Write(const SoundSource& S, std::filesystem::path Path, WriteDone Done, std::shared_ptr<const void> Keep)
+{
+    auto J = std::make_shared<SoundJob>();
+    J->Source = S;
+    J->Path = std::move(Path);
+    J->Format = Fmt;
+    // a copy of what the source points at (an Opus source may read past Size, up to Available)
+    if (Keep) J->Keep = std::move(Keep);
+    else if (S.Data != nullptr)
+    {
+        auto Copy = std::make_shared<std::vector<uint8_t>>(S.Data, S.Data + std::max(S.Size, S.Available));
+        J->Source.Data = Copy->data();
+        J->Keep = std::move(Copy);
+    }
+    SoundJob* Raw = J.get();
+    St->Run(std::move(J), [Raw, Done = std::move(Done)](int Code, const std::string& Crash) {
+        if (Done) Done(Code >= 0 && Raw->Ok, Raw->Why, Crash);
+    });
+}
+
+void SoundSink::Export(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, ExportDone Done)
+{
+    ExportOn(Game, Sound, Dir, Extension, std::move(Done), false);
+}
+
+int SoundSink::ExportNow(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, std::string& Crash)
+{
+    int Code = -1;
+    ExportOn(Game, Sound, Dir, Extension, [&](int C, const std::string& Why) { Code = C, Crash = Why; }, true);
+    return Code;
+}
+
+void SoundSink::WaitFor(const std::filesystem::path& Path)
+{
+    const std::wstring Key = State::KeyOf(Path);
+    std::unique_lock<std::mutex> L(St->PathsLock);
+    St->PathDone.wait(L, [&]() { return !St->InFlight.count(Key); });
+}
+
+void SoundSink::ExportOn(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, ExportDone Done,
+                         bool Inline)
+{
+    const auto Report = [&](int Code, const std::string& Crash) {
+        if (!Done) return;
+        std::lock_guard<std::mutex> G(St->DoneLock);
+        Done(Code, Crash);
+    };
+    // LiveExport::ExportSound's path, built the same way
+    std::string Full;
+    std::string Crash;
+    std::unique_ptr<XSound> Read;
+    const int ReadCode = Guarded([&]() {
+        Full = (std::filesystem::path(Dir) / (Sound.AssetName + Extension)).string();
+        if (SkipPrevious && HasFile(Full)) return 1;
+        return Game == nullptr ? 0 : ReadSoundSeh(Game, &Sound, &Read);
+    }, Crash);
+    if (ReadCode < 0) return Report(-1, Crash);
+    if (ReadCode == 1) return Report(static_cast<int>(ExportGameResult::Success), "");
+    // nothing read: a failure the run reports (not a sound counted written)
+    if (Read == nullptr) return Report(static_cast<int>(ExportGameResult::UnknownError), "");
+
+    auto J = std::make_shared<SoundJob>();
+    J->AsRead = Game->SoundsAsRead() || Read->DataSize == 0;
+    J->Source = SourceOf(*Read);
+    J->Keep = std::shared_ptr<const XSound>(std::move(Read));
+    J->Path = Full;
+    J->Format = Fmt;
+    SoundJob* Raw = J.get();
+    St->Run(std::move(J), [Raw, Done = std::move(Done)](int Code, const std::string& Crash) {
+        if (!Done) return;
+        if (Code < 0) Done(-1, Crash);
+        else Done(static_cast<int>(Raw->Ok ? ExportGameResult::Success : ExportGameResult::UnknownError), "");
+    }, Inline);
+}
+
+void SoundSink::Locked(const std::function<void()>& F)
+{
+    std::lock_guard<std::mutex> G(St->DoneLock);
+    F();
+}
+
+void SoundSink::Finish()
+{
+    St->Pool.Drain();
+}
+
+namespace
+{
+    // Two Ogg files whose pages are the same but for the stream's serial (bytes 14-17 of each page
+    // header) and so the page's CRC (22-25): an Opus encode's serial comes from its file's name,
+    // the same sound under <name>_2 differs only there
+    bool SameOggPages(const std::filesystem::path& A, const std::filesystem::path& B)
+    {
+        std::vector<uint8_t> Da, Db;
+        if (!ReadBytes(A, Da) || !ReadBytes(B, Db) || Da.size() != Db.size()) return false;
+        for (size_t At = 0; At < Da.size();)
+        {
+            if (At + 27 > Da.size() || std::memcmp(Da.data() + At, "OggS", 4) != 0) return false;
+            const size_t Segments = Da[At + 26];
+            if (At + 27 + Segments > Da.size()) return false;
+            size_t Body = 0;
+            for (size_t K = 0; K < Segments; K++) Body += Da[At + 27 + K];
+            const size_t End = At + 27 + Segments + Body;
+            if (End > Da.size()) return false;
+            for (size_t I = At; I < End; I++)
+            {
+                const size_t In = I - At;
+                if ((In >= 14 && In < 18) || (In >= 22 && In < 26)) continue;
+                if (Da[I] != Db[I]) return false;
+            }
+            At = End;
+        }
+        return true;
+    }
+
     bool SameBytes(const std::filesystem::path& A, const std::filesystem::path& B)
     {
         std::error_code Ec;
         const auto Size = std::filesystem::file_size(A, Ec);
         if (Ec || Size != std::filesystem::file_size(B, Ec) || Ec) return false;
+        const std::string Ext = ExportNaming::Lower(A.extension().string());
+        if (Ext == ".opus" || Ext == ".ogg") return SameOggPages(A, B);
         std::ifstream Fa(A, std::ios::binary), Fb(B, std::ios::binary);
         std::vector<char> Ba(1 << 16), Bb(1 << 16);
         while (Fa && Fb)
@@ -734,6 +1160,49 @@ namespace
     }
 }
 
+void SoundFiles::Write(SoundSink& Sink, const ICoDGame* Game, const CoDSound_t& Sound, const std::filesystem::path& Dir,
+                       const std::string& Extension, std::function<void(int Code, const std::string& Crash, const std::filesystem::path& File)> Done)
+{
+    const auto Key = [&](const std::string& Stem) { return ExportNaming::Lower((Dir / (Stem + Extension)).string()); };
+    if (!Taken.contains(Key(Sound.AssetName)))
+    {
+        // the name's first file: on the pool
+        Taken.insert(Key(Sound.AssetName));
+        MakeDirs(Dir);
+        Sink.Export(Game, Sound, Dir.string(), Extension,
+                    [Done = std::move(Done), File = Dir / (Sound.AssetName + Extension)](int Code, const std::string& Crash) {
+                        if (Done) Done(Code, Crash, File);
+                    });
+        return;
+    }
+    // a second sound under that name: written here, once the name's first file is (the copy is
+    // compared with it), as Write does
+    std::string Stem = Sound.AssetName;
+    for (size_t N = 2; Taken.contains(Key(Stem)); N++) Stem = std::format("{}_{}", Sound.AssetName, N);
+    Taken.insert(Key(Stem));
+    CoDSound_t Named = Sound;
+    Named.AssetName = Stem;
+    MakeDirs(Dir);
+    Sink.WaitFor((std::filesystem::path(Dir.string()) / (Sound.AssetName + Extension)).string());
+    std::string Crash;
+    const int Code = Sink.ExportNow(Game, Named, Dir.string(), Extension, Crash);
+    std::filesystem::path Written = Dir / (Stem + Extension);
+    if (Code == static_cast<int>(ExportGameResult::Success))
+    {
+        const std::filesystem::path First = Dir / (Sound.AssetName + Extension);
+        std::error_code Ec;
+        if (SameBytes(First, Written))
+        {
+            std::filesystem::remove(Written, Ec);
+            Taken.erase(Key(Stem));
+            Written = First;
+            Copies++;
+        }
+        else Renamed++;
+    }
+    if (Done) Sink.Locked([&] { Done(Code, Crash, Written); });
+}
+
 int SoundFiles::Write(const CoDSound_t& Sound, const std::filesystem::path& Dir, const std::string& Extension, std::string& Crash,
                       std::filesystem::path* File)
 {
@@ -744,7 +1213,7 @@ int SoundFiles::Write(const CoDSound_t& Sound, const std::filesystem::path& Dir,
     CoDSound_t Named = Sound;
     Named.AssetName = Stem;
     std::error_code Ec;
-    std::filesystem::create_directories(Dir, Ec);
+    MakeDirs(Dir);
     const int Code = ExportSound(Named, Dir.string(), Extension, Crash);
     std::filesystem::path Written = Dir / (Stem + Extension);
     if (Code == static_cast<int>(ExportGameResult::Success) && Stem != Sound.AssetName)

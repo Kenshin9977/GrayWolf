@@ -9,6 +9,7 @@
 #include "ExportWriters.h"
 
 #include "CoDAssets.h"
+#include "CoDPackageCache.h"
 #include "CoDAssetType.h"
 #include "CoDRawImageTranslator.h"
 #include "DBGameAssets.h"
@@ -24,6 +25,7 @@
 #include "Games/Treyarch/TreyarchPackages.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <format>
 #include <filesystem>
@@ -337,6 +339,19 @@ bool KeepZoneForUiRes(const std::string& Zone, const std::string& UiRes)
 
 namespace
 {
+    std::unique_ptr<XImageDDS> TranslateDds(const ImageInfo& Img, std::unique_ptr<uint8_t[]>& Data, uint32_t Size,
+                                            uint32_t Width, uint32_t Height, uint8_t Levels, bool Cube);
+
+    // A streamed image read from the packages: true when it is one (else BuildDds, the zone's own
+    // pixels); Finish then gives the package object, decompressed on whatever thread calls it.
+    bool ReadStreamed(const ImageInfo& Img, CoDPackageCache* Packages, CoDPackageCache::PackageObjectFinish& Finish)
+    {
+        const bool InZone = !Img.Streamed && Img.PayloadPos >= 0;
+        if (InZone || Packages == nullptr || Img.MipHash == 0 || Img.MipSize == 0) return false;
+        Finish = Packages->ReadPackageObject(Img.MipHash, (int32_t)Img.MipSize);
+        return true;
+    }
+
     // An image as DDS: in-zone pixels from the zone, streamed ones from the packages by the widest
     // mip's key. Null when neither is there; FromPackages tells which path it took.
     std::unique_ptr<XImageDDS> BuildDds(ByteView Zone, const ImageInfo& Img,
@@ -352,7 +367,7 @@ namespace
             // a cube map keeps its six faces; an array keeps its first layer
             const uint32_t Layers = (!Cube && Img.MapType != 3 && Img.Depth > 1) ? Img.Depth : 1;
             Size = Img.PayloadSize / Layers;
-            Data = std::make_unique<uint8_t[]>(Size);
+            Data = std::make_unique_for_overwrite<uint8_t[]>(Size);
             std::memcpy(Data.get(), Zone.data() + Img.PayloadPos, Size);
         }
         else if (Packages != nullptr && Img.MipHash != 0 && Img.MipSize != 0)
@@ -363,6 +378,13 @@ namespace
             Levels = 1;
             FromPackages = Data && Size;
         }
+        return TranslateDds(Img, Data, Size, Width, Height, Levels, Cube);
+    }
+
+    // An image's pixels as DDS (BuildDds' last step)
+    std::unique_ptr<XImageDDS> TranslateDds(const ImageInfo& Img, std::unique_ptr<uint8_t[]>& Data, uint32_t Size,
+                                            uint32_t Width, uint32_t Height, uint8_t Levels, bool Cube)
+    {
         if (!Data || Size == 0) return nullptr;
         // as GameBlackOps4::LoadXImage: the sRGB BC formats written as their UNORM twins
         uint32_t Format = Img.Format;
@@ -409,6 +431,24 @@ ExportStats ExportImages(ByteView Zone, const ZoneAssets& Assets,
     // blocks and encode - the CPU half of the work, done by the sink's pool while this thread reads
     // in disk order. Same bytes already exported (this zone or an earlier one) become a link: keyed
     // by content, not name, as a fifth of the names shared across zones are different images.
+    //
+    // A streamed image is only read here; the sink's pool decompresses and translates it (BuildDds'
+    // other half), so the next read is issued meanwhile. What the pool finds missing is counted
+    // there and its samples kept in read order, as the loop keeps them.
+    struct Pooled
+    {
+        std::mutex Lock;
+        std::atomic<size_t> FromPackages{ 0 };
+        std::vector<std::pair<size_t, std::string>> Missing;   // read order, why
+    };
+    const auto P = std::make_shared<Pooled>();
+    const auto Why = [](const ImageInfo& Img) {
+        char Text[256] = {};
+        snprintf(Text, sizeof(Text), "%s streamed=%d payload=%u at=%lld mips=%u mip_hash=%llx mip_size=%u %ux%u",
+                 Img.Name.c_str(), Img.Streamed ? 1 : 0, Img.PayloadSize, (long long)Img.PayloadPos,
+                 Img.Mips, (unsigned long long)Img.MipHash, Img.MipSize, Img.MipWidth, Img.MipHeight);
+        return std::string(Text);
+    };
     ExportWriters::ImageSink Sink;
     const std::string& Ext = Sink.Extension();
     std::set<std::string> Referenced, Defined;
@@ -433,20 +473,30 @@ ExportStats ExportImages(ByteView Zone, const ZoneAssets& Assets,
             S.Runtime++;
             continue;
         }
+        CoDPackageCache::PackageObjectFinish Finish;
+        if (ReadStreamed(Img, Packages, Finish))
+        {
+            Sink.Write([P, &Img, &Why, N, Finish = std::move(Finish)]() -> std::unique_ptr<XImageDDS> {
+                uint32_t Size = 0;
+                auto Data = Finish(Size);
+                if (Data && Size) P->FromPackages++;
+                auto Dds = TranslateDds(Img, Data, Size, Img.MipWidth, Img.MipHeight, 1, Img.MapType == 4 || Img.MapType == 5);
+                if (!Dds)
+                {
+                    std::lock_guard<std::mutex> G(P->Lock);
+                    P->Missing.emplace_back(N, Why(Img));
+                }
+                return Dds;
+            }, Path);
+            continue;
+        }
         bool FromPackages = false;
         auto Dds = BuildDds(Zone, Img, Packages, FromPackages);
         if (FromPackages) S.FromPackages++;
         if (!Dds)
         {
-            S.Missing++;
-            if (S.MissingSamples.size() < 12)
-            {
-                char Why[256] = {};
-                snprintf(Why, sizeof(Why), "%s streamed=%d payload=%u at=%lld mips=%u mip_hash=%llx mip_size=%u %ux%u",
-                         Img.Name.c_str(), Img.Streamed ? 1 : 0, Img.PayloadSize, (long long)Img.PayloadPos,
-                         Img.Mips, (unsigned long long)Img.MipHash, Img.MipSize, Img.MipWidth, Img.MipHeight);
-                S.MissingSamples.push_back(Why);
-            }
+            std::lock_guard<std::mutex> G(P->Lock);
+            P->Missing.emplace_back(N, Why(Img));
             continue;
         }
         Sink.Write(std::move(Dds), Path);
@@ -460,6 +510,12 @@ ExportStats ExportImages(ByteView Zone, const ZoneAssets& Assets,
         },
         S.Missing,
         [&](size_t Index) { return ContentKey(Zone, Assets.Images[Index], Ext); });
+    // the pool done: what it found missing, the first samples in read order
+    S.FromPackages += P->FromPackages;
+    std::sort(P->Missing.begin(), P->Missing.end());
+    S.Missing += P->Missing.size();
+    for (size_t K = 0; K < P->Missing.size() && S.MissingSamples.size() < 12; K++)
+        S.MissingSamples.push_back(std::move(P->Missing[K].second));
     S.Written += Written.Written;
     S.Failed += Written.Failed;
     S.Linked += Written.Linked;
@@ -545,14 +601,14 @@ ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, con
     const Bo4SoundBanks::Zone Banks = Bo4SoundBanks::Read(*FS, Zone);
     for (const auto& Why : Banks.Failures) NoteFailure(S, "bank", Why, 0, 2);
 
-    // the entries' samples read from the banks in place (Bo4SoundBanks::Reader) while they are written
+    // the entries' samples read from the banks in place (Bo4SoundBanks::Reader), in bank order, on
+    // this thread; decoded and written by the sink's pool. CoDAssets::Game is left alone: the
+    // reader is handed to the sink.
     const auto Reader = Bo4SoundBanks::Reader(*FS);
-    const ICoDGame* const SavedGame = CoDAssets::Game;
-    CoDAssets::Game = Reader.get();
-    struct Restore { const ICoDGame* Game; ~Restore() { CoDAssets::Game = Game; } } Restored{ SavedGame };
 
     const bool UseIndex = SettingsManager::GetSetting("usesabindexbo4", "false") == "true";
-    const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
+    ExportWriters::SoundSink Sink;
+    const std::string Extension = ExportWriters::SoundExtension(Sink.Format());
     std::error_code Ec;
     for (size_t N = 0; N < Banks.Entries.size(); N++)
     {
@@ -596,12 +652,13 @@ ExportStats ExportSounds(CoDPackageCache* Packages, const std::string& Zone, con
             S.Written++;
             continue;
         }
-        fs::create_directories(Dir, Ec);
-        std::string Crash;
-        const int Code = ExportWriters::ExportSound(Sound, Dir.string(), Extension, Crash);
-        if (Code == static_cast<int>(ExportGameResult::Success)) S.Written++;
-        else NoteFailure(S, "sound", Sound.AssetName, static_cast<int64_t>(E.Offset), Code);
+        ExportWriters::MakeDirs(Dir);
+        Sink.Export(Reader.get(), Sound, Dir.string(), Extension, [&S, Name = Sound.AssetName, Offset = E.Offset](int Code, const std::string&) {
+            if (Code == static_cast<int>(ExportGameResult::Success)) S.Written++;
+            else NoteFailure(S, "sound", Name, static_cast<int64_t>(Offset), Code);
+        });
     }
+    Sink.Finish();
     return S;
 }
 

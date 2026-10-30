@@ -73,7 +73,8 @@ namespace Updater
     Status StageApp(const Config& C, const Asset& App, std::string& StageDir, std::string& Message);
 
     // Starts a copy of this exe (`apply-update`) that waits for this process to exit, copies
-    // StageDir over AppDir and, with Relaunch, starts the new GrayWolf.exe.
+    // StageDir over AppDir and, with Relaunch, starts the new GrayWolf.exe. Refused (Message says
+    // which) while another GrayWolf.exe runs from AppDir, e.g. an `mcp` server.
     bool LaunchApply(const Config& C, const std::string& StageDir, bool Relaunch, std::string& Message);
 
     // The `apply-update` subcommand: the helper's side of LaunchApply. Returns a process exit code.

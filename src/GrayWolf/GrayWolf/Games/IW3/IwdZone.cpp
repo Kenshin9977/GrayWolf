@@ -10,6 +10,7 @@
 #include "CoDIWITranslator.h"
 #include "Image.h"
 #include "IWDCache.h"
+#include "ZipInflate.h"
 #include <miniz/miniz.h>
 
 #include <algorithm>
@@ -81,7 +82,7 @@ namespace
         if (At >= 0 && mz_zip_reader_file_stat(&Zip, (mz_uint)At, &Stat))
         {
             Out = std::make_unique<uint8_t[]>((size_t)Stat.m_uncomp_size);
-            if (mz_zip_reader_extract_to_mem(&Zip, (mz_uint)At, Out.get(), (size_t)Stat.m_uncomp_size, 0))
+            if (ZipInflate::Extract(&Zip, (mz_uint)At, Out.get(), (size_t)Stat.m_uncomp_size))
                 Size = (uint32_t)Stat.m_uncomp_size;
             else
                 Out.reset();
@@ -94,7 +95,7 @@ namespace
 
 namespace Iw3Family
 {
-    IwdZone::IwdZone(const std::string& Path, std::string InstallDir) : Iw32LevelZone(Path), Install(std::move(InstallDir))
+    IwdZone::IwdZone(const std::string& Path, std::string InstallDir) : Iw32LevelZone(Path), Install(std::move(InstallDir)), Mod(ModFolderOf(Path))
     {
         Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
         Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
@@ -152,7 +153,7 @@ namespace Iw3Family
     {
         if (Install.empty()) return;
         ServePackages(On, [this] {
-            if (!Iwd) Iwd = IwdPackagesOf(Install);
+            if (!Iwd) Iwd = IwdPackagesOf(Install, Mod);
             return SharedPackages(Iwd);
         });
     }
@@ -199,7 +200,7 @@ namespace Iw3Family
     void IwdZone::Weigh(Kind K, int64_t Pos, DiskGame::Weight& W) const
     {
         if (K != Kind::Image || Install.empty()) return;
-        const auto Packages = IwdPackagesOf(Install);
+        const auto Packages = IwdPackagesOf(Install, Mod);
         const std::string N = AssetName(Kind::Image, Pos);
         PackageCacheObject O;
         if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
@@ -209,7 +210,7 @@ namespace Iw3Family
     {
         if (!Install.empty())
         {
-            if (!Iwd) Iwd = IwdPackagesOf(Install);
+            if (!Iwd) Iwd = IwdPackagesOf(Install, Mod);
             uint32_t Size = 0;
             auto Data = Iwd->ExtractPackageObject(Iwd->HashPackageID(ImageName), Size);
             if (Data)
@@ -325,9 +326,12 @@ namespace Iw3Family
             }
         }
         if (Files.empty() || Install.empty()) return;
-        if (!Iwd) Iwd = IwdPackagesOf(Install);
+        if (!Iwd) Iwd = IwdPackagesOf(Install, Mod);
         const fs::path Root = C.KindDir(Kind::Sound);
         size_t N = 0;
+        // extracted here in the files' order, decoded and written by the sink's pool
+        ExportWriters::SoundSink Sink;
+        size_t Written = 0;   // the zone's counters are this thread's: added once the sink is done
         for (const auto& F : Files)
         {
             if (!C.Advance(N++, Files.size(), F)) break;
@@ -341,20 +345,26 @@ namespace Iw3Family
             if (!Data)
             {
                 Counter("sound_files_missing")++;
-                T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives");
+                Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives"); });
                 continue;
             }
-            const std::string Format = ExportWriters::SoundFormatSetting();
+            const std::string& Format = Sink.Format();
             const fs::path Out = Root / fs::path(F).parent_path() /
                                  ExportNaming::SafeFileName(ExportWriters::SoundFileName(fs::path(F).filename().string(), Format));
-            std::string Why;
-            if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(Data.get(), Size, F), Out.string(), Format, &Why))
-            {
-                Kt.Written++;
-                Counter("sound_files")++;
-            }
-            else
-                T.Fail(Name(), Kind::Sound, F, Why);
+            const uint8_t* Bytes = Data.get();
+            Sink.Write(ExportWriters::SoundSource::OfFile(Bytes, Size, F), Out.string(),
+                       [this, &Kt, &T, &Written, F](bool Ok, const std::string& Why, const std::string& Crash) {
+                           if (Ok)
+                           {
+                               Kt.Written++;
+                               Written++;
+                           }
+                           else
+                               T.Fail(Name(), Kind::Sound, F, Crash.empty() ? Why : Crash);
+                       },
+                       std::shared_ptr<const uint8_t[]>(std::move(Data)));
         }
+        Sink.Finish();
+        if (Written) Counter("sound_files") += Written;
     }
 }

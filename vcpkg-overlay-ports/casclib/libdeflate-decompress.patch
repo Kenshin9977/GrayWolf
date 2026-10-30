@@ -1,0 +1,91 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index dbcdbeb..5206d30 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,6 +56,8 @@ set(SRC_FILES
+ )
+ 
+ set(LINK_LIBS)
++find_package(libdeflate CONFIG REQUIRED)
++set(LINK_LIBS ${LINK_LIBS} $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
+ find_package(ZLIB)
+ if (ZLIB_FOUND)
+     set(LINK_LIBS ${LINK_LIBS} ZLIB::ZLIB)
+diff --git a/Config.cmake.in b/Config.cmake.in
+index 04135be..91b30d2 100644
+--- a/Config.cmake.in
++++ b/Config.cmake.in
+@@ -2,6 +2,7 @@
+ 
+ include(CMakeFindDependencyMacro)
+ find_dependency(ZLIB REQUIRED)
++find_dependency(libdeflate CONFIG)
+ 
+ include("${CMAKE_CURRENT_LIST_DIR}/@PROJECT_NAME@Targets.cmake")
+ check_required_components("@PROJECT_NAME@")
+diff --git a/src/CascDecompress.cpp b/src/CascDecompress.cpp
+index 19d7d0a..4026521 100644
+--- a/src/CascDecompress.cpp
++++ b/src/CascDecompress.cpp
+@@ -12,10 +12,15 @@
+ #include "CascLib.h"
+ #include "CascCommon.h"
+ 
++#include <libdeflate.h>
++
+ //-----------------------------------------------------------------------------
+-// Public functions
++// Local functions
+ 
+-DWORD CascDecompress(LPBYTE pbOutBuffer, PDWORD pcbOutBuffer, LPBYTE pbInBuffer, DWORD cbInBuffer)
++// The original zlib path, kept as the fallback: zlib accepts what libdeflate refuses
++// (a stream longer than the output buffer gives its first *pcbOutBuffer bytes, a truncated
++// stream gives what it has) and both must keep doing so.
++static DWORD CascDecompress_Zlib(LPBYTE pbOutBuffer, PDWORD pcbOutBuffer, LPBYTE pbInBuffer, DWORD cbInBuffer)
+ {
+     z_stream z;                        // Stream information for zlib
+     DWORD dwErrCode = ERROR_FILE_CORRUPT;
+@@ -54,3 +59,43 @@ DWORD CascDecompress(LPBYTE pbOutBuffer, PDWORD pcbOutBuffer, LPBYTE pbInBuffer,
+     pcbOutBuffer[0] = cbOutBuffer;
+     return dwErrCode;
+ }
++
++// One libdeflate decompressor per thread, freed when the thread ends
++struct CASC_DEFLATE_DECOMPRESSOR
++{
++    CASC_DEFLATE_DECOMPRESSOR() : p(libdeflate_alloc_decompressor())
++    {}
++
++    ~CASC_DEFLATE_DECOMPRESSOR()
++    {
++        if(p != NULL)
++            libdeflate_free_decompressor(p);
++    }
++
++    struct libdeflate_decompressor * p;
++};
++
++//-----------------------------------------------------------------------------
++// Public functions
++
++DWORD CascDecompress(LPBYTE pbOutBuffer, PDWORD pcbOutBuffer, LPBYTE pbInBuffer, DWORD cbInBuffer)
++{
++    static thread_local CASC_DEFLATE_DECOMPRESSOR Decompressor;
++    size_t cbActualOut = 0;
++
++    // libdeflate decodes a whole zlib stream that fits in the buffer, the common case
++    // (a CASC frame's content size is known). Trailing input after the stream is ignored,
++    // as zlib's single inflate() call did.
++    if(Decompressor.p != NULL)
++    {
++        if(libdeflate_zlib_decompress_ex(Decompressor.p, pbInBuffer, cbInBuffer, pbOutBuffer, pcbOutBuffer[0], NULL, &cbActualOut) == LIBDEFLATE_SUCCESS)
++        {
++            pcbOutBuffer[0] = (DWORD)cbActualOut;
++            return ERROR_SUCCESS;
++        }
++    }
++
++    // Anything else (output larger than the buffer, a truncated or corrupt stream)
++    // goes through zlib, so the result and the error code stay what they were
++    return CascDecompress_Zlib(pbOutBuffer, pcbOutBuffer, pbInBuffer, cbInBuffer);
++}

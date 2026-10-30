@@ -1,15 +1,13 @@
 #include "stdafx.h"
 
 #include "MaterialDescription.h"
-#include "CoDAssets.h"
+#include "Games/Treyarch/TreyarchMaterials.h"
 
 #include <algorithm>
 #include <cmath>
 #include <string>
 
-// Black Ops 3 materials (MaterialDescription.h): colour, normal (x,y in r,g), gloss,
-// specular colour, occlusion and emission by semantic. 4E07583B/AB07D475/01782DE2 are the
-// character shader's colour, normal and gloss. Layered ("micro tile blend") materials: two layers
+// Black Ops 3 materials: Treyarch's semantics (Games/Treyarch/TreyarchMaterials.h). Layered ("micro tile blend") materials: two layers
 // mixed by mixMap, their scales, tints and gloss read from the technique's static pixel cbuffer
 // at the offsets the t7 profile's shading.txt gives (from the shaders' RDEF).
 // Backlit materials: thicknessMap (inverted) and backlightScatterColor as the transmission; the
@@ -18,10 +16,11 @@
 // alpha or tintMask, the "color" recipe) as the colour tint, emissiveTint1 as the emission's colour.
 namespace
 {
-    // Texture semantics: the hash of the shader's own texture name (mod tools' techsetdefs).
-    constexpr uint32_t ColorMap = 0xA0AB1041, ColorMapDetail2 = 0x80951342, DetailMap1 = 0x55A604DC,
-                       DetailMap2 = 0x55A604DF, MixMap = 0x04429A80, GlossMap = 0x6D0A6C98, GlossMapDetail2 = 0x56B697BB,
-                       ThicknessMap = 0x2335512A, RevealMap = 0x34D849D5;
+    // Texture semantics of the layered, backlit and reveal shaders, beside Treyarch's common ones
+    using TreyarchMaterials::ColorMap;
+    using TreyarchMaterials::GlossMap;
+    constexpr uint32_t ColorMapDetail2 = 0x80951342, DetailMap1 = 0x55A604DC, DetailMap2 = 0x55A604DF, MixMap = 0x04429A80,
+                       GlossMapDetail2 = 0x56B697BB, ThicknessMap = 0x2335512A, RevealMap = 0x34D849D5;
 
     std::string TechsetName(const Materials::Source& M)
     {
@@ -161,26 +160,18 @@ namespace
         D.Alpha = Materials::AlphaMode::Opaque;
     }
 
-    class T7Materials final : public Materials::IAdapter
+    class T7Materials final : public Materials::SemanticAdapter
     {
     public:
-        const char* Name() const override { return "bo3"; }
-        Materials::Description Describe(const Materials::Source& M) const override
+        T7Materials() : SemanticAdapter("bo3", TreyarchMaterials::Table()) {}
+    protected:
+        void Refine(const Materials::Source& M, Materials::Description& D, bool) const override
         {
-            using Materials::Role;
-            Materials::Description D = Materials::DescribeBySemantic(M, {
-                { 0xA0AB1041, Role::Albedo },   { 0x4E07583B, Role::Albedo },
-                { 0x59D30D0F, Role::Normal },   { 0xAB07D475, Role::Normal },
-                { 0x6D0A6C98, Role::Gloss },    { 0x01782DE2, Role::Gloss },
-                { 0xEC443804, Role::Specular }, { 0x07176BF2, Role::Occlusion },
-                { 0x34614347, Role::Emissive },
-            });
             DescribeAlpha(M, D);
             if (M.BySemantic(ColorMapDetail2) && M.BySemantic(MixMap)) DescribeLayers(M, D);
             if (D.Layers.empty()) DescribeColor(M, D);   // the layers carry their own tints
             DescribeEmissive(M, D);
             DescribeBacklight(M, D);
-            return D;
         }
     };
     const T7Materials Adapter;

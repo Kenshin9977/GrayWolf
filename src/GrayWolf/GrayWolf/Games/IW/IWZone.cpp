@@ -372,10 +372,10 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
 {
     auto& Kt = T.Kinds[DiskGame::Kind::Sound];
     if (Banks.empty() && Patches.empty()) return;
-    auto SavedPool = std::move(CoDAssets::GameAssets);
-    auto SavedCache = std::move(CoDAssets::GamePackageCache);
-    CoDAssets::GameAssets = std::make_unique<AssetPool>();
-    CoDAssets::GamePackageCache = std::make_unique<CoDPackageCache>();
+    // the banks' own pool and cache, and the game ParseSAB names (the bank's owner), for this export
+    const CoDAssets::Scoped Pool(CoDAssets::GameAssets, std::make_shared<AssetPool>());
+    const CoDAssets::Scoped Cache(CoDAssets::GamePackageCache, std::make_shared<CoDPackageCache>());
+    const CoDAssets::Scoped Owner(CoDAssets::Game, CoDAssets::Game);
     size_t FromPatches = 0;   // the loaded assets from here on are the patch banks'
     for (const auto* List : { &Banks, &Patches })
     {
@@ -410,6 +410,8 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
             if (Kept == nullptr || (Patch && !KeptPatch) || (Patch == KeptPatch && Sound->AssetSize > Kept->AssetSize)) Kept = Sound, KeptPatch = Patch;
         }
     ExportWriters::SoundFiles Files;
+    // read here (the swapped globals are this thread's), decoded and written by the sink's pool
+    ExportWriters::SoundSink Sink;
     for (size_t N = 0; N < Loaded.size(); N++)
     {
         const auto* Sound = dynamic_cast<const CoDSound_t*>(Loaded[N]);
@@ -430,15 +432,15 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
         Kt.Seen++;
         CoDSound_t Named = *Sound;
         Named.AssetName = ExportNaming::SafeFileName(Sound->AssetName);
-        std::string Crash;
-        const int Code = Files.Write(Named, fs::path(Dir) / SoundBankFolder(Sound->FullPath), Extension, Crash);
-        if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-        else T.Fail(Name(), DiskGame::Kind::Sound, Sound->AssetName, std::format("code {} {}", Code, Crash.c_str()));
+        Files.Write(Sink, CoDAssets::Game, Named, fs::path(Dir) / SoundBankFolder(Sound->FullPath), Extension,
+                    [this, &Kt, &T, Asset = Sound->AssetName](int Code, const std::string& Crash, const fs::path&) {
+                        if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+                        else T.Fail(Name(), DiskGame::Kind::Sound, Asset, std::format("code {} {}", Code, Crash.c_str()));
+                    });
     }
+    Sink.Finish();
     if (Files.Renamed) Counter("sounds_renamed") += Files.Renamed;
     if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
-    CoDAssets::GameAssets = std::move(SavedPool);
-    CoDAssets::GamePackageCache = std::move(SavedCache);
 }
 
 std::vector<std::string> IWZone::InlineScriptStrings(ByteView Z)

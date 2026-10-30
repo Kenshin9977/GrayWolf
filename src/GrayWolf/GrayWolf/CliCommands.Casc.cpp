@@ -296,7 +296,7 @@ int RunXsubIndex(const CliOptions& Options)
 // as the live readers get them (XSUBCache), each written to <out>/<key>.bin
 int RunXsubExtract(const CliOptions& Options)
 {
-    CoDPackageCache* Packages = TreyarchPackages::Open<XSUBCache>(Options.XsubExtract);
+    const auto Packages = TreyarchPackages::Open<XSUBCache>(Options.XsubExtract);
     if (Packages == nullptr || Options.Out.empty())
     {
         CliReport(Options, "result=error\nreason=needs a Cold War install and --out <dir>\n");

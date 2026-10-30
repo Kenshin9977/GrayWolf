@@ -255,6 +255,7 @@ namespace GameInstalls
             I.Year = T.Year;
             I.DiskId = T.DiskId;
             I.Source = Source;
+            I.Language = Languages::OfInstall(Path);
             // the shared HQ folder (or one game's copy of it): one entry per game it holds, all on
             // the same folder
             bool Split = false;

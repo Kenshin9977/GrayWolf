@@ -65,6 +65,17 @@ namespace
         O.OatImageFormat = Cli.OatImageFmt;
         O.OatGdt = Cli.OatGdt;
         O.Threads = Cli.Threads;
+        // the command line's own default (all), not the GUI's saved choice: the output depends on
+        // the arguments; its words checked here, "auto" read when a run resolves it
+        O.Languages = Cli.Languages.empty() ? std::string(Languages::CliDefault) : Cli.Languages;
+        {
+            Languages::Choice Check;
+            if (!Languages::Resolve(O.Languages, Languages::Detected(), Check, Error))
+            {
+                Error = "--languages: " + Error;
+                return false;
+            }
+        }
         for (const Setting* S : Game.AllSettings())
             for (const SettingFlag& F : SettingFlags)
             {
@@ -126,10 +137,19 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
         Zones.clear();
         if (O.Install.empty() || !Game.ResolveZones(O.Install, { Input }, O, Zones, Why) || Zones.empty()) return Fail(Error);
     }
+    // a folder's or a pattern's zones in the run's languages (or of none); a zone named alone is
+    // exported whatever its language
+    Languages::Choice Spoken;
+    if (!RunLanguages(Game, O, Zones.empty() ? std::string() : Zones.front(), Spoken, Error)) return Fail(Error);
+    std::error_code Ec;
+    const size_t Named = Zones.size();
+    if (!fs::is_regular_file(Input, Ec)) Zones = InLanguages(Game, Zones, Spoken);
     C.ResolveSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
     const Totals T = Export(Game, O, Zones, C);
     const bool Ignored = !C.NameFilter.empty() && !Game.FiltersByName();
-    CliReport(Options, std::string("result=ok\ngame=") + Game.Id() + "\n" + (Ignored ? "name_filter=ignored\n" : "") + Report(T));
+    const std::string LanguageLines = "languages=" + Spoken.Text() + "\n" +
+                                  (Zones.size() < Named ? "zones_other_languages=" + std::to_string(Named - Zones.size()) + "\n" : "");
+    CliReport(Options, std::string("result=ok\ngame=") + Game.Id() + "\n" + (Ignored ? "name_filter=ignored\n" : "") + LanguageLines + Report(T));
     return 0;
 }
 
@@ -290,7 +310,9 @@ namespace
             if (Levels.count(Z)) S.Levels++, S.LevelFootprint += Ix->Footprint(Z);
         }
         S.LevelsKnown = Named != nullptr;
-        S.Weights = Sizes::WeighPicks(*Ix, Picked, S.Kinds, S.Formats);
+        Languages::Choice Spoken;
+        if (!RunLanguages(*Game, O, std::string(), Spoken, Error)) return Fail(Error);
+        S.Weights = Sizes::WeighPicks(*Ix, Picked, S.Kinds, S.Formats, Spoken);
         const Sizes::Estimate E = Sizes::Compute(C, S);
         std::string Lines;
         for (const auto& [K, R] : E.Kinds)
@@ -300,7 +322,7 @@ namespace
             Lines += std::string("sample_") + KindName(K) + "=" + std::to_string(M.Assets) + " assets from " + M.Zone + " in " +
                      std::to_string(M.Seconds) + " s" + (M.Cut ? " (cut)" : "") + ", wrote " + Sizes::Text(M.Listed ? Sizes::Written(M) : M.ZoneBytes) +
                      (M.Textures ? ", textures " + Sizes::Text(M.Textures) + " (listed " + Sizes::Text(M.ListedTextures) + ")" : "") + "\n";
-        CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nzones=" + std::to_string(Picked.size()) +
+        CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nlanguages=" + Spoken.Text() + "\nzones=" + std::to_string(Picked.size()) +
                                "\nbytes=" + std::to_string(E.Bytes) + "\ntext=" + (E.Approx ? "~" : "") + Sizes::Text(E.Bytes) +
                                "\nmeasure_seconds=" + std::to_string(Seconds) + "\n" + Lines);
         return 0;

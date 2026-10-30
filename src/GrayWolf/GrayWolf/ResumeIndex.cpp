@@ -42,7 +42,7 @@ namespace
             }
             B.push_back((char)V);
         }
-        void Zig(int64_t V) { Var((uint64_t)((V << 1) ^ (V >> 63))); }
+        void Zig(int64_t V) { Var(((uint64_t)V << 1) ^ (0 - ((uint64_t)V >> 63))); }
         void U64(uint64_t V) { B.append(reinterpret_cast<const char*>(&V), 8); }
         void Text(const std::string& S)
         {

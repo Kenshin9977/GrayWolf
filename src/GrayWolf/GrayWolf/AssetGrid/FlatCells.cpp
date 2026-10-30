@@ -48,7 +48,7 @@ namespace
         const ImVec2 C(Max.x - R * 2.0f, Max.y - R * 2.0f);
         const float T = (float)Time * 6.0f;
         DL->PathArcTo(C, R, T, T + 4.2f, 16);
-        DL->PathStroke(IM_COL32(120, 170, 230, 220), 0, 2.0f);
+        DL->PathStroke(IM_COL32(245, 165, 36, 220), 0, 2.0f);
     }
 
     class ImageCells : public IAssetCellRenderer
@@ -147,7 +147,7 @@ namespace
             {
                 const float X0 = Min.x + Pad + i * Step;
                 const float Y0 = MidY - std::max(W->Hi[i], 0.01f) * Amp, Y1 = MidY - std::min(W->Lo[i], -0.01f) * Amp;
-                DL->AddRectFilled(ImVec2(X0, Y0), ImVec2(X0 + std::max(1.0f, Step * 0.7f), Y1), IM_COL32(120, 170, 220, 220));
+                DL->AddRectFilled(ImVec2(X0, Y0), ImVec2(X0 + std::max(1.0f, Step * 0.7f), Y1), IM_COL32(150, 156, 168, 200));
             }
             char Len[32];
             const int Sec = (int)W->Seconds;

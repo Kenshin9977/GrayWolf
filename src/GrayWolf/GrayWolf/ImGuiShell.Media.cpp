@@ -7,6 +7,7 @@
 #include "CoDIWITranslator.h"  // TranslateIWI (raw CoD images)
 #include "CoDAssetType.h"      // XImageDDS
 
+#include "ImGuiTheme.h"        // the play button
 #include "imgui.h"
 #include "DirectXTex.h"
 
@@ -117,16 +118,20 @@ namespace ShellUi
 
         if (!Audio.IsLoaded())
         {
-            ImGui::TextDisabled("could not decode this audio (%s)", FormatLabel.c_str());
+            ImGui::TextDisabled("Could not decode this audio (%s)", FormatLabel.c_str());
             return;
         }
 
         const double Pos = Audio.Position(), Dur = Audio.Duration();
         const bool Playing = Audio.IsPlaying();
 
-        if (ImGui::Button(Playing ? "Pause" : "Play", ImVec2(90, 0))) Audio.TogglePlay();
+        {
+            char Label[64];
+            snprintf(Label, sizeof(Label), "%s  %s###play", Playing ? Theme::Icon::Pause : Theme::Icon::Play, Playing ? "Pause" : "Play");
+            if (Theme::PrimaryButton(Label, ImVec2(ImGui::GetFontSize() * 6.0f, 0))) Audio.TogglePlay();
+        }
         ImGui::SameLine();
-        if (ImGui::Button("Stop", ImVec2(90, 0))) Audio.Stop();
+        if (ImGui::Button("Stop", ImVec2(ImGui::GetFontSize() * 5.0f, 0))) Audio.Stop();
         ImGui::SameLine();
         // Plain ASCII: segoeui.ttf lacks these symbol glyphs (U+25B6/U+23F8/U+25A0) whatever the ranges.
         ImGui::TextUnformatted(Playing ? "  > playing" : (Pos > 0.0 && Pos < Dur ? "  || paused" : "  [] stopped"));
@@ -141,8 +146,8 @@ namespace ShellUi
         const bool WaveActive = ImGui::IsItemActive();
         ImDrawList* DL = ImGui::GetWindowDrawList();
         const ImU32 ColBg   = ImGui::GetColorU32(ImGuiCol_FrameBg);
-        const ImU32 ColWave = IM_COL32(120, 170, 220, 200);
-        const ImU32 ColPlayed = IM_COL32(200, 150, 62, 230);
+        const ImU32 ColWave = IM_COL32(150, 156, 168, 200);
+        const ImU32 ColPlayed = IM_COL32(245, 165, 36, 235);
         const ImU32 ColHead = IM_COL32(235, 235, 235, 255);
         DL->AddRectFilled(P0, ImVec2(P0.x + WaveSz.x, P0.y + WaveSz.y), ColBg, 4.0f);
         const float MidY = P0.y + WaveSz.y * 0.5f;

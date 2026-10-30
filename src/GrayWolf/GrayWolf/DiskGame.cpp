@@ -236,8 +236,7 @@ bool Context::Wants(Kind K, const std::string& Name) const
 std::string Context::KindDir(Kind K) const
 {
     const fs::path Dir = fs::path(OutRoot) / KindFolder(K);
-    std::error_code Ec;
-    fs::create_directories(Dir, Ec);
+    ExportWriters::MakeDirs(Dir);
     return Dir.string();
 }
 
@@ -321,6 +320,30 @@ bool IDiskGame::ResolveZones(const std::string& Install, const std::vector<std::
 std::string IDiskGame::InstallOfZone(const std::string& Zone) const
 {
     return fs::path(Zone).parent_path().string();
+}
+
+Languages::Detected InstallLanguages(const IDiskGame& Game, const ExportOptions& Options, const std::string& Zone)
+{
+    if (!Options.Install.empty()) return Languages::OfInstall(Options.Install);
+    return Zone.empty() ? Languages::Detected() : Languages::OfInstall(Game.InstallOfZone(Zone));
+}
+
+bool RunLanguages(const IDiskGame& Game, const ExportOptions& Options, const std::string& Zone, Languages::Choice& Out,
+                  std::string& Error)
+{
+    // the install's launcher files read only when "auto" asks
+    const std::string Option = Options.Languages.empty() ? std::string(Languages::CliDefault) : Options.Languages;
+    const bool Auto = ExportNaming::Lower(Option).find("auto") != std::string::npos;
+    return Languages::Resolve(Option, Auto ? InstallLanguages(Game, Options, Zone) : Languages::Detected(), Out, Error);
+}
+
+std::vector<std::string> InLanguages(const IDiskGame& Game, const std::vector<std::string>& Zones, const Languages::Choice& Wanted)
+{
+    if (Wanted.Every) return Zones;
+    std::vector<std::string> Out;
+    for (const auto& Z : Zones)
+        if (Wanted.Wants(Game.LanguageOfZone(Z))) Out.push_back(Z);
+    return Out.empty() ? Zones : Out;
 }
 
 Registration::Registration(const IDiskGame& Game)
@@ -511,6 +534,15 @@ namespace
                 std::vector<size_t> Zs;
                 for (size_t Z : Index->DefinedIn(A))
                     if (!Not.count(Stem(Index->Zones()[Z]))) Zs.push_back(Z);
+                // the zones of the run's languages or of none, as for a folder's zones; all of them
+                // when none is (the dependency is pulled whatever its language)
+                if (!Run.Languages.Every)
+                {
+                    std::vector<size_t> Spoken;
+                    for (size_t Z : Zs)
+                        if (Run.Languages.Wants(Game.LanguageOfZone(Index->Zones()[Z]))) Spoken.push_back(Z);
+                    if (!Spoken.empty()) Zs = std::move(Spoken);
+                }
                 if (!Zs.empty())
                 {
                     Candidates[A] = std::move(Zs);
@@ -929,7 +961,7 @@ namespace
 
 PartialScope::PartialScope(std::shared_ptr<const Selection> Only) : Previous(PartialWanted)
 {
-    PartialWanted = Only && !Only->empty() && Only->size() <= PartialAtMost ? std::move(Only) : nullptr;
+    PartialWanted = Only && !Only->empty() ? std::move(Only) : nullptr;
 }
 
 PartialScope::~PartialScope() { PartialWanted = Previous; }
@@ -947,8 +979,8 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     if (!Options.Install.empty()) Siren::AddSearchDir(fs::path(Options.Install).wstring());
     else if (!Zones.empty()) Siren::AddSearchDir(fs::path(Game.InstallOfZone(Zones.front())).wstring());
     const auto SoundsBefore = ExportWriters::SoundCounters();   // the sound writer's, this run's share added at the end
-    std::error_code Ec;
-    fs::create_directories(C.OutRoot, Ec);
+    ExportWriters::ForgetDirs();   // a folder deleted since the last run is made again
+    ExportWriters::MakeDirs(C.OutRoot);
     RunMonitor Mon(RunLogPath(C), [&](const std::string& Stalled) {
         if (!OnProgress) return;
         Progress W;
@@ -956,7 +988,20 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         W.Stalled = Stalled;
         OnProgress(W);
     });
-    Mon.Log(Header(Game, Options, Zones, C));
+    // the languages exported, "auto" read from the install's launcher files once; a word naming no
+    // language (the adapters check it first) exports every one
+    Languages::Choice Spoken;
+    {
+        const std::string Option = Options.Languages.empty() ? std::string(Languages::CliDefault) : Options.Languages;
+        const bool Auto = ExportNaming::Lower(Option).find("auto") != std::string::npos;
+        const Languages::Detected Found = Auto ? InstallLanguages(Game, Options, Zones.empty() ? std::string() : Zones.front())
+                                               : Languages::Detected();
+        std::string Why;
+        if (!Languages::Resolve(Option, Found, Spoken, Why)) Spoken = Languages::Choice();
+        Mon.Log(Header(Game, Options, Zones, C) + "; languages " + Spoken.Text() + " (" + Option +
+                (Auto ? ", install: " + Languages::Describe(Found) : std::string()) + (Why.empty() ? std::string() : ", " + Why) + ")");
+    }
+    const Languages::Scope SpokenScope(Spoken);
     if (C.ResolveSeconds > 0)
     {
         Mon.Prior("resolve", C.ResolveSeconds);
@@ -973,6 +1018,7 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     if (Run.Limit > 0) Run.LimitSeen = std::make_shared<Context::Limited>();
     if (Cancel != nullptr) Run.Cancel = Cancel;
     Run.Settings = Options.Settings;
+    Run.Languages = Spoken;
     if (!Options.ActsExe.empty()) Run.Settings["acts_exe"] = Options.ActsExe;
     if (!Options.GscToolExe.empty()) Run.Settings["gsc_tool_exe"] = Options.GscToolExe;
     if (!Options.GameExe.empty()) Run.Settings["game_exe"] = Options.GameExe;

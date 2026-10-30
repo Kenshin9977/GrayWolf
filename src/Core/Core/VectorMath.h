@@ -25,7 +25,6 @@ class Vector2
 public:
     Vector2();
     Vector2(float XCoord, float YCoord);
-    ~Vector2();
 
     // Coordinate (X or UV U)
     union
@@ -47,7 +46,6 @@ class Vector3
 public:
     Vector3();
     Vector3(float XCoord, float YCoord, float ZCoord);
-    ~Vector3();
 
     union
     {
@@ -79,7 +77,6 @@ public:
     // Create a new Quaternion set to identity
     Quaternion();
     Quaternion(float XCoord, float YCoord, float ZCoord, float WCoord);
-    ~Quaternion();
 
     union
     {
@@ -125,7 +122,6 @@ private:
 
 public:
     Matrix();
-    ~Matrix();
 
     Matrix operator/(float Value) const;
 

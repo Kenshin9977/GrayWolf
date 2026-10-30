@@ -3,9 +3,10 @@
 #include "ImGuiShell.h"
 #include "ImGuiShell.Internal.h" // the shell's pieces in their own files
 #include "AppLog.h"           // session log, timed steps, UI stalls
-#include "ImGuiLoadGamePanel.h" // the Load Game window: a game exported from its files
+#include "ImGuiLoadGamePanel.h" // the Extract tab: a game exported from its files
 #include "UiAsync.h"           // dialogs, shell opens and disk lookups off the frame
 #include "SettingsManager.h"   // the list or the grid, the anims' rig
+#include "ImGuiTheme.h"        // the fonts and colours
 
 #include "imgui.h"
 #include "imgui_internal.h"   // FindWindowByName
@@ -45,7 +46,13 @@ namespace
             return 0;
         case WM_GETMINMAXINFO:
         {
-            if (S && S->Offscreen) return 0;   // ui-grid-shot: the size asked, whatever the screen
+            if (S && S->Offscreen)   // ui-grid-shot, ui-record: the size asked, whatever the screen
+            {
+                MINMAXINFO* Mm = reinterpret_cast<MINMAXINFO*>(L);
+                Mm->ptMaxTrackSize.x = Mm->ptMaxSize.x = 16384;
+                Mm->ptMaxTrackSize.y = Mm->ptMaxSize.y = 16384;
+                return 0;
+            }
             // Clamp the maximized window to the monitor WORK area so the bottom status bar is never
             // hidden behind the Windows taskbar.
             MONITORINFO Mi{ sizeof(Mi) };
@@ -68,7 +75,6 @@ namespace
     // The fonts at the window's DPI and the shell's theme.
     void SetUpFontsAndStyle(HWND Hwnd)
     {
-        ImGuiIO& io = ImGui::GetIO();
         float Dpi = 1.0f;
         if (HMODULE U = GetModuleHandleW(L"user32.dll"))
         {
@@ -80,61 +86,8 @@ namespace
             }
         }
 
-        // Segoe UI at physical pixel size; falls back to the default if unavailable.
-        // The atlas only rasterizes glyphs in the ranges given (default: up to U+00FF), so the symbols this
-        // shell uses beyond that (U+25B6/U+23F8/U+25A0, U+2212, U+2013, U+2026, U+2248) are added explicitly.
-        // The games' level names (DiskGame::LevelNames) add Latin Extended (Polish, Czech...), Greek and
-        // Cyrillic, from Segoe UI too, and CODOL's Chinese, merged from Microsoft YaHei (its common
-        // simplified set, without oversampling: the atlas stays small) when the system has it.
-        static ImVector<ImWchar> ExtraGlyphRanges;
-        {
-            static const ImWchar LatinExtended[] = { 0x0100, 0x024F, 0x0370, 0x03FF, 0x2000, 0x206F, 0 };
-            ImFontGlyphRangesBuilder Builder;
-            Builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-            Builder.AddRanges(LatinExtended);
-            Builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
-            Builder.AddText("\xE2\x96\xB6\xE2\x8F\xB8\xE2\x96\xA0\xE2\x88\x92\xE2\x80\x93\xE2\x80\xA6\xE2\x89\x88"); // ▶⏸■−–…≈
-            Builder.BuildRanges(&ExtraGlyphRanges);
-        }
-        ImFontConfig Fc; Fc.OversampleH = 2; Fc.OversampleV = 2;
-        if (!io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * Dpi, &Fc, ExtraGlyphRanges.Data))
-            io.Fonts->AddFontDefault();
-        else if (GetFileAttributesW(L"C:\\Windows\\Fonts\\msyh.ttc") != INVALID_FILE_ATTRIBUTES)
-        {
-            ImFontConfig Cjk; Cjk.MergeMode = true; Cjk.OversampleH = 1; Cjk.OversampleV = 1;
-            io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyh.ttc", 17.0f * Dpi, &Cjk, io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
-        }
-        io.FontGlobalScale = 1.0f;
-
-        // Softer, more finished dark theme (rounded frames, roomier padding, a blue accent).
-        ImGui::StyleColorsDark();
-        ImGuiStyle& St = ImGui::GetStyle();
-        St.WindowRounding = 6.0f; St.FrameRounding = 5.0f; St.GrabRounding = 4.0f; St.TabRounding = 5.0f; St.ScrollbarRounding = 6.0f;
-        St.WindowPadding = ImVec2(10, 10); St.FramePadding = ImVec2(9, 5); St.ItemSpacing = ImVec2(8, 7); St.CellPadding = ImVec2(7, 4);
-        St.Colors[ImGuiCol_WindowBg]        = ImVec4(0.11f, 0.115f, 0.13f, 1.0f);
-        St.Colors[ImGuiCol_FrameBg]         = ImVec4(0.17f, 0.18f, 0.20f, 1.0f);
-        // secondary text at 4.5:1 or more on the window, the frames, the table headers and the
-        // banners (WCAG 2.2 SC 1.4.3; graywolf-tools ux/ux-check.py contrast checks it)
-        St.Colors[ImGuiCol_TextDisabled]    = ImVec4(0.62f, 0.63f, 0.66f, 1.0f);
-        St.Colors[ImGuiCol_Header]          = ImVec4(0.20f, 0.33f, 0.48f, 1.0f);
-        St.Colors[ImGuiCol_HeaderHovered]   = ImVec4(0.26f, 0.42f, 0.60f, 1.0f);
-        St.Colors[ImGuiCol_HeaderActive]    = ImVec4(0.30f, 0.48f, 0.68f, 1.0f);
-        St.Colors[ImGuiCol_TitleBgActive]   = ImVec4(0.15f, 0.22f, 0.30f, 1.0f);
-        St.Colors[ImGuiCol_TableHeaderBg]   = ImVec4(0.17f, 0.19f, 0.23f, 1.0f);
-        // Blue-accent buttons + zebra rows + subtle borders for a more finished feel.
-        St.Colors[ImGuiCol_Button]          = ImVec4(0.20f, 0.30f, 0.44f, 1.0f);
-        St.Colors[ImGuiCol_ButtonHovered]   = ImVec4(0.26f, 0.40f, 0.58f, 1.0f);
-        St.Colors[ImGuiCol_ButtonActive]    = ImVec4(0.30f, 0.48f, 0.68f, 1.0f);
-        St.Colors[ImGuiCol_CheckMark]       = ImVec4(0.40f, 0.62f, 0.92f, 1.0f);
-        St.Colors[ImGuiCol_SliderGrab]      = ImVec4(0.36f, 0.56f, 0.82f, 1.0f);
-        St.Colors[ImGuiCol_SliderGrabActive]= ImVec4(0.44f, 0.66f, 0.95f, 1.0f);
-        St.Colors[ImGuiCol_Tab]             = ImVec4(0.16f, 0.20f, 0.27f, 1.0f);
-        St.Colors[ImGuiCol_TabHovered]      = ImVec4(0.28f, 0.44f, 0.62f, 1.0f);
-        St.Colors[ImGuiCol_Border]          = ImVec4(1.0f, 1.0f, 1.0f, 0.07f);
-        St.Colors[ImGuiCol_TableBorderLight]= ImVec4(1.0f, 1.0f, 1.0f, 0.06f);
-        St.Colors[ImGuiCol_TableRowBg]      = ImVec4(1.0f, 1.0f, 1.0f, 0.0f);
-        St.Colors[ImGuiCol_TableRowBgAlt]   = ImVec4(1.0f, 1.0f, 1.0f, 0.025f);
-        St.ScaleAllSizes(Dpi);
+        // the fonts (Segoe UI, its semibold, the icons merged) and the colours: ImGuiTheme.h
+        Theme::Load(Dpi);
     }
 }
 
@@ -251,7 +204,11 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
         DrawFilterHelp(OpenHelp);
 
         // (kept until the window exists: the first frame has drawn none yet)
-        if (!S.FocusWindow.empty() && ImGui::FindWindowByName(S.FocusWindow.c_str()) != nullptr) { ImGui::SetWindowFocus(S.FocusWindow.c_str()); S.FocusWindow.clear(); }
+        if (const std::string Id = "###" + S.FocusWindow; !S.FocusWindow.empty() && ImGui::FindWindowByName(Id.c_str()) != nullptr)
+        {
+            ImGui::SetWindowFocus(Id.c_str());
+            S.FocusWindow.clear();
+        }
         if (!S.LoadGameScript.empty()) { LoadGame.Script(S.LoadGameScript); S.LoadGameScript.clear(); }
         LoadGame.Draw(Dev.Get());
         S.LoadGameWorking = S.Recorder && LoadGame.Working();
@@ -271,7 +228,7 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
             S.SelectWhenListedDir = Dir;
             S.SelectWhenListedFrames = 600;
         }
-        if (LoadGame.ConsumeShowAssets()) ImGui::SetWindowFocus("Assets");
+        if (LoadGame.ConsumeShowAssets()) ImGui::SetWindowFocus(Theme::LibraryWindow);
 
         UiAsync::DrawOverlay();   // a dialog's dimmed layer, the notices
         ImGui::Render();

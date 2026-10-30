@@ -95,19 +95,17 @@ namespace
                 Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
                     LoadMeshesBeside(C);
                     BookMaterialsElsewhere();
-                    GameBlackOps7::ImagesElsewhere = [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
+                    const CoDAssets::Scoped Images(GameBlackOps7::ImagesElsewhere, [this](const std::string& Hash, IWMaterialBooks::ImageList& Out) {
                         return HashedImagesElsewhere(Hash, Out, [](uint64_t H) { return GameBlackOps7::HashName("ximage", H); });
-                    };
-                    GameBlackOps7::DetailsElsewhere = [this](const std::string& Hash, std::string& Techset, int& SortKey) {
+                    });
+                    const CoDAssets::Scoped Details(GameBlackOps7::DetailsElsewhere, [this](const std::string& Hash, std::string& Techset, int& SortKey) {
                         IWMaterialBooks::Extra E;
                         if (MaterialsElsewhere == nullptr || !MaterialsElsewhere->Details(Hash, E)) return false;
                         if (!E.Techset.empty()) Techset = GameBlackOps7::HashName("xtechset", std::stoull(E.Techset, nullptr, 16));
                         SortKey = E.SortKey;
                         return true;
-                    };
+                    });
                     Read(C, T);
-                    GameBlackOps7::ImagesElsewhere = nullptr;
-                    GameBlackOps7::DetailsElsewhere = nullptr;
                 });
             // material (0x78) with its atlas, and particlesystem (0x80) as the vfx core's JSON (Games/IW/Vfx.h)
             ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
@@ -1531,12 +1529,14 @@ namespace
                                                   std::string& Error) const override
         {
             // the packages the readers stream mesh and image data from (--install: the cod25 folder or the HQ install)
-            if (!Options.Install.empty() && TreyarchPackages::Open<XSUBCache>(Options.Install) == nullptr)
+            auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
+            if (!Options.Install.empty() && Packages == nullptr)
             {
                 Error = "could not open the packages of " + Options.Install;
                 return nullptr;
             }
             auto Zone = std::make_unique<BO7Zone>(Path);
+            Zone->ServesPackages(std::move(Packages));
             // (--install: where the global zones are when not beside the level, whose index LoadIndexed reads)
             Zone->SetInstall(this, Options, Options.Install);
             Zone->Indexing = Options.Indexing;

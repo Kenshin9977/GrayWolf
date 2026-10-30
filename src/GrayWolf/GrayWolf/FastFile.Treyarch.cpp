@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <format>
 #include "FastFile.Internal.h"
+#include "MappedFile.h"
 
 using namespace FastFileInternal;
 
@@ -280,7 +281,7 @@ namespace
                 // The blocks carry a normal zlib header, they just declare a smaller window
                 // than usual (acts' own T8 decompressor does it through plain uncompress2())
                 size_t Produced = 0;
-                const libdeflate_result Result = libdeflate_zlib_decompress(Inflater(), J.Data, Block.CompressedSize, Out, Block.UncompressedSize, &Produced);
+                const libdeflate_result Result = libdeflate_zlib_decompress(Compression::Inflater(), J.Data, Block.CompressedSize, Out, Block.UncompressedSize, &Produced);
 
                 if (Result != LIBDEFLATE_SUCCESS || Produced != Block.UncompressedSize)
                 {
@@ -337,21 +338,12 @@ bool FastFile::DecompressTreyarch(const std::string& FilePath, const FastFileInf
 // zone the game's loader reads.
 static bool ApplyBo4Patch(const std::string& FilePath, ZoneBytes& Zone, std::string& Error)
 {
-    std::vector<uint8_t> File;
+    // mapped, not read first: the delta inflates as its pages come in
+    MappedFile File;
+    if (!File.Open(std::filesystem::path(FilePath)))
     {
-        std::ifstream In(FilePath, std::ios::binary | std::ios::ate);
-        if (!In)
-        {
-            Error = "could not open the patch";
-            return false;
-        }
-        File.resize((size_t)In.tellg());
-        In.seekg(0);
-        if (!In.read(reinterpret_cast<char*>(File.data()), (std::streamsize)File.size()))
-        {
-            Error = "could not read the whole patch";
-            return false;
-        }
+        Error = "could not open the patch";
+        return false;
     }
     constexpr size_t PatchHeader = 0x1080;
     if (File.size() < PatchHeader + 0x28)
@@ -376,7 +368,7 @@ static bool ApplyBo4Patch(const std::string& FilePath, ZoneBytes& Zone, std::str
         return false;
     }
     // the delta inflates while the base decompresses
-    std::vector<uint8_t> Delta;
+    ZoneBytes Delta;
     std::string DeltaError;
     auto Inflated = std::async(std::launch::async, [&] {
         return FastFileInternal::InflateZLibStreams(File.data() + DataStart, File.size() - (size_t)DataStart, Delta, DeltaError);
@@ -404,15 +396,14 @@ static bool ApplyBo4Patch(const std::string& FilePath, ZoneBytes& Zone, std::str
     return true;
 }
 
-bool FastFileInternal::InflateZLibStreams(const uint8_t* Data, const size_t Size, std::vector<uint8_t>& Delta,
-                                          std::string& Error)
+bool FastFileInternal::InflateZLibStreams(const uint8_t* Data, const size_t Size, ZoneBytes& Delta, std::string& Error)
 {
     size_t In = 0;
     while (In < Size && Data[In] == 0x78)
     {
         size_t Used = 0;
         std::string Why;
-        if (!InflateAppend(ByteView(Data + In, Size - In), Delta, Why, false, 0, &Used))
+        if (!InflateInPlace(ByteView(Data + In, Size - In), Delta, Why, &Used))
         {
             Error = std::format("the patch failed to inflate ({}) at 0x{:x}", Why, (unsigned long long)In);
             return false;

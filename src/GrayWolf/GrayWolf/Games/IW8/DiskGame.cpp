@@ -100,15 +100,15 @@ namespace
     }
 
     // The techsets_ zones defining what a zone's headers name: the zone's own, then the common and
-    // global ones, beside the .ff; pulled there from the install's storage when missing
-    std::vector<fs::path> BookZones(const std::string& Path)
+    // global ones, beside the .ff; pulled there from the install's storage (Packages) when missing
+    std::vector<fs::path> BookZones(const std::string& Path, CoDPackageCache* Packages)
     {
         const fs::path Dir = fs::path(Path).parent_path();
         std::error_code Ec;
-        if (!fs::exists(Dir / "techsets_common.ff", Ec) && CoDAssets::GamePackageCache != nullptr)
+        if (!fs::exists(Dir / "techsets_common.ff", Ec) && Packages != nullptr)
         {
             std::string Error;
-            TreyarchPackages::ExtractFastFiles(CoDAssets::GamePackageCache.get(), "techsets_*.ff", Dir.string(), Error, ".fp");
+            TreyarchPackages::ExtractFastFiles(Packages, "techsets_*.ff", Dir.string(), Error, ".fp");
         }
         std::vector<fs::path> Out;
         if (const fs::path Own = Dir / ("techsets_" + fs::path(Path).filename().string()); fs::exists(Own, Ec)) Out.push_back(Own);
@@ -213,8 +213,8 @@ namespace
     class IW8Zone final : public IWZone
     {
     public:
-        IW8Zone(const std::string& Path, std::string CacheDir)
-            : IWZone(Path), Books(MaterialLayout(), std::move(CacheDir), [Path] { return BookZones(Path); })
+        IW8Zone(const std::string& Path, std::string CacheDir, std::shared_ptr<CoDPackageCache> Packages)
+            : IWZone(Path), Books(MaterialLayout(), std::move(CacheDir), [Path, Packages] { return BookZones(Path, Packages.get()); })
         {
             using namespace DiskGame;
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
@@ -325,11 +325,6 @@ namespace
             return true;
         }
 
-        ~IW8Zone() override
-        {
-            if (IsServed()) GameModernWarfare4::ImagesElsewhere = nullptr;
-        }
-
         // its string tables, and its anim sets, character scripts and weapons for the anim owners
         // (Games/IW/IwAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -406,12 +401,12 @@ namespace
         }
         void Served(bool On) override
         {
-            GameModernWarfare4::ImagesElsewhere = nullptr;
+            ImagesServed.reset();
             if (On)
             {
-                GameModernWarfare4::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
+                ImagesServed.emplace(GameModernWarfare4::ImagesElsewhere, [this](const std::string& Name, IWMaterialBooks::ImageList& Out) {
                     return Books.Find(Name, Out);
-                };
+                });
                 Beside.Serve();
             }
         }
@@ -612,6 +607,8 @@ namespace
         IWMaterialBooks::Lookup Books;
         IwBeside::Set Beside;   // the zones holding the xmodelsurfs this one names only (LoadMeshesBeside)
         bool BesideTried = false;
+        // the readers' lookup into Books while the zone is served (after Books: it ends first)
+        std::optional<CoDAssets::Scoped<decltype(GameModernWarfare4::ImagesElsewhere)>> ImagesServed;
     };
 
     // ---- the anim owners' facts (Games/IW/IwAnimOwners.h), names as keys (lower case)
@@ -960,15 +957,15 @@ namespace
         const char* Title() const override { return "Call of Duty: Modern Warfare (2019)"; }
         const char* Engine() const override { return "IW8"; }
         std::vector<std::string> Aliases() const override { return { "mw2019-disk-export" }; }
-        std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<IW8Zone>(std::string(), std::string()); }
+        std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<IW8Zone>(std::string(), std::string(), nullptr); }
 
         // a .ff, a folder of them, or casc:<pattern> pulled from the install (--install) with the .fp patches
         bool Zones(const std::string& Input, const DiskGame::ExportOptions& Options, std::vector<std::string>& Out,
                    std::string& Error) const override
         {
             if (Input.rfind("casc:", 0) != 0) return IDiskGame::Zones(Input, Options, Out, Error);
-            CoDPackageCache* P = Packages(Options, Error);
-            if (P != nullptr) Out = TreyarchPackages::ExtractFastFiles(P, Input.substr(5), FastFileDir(Options), Error, ".fp");
+            const auto P = Packages(Options, Error);
+            if (P != nullptr) Out = TreyarchPackages::ExtractFastFiles(P.get(), Input.substr(5), FastFileDir(Options), Error, ".fp");
             if (P != nullptr && Out.empty()) Error = "no fast file matches " + Input + " " + Error;
             return !Out.empty();
         }
@@ -976,8 +973,8 @@ namespace
         bool ListZones(const std::string& Install, const DiskGame::ExportOptions& Options, std::vector<std::string>& Names,
                        std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XPAKCache>(Install);
-            if (P != nullptr) Names = TreyarchPackages::ListFastFiles(P);
+            const auto P = TreyarchPackages::Open<XPAKCache>(Install);
+            if (P != nullptr) Names = TreyarchPackages::ListFastFiles(P.get());
             if (Names.empty()) Error = "no fast file in " + Install;
             return !Names.empty();
         }
@@ -995,7 +992,7 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const DiskGame::ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install), Install, Names, FastFileDir(Options), Out, Error, ".fp");
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install).get(), Install, Names, FastFileDir(Options), Out, Error, ".fp");
         }
 
         // its zones open on the index's workers: their decompression and walk share nothing, its
@@ -1014,8 +1011,8 @@ namespace
                 std::error_code Ec;
                 if (fs::exists(Beside, Ec)) return { Beside.string() };
                 std::string Error;
-                CoDPackageCache* P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
-                return P == nullptr ? std::vector<std::string>{} : TreyarchPackages::ExtractFastFiles(P, "global_stream_mp.ff", FastFileDir(Options), Error, ".fp");
+                const auto P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
+                return P == nullptr ? std::vector<std::string>{} : TreyarchPackages::ExtractFastFiles(P.get(), "global_stream_mp.ff", FastFileDir(Options), Error, ".fp");
             };
             IwAnimOwners::Fill(*this, Options, Zones, Shared, [](const std::string& Anim) { return ExportNaming::Lower(Anim); }, Out);
         }
@@ -1025,12 +1022,14 @@ namespace
         {
             if (Refused(Path, Error)) return nullptr;
             // the packages the live readers stream mesh and image data from (--install)
-            if (!Options.Install.empty() && TreyarchPackages::Open<XPAKCache>(Options.Install) == nullptr)
+            auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
+            if (!Options.Install.empty() && Packages == nullptr)
             {
                 Error = "could not open the packages of " + Options.Install;
                 return nullptr;
             }
-            auto Zone = std::make_unique<IW8Zone>(Path, (fs::path(FastFileDir(Options)) / "iw8_materials").string());
+            auto Zone = std::make_unique<IW8Zone>(Path, (fs::path(FastFileDir(Options)) / "iw8_materials").string(), Packages);
+            Zone->ServesPackages(std::move(Packages));
             Zone->SetInstall(this, Options, Options.Install);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
@@ -1041,9 +1040,9 @@ namespace
         {
             return !Options.Cache.empty() ? Options.Cache : (fs::temp_directory_path() / "greyhound_iw8ff").string();
         }
-        static CoDPackageCache* Packages(const DiskGame::ExportOptions& Options, std::string& Error)
+        static std::shared_ptr<CoDPackageCache> Packages(const DiskGame::ExportOptions& Options, std::string& Error)
         {
-            CoDPackageCache* P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
+            auto P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
             if (P == nullptr) Error = "casc: zones need --install";
             return P;
         }

@@ -21,15 +21,15 @@ struct FLACStreamInfo
     int8_t* InputBuffer;
     uint64_t InputBufferSize;
     uint64_t CurrentPosition;
-    FILE* OutputFileHandle;
 
     uint64_t TotalSamples;
     uint32_t SampleRate;
     uint32_t ChannelsCount;
     uint32_t Bps;
 
-    // Scratch space for interleaving one decoded block, reused across frames
-    std::vector<uint16_t> InterleaveBuffer;
+    // The WAV file's bytes (header and samples), built whole and written with one call: a write
+    // per frame went through the CRT's 4 KB buffer, a WriteFile every 4 KB
+    std::vector<uint8_t>* ByteSink = nullptr;
 
     // When set, decoded samples are collected here instead of written as WAV, which is
     // what the Opus path needs since it has to encode rather than copy
@@ -47,14 +47,24 @@ struct WAVStreamInfo
     uint16_t Bps;
 };
 
-inline void WriteLEUInt32(FILE* file, uint32_t x)
+namespace
 {
-    fwrite(&x, 4, 1, file);
-}
+    template <typename T>
+    void AppendRaw(std::vector<uint8_t>& Out, const T& Value)
+    {
+        const auto* Bytes = reinterpret_cast<const uint8_t*>(&Value);
+        Out.insert(Out.end(), Bytes, Bytes + sizeof(T));
+    }
 
-inline void WriteLEUInt16(FILE* file, uint16_t x)
-{
-    fwrite(&x, 2, 1, file);
+    // A whole file written with one call (the CRT writes a block that large straight through)
+    bool WriteWholeFile(const std::string& Path, const std::vector<uint8_t>& Bytes)
+    {
+        FILE* Output = nullptr;
+        fopen_s(&Output, Path.c_str(), "wb");
+        if (Output == nullptr) return false;
+        const bool Wrote = Bytes.empty() || fwrite(Bytes.data(), 1, Bytes.size(), Output) == Bytes.size();
+        return (fclose(Output) == 0) && Wrote;
+    }
 }
 
 #pragma region FLACDecoder
@@ -145,6 +155,14 @@ void FLACMetaDataCallback(const FLAC__StreamDecoder *decoder, const FLAC__Stream
         StreamData->SampleRate = metadata->data.stream_info.sample_rate;
         StreamData->ChannelsCount = metadata->data.stream_info.channels;
         StreamData->Bps = metadata->data.stream_info.bits_per_sample;
+
+        // the whole stream's room at once (a header that claims more than 1 GB is not trusted)
+        const uint64_t Values = StreamData->TotalSamples * StreamData->ChannelsCount;
+        if (Values > 0 && Values < (1ull << 29))
+        {
+            if (StreamData->SampleSink != nullptr) StreamData->SampleSink->reserve((size_t)Values);
+            if (StreamData->ByteSink != nullptr) StreamData->ByteSink->reserve((size_t)Values * 2 + 44);
+        }
     }
 }
 
@@ -185,42 +203,57 @@ FLAC__StreamDecoderWriteStatus FLACWriteCallback(const FLAC__StreamDecoder *deco
         return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
     }
 
+    std::vector<uint8_t>& Out = *StreamData->ByteSink;
+
     if (frame->header.number.sample_number == 0)
     {
-        auto SizeWithHeader = TotalSize + 36;
+        const uint32_t SizeWithHeader = TotalSize + 36;
 
-        fwrite("RIFF", 1, 4, StreamData->OutputFileHandle);
-        fwrite(&SizeWithHeader, 4, 1, StreamData->OutputFileHandle);
+        Out.insert(Out.end(), { 'R', 'I', 'F', 'F' });
+        AppendRaw(Out, SizeWithHeader);
+        Out.insert(Out.end(), { 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ' });
 
-        fwrite("WAVEfmt ", 1, 8, StreamData->OutputFileHandle);
+        AppendRaw(Out, (uint32_t)16);
+        AppendRaw(Out, (uint16_t)1);
+        AppendRaw(Out, (uint16_t)StreamData->ChannelsCount);
+        AppendRaw(Out, (uint32_t)StreamData->SampleRate);
+        AppendRaw(Out, (uint32_t)(StreamData->SampleRate * StreamData->ChannelsCount * (StreamData->Bps / 8)));
+        AppendRaw(Out, (uint16_t)(StreamData->ChannelsCount * (StreamData->Bps / 8)));
+        AppendRaw(Out, (uint16_t)StreamData->Bps);
 
-        WriteLEUInt32(StreamData->OutputFileHandle, 16);
-        WriteLEUInt16(StreamData->OutputFileHandle, 1);
-        WriteLEUInt16(StreamData->OutputFileHandle, (uint16_t)StreamData->ChannelsCount);
-        WriteLEUInt32(StreamData->OutputFileHandle, StreamData->SampleRate);
-        WriteLEUInt32(StreamData->OutputFileHandle, StreamData->SampleRate * StreamData->ChannelsCount * (StreamData->Bps / 8));
-        WriteLEUInt16(StreamData->OutputFileHandle, (uint16_t)(StreamData->ChannelsCount * (StreamData->Bps / 8)));
-        WriteLEUInt16(StreamData->OutputFileHandle, (uint16_t)StreamData->Bps);
-
-        fwrite("data", 1, 4, StreamData->OutputFileHandle);
-        fwrite(&TotalSize, 4, 1, StreamData->OutputFileHandle);
+        Out.insert(Out.end(), { 'd', 'a', 't', 'a' });
+        AppendRaw(Out, TotalSize);
     }
 
-    // Interleave the whole block and write in one call: a write per sample is a locked CRT call each
+    // The block interleaved straight into the file's bytes, 16-bit little endian
     const size_t Channels = StreamData->ChannelsCount;
     const size_t Samples = frame->header.blocksize;
+    const size_t At = Out.size();
 
-    StreamData->InterleaveBuffer.resize(Samples * Channels);
+    Out.resize(At + (Samples * Channels * sizeof(int16_t)));
+    auto* Dest = reinterpret_cast<int16_t*>(Out.data() + At);
 
-    for (size_t i = 0; i < Samples; i++)
+    if (Channels == 2)
+    {
+        const FLAC__int32* Left = buffer[0];
+        const FLAC__int32* Right = buffer[1];
+        for (size_t i = 0; i < Samples; i++)
+        {
+            Dest[2 * i] = (int16_t)Left[i];
+            Dest[(2 * i) + 1] = (int16_t)Right[i];
+        }
+    }
+    else
     {
         for (size_t c = 0; c < Channels; c++)
         {
-            StreamData->InterleaveBuffer[(i * Channels) + c] = (uint16_t)((int16_t)buffer[c][i]);
+            const FLAC__int32* Channel = buffer[c];
+            for (size_t i = 0; i < Samples; i++)
+            {
+                Dest[(i * Channels) + c] = (int16_t)Channel[i];
+            }
         }
     }
-
-    fwrite(StreamData->InterleaveBuffer.data(), sizeof(uint16_t), Samples * Channels, StreamData->OutputFileHandle);
 
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 }
@@ -258,39 +291,28 @@ bool Sound::ConvertSoundMemory(int8_t* SoundBuffer, uint64_t SoundSize, SoundFor
     return ConversionResult;
 }
 
-bool Sound::TranscodeFLACToWav(int8_t* SoundBuffer, uint64_t SoundSize, const std::string& OutputFile)
+bool Sound::DecodeFLACToWav(int8_t* SoundBuffer, uint64_t SoundSize, std::vector<uint8_t>& Wav)
 {
-    bool IsOk = true;
-    FLAC__StreamDecoder* Decoder = nullptr;
-    FLAC__StreamDecoderInitStatus InitStatus;
-
-    FILE* OutputHandle;
-    fopen_s(&OutputHandle, OutputFile.c_str(), "wb");
-
-    if (OutputHandle == NULL)
-    {
-        return false;
-    }
+    Wav.clear();
 
     auto FlacInfo = std::make_unique<FLACStreamInfo>();
     FlacInfo->InputBuffer = SoundBuffer;
     FlacInfo->InputBufferSize = SoundSize;
-    FlacInfo->OutputFileHandle = OutputHandle;
     FlacInfo->CurrentPosition = 0;
+    FlacInfo->ByteSink = &Wav;
 
-    Decoder = FLAC__stream_decoder_new();
+    FLAC__StreamDecoder* Decoder = FLAC__stream_decoder_new();
 
     if (Decoder == nullptr)
     {
-        fclose(OutputHandle);
         return false;
     }
 
     FLAC__stream_decoder_set_md5_checking(Decoder, false);
 
-    InitStatus = FLAC__stream_decoder_init_stream(Decoder, FLACReadFromStream, FLACSeekStream, FLACTellStream, FLACLengthStream, FLACEOFStream, FLACWriteCallback, FLACMetaDataCallback, FLACErrorCallback, FlacInfo.get());
+    const auto InitStatus = FLAC__stream_decoder_init_stream(Decoder, FLACReadFromStream, FLACSeekStream, FLACTellStream, FLACLengthStream, FLACEOFStream, FLACWriteCallback, FLACMetaDataCallback, FLACErrorCallback, FlacInfo.get());
 
-    if (InitStatus != FLAC__STREAM_DECODER_INIT_STATUS_OK) { IsOk = false; }
+    const bool IsOk = (InitStatus == FLAC__STREAM_DECODER_INIT_STATUS_OK);
 
     if (IsOk)
     {
@@ -298,9 +320,17 @@ bool Sound::TranscodeFLACToWav(int8_t* SoundBuffer, uint64_t SoundSize, const st
     }
 
     FLAC__stream_decoder_delete(Decoder);
-    fclose(OutputHandle);
 
     return IsOk;
+}
+
+bool Sound::TranscodeFLACToWav(int8_t* SoundBuffer, uint64_t SoundSize, const std::string& OutputFile)
+{
+    // what the decoder gave, even nothing (a stream it does not read is an empty file, as before)
+    std::vector<uint8_t> Wav;
+    const bool IsOk = DecodeFLACToWav(SoundBuffer, SoundSize, Wav);
+
+    return WriteWholeFile(OutputFile, Wav) && IsOk;
 }
 
 bool Sound::TranscodeWAVToFlac(int8_t* SoundBuffer, uint64_t SoundSize, const std::string& OutputFile)
@@ -428,16 +458,16 @@ namespace
         }
     }
 
-    // Writes whatever pages libogg has ready for us
-    bool FlushOggPages(ogg_stream_state& Stream, FILE* Output, bool ForcePageBreak)
+    // Appends whatever pages libogg has ready for us to the file's bytes
+    bool FlushOggPages(ogg_stream_state& Stream, std::vector<uint8_t>& Output, bool ForcePageBreak)
     {
         ogg_page Page;
 
         while (ForcePageBreak ? (ogg_stream_flush(&Stream, &Page) != 0)
                               : (ogg_stream_pageout(&Stream, &Page) != 0))
         {
-            if (fwrite(Page.header, 1, Page.header_len, Output) != (size_t)Page.header_len) return false;
-            if (fwrite(Page.body, 1, Page.body_len, Output) != (size_t)Page.body_len) return false;
+            Output.insert(Output.end(), Page.header, Page.header + Page.header_len);
+            Output.insert(Output.end(), Page.body, Page.body + Page.body_len);
         }
 
         return true;
@@ -512,14 +542,9 @@ bool Sound::EncodePCMToOpus(const std::vector<int16_t>& Samples, uint32_t Channe
     // automatic rate smears transients; a surround stream keeps the encoder's own allocation
     if (Encoder != nullptr) opus_encoder_ctl(Encoder, OPUS_SET_BITRATE((opus_int32)(64000 * ChannelsCount)));
 
-    FILE* Output = nullptr;
-    fopen_s(&Output, OutputFile.c_str(), "wb");
-
-    if (Output == nullptr)
-    {
-        Destroy();
-        return false;
-    }
+    // the file's bytes, written with one call at the end
+    std::vector<uint8_t> Output;
+    Output.reserve(4096 + (Samples.size() / ChannelsCount / ((size_t)SampleRate / 50)) * 170 * (size_t)ChannelsCount);
 
     // The serial only has to be unique within a physical stream, and we write exactly one,
     // so derive it from the name to keep runs reproducible rather than using a random value
@@ -528,7 +553,7 @@ bool Sound::EncodePCMToOpus(const std::vector<int16_t>& Samples, uint32_t Channe
     ogg_stream_state Stream;
     if (ogg_stream_init(&Stream, OggSerial) != 0)
     {
-        fclose(Output);
+        WriteWholeFile(OutputFile, Output);
         Destroy();
         return false;
     }
@@ -635,10 +660,9 @@ bool Sound::EncodePCMToOpus(const std::vector<int16_t>& Samples, uint32_t Channe
     }
 
     ogg_stream_clear(&Stream);
-    fclose(Output);
     Destroy();
 
-    return IsOk;
+    return WriteWholeFile(OutputFile, Output) && IsOk;
 }
 
 bool Sound::DecodeFLACToPCM(int8_t* SoundBuffer, uint64_t SoundSize, std::vector<int16_t>& Samples, uint32_t& ChannelsCount, uint32_t& SampleRate)
@@ -649,7 +673,6 @@ bool Sound::DecodeFLACToPCM(int8_t* SoundBuffer, uint64_t SoundSize, std::vector
     auto FlacInfo = std::make_unique<FLACStreamInfo>();
     FlacInfo->InputBuffer = SoundBuffer;
     FlacInfo->InputBufferSize = SoundSize;
-    FlacInfo->OutputFileHandle = nullptr;
     FlacInfo->CurrentPosition = 0;
     FlacInfo->SampleSink = &Samples;
 
@@ -691,6 +714,37 @@ bool Sound::TranscodeFLACToOpus(int8_t* SoundBuffer, uint64_t SoundSize, const s
     return EncodePCMToOpus(Samples, ChannelsCount, SampleRate, OutputFile);
 }
 
+namespace
+{
+    // A file in memory for the FLAC encoder: writes at the position, which a seek moves
+    struct FlacMemoryFile
+    {
+        std::vector<uint8_t> Bytes;
+        size_t Position = 0;
+    };
+
+    FLAC__StreamEncoderWriteStatus FlacMemoryWrite(const FLAC__StreamEncoder*, const FLAC__byte Buffer[], size_t Size, uint32_t, uint32_t, void* Client)
+    {
+        auto* File = static_cast<FlacMemoryFile*>(Client);
+        if (File->Position + Size > File->Bytes.size()) File->Bytes.resize(File->Position + Size);
+        if (Size) std::memcpy(File->Bytes.data() + File->Position, Buffer, Size);
+        File->Position += Size;
+        return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
+    }
+
+    FLAC__StreamEncoderSeekStatus FlacMemorySeek(const FLAC__StreamEncoder*, FLAC__uint64 Offset, void* Client)
+    {
+        static_cast<FlacMemoryFile*>(Client)->Position = (size_t)Offset;
+        return FLAC__STREAM_ENCODER_SEEK_STATUS_OK;
+    }
+
+    FLAC__StreamEncoderTellStatus FlacMemoryTell(const FLAC__StreamEncoder*, FLAC__uint64* Offset, void* Client)
+    {
+        *Offset = static_cast<FlacMemoryFile*>(Client)->Position;
+        return FLAC__STREAM_ENCODER_TELL_STATUS_OK;
+    }
+}
+
 bool Sound::EncodePCMToFLAC(const std::vector<int16_t>& Samples, uint32_t ChannelsCount, uint32_t SampleRate, const std::string& OutputFile)
 {
     if (ChannelsCount < 1 || ChannelsCount > 8 || SampleRate == 0 || Samples.empty())
@@ -712,7 +766,11 @@ bool Sound::EncodePCMToFLAC(const std::vector<int16_t>& Samples, uint32_t Channe
     FLAC__stream_encoder_set_sample_rate(Encoder, SampleRate);
     FLAC__stream_encoder_set_total_samples_estimate(Encoder, Samples.size() / ChannelsCount);
 
-    bool IsOk = FLAC__stream_encoder_init_file(Encoder, OutputFile.c_str(), nullptr, nullptr) == FLAC__STREAM_ENCODER_INIT_STATUS_OK;
+    // built in memory with the seek and tell a file gives (the encoder rewrites STREAMINFO at the
+    // end, as init_file does), then written with one call
+    FlacMemoryFile Output;
+    Output.Bytes.reserve(4096 + Samples.size());
+    bool IsOk = FLAC__stream_encoder_init_stream(Encoder, FlacMemoryWrite, FlacMemorySeek, FlacMemoryTell, nullptr, &Output) == FLAC__STREAM_ENCODER_INIT_STATUS_OK;
 
     // whole frames only: a truncated last frame (an odd byte count) is left out
     const size_t Frames = Samples.size() / ChannelsCount;
@@ -732,7 +790,8 @@ bool Sound::EncodePCMToFLAC(const std::vector<int16_t>& Samples, uint32_t Channe
     IsOk = (FLAC__stream_encoder_finish(Encoder) != 0) && IsOk;
     FLAC__stream_encoder_delete(Encoder);
 
-    return IsOk;
+    // written finished or not, as the file init_file opened first was
+    return WriteWholeFile(OutputFile, Output.Bytes) && IsOk;
 }
 
 bool Sound::WriteOggOpus(const std::vector<std::pair<const uint8_t*, uint32_t>>& Packets, uint32_t ChannelsCount, uint32_t InputRate,
@@ -759,13 +818,11 @@ bool Sound::WriteOggOpus(const std::vector<std::pair<const uint8_t*, uint32_t>>&
     }
     const uint64_t End = (EndGranule != 0 && EndGranule < Total) ? EndGranule : Total;
 
-    FILE* Output = nullptr;
-    fopen_s(&Output, OutputFile.c_str(), "wb");
-
-    if (Output == nullptr)
-    {
-        return false;
-    }
+    // the file's bytes, written with one call at the end
+    std::vector<uint8_t> Output;
+    size_t Room = 4096;
+    for (const auto& Packet : Packets) Room += Packet.second + 1;
+    Output.reserve(Room + (Room / 255) + 64);
 
     // one stream per file: its serial from the file's name, as EncodePCMToOpus, for reproducible files
     const int OggSerial = OggSerialOf(OutputFile);
@@ -773,7 +830,7 @@ bool Sound::WriteOggOpus(const std::vector<std::pair<const uint8_t*, uint32_t>>&
     ogg_stream_state Stream;
     if (ogg_stream_init(&Stream, OggSerial) != 0)
     {
-        fclose(Output);
+        WriteWholeFile(OutputFile, Output);
         return false;
     }
 
@@ -839,9 +896,8 @@ bool Sound::WriteOggOpus(const std::vector<std::pair<const uint8_t*, uint32_t>>&
     }
 
     ogg_stream_clear(&Stream);
-    IsOk = (fclose(Output) == 0) && IsOk;
 
-    return IsOk;
+    return WriteWholeFile(OutputFile, Output) && IsOk;
 }
 
 bool Sound::TranscodeWAVToOpus(int8_t* SoundBuffer, uint64_t SoundSize, const std::string& OutputFile)

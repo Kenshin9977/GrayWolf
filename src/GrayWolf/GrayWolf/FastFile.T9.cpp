@@ -164,8 +164,8 @@ namespace
         case FastFileCompression::ZLib:
         case FastFileCompression::ZLibHighCompression:
         {
-            mz_ulong Size = OutSize;
-            if (mz_uncompress(Out, &Size, In, InSize) != MZ_OK || Size != OutSize)
+            // libdeflate (FastFileInternal's thread decompressor): exactly OutSize bytes, Adler-32 checked
+            if (libdeflate_zlib_decompress(Compression::Inflater(), In, InSize, Out, OutSize, nullptr) != LIBDEFLATE_SUCCESS)
             {
                 Error = "a zlib block did not inflate";
                 return false;
@@ -288,7 +288,7 @@ namespace
             Error = "the patch header has no platform or size section";
             return false;
         }
-        std::vector<uint8_t> Delta;
+        ZoneBytes Delta;
         const uint8_t* Data = File.data() + Pos;
         const size_t DataSize = File.size() - Pos;
         if ((FastFileCompression)Platform.Compression == FastFileCompression::BDeltaUncompressed)

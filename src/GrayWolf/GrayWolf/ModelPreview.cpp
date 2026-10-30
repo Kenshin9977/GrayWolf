@@ -895,6 +895,14 @@ namespace
             Work();
             for (auto& T : Pool) T.join();
             if (Cancelled && Cancelled()) return false;
+            // a map not read because its file is not there (yet: an export writes a model before
+            // the images it pulls from other zones); an engine placeholder ("$white_ao") never is
+            for (const Job& J : Jobs)
+            {
+                std::error_code Ec;
+                if (J.Img.Empty() && std::filesystem::path(J.Path).filename().string().rfind('$', 0) != 0 && !std::filesystem::exists(J.Path, Ec))
+                    Missing.push_back(J.Path);
+            }
 
             auto Img = [&](int Slot) { return Slot < 0 ? PreviewImage{} : Jobs[Slot].Img; };
             for (size_t i = 0; i < List.size(); i++)
@@ -923,6 +931,8 @@ namespace
             }
             return true;
         }
+
+        std::vector<std::string> Missing;   // Load's: the maps whose files are not on disk
 
     private:
         std::map<std::string, Materials::Description> Described;
@@ -1201,24 +1211,58 @@ namespace
         if (Size < 8) Size = 8;
         if (G.Pos.empty() || G.Idx.empty()) return false;
 
-        // Bounding sphere to frame the model: mean position for the center and a 90th-percentile radius,
-        // both robust to a single outlier mesh (a map .glb's skybox).
-        Vec3 Sum{};
-        for (const auto& P : G.Pos) { Sum.x += P.x; Sum.y += P.y; Sum.z += P.z; }
-        const float N = (float)G.Pos.size();
-        const Vec3 Ctr{ Sum.x / N, Sum.y / N, Sum.z / N };
-        std::vector<float> Dists(G.Pos.size());
-        for (size_t i = 0; i < G.Pos.size(); i++) Dists[i] = std::sqrt(Dot(Sub(G.Pos[i], Ctr), Sub(G.Pos[i], Ctr)));
-        float Radius = *std::max_element(Dists.begin(), Dists.end());
-        if (Dists.size() >= 20)
+        // Camera: 3/4 view, CoD models Z-up. Yaw rotates the azimuth around Up (for turntables).
+        const Vec3 Up = View == 1 ? Vec3{ 0, 1, 0 } : Vec3{ 0, 0, 1 };
+        const Vec3 D0 = View == 1 ? Vec3{ 0, 0, -1 } : Vec3{ -0.55f, -0.8f, -0.32f };
+        const float ca = std::cos(Yaw), sa = std::sin(Yaw);
+        const Vec3 Dir = Norm({ D0.x * ca - D0.y * sa, D0.x * sa + D0.y * ca, D0.z });
+        const Vec3 Right = Norm(Cross(Dir, Up));
+        const Vec3 CamUp = Cross(Right, Dir);
+        const Vec3 Light = Norm({ -0.4f, -0.5f, 0.75f });
+
+        float Radius = 1.0f;
+        Vec3 Ctr2{};
+        if (View == 0)
         {
-            const size_t P90 = (size_t)(Dists.size() * 0.90);
-            std::nth_element(Dists.begin(), Dists.begin() + P90, Dists.end());
-            Radius = Dists[P90];
+            // the vertices pulled into the framing box (PreviewFramingBox: whole for a model, a skybox
+            // left out) as the view sees them: their extent across the view, centred
+            static_assert(sizeof(Vec3) == 3 * sizeof(float));
+            float Lo[3], Hi[3];
+            PreviewFramingBox(&G.Pos[0].x, G.Pos.size(), Lo, Hi);
+            const Vec3 C{ (Lo[0] + Hi[0]) * 0.5f, (Lo[1] + Hi[1]) * 0.5f, (Lo[2] + Hi[2]) * 0.5f };
+            float Mn[2] = { FLT_MAX, FLT_MAX }, Mx[2] = { -FLT_MAX, -FLT_MAX };
+            const size_t Step = std::max<size_t>(1, G.Pos.size() / 65536);
+            for (size_t v = 0; v < G.Pos.size(); v += Step)
+            {
+                const Vec3& Q = G.Pos[v];
+                const Vec3 P{ std::clamp(Q.x, Lo[0], Hi[0]), std::clamp(Q.y, Lo[1], Hi[1]), std::clamp(Q.z, Lo[2], Hi[2]) };
+                const float X = Dot(Sub(P, C), Right), Y = Dot(Sub(P, C), CamUp);
+                Mn[0] = std::min(Mn[0], X); Mx[0] = std::max(Mx[0], X);
+                Mn[1] = std::min(Mn[1], Y); Mx[1] = std::max(Mx[1], Y);
+            }
+            const float Mxs = (Mn[0] + Mx[0]) * 0.5f, Mys = (Mn[1] + Mx[1]) * 0.5f;
+            Ctr2 = { C.x + Right.x * Mxs + CamUp.x * Mys, C.y + Right.y * Mxs + CamUp.y * Mys, C.z + Right.z * Mxs + CamUp.z * Mys };
+            Radius = std::max(Mx[0] - Mn[0], Mx[1] - Mn[1]) * 0.5f;
         }
-        if (Radius < 1e-6f) Radius = 1.0f;
-        Vec3 Ctr2 = Ctr;
-        if (View == 1)
+        else if (View == 2)
+        {
+            // a map's detail: the mean vertex, the 90th percentile distance from it, closer in
+            Vec3 Sum{};
+            for (const auto& P : G.Pos) { Sum.x += P.x; Sum.y += P.y; Sum.z += P.z; }
+            const float N = (float)G.Pos.size();
+            Ctr2 = { Sum.x / N, Sum.y / N, Sum.z / N };
+            std::vector<float> Dists(G.Pos.size());
+            for (size_t i = 0; i < G.Pos.size(); i++) Dists[i] = std::sqrt(Dot(Sub(G.Pos[i], Ctr2), Sub(G.Pos[i], Ctr2)));
+            Radius = *std::max_element(Dists.begin(), Dists.end());
+            if (Dists.size() >= 20)
+            {
+                const size_t P90 = (size_t)(Dists.size() * 0.90);
+                std::nth_element(Dists.begin(), Dists.begin() + P90, Dists.end());
+                Radius = Dists[P90];
+            }
+            Radius *= 0.35f;
+        }
+        else
         {
             Vec3 Mn = G.Pos[0], Mx = G.Pos[0];
             for (const auto& P : G.Pos)
@@ -1229,17 +1273,7 @@ namespace
             Ctr2 = { (Mn.x + Mx.x) * 0.5f, (Mn.y + Mx.y) * 0.5f, (Mn.z + Mx.z) * 0.5f };
             Radius = std::max(Mx.x - Mn.x, Mx.y - Mn.y) * 0.5f + 1e-3f;
         }
-        else if (View == 2)
-            Radius *= 0.35f;
-
-        // Camera: 3/4 view, CoD models Z-up. Yaw rotates the azimuth around Up (for turntables).
-        const Vec3 Up = View == 1 ? Vec3{ 0, 1, 0 } : Vec3{ 0, 0, 1 };
-        const Vec3 D0 = View == 1 ? Vec3{ 0, 0, -1 } : Vec3{ -0.55f, -0.8f, -0.32f };
-        const float ca = std::cos(Yaw), sa = std::sin(Yaw);
-        const Vec3 Dir = Norm({ D0.x * ca - D0.y * sa, D0.x * sa + D0.y * ca, D0.z });
-        const Vec3 Right = Norm(Cross(Dir, Up));
-        const Vec3 CamUp = Cross(Right, Dir);
-        const Vec3 Light = Norm({ -0.4f, -0.5f, 0.75f });
+        if (!(Radius > 1e-6f)) Radius = 1.0f;
 
         const float Margin = 0.92f;
         const float Scale = (Size * 0.5f * Margin) / Radius;
@@ -1508,6 +1542,7 @@ namespace
         if (!Maps.Load(Cancelled)) return false;
     }
     Out.MaterialMaps = std::move(Maps.List);
+    Out.MissingMaps = std::move(Maps.Missing);
     return true;
 }
 }
@@ -2030,4 +2065,31 @@ bool RenderPreviewGeometryToPNG(const PreviewGeometry& P, const std::string& Out
     }
 
     return RasterizeAndSave(G, Textures2, OutPngPath, Size);
+}
+
+void PreviewFramingBox(const float* Pos, size_t VertexCount, float Lo[3], float Hi[3])
+{
+    for (int c = 0; c < 3; c++) { Lo[c] = FLT_MAX; Hi[c] = -FLT_MAX; }
+    for (size_t v = 0; v < VertexCount; v++)
+        for (int c = 0; c < 3; c++) { Lo[c] = std::min(Lo[c], Pos[v * 3 + c]); Hi[c] = std::max(Hi[c], Pos[v * 3 + c]); }
+    if (VertexCount == 0) { for (int c = 0; c < 3; c++) Lo[c] = Hi[c] = 0.0f; return; }
+    if (VertexCount < 200) return;
+    // a sample of at most 200k vertices, sorted per axis
+    const size_t Step = std::max<size_t>(1, VertexCount / 200000);
+    std::vector<float> Axis;
+    Axis.reserve(VertexCount / Step + 1);
+    for (int c = 0; c < 3; c++)
+    {
+        Axis.clear();
+        for (size_t v = 0; v < VertexCount; v += Step) Axis.push_back(Pos[v * 3 + c]);
+        const size_t N = Axis.size(), A = N / 200, B = N - 1 - N / 200;   // 0.5% each side
+        std::nth_element(Axis.begin(), Axis.begin() + A, Axis.end());
+        const float PLo = Axis[A];
+        std::nth_element(Axis.begin(), Axis.begin() + B, Axis.end());
+        const float PHi = Axis[B];
+        // a tail longer than the rest of the model spans is an outlier, not part of what is framed
+        const float Core = std::max(PHi - PLo, 1e-6f);
+        if (PLo - Lo[c] > Core) Lo[c] = PLo;
+        if (Hi[c] - PHi > Core) Hi[c] = PHi;
+    }
 }

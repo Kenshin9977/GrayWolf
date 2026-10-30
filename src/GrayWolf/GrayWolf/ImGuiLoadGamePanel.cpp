@@ -7,6 +7,7 @@
 #include "ImGuiLoadGamePanel.Common.h"
 #include "ImGuiDialogs.h"
 #include "LauncherIcons.h"
+#include "GameBadges.h"
 #include "DiskGame.h"
 #include "SettingsManager.h"
 
@@ -44,7 +45,7 @@ LoadGamePanel::LoadGamePanel()
     SetBuf(DiskZoneFilterBuf, sizeof(DiskZoneFilterBuf), SettingsManager::GetSetting("disk_zone_filter", ""));
     ExportByAsset = SettingsManager::GetSetting("disk_pick_by", "asset") != "zone";
     WantTab = ExportByAsset ? 0 : 1;
-    Status = "no game loaded";
+    Status = "No game loaded";
 }
 
 LoadGamePanel::~LoadGamePanel()
@@ -175,7 +176,11 @@ void LoadGamePanel::DrawSetup(ID3D11Device* Dev)
     }
     ImGui::SameLine();
     if (ImGui::Button("Rescan")) StartWork("scan", &LoadGamePanel::DoScan);
+    DrawFolderField();
+}
 
+void LoadGamePanel::DrawFolderField()
+{
     ImGui::TextUnformatted("Game folder");
     ImGui::SetNextItemWidth(-90);
     ImGui::InputText("##game", GameBuf, sizeof(GameBuf));
@@ -183,24 +188,86 @@ void LoadGamePanel::DrawSetup(ID3D11Device* Dev)
     GameEditing = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit()) Persist();
     ImGui::SameLine();
-    if (ImGui::Button("Browse##game")) UiAsync::PickFolder("loadgame.folder", "Select the game install folder", GameBuf);
+    if (ImGui::Button("Browse\xE2\x80\xA6##game")) UiAsync::PickFolder("loadgame.folder", "Select the game install folder", GameBuf);
     DrawReadWith();
+}
+
+void LoadGamePanel::DrawInstallTiles(ID3D11Device* Dev)
+{
+    std::lock_guard<std::mutex> Lock(Mutex);
+    if (!ScannedOnce)
+    {
+        DrewIndicator = true;
+        Loading("Looking for installed games");
+        return;
+    }
+    ImGui::TextUnformatted("Installed games");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Rescan")) StartWork("scan", &LoadGamePanel::DoScan);
+    if (Installs.empty())
+    {
+        ImGui::TextDisabled("None found on this machine: choose the game's folder below.");
+        return;
+    }
+    // a tile per install, as many to a row as fit: the game's icon, its title, the launcher
+    const float Line = ImGui::GetTextLineHeight();
+    const ImVec2 Tile(Line * 14.0f, Line * 3.4f);
+    const float Side = Line * 2.2f;
+    const float Pad = (Tile.y - Side) * 0.5f;
+    const float Right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    ImDrawList* DL = ImGui::GetWindowDrawList();
+    for (int i = 0; i < (int)Installs.size(); i++)
+    {
+        const auto& I = Installs[i];
+        if (i > 0)
+        {
+            ImGui::SameLine();
+            if (ImGui::GetCursorScreenPos().x + Tile.x > Right) ImGui::NewLine();
+        }
+        ImGui::PushID(i);
+        const ImVec2 Min = ImGui::GetCursorScreenPos();
+        // a game no reader reads yet is shown, not offered
+        ImGui::BeginDisabled(I.DiskId.empty());
+        const bool Clicked = ImGui::Button("##tile", Tile);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s\n%s%s", I.Display.c_str(), I.Path.c_str(), I.DiskId.empty() ? "\nNot supported yet" : "");
+        GameBadges::DrawInstall(DL, Dev, I.Path, I.Display, ImVec2(Min.x + Pad, Min.y + Pad), Side);
+        const ImVec2 Text(Min.x + Pad * 2 + Side, Min.y + Tile.y * 0.5f - Line);
+        const ImU32 Ink = ImGui::GetColorU32(I.DiskId.empty() ? ImGuiCol_TextDisabled : ImGuiCol_Text);
+        DL->PushClipRect(Min, ImVec2(Min.x + Tile.x - Pad, Min.y + Tile.y), true);
+        DL->AddText(Theme::Font().Strong, ImGui::GetFontSize(), Text, Ink, I.Display.c_str());
+        // the drive too when another install has the same title
+        const std::string Where = I.Source + (I.Label != I.Display ? "  \xC2\xB7  " + I.Path.substr(0, 2) : "");
+        DL->AddText(ImVec2(Text.x, Text.y + Line * 1.1f), ImGui::GetColorU32(ImGuiCol_TextDisabled), Where.c_str());
+        DL->PopClipRect();
+        if (Clicked)
+        {
+            InstallIndex = i;
+            ApplyInstall(I);
+            Persist();
+        }
+        ImGui::PopID();
+    }
 }
 
 void LoadGamePanel::DrawGameCard(ID3D11Device* Dev)
 {
     if (Disk == nullptr)
     {
-        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.25f);
+        Theme::PushTitle();
         ImGui::TextUnformatted("Pick a game");
-        ImGui::PopFont();
+        Theme::PopFont();
         ImGui::TextDisabled("GrayWolf reads the game's files: the game is never launched.");
         ImGui::Spacing();
-        DrawSetup(Dev);
+        DrawInstallTiles(Dev);
+        ImGui::Spacing();
+        ImGui::SeparatorText("Or a folder");
+        DrawFolderField();
         if (Detecting)
-            ImGui::TextDisabled("looking for the game's files...");
+            ImGui::TextDisabled("Looking for the game's files\xE2\x80\xA6");
         else if (GameBuf[0] != 0)
-            ImGui::TextWrapped("No disk reader recognises this folder: pick one under \"Read with\".");
+            ImGui::TextWrapped("This folder is not recognised: pick its game under \"Read with\".");
         return;
     }
 
@@ -297,7 +364,11 @@ void LoadGamePanel::Draw(ID3D11Device* Dev)
     }
 
     DrewIndicator = false;
-    ImGui::Begin("Load Game");
+    // its tab first in the dock, whichever window came in first: a game is where one starts
+    ImGuiWindowClass First;
+    First.TabItemFlagsOverrideSet = ImGuiTabItemFlags_Leading;
+    ImGui::SetNextWindowClass(&First);
+    ImGui::Begin(Theme::ExtractWindow);
     if (DiskChosenFor != GameBuf) ChooseDiskGame();
     const bool Busyish = Busy.load();
 
@@ -307,8 +378,6 @@ void LoadGamePanel::Draw(ID3D11Device* Dev)
 
     if (Disk == nullptr)
     {
-        std::lock_guard<std::mutex> Lock(Mutex);
-        if (!Status.empty()) ImGui::TextDisabled("%s", Status.c_str());
         ImGui::End();
         return;
     }

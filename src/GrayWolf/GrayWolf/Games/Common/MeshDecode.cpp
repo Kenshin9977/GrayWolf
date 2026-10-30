@@ -93,7 +93,10 @@ namespace
             if (Weights == nullptr)
                 V.AddVertexWeight(0, 1.0f);
             else
+            {
+                V.Weights.reserve(Weights[I].WeightCount);
                 for (uint32_t K = 0; K < Weights[I].WeightCount; K++) V.AddVertexWeight(Weights[I].BoneValues[K], Weights[I].WeightValues[K]);
+            }
         }
     }
 

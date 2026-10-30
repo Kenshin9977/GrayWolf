@@ -1609,7 +1609,7 @@ namespace AnimRigs
                     std::map<std::string, std::string>* From = nullptr)
         {
             const DiskGame::IDiskGame* G = DiskGame::Find(Game);
-            if (G == nullptr) { Note = "no disk reader"; return; }
+            if (G == nullptr) { Note = "this game is not supported"; return; }
             static const std::vector<GameInstalls::Install> Detected = GameInstalls::Detect();
             DiskGame::ExportOptions Defaults;
             for (const DiskGame::Setting* S : G->AllSettings()) Defaults.Settings[S->Key] = S->Default;
@@ -1638,7 +1638,7 @@ namespace AnimRigs
                 }
                 return;
             }
-            Note = "no install index (Load Game: index the install)";
+            Note = "no install index (Extract: index the install)";
             for (const auto& I : Installs)
             {
                 DiskGame::ExportOptions O = Defaults;

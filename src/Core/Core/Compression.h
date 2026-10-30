@@ -2,9 +2,14 @@
 
 #include <cstdint>
 
+struct libdeflate_decompressor;
+
 class Compression
 {
 public:
+    // The thread's libdeflate decompressor (about twice zlib's and miniz's speed): the one every
+    // libdeflate inflate of the app uses
+    static libdeflate_decompressor* Inflater();
 
     static uint32_t DecompressLZ4Block(const int8_t* CompressedBuffer, int8_t* DecompressedBuffer, int32_t CompressedSize, int32_t DecompressedSize);
     static uint32_t CompressLZ4Block(const int8_t* Buffer, int8_t* CompressedBuffer, int32_t BufferSize, int32_t CompressedSize);

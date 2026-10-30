@@ -23,14 +23,20 @@ namespace ShellUi
         if (!ImGui::BeginMenu("Settings")) return;   // appended to the Settings menu ImGuiUpdates opens
         if (ImGui::BeginMenu("Sounds"))
         {
-            const std::string Current = Strings::ToUpper(SettingsManager::GetSetting("exportsnd", "WAV"));
-            const struct { const char* Value; const char* Label; } Formats[] = {
-                { "WAV", "WAV (as the game keeps them, or decoded)" },
-                { "FLAC", "FLAC (lossless)" },
-                { "OPUS", "Opus (the game's own packets when it keeps Opus, else encoded)" },
+            // Opus by default (ExportWriters::SoundFormatSetting)
+            const std::string Current = Strings::ToUpper(SettingsManager::GetSetting("exportsnd", "OPUS"));
+            const struct { const char* Value; const char* Label; const char* Tip; } Formats[] = {
+                { "OPUS", "Opus (default: small, lossy)",
+                  "The game's own Opus packets kept as they are when it stores Opus; any other sound decoded and encoded "
+                  "(64 kb/s a channel, 48 kHz). About a tenth of WAV's size." },
+                { "WAV", "WAV (lossless)", "As the game keeps them (PCM, ADPCM, MP3), or decoded to 16-bit PCM. The largest files." },
+                { "FLAC", "FLAC (lossless, compressed)", "Lossless, about half of WAV's size." },
             };
             for (const auto& F : Formats)
+            {
                 if (ImGui::MenuItem(F.Label, nullptr, Current == F.Value)) SettingsManager::SetSetting("exportsnd", F.Value);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
+            }
             ImGui::EndMenu();
         }
         ImGui::EndMenu();
@@ -48,7 +54,7 @@ namespace ShellUi
             DrawSoundSettingsMenu();
             if (ImGui::BeginMenu("Help"))
             {
-                if (ImGui::MenuItem("Filter syntax…")) OpenHelp = true;
+                if (ImGui::MenuItem("Search syntax")) OpenHelp = true;
                 ImGui::Separator();
                 if (ImGui::MenuItem("Open session log")) UiAsync::OpenInShell(AppLog::SessionPath());
                 bool Verbose = AppLog::Verbose();
@@ -76,7 +82,7 @@ namespace ShellUi
                 ImGui::Text("%d assets", (int)Models.size());
                 ImGui::TextDisabled("|");
                 if (S.Selected >= 0 && S.Selected < (int)Models.size()) ImGui::Text("Selected: %s", Models[S.Selected].Name.c_str());
-                else ImGui::TextDisabled("no selection");
+                else ImGui::TextDisabled("No selection");
                 const char* Hint = "drag: orbit   \xC2\xB7   middle drag: pan   \xC2\xB7   wheel: zoom";
                 ImGui::SameLine(std::max(0.0f, ImGui::GetWindowWidth() - ImGui::CalcTextSize(Hint).x - 14.0f));
                 ImGui::TextDisabled("%s", Hint);
@@ -86,7 +92,7 @@ namespace ShellUi
         ImGui::End();
     }
 
-    // First frame: split the dockspace so Assets fills the left and Viewport the rest, both
+    // First frame: split the dockspace so Extract and Library fill the left and Viewport the rest, all
     // filling the window (otherwise ImGui leaves them as small floating windows in the corner).
     void BuildDockLayout(unsigned int DockId)
     {
@@ -98,10 +104,10 @@ namespace ShellUi
         ImGui::DockBuilderSetNodeSize(DockId, ImGui::GetMainViewport()->Size);
         ImGuiID Left = 0, Right = 0;
         ImGui::DockBuilderSplitNode(DockId, ImGuiDir_Left, 0.38f, &Left, &Right);
-        ImGui::DockBuilderDockWindow("Assets", Left);
-        // Tabbed with Assets: browsing exported files and loading a game are the same job seen
+        // Tabbed together: reading a game and browsing what was exported are the same job seen
         // from two ends, and they never need to be visible at once.
-        ImGui::DockBuilderDockWindow("Load Game", Left);
+        ImGui::DockBuilderDockWindow(Theme::ExtractWindow, Left);
+        ImGui::DockBuilderDockWindow(Theme::LibraryWindow, Left);
         ImGui::DockBuilderDockWindow("Viewport", Right);
         ImGui::DockBuilderFinish(DockId);
     }
@@ -109,11 +115,11 @@ namespace ShellUi
     // Filter help dialog (opened from the '?' button or the Help menu)
     void DrawFilterHelp(bool OpenHelp)
     {
-        if (OpenHelp) ImGui::OpenPopup("Filter syntax");
+        if (OpenHelp) ImGui::OpenPopup("Search syntax");
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        if (ImGui::BeginPopupModal("Filter syntax", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        if (ImGui::BeginPopupModal("Search syntax", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::TextUnformatted("Filter — matches the model NAME");
+            ImGui::TextUnformatted("Search matches the asset name");
             ImGui::Separator();
             ImGui::BulletText("space   =   AND  (every term must appear)");
             ImGui::BulletText("!term   =   the term must NOT appear");
@@ -124,7 +130,7 @@ namespace ShellUi
             ImGui::BulletText("moon militarypolice    both terms");
             ImGui::Spacing();
             ImGui::TextDisabled("Tip: sort by any column by clicking its header.");
-            ImGui::TextDisabled("Numeric filters (bones / meshes / mats / size) are in the toolbar above the table.");
+            ImGui::TextDisabled("Number ranges (bones, meshes, materials, size) are under Filters in the toolbar.");
             ImGui::Spacing();
             if (ImGui::Button("Got it", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();

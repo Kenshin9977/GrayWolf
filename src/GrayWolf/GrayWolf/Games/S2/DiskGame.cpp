@@ -146,8 +146,9 @@ namespace
         std::unordered_map<uint64_t, SoundEntry> SoundFiles;
         // each language folder's (french), by its name in lower case
         std::map<std::string, std::unordered_map<uint64_t, SoundEntry>> LocalizedSoundFiles;
-        std::unique_ptr<XPTOCCache> Meshes;
-        std::unique_ptr<PAKCache> Sounds;
+        // shared: set as CoDAssets' package cache while a kind is exported
+        std::shared_ptr<XPTOCCache> Meshes;
+        std::shared_ptr<PAKCache> Sounds;
     };
 
     void ReadImageToc(const fs::path& Path, std::unordered_multimap<uint64_t, ImageLevels>& Out)
@@ -190,16 +191,18 @@ namespace
         return fs::path(FastFilePath).parent_path().string();
     }
 
-    // The install's packages, read once per install for the run: the tocs are tens of MB
-    InstallPackages& PackagesFor(const std::string& FastFilePath)
+    // The install's packages, read once per install for the run: the tocs are tens of MB. Shared:
+    // another install's zone opened meanwhile replaces them, and whoever still reads these keeps
+    // them alive until done.
+    std::shared_ptr<const InstallPackages> PackagesFor(const std::string& FastFilePath)
     {
         static std::mutex Lock;
-        static std::unique_ptr<InstallPackages> Cached;
+        static std::shared_ptr<const InstallPackages> Cached;
         std::lock_guard<std::mutex> Guard(Lock);
         const std::string Root = InstallOf(FastFilePath);
         if (!Cached || Cached->Root != Root)
         {
-            auto P = std::make_unique<InstallPackages>();
+            auto P = std::make_shared<InstallPackages>();
             P->Root = Root;
             std::error_code Ec;
             for (const auto& E : fs::directory_iterator(Root, Ec))
@@ -215,15 +218,15 @@ namespace
                         if (Ln.find("soundfile") != std::string::npos && L.path().extension() == ".toc") ReadSoundToc(L.path(), P->LocalizedSoundFiles[N]);
                     }
             }
-            P->Meshes = std::make_unique<XPTOCCache>();
+            P->Meshes = std::make_shared<XPTOCCache>();
             P->Meshes->LoadPackageCache(Root);   // xpakfile.toc
             for (const char* Dlc : { "xpakfile4.toc", "xpakfile5.toc", "xpakfile6.toc" })
                 if (fs::exists(fs::path(Root) / Dlc, Ec)) P->Meshes->LoadPackage((fs::path(Root) / Dlc).string());
-            P->Sounds = std::make_unique<PAKCache>();
+            P->Sounds = std::make_shared<PAKCache>();
             P->Sounds->LoadPackageCache(Root);
             Cached = std::move(P);
         }
-        return *Cached;
+        return Cached;
     }
 
     // A name-only material header names a material of the install's common zones (common*,
@@ -344,14 +347,14 @@ namespace
             // the live model and anim readers, with the install's packages
             for (Kind K : { Kind::Model, Kind::Anim })
                 Exports(K, [this, K, Base = *ExporterOf(K)](const Context& C, Totals& T) {
-                    const IWPakSounds::PackagesInUse Using(Packages().Meshes.get());
+                    const CoDAssets::Scoped Using(CoDAssets::GamePackageCache, Packages().Meshes);
                     Base(C, T);
                     if (K == Kind::Model) ExportComposites(C, T);
                 });
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
             Exports(Kind::Map, [this](const Context& C, Totals& T) {
-                const IWPakSounds::PackagesInUse Using(Packages().Meshes.get());
+                const CoDAssets::Scoped Using(CoDAssets::GamePackageCache, Packages().Meshes);
                 ExportMap(C, T);
             });
             ExportsScriptFiles(Scripts::GscToolBin("s2"));
@@ -362,11 +365,6 @@ namespace
             // techniqueSet at 0xb8 (the s2 tables f4ac960, f4acc20 and f4b7860)
             ExportsIwEffects(IwEffects::WorldWar2(), GameWorldWar2::ReadXMaterial, 0xb8);
         }
-        ~WW2Zone() override
-        {
-            if (IsServed()) GameWorldWar2::ImagesElsewhere = nullptr;
-        }
-
         // the material headers the common zones' book filled, and those it did not
         void Measures(DiskGame::Totals& T) const override
         {
@@ -388,12 +386,10 @@ namespace
         void Fixups() override;
         void Served(bool On) override
         {
-            if (!On)
-            {
-                GameWorldWar2::ImagesElsewhere = nullptr;
-                return;
-            }
-            GameWorldWar2::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); };
+            ImagesServed.reset();
+            if (!On) return;
+            ImagesServed.emplace(GameWorldWar2::ImagesElsewhere,
+                                 [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); });
         }
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
         // a streamed image: its largest level here, as Decode writes it (a resident one is its
@@ -523,7 +519,13 @@ namespace
             if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);
         }
 
-        InstallPackages& Packages() const { return PackagesFor(FastFilePath()); }
+        // the zone's install's packages, held by the zone once asked (one install per zone; read per asset)
+        const InstallPackages& Packages() const
+        {
+            if (!HeldPackages) HeldPackages = PackagesFor(FastFilePath());
+            return *HeldPackages;
+        }
+        mutable std::shared_ptr<const InstallPackages> HeldPackages;
         bool Resident(int64_t Pos) const;
         // the image's largest level with data: its size and where it is
         bool Largest(int64_t Pos, uint32_t& Width, uint32_t& Height, PakLevel& Where, std::string& Pak) const;
@@ -537,6 +539,8 @@ namespace
         std::unordered_set<int64_t> Bases;               // the XModelBases walked here
         bool NoPixelsCounted = false;
         IWMaterialBooks::Lookup Books;
+        // the readers' lookup into Books while the zone is served (after Books: it ends first)
+        std::optional<CoDAssets::Scoped<decltype(GameWorldWar2::ImagesElsewhere)>> ImagesServed;
     };
 
     bool WW2Zone::Resident(int64_t Pos) const
@@ -949,10 +953,13 @@ namespace
         const auto Files = SoundFiles();
         const auto& P = Packages();
         // a localized sound is in the zone's language folder (french/fra_paris.ff), else in the
-        // install's first one
+        // install's first one of the run's languages, else its first one
         const std::string Language = GameWorldWar2::LanguageOfZone(FastFilePath());
         static const std::unordered_map<uint64_t, SoundEntry> NoToc;
-        const auto Localized = P.LocalizedSoundFiles.find(Language);
+        auto Localized = P.LocalizedSoundFiles.find(Language);
+        if (Localized == P.LocalizedSoundFiles.end())
+            Localized = std::find_if(P.LocalizedSoundFiles.begin(), P.LocalizedSoundFiles.end(),
+                                     [&](const auto& L) { return C.Languages.WantsSpelling(L.first); });
         const auto& LocalizedToc = Localized != P.LocalizedSoundFiles.end() ? Localized->second
             : P.LocalizedSoundFiles.empty() ? NoToc : P.LocalizedSoundFiles.begin()->second;
         for (size_t N = 0; N < Found.size(); N++)
@@ -975,8 +982,9 @@ namespace
         }
         IWPakSounds::WriteOptions Options;
         Options.OnePerName = true;
-        Options.Language = Localized != P.LocalizedSoundFiles.end() || P.LocalizedSoundFiles.empty() ? Language : P.LocalizedSoundFiles.begin()->first;
-        IWPakSounds::Write(Found, Packages().Sounds.get(), C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
+        Options.Language = Localized != P.LocalizedSoundFiles.end() ? Localized->first
+                         : P.LocalizedSoundFiles.empty()            ? Language : P.LocalizedSoundFiles.begin()->first;
+        IWPakSounds::Write(Found, P.Sounds, C, T, Name(), [this](const std::string& N) -> size_t& { return Counter(N); }, Options);
         if (!SoundAliasCsv::Wanted(C)) return;
         const SoundAliasCsv::ZoneView Z = AliasView();
         const IWSoundAliases::Layout L = AliasLayout();

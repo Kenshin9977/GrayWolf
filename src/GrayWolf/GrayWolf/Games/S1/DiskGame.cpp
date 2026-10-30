@@ -141,11 +141,6 @@ namespace
             // 0xf0 (the s1 tables f246690 and f24f5a0, x64-zt's S1 structs.hpp)
             ExportsIwEffects(IwEffects::AdvancedWarfare(), GameAdvancedWarfare::ReadXMaterial, 0xf0);
         }
-        ~AwZone() override
-        {
-            if (IsServed()) GameAdvancedWarfare::ImagesElsewhere = nullptr;
-        }
-
         // the material headers the common zones' book filled, and those it did not
         void Measures(DiskGame::Totals& T) const override
         {
@@ -165,12 +160,10 @@ namespace
         void Fixups() override;
         void Served(bool On) override
         {
-            if (!On)
-            {
-                GameAdvancedWarfare::ImagesElsewhere = nullptr;
-                return;
-            }
-            GameAdvancedWarfare::ImagesElsewhere = [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); };
+            ImagesServed.reset();
+            if (!On) return;
+            ImagesServed.emplace(GameAdvancedWarfare::ImagesElsewhere,
+                                 [this](const std::string& Name, IWMaterialBooks::ImageList& Out) { return Books.Find(Name, Out); });
         }
         // with the images
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
@@ -210,6 +203,8 @@ namespace
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         std::vector<int64_t> Resident;                                  // images whose pixels are in the zone
         IWMaterialBooks::Lookup Books;
+        // the readers' lookup into Books while the zone is served (after Books: it ends first)
+        std::optional<CoDAssets::Scoped<decltype(GameAdvancedWarfare::ImagesElsewhere)>> ImagesServed;
     };
 
     std::unique_ptr<XImageDDS> AwZone::DiskImage(const XImage_t& Image)

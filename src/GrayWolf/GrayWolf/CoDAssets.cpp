@@ -9,16 +9,16 @@
 WraithNameIndex CoDAssets::AssetNameCache;
 WraithNameIndex CoDAssets::StringCache;
 
-std::unique_ptr<ProcessReader> CoDAssets::GameInstance = nullptr;
+std::shared_ptr<ProcessReader> CoDAssets::GameInstance = nullptr;
 std::shared_ptr<spdlog::logger> CoDAssets::Log = nullptr;
 
 const ICoDGame* CoDAssets::Game = nullptr;
 SupportedGameFlags CoDAssets::GameFlags = SupportedGameFlags::None;
 
-std::unique_ptr<AssetPool> CoDAssets::GameAssets = nullptr;
-std::unique_ptr<CoDPackageCache> CoDAssets::GamePackageCache = nullptr;
-std::unique_ptr<CoDPackageCache> CoDAssets::OnDemandCache = nullptr;
-std::unique_ptr<CoDCDNDownloader> CoDAssets::CDNDownloader = nullptr;
+std::shared_ptr<AssetPool> CoDAssets::GameAssets = nullptr;
+std::shared_ptr<CoDPackageCache> CoDAssets::GamePackageCache = nullptr;
+std::shared_ptr<CoDPackageCache> CoDAssets::OnDemandCache = nullptr;
+std::shared_ptr<CoDCDNDownloader> CoDAssets::CDNDownloader = nullptr;
 
 LoadXImageHandler CoDAssets::GameXImageHandler = nullptr;
 LoadStringHandler CoDAssets::GameStringHandler = nullptr;

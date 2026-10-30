@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "InlineVector.h"
 #include "WraithAsset.h"
 
 #include "VectorMath.h"
@@ -12,7 +13,6 @@ class WraithBone
 {
 public:
     WraithBone();
-    ~WraithBone();
 
     std::string TagName;
     // The index of this bones parent in the WraithModel bone list (-1 means connected to the root)
@@ -31,7 +31,6 @@ class WraithFace
 public:
     WraithFace();
     WraithFace(uint32_t Vert1, uint32_t Vert2, uint32_t Vert3);
-    ~WraithFace();
 
     uint32_t Index1;
     uint32_t Index2;
@@ -43,7 +42,6 @@ class WraithVertexWeight
 public:
     WraithVertexWeight();
     WraithVertexWeight(uint32_t Bone, float Value);
-    ~WraithVertexWeight();
 
     uint32_t BoneIndex;
     // The vertex weight (Out of 1.0)
@@ -54,13 +52,13 @@ class WraithVertex
 {
 public:
     WraithVertex();
-    ~WraithVertex();
     
     Vector3 Position;
     std::vector<std::pair<uint32_t, Vector3>> BlendShapeDeltas;
-    std::vector<WraithVertexWeight> Weights;
+    // up to 4 weights and 1 UV layer held inline: no allocation per vertex for most models
+    InlineVector<WraithVertexWeight, 4> Weights;
     Vector3 Normal;
-    std::vector<Vector2> UVLayers;
+    InlineVector<Vector2, 1> UVLayers;
     uint8_t Color[4];
 
     uint32_t WeightCount() const;
@@ -75,7 +73,6 @@ class WraithSubmesh
 {
 public:
     WraithSubmesh();
-    ~WraithSubmesh();
 
     std::vector<WraithVertex> Verticies;
     std::vector<WraithFace> Faces;
@@ -101,8 +98,7 @@ class WraithMaterial
 {
 public:
     WraithMaterial();
-    WraithMaterial(const std::string Name, const std::string Diffuse, const std::string Normal, const std::string Specular);
-    ~WraithMaterial();
+    WraithMaterial(const std::string& Name, const std::string& Diffuse, const std::string& Normal, const std::string& Specular);
 
     std::string MaterialName;
     // The file name of the diffuse map for this material

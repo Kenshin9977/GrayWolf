@@ -55,14 +55,14 @@ public:
     // The framerate of the animation as a float (Defaults to 30.0)
     float FrameRate;
 
-    void AddTranslationKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z);
-    void AddRotationKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z, float W);
-    void AddScaleKey(const std::string Bone, uint32_t Frame, float X, float Y, float Z);
-    void AddBlendShapeKey(const std::string Shape, uint32_t Frame, float X, float Y, float Z);
+    void AddTranslationKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z);
+    void AddRotationKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z, float W);
+    void AddScaleKey(const std::string& Bone, uint32_t Frame, float X, float Y, float Z);
+    void AddBlendShapeKey(const std::string& Shape, uint32_t Frame, float X, float Y, float Z);
 
-    void AddNoteTrack(const std::string Notification, uint32_t Frame);
+    void AddNoteTrack(const std::string& Notification, uint32_t Frame);
     // Adds a bone modifier for this bone, overwriting if existing
-    void AddBoneModifier(const std::string Bone, WraithAnimationType Modifier);
+    void AddBoneModifier(const std::string& Bone, WraithAnimationType Modifier);
 
     void ScaleAnimation(float ScaleFactor);
 };

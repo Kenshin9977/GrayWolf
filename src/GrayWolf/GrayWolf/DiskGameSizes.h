@@ -140,8 +140,9 @@ namespace DiskGame::Sizes
     };
     // ... of Kinds over Zones of Ix, in Formats (FormatsNow()'s). An image or a sound only: what
     // another kind writes is not known from its weight yet (Predict gives its bytes in the zone).
+    // Spoken: a sound of another language (its name's first folder, Languages::OfAssetName) left out
     std::map<Kind, Weighed> WeighPicks(const ZoneIndex& Ix, const std::vector<size_t>& Zones, const std::set<Kind>& Kinds,
-                                       const std::string& Formats);
+                                       const std::string& Formats, const Languages::Choice& Spoken = {});
 
     // What an estimate is for: the kinds ticked and the zones picked
     struct Picks

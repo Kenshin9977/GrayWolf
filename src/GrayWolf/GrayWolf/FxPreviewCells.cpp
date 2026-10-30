@@ -3,6 +3,7 @@
 #include "FxPreviewCells.h"
 #include "FxPreviewRender.h"
 #include "AssetGrid/GridServices.h"
+#include "PreviewD3D.h"
 
 #include "imgui.h"
 
@@ -30,7 +31,7 @@ namespace
         const ImVec2 C(Max.x - R * 2.0f, Max.y - R * 2.0f);
         const float T = (float)Time * 6.0f;
         DL->PathArcTo(C, R, T, T + 4.2f, 16);
-        DL->PathStroke(IM_COL32(120, 170, 230, 220), 0, 2.0f);
+        DL->PathStroke(IM_COL32(245, 165, 36, 220), 0, 2.0f);
     }
 
     // something drawn (a sound, a runner: nothing of its own)
@@ -252,18 +253,9 @@ private:
         if (C.Live && C.LivePixels == Pixels) return true;
         if (C.Live) { S.Retire(C.Live); S.Retire(C.LiveSRV); }
         C.Live.Reset(); C.LiveSRV.Reset(); C.LiveValid = false;
-        if (!MakeTexture(S, Pixels, C.Live, C.LiveSRV)) return false;
+        if (!PreviewD3D::Sampled(S.Dev, Pixels, Pixels, DXGI_FORMAT_R8G8B8A8_UNORM, C.Live, C.LiveSRV)) return false;
         C.LivePixels = Pixels;
         return true;
-    }
-
-    static bool MakeTexture(GridServices& S, int Pixels, ComPtr<ID3D11Texture2D>& Tex, ComPtr<ID3D11ShaderResourceView>& Srv)
-    {
-        D3D11_TEXTURE2D_DESC Td{}; Td.Width = Pixels; Td.Height = Pixels; Td.MipLevels = 1; Td.ArraySize = 1;
-        Td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; Td.SampleDesc.Count = 1; Td.Usage = D3D11_USAGE_DEFAULT; Td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        if (SUCCEEDED(S.Dev->CreateTexture2D(&Td, nullptr, &Tex)) && SUCCEEDED(S.Dev->CreateShaderResourceView(Tex.Get(), nullptr, &Srv))) return true;
-        Tex.Reset(); Srv.Reset();
-        return false;
     }
 
     // The effect at Msec through the scratch target, copied into Into.
@@ -296,7 +288,7 @@ private:
     {
         ComPtr<ID3D11Texture2D> Tex;
         ComPtr<ID3D11ShaderResourceView> Srv;
-        if (!MakeTexture(S, Pixels, Tex, Srv) || !RenderInto(S, C, C.Fx.Peak, Pixels, Tex.Get())) return;
+        if (!PreviewD3D::Sampled(S.Dev, Pixels, Pixels, DXGI_FORMAT_R8G8B8A8_UNORM, Tex, Srv) || !RenderInto(S, C, C.Fx.Peak, Pixels, Tex.Get())) return;
         C.Still = Srv;
         const std::string File = ThumbCache::FileFor(C.Item, "fx");
         GridServices* SP = &S;

@@ -100,6 +100,7 @@ static int RunCli(const CliOptions& Options)
 {
     if (Options.SelfTest) return RunSelfTest(Options);
     if (Options.ListInstalls) return RunListInstalls(Options);
+    if (Options.Mcp) return RunMcp(Options);
 
 
     if (!Options.Identify.empty()) return RunIdentify(Options);
@@ -252,7 +253,7 @@ static int RunCli(const CliOptions& Options)
 // it (CliCommands.h). "<game commands>": the games' own (GameCommand.h); "zone-walk" adds
 // bo4-walk too, "disk-export" the games' aliases.
 static const char* const kHelpOrder[] = {
-    "self-test", "list-installs", "verify-opus", "decompress-ff", "identify",
+    "self-test", "list-installs", "mcp", "verify-opus", "decompress-ff", "identify",
     "bo3-images", "bo3-dump-xpak-entries", "salsa20-selftest", "bo3-decrypt-movie",
     "index-assets", "query-assets", "audio-probe",
     "casc-list", "xpak-index", "xsub-index", "xsub-extract", "casc-extract", "zone-decompress",
@@ -274,13 +275,14 @@ static int RunHeadlessCli(int argc, char** argv, bool& CliInvoked)
     CliInvoked = false;
 
 
-    // Let CLI11-printed help/error text reach an invoking console (a no-op without one).
-    if (AttachConsole(ATTACH_PARENT_PROCESS))
+    // Let CLI11-printed help/error text reach an invoking console (a no-op without one). Not for
+    // `mcp`: its stdout is the pipe its client gave it, which reopening CONOUT$ would replace.
+    if (!IsMcpRun(argc, argv) && AttachConsole(ATTACH_PARENT_PROCESS))
     {
         FILE* OutF = nullptr;
         FILE* ErrF = nullptr;
-        freopen_s(&OutF, "CONOUT$", "w", stdout);
-        freopen_s(&ErrF, "CONOUT$", "w", stderr);
+        (void)freopen_s(&OutF, "CONOUT$", "w", stdout);
+        (void)freopen_s(&ErrF, "CONOUT$", "w", stderr);
     }
 
     // The bare "verifiedhashes" token (no leading dashes) is scanned for directly in main()
@@ -308,7 +310,7 @@ static int RunHeadlessCli(int argc, char** argv, bool& CliInvoked)
     CliCommandBuilders Builders;
     for (const auto Add : { AddMiscCommands, AddToolsCommands, AddAudioCommands, AddAssetExportCommands, AddCascCommands,
                             AddZoneWalkCommands, AddModelPreviewCommands, AddBlenderCommands, AddFxPreviewCommands,
-                            AddBo3Commands, AddBo4StringCommands, AddGameCommands, AddDiskExportCommands })
+                            AddBo3Commands, AddBo4StringCommands, AddGameCommands, AddDiskExportCommands, AddMcpCommands })
         Add(Builders);
     for (const char* Name : kHelpOrder) Builders.at(Name)(App, Options);
 
@@ -345,11 +347,15 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
     AppLog::Init();
 
+    // An MCP server and its children never write graywolf.json (no defaults saved, no setting
+    // persisted): the user's settings are not an agent's to change. The children inherit this.
+    if (IsMcpRun(__argc, __argv)) SetEnvironmentVariableW(L"GRAYWOLF_SETTINGS_READONLY", L"1");
+
     {
         SettingsManager::LoadSettings("graywolf", "greyhound",
         {
             { "exportimg", "PNG" },
-            { "exportsnd", "WAV" },
+            { "exportsnd", "OPUS" },   // ExportWriters::SoundFormatSetting's default
             // The game folder picked in the shell, so it survives a restart.
             { "game_folder", "" },
             // blender.exe for Open in Blender (BlenderLauncher.h); empty: detected

@@ -1,0 +1,18 @@
+set output diag
+set bind-root false
+set traversal IgnoreUnlessSpelledInSource
+# Matchers clang-tidy has no check for; tools/safety_gate.py reports the "gate-*" bindings on changed lines.
+# gate-static-pointer: a mutable raw pointer (or string_view/span/reference_wrapper) with static storage:
+# namespace scope, static data member, function-local static or thread_local. It aliases an object owned
+# elsewhere, and nothing ties its lifetime to that owner. Make it const (a constant table), or own the object.
+match varDecl(hasGlobalStorage(), unless(isExpansionInSystemHeader()), anyOf(hasType(pointerType()), hasType(hasUnqualifiedDesugaredType(recordType(hasDeclaration(cxxRecordDecl(hasAnyName("::std::basic_string_view", "::std::span", "::std::reference_wrapper"))))))), unless(hasType(isConstQualified())), unless(isConstexpr())).bind("gate-static-pointer")
+# gate-static-member: a non-const static data member, any type (CoDAssets-style process-wide state)
+match varDecl(isStaticStorageClass(), hasDeclContext(cxxRecordDecl()), unless(isExpansionInSystemHeader()), unless(hasType(isConstQualified())), unless(isConstexpr())).bind("gate-static-member")
+# gate-fake-owner: a unique_ptr/shared_ptr built from another owner's .get() or from &x
+match cxxConstructExpr(unless(isExpansionInSystemHeader()), hasType(hasUnqualifiedDesugaredType(recordType(hasDeclaration(classTemplateSpecializationDecl(hasAnyName("::std::unique_ptr", "::std::shared_ptr")))))), hasArgument(0, ignoringParenImpCasts(expr(anyOf(cxxMemberCallExpr(callee(cxxMethodDecl(hasName("get")))), unaryOperator(hasOperatorName("&")))).bind("gate-fake-owner"))))
+# gate-dropped-release: unique_ptr::release() whose result is thrown away (a leak, or the end of a fake ownership)
+match cxxMemberCallExpr(unless(isExpansionInSystemHeader()), callee(cxxMethodDecl(hasName("release"), ofClass(hasName("::std::unique_ptr")))), unless(hasParent(expr())), unless(hasParent(varDecl())), unless(hasParent(returnStmt()))).bind("gate-dropped-release")
+# gate-stored-get: an owner's .get() / .data() / .c_str() stored into a pointer member of *this or a static pointer
+match binaryOperator(isAssignmentOperator(), unless(isExpansionInSystemHeader()), hasLHS(ignoringParenImpCasts(expr(hasType(pointerType()), anyOf(memberExpr(hasObjectExpression(cxxThisExpr())), declRefExpr(to(varDecl(hasGlobalStorage()))))))), hasRHS(ignoringParenImpCasts(cxxMemberCallExpr(callee(cxxMethodDecl(hasAnyName("get", "data", "c_str"))))))).bind("gate-stored-get")
+# gate-global-callback-this: a static-storage std::function given a lambda that captures this
+match cxxOperatorCallExpr(unless(isExpansionInSystemHeader()), hasOverloadedOperatorName("="), hasArgument(0, ignoringParenImpCasts(declRefExpr(to(varDecl(hasGlobalStorage()))))), hasDescendant(lambdaExpr(hasAnyCapture(capturesThis())))).bind("gate-global-callback-this")

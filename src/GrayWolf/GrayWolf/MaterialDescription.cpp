@@ -2,6 +2,7 @@
 
 #include "MaterialDescription.h"
 #include "ExportNaming.h"     // Lower
+#include "ExportWriters.h"    // MayExist, Claim
 #include "ZoneTableWalker.h"  // LoadProfile (shading.txt)
 #include <nlohmann/json.hpp>
 
@@ -72,27 +73,20 @@ namespace
     // colorMap, normalMap, specularMap (rgb the reflection colour, alpha the gloss). A white map
     // ("$white-rgb") is common: read as F0 it would be a mirror and take all the colour, so the
     // reflection is scaled to a dielectric-like strength and the colour kept.
-    class LegacySpecularAdapterImpl final : public IAdapter
+    class LegacySpecularAdapterImpl final : public SemanticAdapter
     {
     public:
-        const char* Name() const override { return "legacy-specular"; }
-        Description Describe(const Source& M) const override
+        LegacySpecularAdapterImpl()
+            : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names) {}
+    protected:
+        // an exporter without semantics gives no colour map: the readers' hints and the names
+        bool Matched(const Description& D) const override { return !D.Albedo.Empty(); }
+        void Refine(const Source&, Description& D, bool) const override
         {
-            Description D = DescribeBySemantic(M, {
-                { 0xA0AB1041, Role::Albedo },
-                { 0x59D30D0F, Role::Normal },
-                { 0x34ECCCB3, Role::Specular },
-                { 0x34ECCCB3, Role::Gloss, 3 },
-            });
-            // an exporter without semantics: the readers' hints and the names
-            if (D.Albedo.Empty()) D = DefaultAdapter().Describe(M);
-            if (!D.Specular.Empty() && D.Metalness.Empty())
-            {
-                D.LegacySpecular = true;
-                D.SpecularScale = 0.2f;
-                if (D.Roughness.Empty()) D.Roughness = { D.Specular.Path, 3, true };
-            }
-            return D;
+            if (D.Specular.Empty() || !D.Metalness.Empty()) return;
+            D.LegacySpecular = true;
+            D.SpecularScale = 0.2f;
+            if (D.Roughness.Empty()) D.Roughness = { D.Specular.Path, 3, true };
         }
     };
 
@@ -135,7 +129,7 @@ namespace
         nlohmann::json O{ { "path", PortablePath(M.Path) } };
         if (Channel) O["channel"] = std::string(1, ChannelNames[M.Channel & 3]);
         if (M.Invert) O["invert"] = true;
-        J[Key] = O;
+        J[Key] = std::move(O);
     }
     void GetMap(const nlohmann::json& J, const char* Key, Map& M)
     {
@@ -300,6 +294,8 @@ const IAdapter& AdapterFor(const std::string& Engine)
 Role RoleFromName(const std::string& FileName)
 {
     const std::string S = Stem(FileName);
+    // an engine placeholder ("$black_color", "$white"): its name says nothing of the slot it fills
+    if (!S.empty() && S[0] == '$') return Role::Unknown;
     static const std::pair<const char*, Role> Suffixes[] = {
         { "_c", Role::Albedo }, { "_col", Role::Albedo }, { "_color", Role::Albedo }, { "_colour", Role::Albedo },
         { "_d", Role::Albedo }, { "_diffuse", Role::Albedo }, { "_albedo", Role::Albedo }, { "_alb", Role::Albedo },
@@ -355,6 +351,26 @@ Description DescribeBySemantic(const Source& M, const std::vector<SemanticRole>&
     return D;
 }
 
+const std::vector<SemanticRole>& SpecularGlossTable()
+{
+    static const std::vector<SemanticRole> Rows = {
+        { 0xA0AB1041, Role::Albedo },
+        { 0x59D30D0F, Role::Normal },
+        { 0x34ECCCB3, Role::Specular },
+        { 0x34ECCCB3, Role::Gloss, 3 },
+    };
+    return Rows;
+}
+
+Description SemanticAdapter::Describe(const Source& M) const
+{
+    Description D = DescribeBySemantic(M, TableFor(M));
+    const bool BySemantic = Else == Unmatched::Empty || Matched(D);
+    if (!BySemantic) D = DefaultAdapter().Describe(M);
+    Refine(M, D, BySemantic);
+    return D;
+}
+
 void BaseColorFactor(const Description& D, float Rgb[3])
 {
     for (int c = 0; c < 3; c++) Rgb[c] = D.Color.Empty() ? 1.0f : D.Color.Color[c];
@@ -372,9 +388,10 @@ namespace
 
     bool FileHolds(const std::string& Path, const std::string& Text)
     {
-        std::error_code Ec;
-        if (std::filesystem::file_size(Path, Ec) != Text.size() || Ec) return false;
-        std::ifstream In(Path, std::ios::binary);
+        // its size from the open file: one open, no stat before it
+        std::ifstream In(Path, std::ios::binary | std::ios::ate);
+        if (!In || (uint64_t)In.tellg() != Text.size()) return false;
+        In.seekg(0);
         std::string Old(Text.size(), '\0');
         return In.read(Old.data(), (std::streamsize)Old.size()) && Old == Text;
     }
@@ -382,13 +399,15 @@ namespace
 
 bool SidecarHolds(const std::string& Path, const Sidecar& S)
 {
-    return FileHolds(Path, SidecarText(S));
+    // a file this run knows absent (ExportWriters::MayExist): neither its text made nor the disk asked
+    return ExportWriters::MayExist(Path) && FileHolds(Path, SidecarText(S));
 }
 
 bool WriteSidecar(const std::string& Path, const Sidecar& S)
 {
     const std::string Text = SidecarText(S);
-    if (FileHolds(Path, Text)) return true;   // already those bytes: not rewritten
+    // claimed before it exists; read first only when it may be there: already those bytes, not rewritten
+    if (ExportWriters::Claim(Path) && FileHolds(Path, Text)) return true;
     std::ofstream Out(Path, std::ios::binary | std::ios::trunc);
     if (!Out) return false;
     Out << Text;
@@ -442,14 +461,14 @@ std::string SidecarText(const Sidecar& S)
             nlohmann::json C = nlohmann::json::object();
             PutMap(C, "mask", D.Color.Mask, true);
             C["color"] = Floats(D.Color.Color, 3);
-            J["color_tint"] = C;
+            J["color_tint"] = std::move(C);
         }
         if (!D.Tint.Empty()) J["tint"] = TintJson(D.Tint);
         if (!D.Layers.empty())
         {
             nlohmann::json Ls = nlohmann::json::array();
             for (const Layer& L : D.Layers) Ls.push_back(LayerJson(L));
-            J["layers"] = Ls;
+            J["layers"] = std::move(Ls);
         }
         if (D.Metalness.Empty() && D.Specular.Empty()) J["metalness_value"] = Rounded(D.MetalnessValue);
         if (i < S.Sources.size())
@@ -462,14 +481,17 @@ std::string SidecarText(const Sidecar& S)
             for (const auto& Img : Src.Images)
             {
                 std::snprintf(Hex, sizeof(Hex), "0x%08X", Img.Semantic);
-                Imgs.push_back({ { "path", PortablePath(Img.Path) }, { "semantic", Hex } });
+                nlohmann::json One = nlohmann::json::object();
+                One["path"] = PortablePath(Img.Path);
+                One["semantic"] = Hex;
+                Imgs.push_back(std::move(One));
             }
-            J["sources"] = Imgs;
+            J["sources"] = std::move(Imgs);
         }
-        Mats.push_back(J);
+        Mats.push_back(std::move(J));
     }
-    const nlohmann::json Root{ { "format", "greyhound-materials" }, { "version", 1 },
-                               { "game", S.Game }, { "adapter", S.Adapter }, { "materials", Mats } };
+    nlohmann::json Root{ { "format", "greyhound-materials" }, { "version", 1 }, { "game", S.Game }, { "adapter", S.Adapter } };
+    Root["materials"] = std::move(Mats);   // an initializer list would copy the whole tree
     // names are raw game strings: bytes that are not UTF-8 become U+FFFD instead of throwing
     return Root.dump(1, '\t', false, nlohmann::json::error_handler_t::replace);
 }

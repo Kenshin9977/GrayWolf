@@ -8,6 +8,8 @@
 #include "UiAsync.h"           // dialogs, shell opens and disk lookups off the frame
 #include "Strings.h"
 #include "SettingsManager.h"   // the screenshot's folder and scale
+#include "ImGuiTheme.h"        // the toolbar's icons
+#include "PreviewEnvironmentUi.h"   // the environment's controls
 
 #include "imgui.h"
 #include "DirectXTex.h"       // CaptureTexture / SaveToWICFile (self-screenshot)
@@ -66,16 +68,16 @@ namespace ShellUi
         if (ImGui::BeginMenu("Screenshots"))
         {
             if (!ImGui::IsAnyItemActive()) SetBuf(Buf, sizeof(Buf), ScreenshotDir());
-            ImGui::TextUnformatted("Folder of the viewport's screenshots (Screenshot, Ctrl+Shift+S)");
+            ImGui::TextUnformatted("Screenshots folder (Viewport camera button, Ctrl+Shift+S)");
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 30.0f);
             ImGui::InputText("##screenshotdir", Buf, sizeof(Buf));
             if (ImGui::IsItemDeactivatedAfterEdit()) SettingsManager::SetSetting("screenshot_dir", Buf);
-            if (ImGui::Button("Browse...")) UiAsync::PickFolder("screenshots.dir", "Select the screenshots folder", ScreenshotDir());
+            if (ImGui::Button("Browse\xE2\x80\xA6")) UiAsync::PickFolder("screenshots.dir", "Select the screenshots folder", ScreenshotDir());
             ImGui::SameLine();
-            if (ImGui::Button("Open")) OpenScreenshotDir();
+            if (ImGui::Button("Open folder")) OpenScreenshotDir();
             ImGui::SameLine();
             ImGui::BeginDisabled(SettingsManager::GetSetting("screenshot_dir", "").empty());
-            if (ImGui::Button("Default")) SettingsManager::SetSetting("screenshot_dir", "");
+            if (ImGui::Button("Use default")) SettingsManager::SetSetting("screenshot_dir", "");
             ImGui::EndDisabled();
             ImGui::EndMenu();
         }
@@ -86,7 +88,8 @@ namespace ShellUi
     {
         if (!V.Vrt.Resize(Dev, W, H)) return;
         V.Renderer.SetLighting(V.Lighting);
-        const float Bg[4] = { 0.086f, 0.086f, 0.098f, 1.0f };
+        V.Renderer.SetQuality(V.Quality);
+        const float* const Bg = kPreviewBackground;   // under the backdrop, or the background without it
         const PreviewCamera Cam = OrbitPreviewCamera(V.Mesh, V.Yaw, V.Pitch, V.DistScale, V.Pan);
         V.Renderer.Render(Ctx, V.Mesh.Valid ? &V.Mesh : nullptr, Cam, V.Vrt, Bg);
         if (!V.PendingShot.Wanted || !V.Mesh.Valid) return;
@@ -98,7 +101,7 @@ namespace ShellUi
         if (!V.Renderer.Capture(Dev, Ctx, V.Mesh, Cam, SW, SH, *Image))
         {
             std::lock_guard<std::mutex> Lk(LastShot->M);
-            LastShot->Status = "could not render the screenshot (" + Size + ")";
+            LastShot->Status = "Could not render the screenshot (" + Size + ")";
             LastShot->File.clear();
             LastShot->Until = UiAsync::Detail::Now() + 8.0;
             return;
@@ -136,9 +139,9 @@ namespace ShellUi
         PreviewLighting& Lighting = V.Lighting;
         for (char& c : ModelName) if (std::strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
         const bool Shortcut = !ImGui::GetIO().WantTextInput && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_S);
-        if ((ImGui::SmallButton("Screenshot") || Shortcut) && V.Mesh.Valid) V.PendingShot = { true, "", ModelName };
+        if ((Theme::IconButton("shot", Theme::Icon::Camera, nullptr) || Shortcut) && V.Mesh.Valid) V.PendingShot = { true, "", ModelName };
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Save what the view shows as a PNG, background transparent (Ctrl+Shift+S), in\n%s\n"
+            ImGui::SetTooltip("Save the view as a PNG with a transparent background (Ctrl+Shift+S), in\n%s\n"
                               "(right-click: open that folder; Settings > Screenshots to change it)", ScreenshotDir().c_str());
         if (ImGui::BeginPopupContextItem("shotmenu"))
         {
@@ -148,13 +151,13 @@ namespace ShellUi
         ImGui::SameLine();
         static const char* Scales[] = { "1x", "2x", "4x" };
         int ScaleIdx = V.ShotScale == 4 ? 2 : V.ShotScale - 1;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 3.5f);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 3.2f);
         if (ImGui::Combo("##shotscale", &ScaleIdx, Scales, 3))
         {
             V.ShotScale = 1 << ScaleIdx;
             SettingsManager::SetSetting("preview_shot_scale", std::to_string(V.ShotScale));
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Screenshot size: the view's size times this");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Screenshot size, as a multiple of the view's size");
 
         // saved when a slider is let go: the settings file is not rewritten every frame of a drag
         const auto SaveLighting = [&] {
@@ -162,21 +165,39 @@ namespace ShellUi
             SettingsManager::SetSetting("preview_lights", std::to_string(Lighting.Lights));
             SettingsManager::SetSetting("preview_specular", Lighting.Specular ? "true" : "false");
         };
-        ImGui::SameLine(0, ImGui::GetFontSize() * 1.5f);
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
-        ImGui::SliderFloat("##exposure", &Lighting.Exposure, -4.0f, 4.0f, "exposure %+.1f");
+        const auto Glyph = [](const char* G) { ImGui::SameLine(); ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("%s", G); ImGui::SameLine(); };
+        ImGui::SameLine(0, ImGui::GetFontSize() * 0.6f);
+        Glyph(Theme::Icon::Exposure);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.5f);
+        ImGui::SliderFloat("##exposure", &Lighting.Exposure, -4.0f, 4.0f, "%+.1f");
         if (ImGui::IsItemDeactivatedAfterEdit()) SaveLighting();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exposure in stops (double-click to type, right-click resets)");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { Lighting.Exposure = 0.0f; SaveLighting(); }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
-        ImGui::SliderFloat("##lights", &Lighting.Lights, 0.0f, 3.0f, "lights %.2fx");
+        Glyph(Theme::Icon::Lights);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4.5f);
+        ImGui::SliderFloat("##lights", &Lighting.Lights, 0.0f, 3.0f, "%.2fx");
         if (ImGui::IsItemDeactivatedAfterEdit()) SaveLighting();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the three lights; the environment stays (right-click resets)");
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { Lighting.Lights = 1.0f; SaveLighting(); }
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Specular", &Lighting.Specular)) SaveLighting();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: every surface a plain dielectric, its colour whole (to judge a material)");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the three lights; the environment light stays (right-click resets)");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) { Lighting.Lights = PreviewLighting{}.Lights; SaveLighting(); }
+        ImGui::SameLine(0, ImGui::GetFontSize() * 0.4f);
+        // no icon says "specular" plainly: the word, as a toggle
+        if (Theme::Pill("Specular", Lighting.Specular))
+        {
+            Lighting.Specular = !Lighting.Specular;
+            SaveLighting();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Specular highlights (off: plain matte surfaces, to judge a material's colour)");
+        ImGui::SameLine(0, ImGui::GetFontSize() * 0.4f);
+        DrawPreviewEnvironmentControls(Lighting);   // the environment, its turn and strength, bloom
+        if (DrawPreviewShadowControls(Lighting.Shadow)) SavePreviewShadowSettings(Lighting.Shadow);
+        // ambient occlusion, anti-aliasing, still frames (PreviewPost.h), in a popup
+        ImGui::SameLine(0, ImGui::GetFontSize() * 0.4f);
+        if (Theme::IconButton("quality", Theme::Icon::Sliders, "Quality: ambient occlusion, anti-aliasing, still frames")) ImGui::OpenPopup("##quality");
+        if (ImGui::BeginPopup("##quality"))
+        {
+            DrawPreviewQualityControls(V.Quality);
+            ImGui::EndPopup();
+        }
         std::string Status, File;
         {
             std::lock_guard<std::mutex> Lk(V.LastShot->M);
@@ -189,8 +210,8 @@ namespace ShellUi
             if (!File.empty())
             {
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Show")) UiAsync::OpenInShell(File, true);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show the file in its folder");
+                if (ImGui::SmallButton("Show in folder")) UiAsync::OpenInShell(File, true);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open its folder with the file selected");
             }
         }
     }

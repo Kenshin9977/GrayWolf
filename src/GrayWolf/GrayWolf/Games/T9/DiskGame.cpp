@@ -725,8 +725,8 @@ namespace
                    std::string& Error) const override
         {
             if (Input.rfind("casc:", 0) != 0) return IDiskGame::Zones(Input, Options, Out, Error);
-            CoDPackageCache* P = Packages(Options, Error);
-            if (P != nullptr) Out = TreyarchPackages::ExtractFastFiles(P, Input.substr(5), FastFileDir(Options), Error);
+            const auto P = Packages(Options, Error);
+            if (P != nullptr) Out = TreyarchPackages::ExtractFastFiles(P.get(), Input.substr(5), FastFileDir(Options), Error);
             if (P != nullptr && Out.empty()) Error = "no fast file matches " + Input + " " + Error;
             return !Out.empty();
         }
@@ -735,8 +735,8 @@ namespace
         bool ListZones(const std::string& Install, const ExportOptions& Options, std::vector<std::string>& Names,
                        std::string& Error) const override
         {
-            CoDPackageCache* P = TreyarchPackages::Open<XSUBCache>(Install);
-            if (P != nullptr) Names = TreyarchPackages::ListFastFiles(P);
+            const auto P = TreyarchPackages::Open<XSUBCache>(Install);
+            if (P != nullptr) Names = TreyarchPackages::ListFastFiles(P.get());
             if (Names.empty()) Error = "no fast file in " + Install;
             return !Names.empty();
         }
@@ -745,18 +745,20 @@ namespace
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
         {
-            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XSUBCache>(Install), Install, Names, FastFileDir(Options), Out, Error);
+            return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XSUBCache>(Install).get(), Install, Names, FastFileDir(Options), Out, Error);
         }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override
         {
             // the packages the live readers stream mesh, image and sound data from (--install)
-            if (!Options.Install.empty() && TreyarchPackages::Open<XSUBCache>(Options.Install) == nullptr)
+            auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
+            if (!Options.Install.empty() && Packages == nullptr)
             {
                 Error = "could not open the packages of " + Options.Install;
                 return nullptr;
             }
             auto Zone = std::make_unique<ColdWarZone>(Path);
+            Zone->ServesPackages(std::move(Packages));
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }
@@ -779,9 +781,9 @@ namespace
         {
             return !Options.Cache.empty() ? Options.Cache : (fs::temp_directory_path() / "greyhound_t9ff").string();
         }
-        static CoDPackageCache* Packages(const ExportOptions& Options, std::string& Error)
+        static std::shared_ptr<CoDPackageCache> Packages(const ExportOptions& Options, std::string& Error)
         {
-            CoDPackageCache* P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
+            auto P = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
             if (P == nullptr) Error = "casc: zones need --install";
             return P;
         }

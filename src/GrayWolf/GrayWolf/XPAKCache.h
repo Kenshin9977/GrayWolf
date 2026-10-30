@@ -22,6 +22,8 @@ public:
     // beside one zone, for the offline exporters.
     void LoadPackagesIn(const std::string& Dir);
     virtual std::unique_ptr<uint8_t[]> ExtractPackageObject(uint64_t CacheID, int32_t Size, uint32_t& ResultSize);
+    // the compressed object read now, decompressed by the function (thread-safe: a buffer of its own)
+    PackageObjectFinish ReadPackageObject(uint64_t CacheID, int32_t Size) override;
 
     // An object the packages' index names ("name: ...", with its type and the size of its first
     // part): a map's baked images (sky, probes) have no key in the zone, only their name.

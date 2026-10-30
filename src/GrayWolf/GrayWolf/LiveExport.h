@@ -57,4 +57,13 @@ namespace LiveExport
 
     // Forgets the textures written so far, so the next one is written again (a new export run)
     void ForgetWrittenImages();
+
+    // Where ExportModel's files go on this thread while one is installed (ExportWriters::ModelFilesOnPool):
+    // each model (a LOD) as a job writing its files and its sidecar, handed over with the model and
+    // all it needs (the model is the job's own; Key: its files' path without extension, two jobs
+    // of one Key never run at once). The read and the translation stay on this thread (the live
+    // readers' state is the process's); none installed: written now.
+    using ModelFileJobs = std::function<void(const std::string& Key, std::function<void()> Job)>;
+    // installs Jobs (nullptr: none), returns the one it replaces
+    const ModelFileJobs* WriteModelFilesWith(const ModelFileJobs* Jobs);
 }

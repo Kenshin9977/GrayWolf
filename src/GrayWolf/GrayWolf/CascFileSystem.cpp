@@ -208,10 +208,7 @@ size_t CascFileSystem::EnumerateFiles(const std::string& pattern, std::function<
         {
             if (findData.bFileAvailable)
             {
-                if (findData.bFileAvailable)
-                {
-                    onFileFound(findData.szFileName, findData.FileSize);
-                }
+                onFileFound(findData.szFileName, findData.FileSize);
             }
         } while (CascFindNextFile(fileHandle, &findData));
     }

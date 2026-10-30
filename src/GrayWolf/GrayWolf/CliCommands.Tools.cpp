@@ -298,8 +298,13 @@ int RunListInstalls(const CliOptions& Options)
     std::string Report = std::format("result=ok\ninstalls={}\ndetect_ms={}\n", Installs.size(),
         (long long)CliElapsedMs(Start, CliClock::now()));
     for (const auto& I : Installs)
-        Report += std::format("install={} year={} source={} disk={} path={}\n", I.Label.c_str(), I.Year,
-            I.Source.c_str(), I.DiskId.c_str(), I.Path.c_str());
+    {
+        std::string Installed;
+        for (const auto& L : I.Language.Installed) Installed += (Installed.empty() ? "" : ",") + L;
+        Report += std::format("install={} year={} source={} disk={} language={} text={} installed={} path={}\n", I.Label.c_str(), I.Year,
+            I.Source.c_str(), I.DiskId.c_str(), I.Language.Main().empty() ? "-" : I.Language.Main().c_str(),
+            I.Language.Text.empty() ? "-" : I.Language.Text.c_str(), Installed.empty() ? "-" : Installed.c_str(), I.Path.c_str());
+    }
     CliReport(Options, Report);
     return 0;
 }

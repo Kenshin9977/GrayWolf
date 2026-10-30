@@ -11,6 +11,7 @@
 #include "SeAnimReader.h"      // SeAnimClip
 #include "AudioPlayer.h"       // real audio playback (miniaudio) with cursor + waveform
 #include "FxPreviewPanel.h"    // an effect (fx JSON) playing in 3D
+#include "ImGuiTheme.h"         // the look, the tabs' names
 #include "AssetGrid/AssetGrid.h" // the Assets tab's grid view
 #include "AssetGrid/GridShot.h" // ui-grid-shot
 #include "AssetGrid/AnimRigs.h" // the model each anim plays on
@@ -206,12 +207,15 @@ namespace ShellUi
         std::vector<int> AnimSkinBones; float AnimBindCenter[3] = {}; float AnimFirstZ = 0; bool AnimFramed = false;
         bool AnimPlaying = false; float AnimFrame = 0.0f;
         char AnimModelFilter[128] = "";
+        // the sidebar beside the view: the selection's every field, an anim's model picker (kept in the settings)
+        bool ShowDetails = false;
 
         ShotRequest PendingShot;
         int ShotScale = 1;
         const std::shared_ptr<ShotResult> LastShot = std::make_shared<ShotResult>();
         // The 3D view's lighting controls, kept in the settings (the defaults are the renderer's own).
         PreviewLighting Lighting;
+        PreviewQuality Quality = LoadPreviewQuality();   // ambient occlusion, anti-aliasing, still frames (PreviewPost.h)
     };
 
     struct ShellState;
@@ -260,7 +264,7 @@ namespace ShellUi
         size_t ShotSelected = 0; int ShotSelectWait = 0;   // ui-grid-shot --select: the names selected so far, frames left before the next
         int Selected = -1;
         bool ScrollToSelected = false; // set on keyboard nav so the table scrolls the new row into view
-        std::set<int> MultiSel; // Ctrl+click picks (into Models), independent of Selected - "Merge" target
+        std::set<int> MultiSel; // Ctrl+click picks (into Models), independent of Selected - "View together" target
         AssetsTab Assets;
         ViewportState Viewport;
         std::unique_ptr<GridShot> Shot;

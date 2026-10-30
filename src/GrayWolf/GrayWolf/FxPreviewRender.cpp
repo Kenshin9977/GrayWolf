@@ -5,6 +5,7 @@
 #include "FxPreviewGeometry.h"
 #include "ModelPreview.h"      // LoadPreviewGeometry: a model element's mesh
 #include "PreviewTextures.h"
+#include "PreviewD3D.h"
 #include "DirectXTex.h"
 #include "ExportNaming.h"
 #include "Strings.h"
@@ -104,12 +105,7 @@ bool Target::Resize(ID3D11Device* Dev, int NewW, int NewH)
     Samples = 4;
     UINT Q = 0;
     if (FAILED(Dev->CheckMultisampleQualityLevels(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, Samples, &Q)) || Q == 0) Samples = 1;
-    const auto Tex = [&](DXGI_FORMAT F, UINT S, UINT Bind, ComPtr<ID3D11Texture2D>& Out) {
-        D3D11_TEXTURE2D_DESC Td{};
-        Td.Width = W; Td.Height = H; Td.MipLevels = 1; Td.ArraySize = 1;
-        Td.Format = F; Td.SampleDesc.Count = S; Td.Usage = D3D11_USAGE_DEFAULT; Td.BindFlags = Bind;
-        return SUCCEEDED(Dev->CreateTexture2D(&Td, nullptr, &Out));
-    };
+    const auto Tex = [&](DXGI_FORMAT F, UINT S, UINT Bind, ComPtr<ID3D11Texture2D>& Out) { return PreviewD3D::Texture(Dev, W, H, F, Bind, Out, S); };
     ComPtr<ID3D11Texture2D> Depth;
     if (!Tex(DXGI_FORMAT_R8G8B8A8_TYPELESS, Samples, D3D11_BIND_RENDER_TARGET, Color) ||
         !Tex(DXGI_FORMAT_D32_FLOAT, Samples, D3D11_BIND_DEPTH_STENCIL, Depth) ||

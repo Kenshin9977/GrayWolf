@@ -18,13 +18,12 @@ private:
     static int32_t const infN = 0x7F800000;
     static int32_t const maxN = 0x477FE000;
     static int32_t const minN = 0x38800000;
-    static int32_t const signN = 0x80000000;
 
     static int32_t const infC = infN >> shift;
     static int32_t const nanN = (infC + 1) << shift;
     static int32_t const maxC = maxN >> shift;
     static int32_t const minC = minN >> shift;
-    static int32_t const signC = signN >> shiftSign;
+    static int32_t const signC = 0x8000; // a half's sign bit
 
     // Precalculated (1 << 23) / minN
     static int32_t const mulN = 0x52000000;

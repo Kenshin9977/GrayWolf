@@ -720,9 +720,14 @@ int RunDumpGlb(const CliOptions& Options)
             Mn[0], Mn[1], Mn[2], Mx[0], Mx[1], Mx[2], Mx[0]-Mn[0], Mx[1]-Mn[1], Mx[2]-Mn[2],
             UntexturedVerts, Geo.VtxMat.size());
 
-        // Same mean-center / 90th-percentile-radius the renderer's camera framing uses
-        // (see ModelPreviewGPU.cpp / ModelPreview.cpp RasterizeToRGBA) - printed here so a bad
+        // The box render-model frames (PreviewFramingBox), then the mean-center / 90th-percentile
+        // radius a map's close view uses (ModelPreview.cpp RasterizeToRGBA) - printed here so a bad
         // camera position can be told apart from a bad read without touching the GUI.
+        {
+            float Lo[3], Hi[3];
+            PreviewFramingBox(Geo.Pos.data(), VertCount, Lo, Hi);
+            Report += std::format("framing-box min=({:.1f},{:.1f},{:.1f}) max=({:.1f},{:.1f},{:.1f})\n", Lo[0], Lo[1], Lo[2], Hi[0], Hi[1], Hi[2]);
+        }
         double SumX = 0, SumY = 0, SumZ = 0;
         for (size_t v = 0; v < VertCount; v++) { SumX += Geo.Pos[v*3]; SumY += Geo.Pos[v*3+1]; SumZ += Geo.Pos[v*3+2]; }
         const float Cx = (float)(SumX / VertCount), Cy = (float)(SumY / VertCount), Cz = (float)(SumZ / VertCount);
@@ -862,13 +867,41 @@ int RunRenderModelCli(const CliOptions& Options)
     { std::stringstream Ss(Options.RenderModel); std::string P;
       while (std::getline(Ss, P, ';')) if (!P.empty()) Parts.push_back(P); }
     const std::string OutPath = Options.Out.empty() ? (Parts[0] + ".png") : Options.Out;
-    const bool Ok = (Options.Turntable > 0) ? RenderModelTurntable(Parts, OutPath, 256, Options.Turntable)
-                  : Options.Gpu             ? RenderModelGPU(Parts, OutPath, 512)
-                  : (Parts.size() == 1)     ? RenderModelToPNG(Parts[0], OutPath, 512)
-                                            : RenderModelsToPNG(Parts, OutPath, 512);
+    // the viewport's defaults, shadows and ground on unless turned off; the backdrop only when asked
+    // (without it the PNG is transparent)
+    PreviewLighting Lighting;
+    if (!Options.PreviewEnv.empty()) Lighting.Environment = Options.PreviewEnv;
+    Lighting.EnvRotation = Options.PreviewEnvRotation;
+    Lighting.EnvIntensity = Options.PreviewEnvIntensity;
+    if (Options.PreviewLights >= 0) Lighting.Lights = Options.PreviewLights;
+    if (Options.PreviewBloom >= 0)
+    {
+        Lighting.Bloom = Options.PreviewBloom > 0;
+        if (Lighting.Bloom) Lighting.BloomStrength = Options.PreviewBloom;
+    }
+    Lighting.Backdrop = Options.PreviewBackdrop;
+    if (Options.PreviewBackdropBlur >= 0) Lighting.BackdropBlur = std::min(Options.PreviewBackdropBlur, 1.0f);
+    Lighting.Shadow = PreviewShadowSettings::On();
+    Lighting.Shadow.Shadows = !Options.NoShadows;
+    Lighting.Shadow.Ground = !Options.NoGround;
+    if (Options.ShadowSoftness >= 0) Lighting.Shadow.Softness = Options.ShadowSoftness;
+    // the GPU renderer's quality: the viewport's settings, then --quality over them
+    PreviewQuality Quality = LoadPreviewQuality();
+    std::string QualityError;
+    if (!ApplyPreviewQualitySpec(Quality, Options.RenderQuality, &QualityError))
+    {
+        CliReport(Options, "result=error\nreason=" + QualityError + "\n");
+        return 2;
+    }
+    const int Size = Options.RenderSize > 0 ? std::clamp(Options.RenderSize, 16, 8192) : Options.Turntable > 0 ? 256 : 512;
+    const bool Ok = (Options.Turntable > 0 && Options.Gpu) ? RenderModelGPU(Parts, OutPath, Size, Lighting, Options.Turntable, &Quality)
+                  : (Options.Turntable > 0) ? RenderModelTurntable(Parts, OutPath, Size, Options.Turntable)
+                  : Options.Gpu             ? RenderModelGPU(Parts, OutPath, Size, Lighting, 0, &Quality)
+                  : (Parts.size() == 1)     ? RenderModelToPNG(Parts[0], OutPath, Size)
+                                            : RenderModelsToPNG(Parts, OutPath, Size);
     CliReport(Options, std::format("result={}\nout={}\nparts={}\nrenderer={}\n",
         Ok ? "ok" : "error", OutPath.c_str(), Parts.size(),
-        Options.Turntable > 0 ? "turntable" : Options.Gpu ? "gpu" : "software"));
+        Options.Turntable > 0 ? (Options.Gpu ? "gpu-turntable" : "turntable") : Options.Gpu ? "gpu" : "software"));
     return Ok ? 0 : 5;
 }
 
@@ -982,6 +1015,19 @@ void AddModelPreviewCommands(CliCommandBuilders& B)
         auto* Sub = App.add_subcommand("render-model", "Render a model to PNG (software, --gpu, or --turntable N views)");
         Sub->add_option("file", Options.RenderModel, "Model file to render")->required()->check(CLI::ExistingFile);
         Sub->add_flag("--gpu", Options.Gpu, "Use the offscreen D3D11 renderer");
-        Sub->add_option("--turntable", Options.Turntable, "Render N views around the model into one contact sheet");
+        Sub->add_option("--env", Options.PreviewEnv, "--gpu: the environment lighting it, studio or a baked one (the viewport's list; studio)");
+        Sub->add_option("--env-rotation", Options.PreviewEnvRotation, "--gpu: the environment's turn about the up axis, degrees");
+        Sub->add_option("--env-intensity", Options.PreviewEnvIntensity, "--gpu: the environment's strength (1)");
+        Sub->add_option("--bloom", Options.PreviewBloom, "--gpu: bloom strength (0: none; the viewport's default 0.15)");
+        Sub->add_option("--lights", Options.PreviewLights, "--gpu: the three lights' strength (0.5; 0: the environment alone)");
+        Sub->add_flag("--backdrop", Options.PreviewBackdrop, "--gpu: the environment drawn behind the model, blurred (an opaque PNG)");
+        Sub->add_option("--backdrop-blur", Options.PreviewBackdropBlur, "--gpu --backdrop: its blur, 0 (sharp) to 1 (0.5)")->check(CLI::Range(0.0f, 1.0f));
+        Sub->add_flag("--no-shadows", Options.NoShadows, "--gpu: without the key light's shadow");
+        Sub->add_flag("--no-ground", Options.NoGround, "--gpu: without the ground (the shadow catcher under the model)");
+        Sub->add_option("--shadow-softness", Options.ShadowSoftness, "--gpu: the key light's size, 0 (sharp) to 1 (soft)")->check(CLI::Range(0.0f, 1.0f));
+        Sub->add_option("--turntable", Options.Turntable, "Render N views around the model into one contact sheet (with --gpu: the D3D11 renderer)");
+        Sub->add_option("--quality", Options.RenderQuality,
+                        "--gpu only, over the viewport's settings: ao=0|1,ao_strength=X,ao_radius=X,msaa=1|2|4|8,smaa=0|1,still_samples=N");
+        Sub->add_option("--render-size", Options.RenderSize, "The image's side in pixels (512; a turntable view's: 256)");
     };
 }

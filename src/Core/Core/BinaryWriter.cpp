@@ -2,12 +2,25 @@
 
 #include "BinaryWriter.h"
 
+#include <cstring>
 #include <stdexcept>
+
+BinaryWriter::BinaryWriter(BinaryWriter&& Other) noexcept
+    : Stream(std::move(Other.Stream)), Buffer(std::move(Other.Buffer)), Buffered(Other.Buffered), Appending(Other.Appending)
+{
+    Other.Buffered = 0;
+}
+
+BinaryWriter::~BinaryWriter()
+{
+    Flush();
+}
 
 bool BinaryWriter::Create(const std::string& FileName)
 {
     Close();
     Stream.open(FileName, std::ios::binary | std::ios::trunc);
+    Appending = false;
     return Stream.is_open();
 }
 
@@ -15,11 +28,26 @@ bool BinaryWriter::Open(const std::string& FileName)
 {
     Close();
     Stream.open(FileName, std::ios::binary | std::ios::app);
+    Appending = true;
     return Stream.is_open();
+}
+
+void BinaryWriter::Flush()
+{
+    if (Buffered == 0)
+    {
+        return;
+    }
+    if (Stream.is_open())
+    {
+        Stream.write(Buffer.get(), (std::streamsize)Buffered);
+    }
+    Buffered = 0;
 }
 
 void BinaryWriter::Close()
 {
+    Flush();
     if (Stream.is_open())
     {
         Stream.close();
@@ -29,7 +57,17 @@ void BinaryWriter::Close()
 
 uint64_t BinaryWriter::GetPosition()
 {
-    return Stream.is_open() ? (uint64_t)Stream.tellp() : 0;
+    if (!Stream.is_open())
+    {
+        return 0;
+    }
+    // appended to, the stream's position moves to the end at each write: asked once they are written
+    if (Appending)
+    {
+        Flush();
+        return (uint64_t)Stream.tellp();
+    }
+    return (uint64_t)Stream.tellp() + Buffered;
 }
 
 uint64_t BinaryWriter::GetLength()
@@ -38,6 +76,7 @@ uint64_t BinaryWriter::GetLength()
     {
         return 0;
     }
+    Flush();
     const auto Position = Stream.tellp();
     Stream.seekp(0, std::ios::end);
     const auto Length = (uint64_t)Stream.tellp();
@@ -49,6 +88,7 @@ void BinaryWriter::SetPosition(uint64_t Offset)
 {
     if (Stream.is_open())
     {
+        Flush();
         Stream.seekp((std::streamoff)Offset, std::ios::beg);
     }
 }
@@ -74,5 +114,21 @@ void BinaryWriter::WriteRaw(const void* Data, size_t ElementSize, size_t Count)
     {
         throw std::runtime_error("BinaryWriter: no file is open");
     }
-    Stream.write(static_cast<const char*>(Data), (std::streamsize)(ElementSize * Count));
+    const size_t Size = ElementSize * Count;
+    if (Buffered + Size > BufferSize)
+    {
+        Flush();
+    }
+    // a block as large as the buffer goes to the file as it is
+    if (Size >= BufferSize)
+    {
+        Stream.write(static_cast<const char*>(Data), (std::streamsize)Size);
+        return;
+    }
+    if (!Buffer)
+    {
+        Buffer = std::make_unique_for_overwrite<char[]>(BufferSize);
+    }
+    std::memcpy(Buffer.get() + Buffered, Data, Size);
+    Buffered += Size;
 }

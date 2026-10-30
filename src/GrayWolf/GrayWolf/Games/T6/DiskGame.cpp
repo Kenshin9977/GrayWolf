@@ -516,6 +516,8 @@ namespace
             size_t N = 0;
             std::map<std::string, std::ifstream> Open;
             std::shared_ptr<const std::map<uint32_t, SoundEntry>> Others;
+            // read here in the files' order, decoded and written by the sink's pool
+            ExportWriters::SoundSink Sink;
             for (const auto& [F, Id] : Files)
             {
                 if (!C.Advance(N++, Files.size(), F)) return;
@@ -536,14 +538,14 @@ namespace
                 if (!Found)
                 {
                     Counter("sounds_without_data")++;
-                    T.Fail(Name(), Kind::Sound, F, "in no sound bank of the install");
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "in no sound bank of the install"); });
                     continue;
                 }
                 const SoundEntry& S = *Found;
                 if ((S.Format != 0 && S.Format != 8) || (S.Format == 0 && S.Rate >= std::size(FrameRates)))
                 {
                     Counter("sounds_format_" + std::to_string(S.Format))++;
-                    T.Fail(Name(), Kind::Sound, F, "format " + std::to_string(S.Format));
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "format " + std::to_string(S.Format)); });
                     continue;
                 }
                 if (C.OnSoundHeader)
@@ -578,30 +580,30 @@ namespace
                 Fs.read(reinterpret_cast<char*>(Data.data()), (std::streamsize)S.Size);
                 if (Fs.gcount() != (std::streamsize)S.Size)
                 {
-                    T.Fail(Name(), Kind::Sound, F, "data not read");
+                    Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "data not read"); });
                     continue;
                 }
                 // the asset file without its raw/ or devraw/ root, the format's extension added
                 const std::string Rel = WithoutRawRoot(F);
                 const std::string Own = S.Format == 8 ? ".flac" : ".wav";
-                const std::string Format = ExportWriters::SoundFormatSetting();
+                const std::string& Format = Sink.Format();
                 const fs::path Out = Root / fs::path(Rel + ExportWriters::SoundExtension(Format, Own, true)).make_preferred();
-                std::vector<uint8_t> File;
+                auto File = std::make_shared<std::vector<uint8_t>>();
                 if (S.Format == 0)
                 {
-                    File = WavHeader(S.Channels, FrameRates[S.Rate], S.Size);
-                    File.insert(File.end(), Data.begin(), Data.end());
+                    *File = WavHeader(S.Channels, FrameRates[S.Rate], S.Size);
+                    File->insert(File->end(), Data.begin(), Data.end());
                 }
                 else
-                    File.swap(Data);
-                std::string Why;
-                if (ExportWriters::WriteSound(ExportWriters::SoundSource::OfFile(File.data(), File.size(), Own, true), Out, Format, &Why))
-                {
-                    Kt.Written++;
-                }
-                else
-                    T.Fail(Name(), Kind::Sound, F, Why);
+                    File->swap(Data);
+                Sink.Write(ExportWriters::SoundSource::OfFile(File->data(), File->size(), Own, true), Out,
+                           [this, &Kt, &T, F](bool Ok, const std::string& Why, const std::string& Crash) {
+                               if (Ok) Kt.Written++;
+                               else T.Fail(Name(), Kind::Sound, F, Crash.empty() ? Why : Crash);
+                           },
+                           File);
             }
+            Sink.Finish();
         }
 
         bool RawfileBytes(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes)

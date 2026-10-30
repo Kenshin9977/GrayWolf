@@ -7,6 +7,16 @@
 #include <lz4.h>
 #include <lzo/lzo1x.h>
 #include <miniz/miniz.h>
+#include <libdeflate.h>
+
+#include <memory>
+
+libdeflate_decompressor* Compression::Inflater()
+{
+    thread_local std::unique_ptr<libdeflate_decompressor, decltype(&libdeflate_free_decompressor)> D(libdeflate_alloc_decompressor(),
+                                                                                                     libdeflate_free_decompressor);
+    return D.get();
+}
 
 uint32_t Compression::DecompressLZ4Block(const int8_t* CompressedBuffer, int8_t* DecompressedBuffer, int32_t CompressedSize, int32_t DecompressedSize)
 {
@@ -62,11 +72,17 @@ uint32_t Compression::DecompressZLibBlock(const int8_t* CompressedBuffer, int8_t
 {
     if (DecompressedSize == 0) { DecompressedSize = DecompressionSizeZLib(); }
 
-    mz_ulong ResultSize = DecompressedSize;
+    // libdeflate: what uncompress accepts, Adler-32 checked
+    libdeflate_decompressor* const D = Inflater();
+    if (D == nullptr || CompressedSize < 0 || DecompressedSize < 0) { return 0; }
 
-    auto Result = uncompress((uint8_t*)DecompressedBuffer, &ResultSize, (const uint8_t*)CompressedBuffer, CompressedSize);
+    size_t ResultSize = 0;
 
-    if (Result == Z_OK) { return (uint32_t)ResultSize; }
+    if (libdeflate_zlib_decompress(D, CompressedBuffer, (size_t)CompressedSize, DecompressedBuffer, (size_t)DecompressedSize,
+                                   &ResultSize) == LIBDEFLATE_SUCCESS)
+    {
+        return (uint32_t)ResultSize;
+    }
 
     return 0;
 }

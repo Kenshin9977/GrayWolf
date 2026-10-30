@@ -488,7 +488,7 @@ void SABSupport::HandleSABv17(BinaryReader& Reader, const SABFileHeader& Header,
     }
 }
 
-void SABSupport::HandleSABv21(BinaryReader& Reader, const SABFileHeader& Header, const std::vector<std::string>& NameList, const WraithNameIndex& NameIndex, const std::string FileName)
+void SABSupport::HandleSABv21(BinaryReader& Reader, const SABFileHeader& Header, const std::vector<std::string>& NameList, const WraithNameIndex& NameIndex, const std::string& FileName)
 {
     const auto SkipBlank = SkipBlankAudio();
     auto UseIndex = SettingsManager::GetSetting("usesabindexbo4", "false") == "true";
@@ -518,7 +518,7 @@ void SABSupport::HandleSABv21(BinaryReader& Reader, const SABFileHeader& Header,
     }
 }
 
-void SABSupport::HandleSABv21v2(BinaryReader& Reader, const SABFileHeader& Header, const std::vector<std::string>& NameList, const WraithNameIndex& NameIndex, const std::string FileName)
+void SABSupport::HandleSABv21v2(BinaryReader& Reader, const SABFileHeader& Header, const std::vector<std::string>& NameList, const WraithNameIndex& NameIndex, const std::string& FileName)
 {
     const auto SkipBlank = SkipBlankAudio();
     const auto SoundNames = NamesByHash<uint64_t>(NameList, HashSoundStringV17);

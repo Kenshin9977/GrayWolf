@@ -155,11 +155,15 @@ bool PreviewModelInteractive(const std::vector<std::string>& SemodelPaths)
     if (FAILED(Hr)) { DestroyWindow(Hwnd); return false; }
 
     PreviewRenderer Renderer(Dev.Get());
+    Renderer.SetQuality(LoadPreviewQuality());   // the viewport's ambient occlusion, anti-aliasing, still frames
     const PreviewGpuMesh Mesh = UploadPreviewMesh(Dev.Get(), Geo);
     PreviewTarget Target;
     if (!Renderer.Ok() || !Mesh.Valid) { DestroyWindow(Hwnd); return false; }
+    PreviewLighting Lighting;
+    Lighting.Shadow = PreviewShadowSettings::On();   // as the viewport's defaults
+    Renderer.SetLighting(Lighting);
 
-    const float BgColor[4] = { 0.086f, 0.086f, 0.098f, 1.0f }; // dark studio grey
+    const float* const BgColor = kPreviewBackground;   // behind the backdrop, or the background without it
     while (!State.Quit)
     {
         MSG Msg;

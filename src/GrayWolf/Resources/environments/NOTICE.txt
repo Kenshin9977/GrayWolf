@@ -1,0 +1,18 @@
+The model preview's environments (image based light)
+=====================================================
+
+Each <id>_radiance.dds / <id>_irradiance.dds pair is baked from an HDR panorama by
+`GrayWolf.exe bake-environment <panorama.hdr> --id <id> --out <this folder>` (PreviewEnvironment.cpp):
+a GGX-prefiltered radiance cube (256 x 256, 6 mips) and an irradiance cube (32 x 32), BC6H, scaled
+so their mean light matches the procedural studio sky's. The panoramas are the 2K .hdr files of
+Poly Haven (https://polyhaven.com), published under CC0 1.0 (public domain,
+https://creativecommons.org/publicdomain/zero/1.0/): no attribution is required; it is given here.
+
+id            Poly Haven asset                 author             source
+photo_studio  Studio Small 09                  Sergej Majboroda   https://polyhaven.com/a/studio_small_09
+overcast      Kloofendal Overcast              Greg Zaal          https://polyhaven.com/a/kloofendal_overcast
+sunny         Kloofendal 48d Partly Cloudy     Greg Zaal          https://polyhaven.com/a/kloofendal_48d_partly_cloudy
+warehouse     Empty Warehouse 01               Sergej Majboroda   https://polyhaven.com/a/empty_warehouse_01
+
+Files: https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/<asset>_2k.hdr (downloaded 2026-10-30).
+License: CC0 1.0 Universal.

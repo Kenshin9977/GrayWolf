@@ -33,13 +33,13 @@ int RunBo4ZoneDiag(const CliOptions& Options, const std::string& Input)
         CliReport(Options, "result=error\nreason=bo4-zone-diag --type strings|matimages|refs|imagekeys; assets: disk-export --game bo4\n");
         return 1;
     }
-    CoDPackageCache* Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
+    const auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XPAKCache>(Options.Install);
     const std::string CacheDir = !Options.Cache.empty() ? Options.Cache : (fs::temp_directory_path() / "greyhound_bo4ff").string();
     const std::string UiRes = Options.UiRes.empty() ? "4k" : Options.UiRes;
     std::vector<std::string> Zones;
     size_t SkippedUiRes = 0;
     std::string Error;
-    if (!Bo4DiskExport::Zones(Input, Packages, CacheDir, UiRes, Zones, SkippedUiRes, Error))
+    if (!Bo4DiskExport::Zones(Input, Packages.get(), CacheDir, UiRes, Zones, SkippedUiRes, Error))
     {
         CliReport(Options, "result=error\nreason=" + Error + "\n");
         return 5;

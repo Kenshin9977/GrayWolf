@@ -23,6 +23,8 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include "Languages.h"
+
 namespace AnimOwners { struct Book; }
 
 namespace DiskGame
@@ -190,6 +192,9 @@ namespace DiskGame
         // the zones it loads beside a map
         bool ZoneAlone = false;
         std::map<std::string, std::string> Settings;  // Setting::Key -> value
+        // The languages exported (Languages::Resolve): "auto" the install's (RunLanguages), "all",
+        // "en,fr"; Languages::CliDefault when empty. Content of no language is always exported.
+        std::string Languages;
     };
 
     // The settings every game takes, beside its own (IDiskGame::AllSettings).
@@ -281,6 +286,11 @@ namespace DiskGame
         // tools given in ExportOptions too, as acts_exe and gsc_tool_exe; a decompiler not given there
         // as graywolf.json names it (acts_exe, gsc_tool_exe, cod_luajit_decompiler_exe, cod_lua_decompiler_exe, ffmpeg_exe).
         std::map<std::string, std::string> Settings;
+        // The run's languages (ExportOptions::Languages resolved for the install, set by Export): a
+        // reader leaves out the content of a language it does not Want. Every language by default.
+        // Export also sets it as Languages::Scope::Current() on its thread, for a reader the
+        // Context does not reach.
+        Languages::Choice Languages;
         // One of Settings by its key, "" when unset
         std::string Setting(const char* Key) const
         {
@@ -480,7 +490,11 @@ namespace DiskGame
         // pulled from. By default the zone's folder; a game whose zones sit in a subfolder of the
         // install (Black Ops 6's cod24\, sp24\) names the install above it.
         virtual std::string InstallOfZone(const std::string& Zone) const;
-        // A zone read and ready to export (nullptr and Error when it does not read).
+        // The language a zone is of, a Languages code ("" for a zone of no language): by default
+        // the language folder it is in or its name's first word (Languages::OfZone). A run whose
+        // input names several zones (a folder, a pattern) leaves out those of the languages it
+        // does not export (InLanguages); a zone named alone is exported whatever its language.
+        virtual std::string LanguageOfZone(const std::string& Zone) const { return ::Languages::OfZone(Zone); }        // A zone read and ready to export (nullptr and Error when it does not read).
         virtual std::unique_ptr<IDiskZone> Open(const std::string& Zone, const ExportOptions& Options,
                                                 std::string& Error) const = 0;
 
@@ -547,6 +561,16 @@ namespace DiskGame
     // The game a zone (or the first .ff under a folder) belongs to, by magic and version.
     const IDiskGame* Detect(const std::string& Input);
 
+    // The languages of the install a run reads, as its launcher's files say (Languages::OfInstall):
+    // Options.Install, else the install of Zone (IDiskGame::InstallOfZone)
+    Languages::Detected InstallLanguages(const IDiskGame& Game, const ExportOptions& Options, const std::string& Zone);
+    // Options.Languages resolved for that install; false and Error for a word naming no language
+    bool RunLanguages(const IDiskGame& Game, const ExportOptions& Options, const std::string& Zone,
+                      Languages::Choice& Out, std::string& Error);
+    // Zones of the wanted languages or of none (IDiskGame::LanguageOfZone), in their order; all of
+    // them when none would be left (the input named only zones of other languages)
+    std::vector<std::string> InLanguages(const IDiskGame& Game, const std::vector<std::string>& Zones, const Languages::Choice& Wanted);
+
     // Where a run is, for a progress bar: zone Zone (0-based) of Zones, being read (no Current)
     // or exporting Current, Done of its Count assets (0 of 0 until its reader says); Running is
     // what the run did so far.
@@ -606,8 +630,9 @@ namespace DiskGame
     // Where each asset of an install is defined (IDiskZone::Defines of every zone ListZones
     // gives), built once and kept in a file keyed by the game, the install, the zone list and the
     // reader's IndexKey. What a run pulls dependencies from, and a zone's asset list for a picker.
-    // A run that asks for a few assets (Context::Only) opens each zone inside one: a zone that can
-    // walk only what is asked (a zonekit zone and its resume index, ResumeIndex.h) asks Wanted()
+    // A run that asks for some assets (Context::Only) opens each zone inside one: a zone that can
+    // walk only what is asked (a zonekit zone and its resume index, ResumeIndex.h) asks Wanted(),
+    // and reads itself whole when that is asked too much (ZonekitZone::Partially)
     class PartialScope
     {
     public:
@@ -621,8 +646,6 @@ namespace DiskGame
     private:
         std::shared_ptr<const Selection> Previous;
     };
-    // at most this many assets asked: a partial open; more, the whole zone
-    inline constexpr size_t PartialAtMost = 256;
 
     class ZoneIndex
     {
@@ -656,6 +679,7 @@ namespace DiskGame
         std::vector<size_t> PartIn(const std::string& Type, uint64_t Hash) const;
         std::string File;                  // where it is kept
         bool Built = false;                // built by this call, not read from File
+        bool Weighed = true;               // false: kept before the assets' weights (Weights empty)
         // built now: "<zone>: <kind> <its bytes> -> <name>", each name a reader gave that was not
         // text (control bytes, not UTF-8), kept under a fallback name (DiskGame.Index.cpp)
         std::vector<std::string> Renamed;

@@ -152,7 +152,7 @@ namespace Bo3AnimOwners
                 {
                     const std::string N = std::to_string(I), Model = Get(K, "boardModel" + N);
                     Json Anims = Json::array();
-                    for (const std::string Key : { "boardAnim" + N, "tearAnim" + N })
+                    for (const std::string& Key : { "boardAnim" + N, "tearAnim" + N })
                         if (auto A = Get(K, Key); !A.empty()) Anims.push_back(A);
                     if (!Model.empty() && !Anims.empty()) Boards.push_back({ { "board", I }, { "model", Model }, { "anims", Anims } });
                 }

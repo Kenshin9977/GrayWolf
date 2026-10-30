@@ -39,10 +39,14 @@ namespace Bo4SoundBanks
         std::vector<Entry> Entries;
         size_t Read = 0;           // entries in the banks
         size_t Duplicates = 0;     // left out: the key again in another bank of that language
+        size_t OtherLanguages = 0; // banks left out, unread: a language the run does not export
         std::vector<std::string> Failures;   // banks not read, why
     };
 
-    // The zone's banks (<zone>.*.sabl and .sabs) in FS.
+    // The zone's banks (<zone>.*.sabl and .sabs) in FS, in the run's languages
+    // (Languages::Scope::Current(): "all" and every language when no run set it). A placeholder (an
+    // entry without samples: the line was not recorded in that language) stays one: the game has
+    // no other data for it (an install of that language holds no English bank; docs/games/T8.md).
     Zone Read(CoDFileSystem& FS, const std::string& ZoneName);
 
     // The path a key hashes, from the name index (bo4_sab.wni, fnv1a_xsounds.wni), else through

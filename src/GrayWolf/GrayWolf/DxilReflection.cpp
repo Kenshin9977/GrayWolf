@@ -327,7 +327,7 @@ namespace DxilReflection
             {
                 const size_t C = T.find(", ", V), E = T.find('>', V);
                 if (C == std::string::npos || E == std::string::npos || C > E) break;
-                T = T.substr(0, V) + T.substr(V + 7, C - V - 7) + T.substr(C + 2, E - C - 2) + T.substr(E + 1);
+                T.replace(V, E + 1 - V, T.substr(V + 7, C - V - 7) + T.substr(C + 2, E - C - 2));
             }
             for (size_t Sp; (Sp = T.find(" >")) != std::string::npos;) T.erase(Sp, 1);
             if (T == "i32") return "int";

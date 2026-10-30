@@ -27,47 +27,61 @@ namespace
         return End >= Suffix.size() && P.compare(End - Suffix.size(), Suffix.size(), Suffix) == 0;
     }
 
-    class IW7Materials final : public Materials::IAdapter
+    // how a material's maps are packed, from their names
+    struct Packing
+    {
+        const Materials::Source::Image *Color, *SpecOcclusion, *Opacity;
+        bool PackedColor, Nog, Ng;
+        explicit Packing(const Materials::Source& M)
+            : Color(M.BySemantic(ColorMap)), SpecOcclusion(M.BySemantic(SpecOcclusionMap))
+        {
+            const auto* Normal = M.BySemantic(NormalMap);
+            PackedColor = Packed(Color, "cs");
+            Nog = Packed(Normal, "nog");
+            Ng = Packed(Normal, "ng");
+            Opacity = Packed(SpecOcclusion, "a") ? SpecOcclusion : nullptr;
+        }
+    };
+
+    class IW7Materials final : public Materials::SemanticAdapter
     {
     public:
-        const char* Name() const override { return "iw"; }
-        Materials::Description Describe(const Materials::Source& M) const override
+        // the table built per material (TableFor); one without these slots: the names and the readers' hints
+        IW7Materials() : SemanticAdapter("iw", {}, Unmatched::Names) {}
+    protected:
+        std::vector<Materials::SemanticRole> TableFor(const Materials::Source& M) const override
         {
             using Materials::Role;
-            const auto* Color = M.BySemantic(ColorMap);
-            const auto* Normal = M.BySemantic(NormalMap);
-            const auto* SpecOcclusion = M.BySemantic(SpecOcclusionMap);
-            const bool PackedColor = Packed(Color, "cs"), Nog = Packed(Normal, "nog"), Ng = Packed(Normal, "ng");
-            const auto* Opacity = Packed(SpecOcclusion, "a") ? SpecOcclusion : nullptr;
-
+            const Packing P(M);
             std::vector<Materials::SemanticRole> Table = { { ColorMap, Role::Albedo }, { NormalMap, Role::Normal }, { EmissiveMap, Role::Emissive } };
-            if (PackedColor) Table.push_back({ ColorMap, Role::Metalness, 3 });
+            if (P.PackedColor) Table.push_back({ ColorMap, Role::Metalness, 3 });
             else Table.push_back({ SpecularMap, Role::Specular });
-            if (Nog || Ng) Table.push_back({ NormalMap, Role::Gloss, 0 });
+            if (P.Nog || P.Ng) Table.push_back({ NormalMap, Role::Gloss, 0 });
             else Table.push_back({ SpecularMap, Role::Gloss, 3 });
-            if (Nog) Table.push_back({ NormalMap, Role::Occlusion, 2 });
-            else if (SpecOcclusion && !Opacity) Table.push_back({ SpecOcclusionMap, Role::Occlusion, 0 });
-            Materials::Description D = Materials::DescribeBySemantic(M, Table);
+            if (P.Nog) Table.push_back({ NormalMap, Role::Occlusion, 2 });
+            else if (P.SpecOcclusion && !P.Opacity) Table.push_back({ SpecOcclusionMap, Role::Occlusion, 0 });
+            return Table;
+        }
+        void Refine(const Materials::Source& M, Materials::Description& D, bool BySemantic) const override
+        {
+            if (!BySemantic) return;
             if (!D.Normal.Empty()) D.NormalEnc = Materials::NormalEncoding::AG;
-            // a material without these slots: the names and the readers' hints
-            if (D.Albedo.Empty() && D.Normal.Empty()) return Materials::DefaultAdapter().Describe(M);
-
             // the alpha: the packed_a's, else an unpacked colour map's
-            const bool HasAlpha = Opacity != nullptr || (Color != nullptr && !PackedColor);
+            const Packing P(M);
+            const bool HasAlpha = P.Opacity != nullptr || (P.Color != nullptr && !P.PackedColor);
             const bool Tested = M.Techset.find("_atest") != std::string::npos;
-            if (IwMaterialAlpha::Apply(M, M.SortKey > 2 || Tested ? Opacity : nullptr, D))
+            if (IwMaterialAlpha::Apply(M, M.SortKey > 2 || Tested ? P.Opacity : nullptr, D))
             {
                 if (!HasAlpha) D.Alpha = Materials::AlphaMode::Opaque;
                 else if (Tested && D.Alpha == Materials::AlphaMode::Opaque) D.Alpha = Materials::AlphaMode::Cutout;
             }
             else if (Tested && HasAlpha)
             {
-                if (Opacity) D.AlphaMap.Image = { Opacity->Path, 0, false };
+                if (P.Opacity) D.AlphaMap.Image = { P.Opacity->Path, 0, false };
                 D.Alpha = Materials::AlphaMode::Cutout;
             }
-            else if (Tested || PackedColor)
+            else if (Tested || P.PackedColor)
                 D.Alpha = Materials::AlphaMode::Opaque;
-            return D;
         }
     };
     const IW7Materials Adapter;

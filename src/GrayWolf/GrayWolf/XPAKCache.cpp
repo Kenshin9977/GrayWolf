@@ -134,67 +134,78 @@ bool XPAKCache::LoadPackage(const std::string& FilePath)
 
 std::unique_ptr<uint8_t[]> XPAKCache::ExtractPackageObject(uint64_t CacheID, int32_t Size, uint32_t& ResultSize)
 {
-    if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
+    return ReadPackageObject(CacheID, Size)(ResultSize);
+}
+
+CoDPackageCache::PackageObjectFinish XPAKCache::ReadPackageObject(uint64_t CacheID, int32_t Size)
+{
+    const auto Nothing = [](uint32_t& ResultSize) {
+        ResultSize = 0;
+        return std::unique_ptr<uint8_t[]>();
+    };
+    PackageCacheObject CacheInfo;
+    if (!Find(CacheID, CacheInfo))
     {
-        std::vector<uint8_t> payload;
-        bool PaddedBlocks = false;
+        return Nothing;
+    }
+    std::shared_ptr<uint8_t[]> payload;
+    bool PaddedBlocks = false;
+    {
+        // Get-or-create this package's handle and its own mutex: only map bookkeeping, never the I/O,
+        // so it never blocks a thread working on a different package.
+        std::mutex* PackageLock;
+        CoDFileHandle* Reader;
         {
-            // Get-or-create this package's handle and its own mutex: only map bookkeeping, never the I/O,
-            // so it never blocks a thread working on a different package.
-            std::mutex* PackageLock;
-            CoDFileHandle* Reader;
+            std::lock_guard<std::mutex> Guard(MapLock);
+            auto It = OpenPackageHandles.find(CacheInfo.PackageFileIndex);
+            if (It == OpenPackageHandles.end())
             {
-                std::lock_guard<std::mutex> Guard(MapLock);
-                auto It = OpenPackageHandles.find(CacheInfo.PackageFileIndex);
-                if (It == OpenPackageHandles.end())
-                {
-                    const auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
-                    auto NewHandle = std::make_unique<CoDFileHandle>(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
-                    // A version 0xD package (Modern Warfare 2019) aligns each block to 4 bytes
-                    Padded[CacheInfo.PackageFileIndex] = NewHandle->IsValid() && NewHandle->Read<BO3XPakHeader>().Version == 0xD;
-                    It = OpenPackageHandles.emplace(CacheInfo.PackageFileIndex, std::move(NewHandle)).first;
-                    PackageLocks.emplace(CacheInfo.PackageFileIndex, std::make_unique<std::mutex>());
-                }
-                Reader = It->second.get();
-                PackageLock = PackageLocks[CacheInfo.PackageFileIndex].get();
-                PaddedBlocks = Padded[CacheInfo.PackageFileIndex];
+                const auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
+                auto NewHandle = std::make_unique<CoDFileHandle>(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+                // A version 0xD package (Modern Warfare 2019) aligns each block to 4 bytes
+                Padded[CacheInfo.PackageFileIndex] = NewHandle->IsValid() && NewHandle->Read<BO3XPakHeader>().Version == 0xD;
+                It = OpenPackageHandles.emplace(CacheInfo.PackageFileIndex, std::move(NewHandle)).first;
+                PackageLocks.emplace(CacheInfo.PackageFileIndex, std::make_unique<std::mutex>());
             }
-
-            // Seek+Read together, locked per PACKAGE FILE: a shared HANDLE has one file pointer,
-            // so two threads racing the same package would silently read each other's offsets -
-            // but two threads on different packages take different locks and run concurrently.
-            std::lock_guard<std::mutex> Guard(*PackageLock);
-
-            if (!Reader->IsValid())
-            {
-                ResultSize = 0;
-                return nullptr;
-            }
-
-#if _DEBUG
-            const auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
-            printf("XPAKCache::ExtractPackageObject(): Streaming Object: 0x%llx from File: %s\n", CacheID, XPAKFileName.c_str());
-#endif // _DEBUG
-
-            Reader->Seek(CacheInfo.Offset, SEEK_SET);
-
-            auto raw = Reader->Read(CacheInfo.CompressedSize);
-            payload.assign(raw.get(), raw.get() + CacheInfo.CompressedSize);
+            Reader = It->second.get();
+            PackageLock = PackageLocks[CacheInfo.PackageFileIndex].get();
+            PaddedBlocks = Padded[CacheInfo.PackageFileIndex];
         }
 
-        const uint64_t DecompressedSize = Size == -1 ? CacheInfo.UncompressedSize : Size;
+        // Seek+Read together, locked per PACKAGE FILE: a shared HANDLE has one file pointer,
+        // so two threads racing the same package would silently read each other's offsets -
+        // but two threads on different packages take different locks and run concurrently.
+        std::lock_guard<std::mutex> Guard(*PackageLock);
+
+        if (!Reader->IsValid())
+        {
+            return Nothing;
+        }
+
+#if _DEBUG
+        const auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
+        printf("XPAKCache::ExtractPackageObject(): Streaming Object: 0x%llx from File: %s\n", CacheID, XPAKFileName.c_str());
+#endif // _DEBUG
+
+        Reader->Seek(CacheInfo.Offset, SEEK_SET);
+
+        payload = Reader->Read(CacheInfo.CompressedSize);
+    }
+    if (!payload)
+    {
+        return Nothing;
+    }
+
+    const uint64_t DecompressedSize = Size == -1 ? CacheInfo.UncompressedSize : Size;
+    const size_t CompressedSize = (size_t)CacheInfo.CompressedSize;
+    // what the read gave, decompressed: no state of the cache's, so any thread
+    return [CacheID, payload, CompressedSize, DecompressedSize, PaddedBlocks](uint32_t& ResultSize) {
         size_t ResultSizeSizeT = 0;
-
-        auto outputBuffer = DecompressPackageObject(CacheID, payload.data(), CacheInfo.CompressedSize, DecompressedSize, ResultSizeSizeT, PaddedBlocks);
-
+        auto outputBuffer = DecompressPackageObject(CacheID, payload.get(), CompressedSize, DecompressedSize, ResultSizeSizeT, PaddedBlocks);
         // TODO: Switch to size_t in package class
         ResultSize = (uint32_t)ResultSizeSizeT;
         return outputBuffer;
-    }
-
-    ResultSize = 0;
-
-    return nullptr;
+    };
 }
 
 bool XPAKCache::FindNamed(const std::string& Name, const std::string& Stem, NamedObject& Out)
@@ -273,8 +284,18 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
     if (decompressedSize == 0)
         return nullptr;
 
-    // Our final big blob of data to return, this will be the entire decompressed buffer.
-    auto result = std::make_unique<uint8_t[]>(decompressedSize);
+    // Our final big blob of data to return, this will be the entire decompressed buffer. Not zeroed
+    // first: the blocks fill it in order, what none writes is zeroed at the end, and an Oodle block
+    // that fails is decoded again over zeros (what it leaves then is what it left before).
+    auto result = std::make_unique_for_overwrite<uint8_t[]>(decompressedSize);
+    const auto Oodle = [&](const int8_t* From, size_t FromSize, size_t Size) {
+        uint8_t* To = result.get() + resultSize;
+        if (Siren::Decompress((const uint8_t*)From, FromSize, To, Size) != Size)
+        {
+            std::memset(To, 0, Size);
+            Siren::Decompress((const uint8_t*)From, FromSize, To, Size);
+        }
+    };
     auto reader = MemoryReader((int8_t*)buffer, bufferSize, true);
     auto remaining = decompressedSize;
 
@@ -313,7 +334,7 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
                 case 0x6:
                 {
                     blockDecompressedSize = std::min<size_t>(remaining, 262112);
-                    Siren::Decompress((const uint8_t*)dataBlock, blockSize, result.get() + resultSize, blockDecompressedSize);
+                    Oodle(dataBlock, blockSize, blockDecompressedSize);
                     resultSize += blockDecompressedSize;
                     remaining -= blockDecompressedSize;
                     break;
@@ -321,7 +342,7 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
                 case 0x8: // compressed (oodle)
                 {
                     blockDecompressedSize = *(uint32_t*)(dataBlock);
-                    Siren::Decompress((const uint8_t*)(dataBlock + 4), blockSize - 4, result.get() + resultSize, blockDecompressedSize);
+                    Oodle(dataBlock + 4, blockSize - 4, blockDecompressedSize);
                     resultSize += blockDecompressedSize;
                     remaining -= blockDecompressedSize;
                     break;
@@ -346,5 +367,7 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
         reader.SetPosition((reader.GetPosition() + 0x7F) & 0xFFFFFFFFFFFFF80);
     }
 
+    if (resultSize < decompressedSize)
+        std::memset(result.get() + resultSize, 0, decompressedSize - resultSize);
     return result;
 }

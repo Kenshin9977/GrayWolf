@@ -21,6 +21,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 class CoDPackageCache;
@@ -111,6 +112,9 @@ public:
     void SetProfile(const std::string& Name) { ProfileName = Name; }
     // The profile Open walks with
     std::string ProfileUsed() const { return ProfileName.empty() ? Profile() : ProfileName; }
+    // Packages the zone holds and serves as CoDAssets' package cache whenever it is served (the
+    // live readers stream mesh, pixel and sound data from there), set before Open
+    void ServesPackages(std::shared_ptr<CoDPackageCache> Packages) { Held = std::move(Packages); }
     // Loads, walks and relocates; false with Error when the zone does not read. Inside a
     // DiskGame::PartialScope, a zone that OpensPartially walks only the assets asked and what they
     // reach, from its resume index (ResumeIndex.h); without the index, or when the walk falls short,
@@ -118,12 +122,27 @@ public:
     bool Open(std::string& Error);
     bool OpenedPartially() const override { return Partial; }
 
+    // How far a partial open goes: at most Assets asked, at most Walks assets walked for them (what
+    // they reach included, the asked first); past either, the zone is read whole. What a walk of
+    // what is asked costs is what it reaches: a few assets may reach most of the zone.
+    struct PartialLimits
+    {
+        size_t Assets = 256;
+        size_t Walks = 4000;
+    };
+    virtual PartialLimits Partially() const { return {}; }
+
 private:
     bool OpenPartially(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap);
     // Want only images the resume index File holds whole (Heads): served from their records alone,
     // the zone neither read nor walked; false otherwise
     bool OpenFromHeads(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap);
     void WriteResume(const std::string& File) const;
+    // the heads the game keeps (Heads) are beside the resume index File, or it keeps none
+    bool HeadsKept(const std::string& ResumeFile) const;
+    // one of Assets is among those the zone defines (DefinesAt)
+    bool DefinesAny(const std::vector<DiskGame::AssetId>& Assets) const;
+    std::vector<DiskGame::AssetId> Unlisted;   // asked of a partial open, not in its resume index
 
 public:
     // the full walk and what it walked (the bytes before relocation), its profile's tables and type
@@ -298,8 +317,13 @@ protected:
     Maps::ClipSource ClipSource() const;
     size_t& Counter(const std::string& Name) { return Counters[Name]; }
     // A sound file (File: its path under the sound kind's folder, UTF-8) written as WriteSound
-    // writes it in the run's sound format: counted written and under Written, else failed with why
-    void WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& File, const uint8_t* Data, size_t Size, const char* Written);
+    // writes it in the run's sound format: counted written and under Written, else failed with why.
+    // With Sink: Data copied and handed to its pool, the counts held until FinishSoundFiles (the
+    // reader's own failures meanwhile through Sink.Locked)
+    void WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& File, const uint8_t* Data, size_t Size, const char* Written,
+                        ExportWriters::SoundSink* Sink = nullptr);
+    // Sink's sound files written, what they counted added to the zone's counters
+    void FinishSoundFiles(ExportWriters::SoundSink& Sink);
     // The relocated zone as a sound alias reader reads it (SoundAliasCsv::ZoneView)
     SoundAliasCsv::ZoneView AliasView() const
     {
@@ -351,6 +375,11 @@ protected:
     // mips' table), each kept after the record: a pointer the zone does not resolve is left as it
     // is when null, else the image is not kept, nor is one whose data is past Max bytes. Size 0: the
     // game keeps none.
+    // Reads: for a reader that finds an image's data by the walk's reads, not by its pointers
+    // (Black Ops 4's DescribeZone): the record as loaded (not relocated) and each later read of
+    // its type within it (its size and bytes, ReadsMax bytes in all, else the image is not kept),
+    // served as the walk of those images alone records them (ZoneResult's reads); an image whose
+    // name another image of the zone has with other bytes is not kept.
     struct HeadSpec
     {
         struct Pointed
@@ -363,6 +392,8 @@ protected:
         int64_t Size = 0;
         int64_t NameAt = -1;
         std::vector<Pointed> Data;
+        bool Reads = false;
+        uint64_t ReadsMax = 0;
     };
     // the images of IwctxReaders::LoadXImage and ModernIwReaders::LoadMipImage (MWIII, Black Ops 6
     // and 7): a 0x40 record, the hash at 0, its in-zone pixels at 0x38 (u32 size 0x18), its mips'
@@ -617,9 +648,10 @@ protected:
 
     // CoDAssets' package cache, which the live readers read pixels and meshes through, set to the
     // one Make gives while the zone is served (On), the previous one back when it is not
-    void ServePackages(bool On, const std::function<std::unique_ptr<CoDPackageCache>()>& Make);
-    // A package cache CoDAssets can own that reads through one every zone of the run shares
-    static std::unique_ptr<CoDPackageCache> SharedPackages(std::shared_ptr<CoDPackageCache> Packages);
+    void ServePackages(bool On, const std::function<std::shared_ptr<CoDPackageCache>()>& Make);
+    // A package cache that reads through one every zone of the run shares (its objects only:
+    // Exists and the file system answer as an empty cache's)
+    static std::shared_ptr<CoDPackageCache> SharedPackages(std::shared_ptr<CoDPackageCache> Packages);
 
     // The zone's script strings by slot, which SlotString names bones and notetracks with: the
     // game fills them when the zone opens (Fixups, or Handlers when they depend on the bytes only)
@@ -644,6 +676,9 @@ protected:
 private:
     static ZonekitZone* Serving;
 
+    // the session just began (opened or resumed, its lock held): the zone becomes Serving, its
+    // held packages CoDAssets' package cache until it is parked or destroyed
+    void BeginServing();
     void Relocate(const ResolvedLinks& L);
     void ExportLocalize(const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T);
@@ -657,10 +692,13 @@ private:
     ZoneTables::ZoneResult R;
     mutable std::unique_ptr<ZoneTables::BlockMap> Memory;   // R's stream layout, built by TextAt
     const ExportWriters::LoadedProfile* Loaded = nullptr;
+    std::shared_ptr<CoDPackageCache> Held;   // ServesPackages'
     std::unique_ptr<VirtualGameSession> Session;
     ZoneMemory::Copy ParkedImage;   // the session's relocated zone while parked
-    std::unique_ptr<CoDPackageCache> SavedPackages;   // CoDAssets' own while ServePackages serves
-    bool PackagesServed = false;
+    // Serving set to this zone while served, CoDAssets' package cache while ServePackages serves:
+    // under the session's lock (after Session: they end first, an exception's unwinding too)
+    std::optional<CoDAssets::Scoped<ZonekitZone*>> ServingThis;
+    std::optional<CoDAssets::Scoped<std::shared_ptr<CoDPackageCache>>> ServedPackages;
     bool Walked = false;
     bool Partial = false;             // opened from the resume index, only some assets walked
     std::set<std::string> Listed;     // a partial open's: the types its asset list names
@@ -677,5 +715,6 @@ private:
     // own or Context::MaterialsElsewhere's), for ModelTextures::Fill; empty when none is
     std::function<void(XMaterial_t& Material)> HeaderFiller(const DiskGame::Context& C);
     std::map<std::string, size_t> Counters;   // Measures() adds them to the run's totals
+    std::map<std::string, size_t> SoundFileCounts;   // WriteSoundFile's with a sink, under its lock
     std::vector<std::pair<std::string, double>> Steps;   // Open's, in seconds
 };

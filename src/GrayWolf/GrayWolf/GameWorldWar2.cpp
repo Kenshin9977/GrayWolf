@@ -18,6 +18,7 @@
 
 #include "DBGameGenerics.h"
 #include "GameReaders.h"
+#include "Languages.h"
 
 #include <filesystem>
 #include <format>
@@ -422,17 +423,22 @@ std::string GameWorldWar2::SoundPackagePath(const CoDSound_t* Sound)
         PackagePath = Root / std::format("soundfile{}.pak", Sound->PackageIndex);
     else
     {
-        // the zone's language, else the first language folder the install has
+        // the zone's language, else the first language folder the install has of the run's
+        // languages (Languages::Scope), else its first one
         const auto Own = Localizations.find(SoundLanguage);
         if (Own != Localizations.end())
             PackagePath = Root / Own->first / std::format("{}soundfile{}.pak", Own->second, Sound->PackageIndex);
         else
-            for (const auto& [Folder, Prefix] : Localizations)
-                if (std::filesystem::is_directory(Root / Folder, Ec))
-                {
-                    PackagePath = Root / Folder / std::format("{}soundfile{}.pak", Prefix, Sound->PackageIndex);
-                    break;
-                }
+            for (const bool Wanted : { true, false })
+            {
+                for (const auto& [Folder, Prefix] : Localizations)
+                    if ((!Wanted || Languages::Scope::Current().WantsSpelling(Folder)) && std::filesystem::is_directory(Root / Folder, Ec))
+                    {
+                        PackagePath = Root / Folder / std::format("{}soundfile{}.pak", Prefix, Sound->PackageIndex);
+                        break;
+                    }
+                if (!PackagePath.empty()) break;
+            }
     }
     if (PackagePath.empty() || !std::filesystem::is_regular_file(PackagePath, Ec))
         return std::string();
@@ -444,7 +450,7 @@ thread_local std::string GameWorldWar2::SoundLanguage;
 std::string GameWorldWar2::LanguageOfZone(const std::string& FastFilePath)
 {
     const std::filesystem::path Ff(FastFilePath);
-    const std::string Folder = Strings::ToLower(Ff.parent_path().filename().string());
+    std::string Folder = Strings::ToLower(Ff.parent_path().filename().string());
     if (Localizations.contains(Folder)) return Folder;
     const std::string Name = Strings::ToLower(Ff.filename().string());
     for (const auto& [Language, Prefix] : Localizations)

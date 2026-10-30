@@ -23,7 +23,7 @@ void DrawUpdatesMenu()
     if (ImGui::BeginMenu("Updates"))
     {
         bool Auto = SettingOn("auto_update", "true");
-        if (ImGui::MenuItem("Check at startup, update hash packages", nullptr, &Auto))
+        if (ImGui::MenuItem("Check for updates at startup", nullptr, &Auto))
             SettingsManager::SetSetting("auto_update", Auto ? "true" : "false");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("At startup: newer hash name packages (package_index) are installed,\n"
@@ -32,16 +32,16 @@ void DrawUpdatesMenu()
         if (ImGui::MenuItem("Use the GitHub CLI's token (gh auth token)", nullptr, &Gh))
             SettingsManager::SetSetting("update_use_gh_token", Gh ? "true" : "false");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("For a private repository: the token is asked of gh at each check,\n"
+            ImGui::SetTooltip("For a private repository: the token is read from gh at each check,\n"
                               "sent to the GitHub API only, never saved. GRAYWOLF_GITHUB_TOKEN is used first.");
         ImGui::Separator();
         const Updater::Background::View V = Updater::Background::Get();
-        if (ImGui::MenuItem(V.Busy ? "Checking..." : "Check for updates now", nullptr, false, !V.Busy))
+        if (ImGui::MenuItem(V.Busy ? "Checking\xE2\x80\xA6" : "Check for updates now", nullptr, false, !V.Busy))
         {
             BannerDismissed = false;
             Updater::Background::Start(false);
         }
-        ImGui::TextDisabled("This GrayWolf: %s", Updater::AppVersion().c_str());
+        ImGui::TextDisabled("Installed version: %s", Updater::AppVersion().c_str());
         ImGui::TextDisabled("Repository: %s", SettingsManager::GetSetting("update_repo", "Kenshin9977/GrayWolf").c_str());
         if (!V.Line.empty()) ImGui::TextDisabled("%s", V.Line.c_str());
         ImGui::EndMenu();
@@ -67,11 +67,11 @@ bool DrawUpdateBanner()
             else if (V.AppStaged)
                 ImGui::Text("GrayWolf %s is downloaded and verified.", V.AppVersion.c_str());
             else if (V.Busy)
-                ImGui::Text("Downloading GrayWolf %s...", V.AppVersion.c_str());
+                ImGui::Text("Downloading GrayWolf %s\xE2\x80\xA6", V.AppVersion.c_str());
             else if (!V.Error.empty())
                 ImGui::Text("Download failed: %s", V.Error.c_str());
             else
-                ImGui::Text("GrayWolf %s is available (this is %s).", V.AppVersion.c_str(), Updater::AppVersion().c_str());
+                ImGui::Text("GrayWolf %s is available (you have %s).", V.AppVersion.c_str(), Updater::AppVersion().c_str());
 
             if (V.AppStaged && ApplyError.empty())
             {

@@ -21,6 +21,7 @@ struct XImageDDS;
 struct XImage_t;
 struct XMaterial_t;
 struct XSound;
+class ICoDGame;
 class CoDModel_t;
 class CoDAnim_t;
 class CoDSound_t;
@@ -57,8 +58,31 @@ namespace ExportWriters
     // Every thread's stack and the loaded modules, not the memory (a zone run holds gigabytes).
     bool WriteMinidump(const std::string& Path);
 
-    // Images written by a pool of converter threads behind a bounded queue, so the thread that
-    // reads (in disk order) never waits on encoding; and identical images written once: an image
+    // Jobs run by a pool of threads behind a bounded queue: the thread that reads (in disk order)
+    // hands each one over and waits only while the queue is full (Times().QueueWaitUs). The writers'
+    // pool (images, sounds); COM is initialised on its threads (WIC). 0 workers: each job inline.
+    class WorkerPool
+    {
+    public:
+        explicit WorkerPool(unsigned Workers = DefaultWorkers(), size_t MaxQueued = 64);
+        ~WorkerPool();   // Drain
+        WorkerPool(const WorkerPool&) = delete;
+        WorkerPool& operator=(const WorkerPool&) = delete;
+
+        void Post(std::function<void()> Job);
+        // every job posted done and the threads ended (nothing posted after)
+        void Drain();
+        unsigned Workers() const;
+        // half the physical cores, 70% past 12 cores; GH_CONVERT_THREADS=<n> (legacy GH_BO4_CONVERT_THREADS) sets it
+        static unsigned DefaultWorkers();
+
+    private:
+        struct State;
+        std::unique_ptr<State> St;
+    };
+
+    // Images written by a WorkerPool, so the thread that reads (in disk order) never waits on
+    // encoding; and identical images written once: an image
     // whose content key was already written in this process becomes a hard link to that file, and
     // a DDS whose file already holds exactly its bytes (an earlier run) is left as it is.
     // GH_CONVERT_THREADS=<n> (legacy GH_BO4_CONVERT_THREADS) sets the pool (0 = inline);
@@ -80,6 +104,9 @@ namespace ExportWriters
         bool LinkIfKnown(uint64_t Key, const std::string& Path, size_t Tag = 0);
         // Queues a decoded image for the pool.
         void Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path);
+        // Queues an image the pool builds first (decompress, translate: the reading thread only
+        // reads); a Build that gives nothing writes nothing and is the caller's to count.
+        void Write(std::function<std::unique_ptr<XImageDDS>()> Build, const std::string& Path);
 
         // Waits for the pool, then makes the links. A link that cannot be made (target failed, is
         // being written by another thread's zone, NTFS's 1023-link limit) is rebuilt with
@@ -94,13 +121,53 @@ namespace ExportWriters
         bool UseDedup = true;
     };
 
+    // While one lives, the models ExportModel exports on the thread that made it have their files
+    // written by a pool (LiveExport::WriteModelFilesWith): the read and the translation stay on that
+    // thread, the writing overlaps the next model's read. Owner(Tag) before each ExportModel names
+    // the jobs that follow; a job that fails (a C++ exception or a crash, guarded like ExportModel)
+    // is reported by Finish, which waits for every job. Finish before the run's settings change.
+    class ModelFilesOnPool
+    {
+    public:
+        ModelFilesOnPool();
+        ~ModelFilesOnPool();   // Finish, its failures dropped
+        ModelFilesOnPool(const ModelFilesOnPool&) = delete;
+        ModelFilesOnPool& operator=(const ModelFilesOnPool&) = delete;
+
+        void Owner(size_t Tag);
+        // every job done; the failed ones: their owner and why ("code -1 seh ...", as ExportModel's)
+        std::vector<std::pair<size_t, std::string>> Finish();
+
+    private:
+        struct State;
+        std::unique_ptr<State> St;
+    };
+
+    // Dir and its parents made, each asked of the file system once per run: create_directories asks
+    // about every component of the path (CreateDirectoryW, then a stat, each through the file system
+    // filters: Defender's among them), 21 calls a file on a sound export. ForgetDirs at a run's
+    // start, so that a folder deleted since is made again. False when Dir could not be made.
+    bool MakeDirs(const std::filesystem::path& Dir);
+    void ForgetDirs();
+
+    // What this run knows of a file without asking the file system (a stat costs as much as a
+    // CreateDirectoryW: a skip check per asset in a fresh output tree found nothing, thousands of
+    // times). MayExist is false only when MakeDirs created File's folder this run (so it was empty)
+    // and no writer has claimed File's name there since; true otherwise (the file system decides).
+    // A writer of a file a skip check looks for Claims it before creating it: the file itself, or
+    // the base its extensions follow ("dir\x_LOD0" for x_LOD0.semodel, .cast, .materials.json).
+    // Claim returns what MayExist answered just before. HasFile: MayExist, then is_regular_file.
+    bool MayExist(const std::filesystem::path& File);
+    bool Claim(const std::filesystem::path& File);
+    bool HasFile(const std::filesystem::path& File);
+
     // Writes Size bytes to P as they are, its folders made first; false when the file is not written
     bool WriteBytes(const std::filesystem::path& P, const uint8_t* Data, size_t Size);
     // Reads the whole file P into Out; false when it does not open
     bool ReadBytes(const std::filesystem::path& P, std::vector<uint8_t>& Out);
 
     // ---- Sounds: every game's sounds written by WriteSound, in the format the user chose (setting
-    // "exportsnd", --audio-format): WAV (the default), FLAC or OPUS.
+    // "exportsnd", --audio-format): OPUS (the default: small, lossy), WAV or FLAC (lossless).
     std::string SoundFormatSetting();
     // A sound as a game holds it.
     struct SoundSource
@@ -161,8 +228,56 @@ namespace ExportWriters
     private:
         Sink Previous;
     };
+    // True while a DrySounds lives on this thread
+    bool DrySoundsActive();
     // The SoundSource a live reader's XSound is (its WAV, FLAC or Opus packets)
     SoundSource SourceOf(const XSound& Sound);
+
+    // Sounds written by a WorkerPool: the thread that reads (in bank or disk order) hands each
+    // sound over and goes on reading, the pool decodes, encodes and writes it (WriteSound), each
+    // under a crash guard. Its format, and skipprevsound, are read once. The callbacks run on the
+    // pool's threads, one at a time (under the sink's lock): they may count without a lock of their
+    // own. A DrySounds on the calling thread makes every sound run inline (a dry run writes
+    // nothing). GH_CONVERT_THREADS sets the pool (0 = inline, WorkerPool::DefaultWorkers).
+    class SoundSink
+    {
+    public:
+        // Ok and Why as WriteSound gives them; Crash names an exception (Ok false)
+        using WriteDone = std::function<void(bool Ok, const std::string& Why, const std::string& Crash)>;
+        // The code ExportSound returns (ExportGameResult, -1 crashed) and Crash
+        using ExportDone = std::function<void(int Code, const std::string& Crash)>;
+
+        explicit SoundSink(std::string Format = SoundFormatSetting());
+        ~SoundSink();   // Finish
+        SoundSink(const SoundSink&) = delete;
+        SoundSink& operator=(const SoundSink&) = delete;
+
+        const std::string& Format() const { return Fmt; }
+
+        // WriteSound(S, Path, Format()) on the pool. S's bytes are copied first, unless Keep holds
+        // them (S then points into what Keep keeps alive until the sound is written).
+        void Write(const SoundSource& S, std::filesystem::path Path, WriteDone Done = nullptr, std::shared_ptr<const void> Keep = nullptr);
+        // ExportSound's way (LiveExport::ExportSound): Game reads Sound on this thread (guarded),
+        // the file <Dir>/<AssetName><Extension> is written on the pool; skipprevsound keeps a file
+        // already there. Game is the one given, never CoDAssets::Game.
+        void Export(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, ExportDone Done);
+        // Export, the file written on this thread (after any sound being written to it): its code
+        int ExportNow(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, std::string& Crash);
+        // Returns once no sound handed over is being written to Path
+        void WaitFor(const std::filesystem::path& Path);
+        // F under the lock the callbacks run under: what the reading thread adds to the totals the
+        // callbacks also change (a failure list, a counter map)
+        void Locked(const std::function<void()>& F);
+        // Every sound handed over written (the callbacks run); nothing handed over after
+        void Finish();
+
+    private:
+        struct State;
+        std::unique_ptr<State> St;
+        std::string Fmt;
+        bool SkipPrevious = false;
+        void ExportOn(const ICoDGame* Game, const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, ExportDone Done, bool Inline);
+    };
     // Measures of the sounds written in this process (sounds_opus_remuxed, sounds_resampled ...),
     // for a run's counters
     std::map<std::string, size_t> SoundCounters();
@@ -228,6 +343,12 @@ namespace ExportWriters
         // File gets the file that holds the sound
         int Write(const CoDSound_t& Sound, const std::filesystem::path& Dir, const std::string& Extension, std::string& Crash,
                   std::filesystem::path* File = nullptr);
+        // The same, Game reading the sound on this thread: the name's first file written by Sink's
+        // pool; a second sound under a name taken written here once that first file is (and compared
+        // with it). Done(code, Crash, the file holding the sound) under Sink's lock. Renamed and
+        // Copies are this thread's.
+        void Write(SoundSink& Sink, const ICoDGame* Game, const CoDSound_t& Sound, const std::filesystem::path& Dir, const std::string& Extension,
+                   std::function<void(int Code, const std::string& Crash, const std::filesystem::path& File)> Done);
         size_t Renamed = 0;   // sounds written under another name than their own
         size_t Copies = 0;    // sounds dropped as a copy of the name's first file
 
