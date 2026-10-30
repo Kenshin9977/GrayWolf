@@ -29,6 +29,12 @@
   <a href="https://github.com/Kenshin9977/GrayWolf/releases/latest"><img alt="Download GrayWolf" src="https://img.shields.io/badge/Download-GrayWolf-f5a524?style=for-the-badge&logo=github&logoColor=white" height="40"></a>
 </p>
 
+<p align="center">
+  <a href=".github/assets/graywolf-presentation.mp4"><img src=".github/assets/graywolf-presentation.jpg" width="860" alt="GrayWolf's presentation video: a Black Ops 7 operator previewed in the Library, with a play button"></a>
+  <br>
+  <sub>▶ 59 s: a Black Ops 4 weapon searched, previewed and exported, then models, textures, sounds, FX, animations and Nuketown</sub>
+</p>
+
 - **Zones read by tables**: each game's fast files are walked by *zonekit* reader tables
   (`zonekit/profiles/<game>`), generated from the game's own zone loaders and checked against
   them; the zone is then served to GrayWolf's asset readers.
