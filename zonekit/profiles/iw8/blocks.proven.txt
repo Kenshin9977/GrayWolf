@@ -123,3 +123,10 @@ f2de5ab0_e4|1|5|8
 # mask 3) aligned 4; the recordings' largest agreeing alignment (64, 32) overfit: common_mp's block 5 drifted 0x4ff0 ahead
 xcam|4|5|8
 f2e00e00|2|5|4
+# Soundbank inline -1 arms: the 32-byte variant array (f2e00160), 40-byte file detail
+# and 176-byte parameters (f2dffef0) occupy the same block 5/alignment 8 as their -2
+# arms. A byte-complete walk otherwise leaves these reads unplaced and later names
+# drift. Verified with common_br_mp's alias/sound hashes and synthetic marker pairs.
+f2e00160|4|5|8
+f2dffef0|4|5|8
+f2dffef0|11|5|8

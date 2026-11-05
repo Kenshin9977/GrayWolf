@@ -41,3 +41,10 @@ zonekit profiles copied beside it (`zonekit/profiles`): rebuild after changing a
 
 At run time, fast files need Oodle beside the exe: `oo2core_8_win64.dll` (Cold War) or
 `oo2core_6_win64.dll`, both shipped with the games.
+
+## IW8 layout regression
+
+Run `python tools/check-iw8-soundbank-layout.py --exe src/GrayWolf/x64/Dev/GrayWolf.exe`
+after changing the IW8 profile. It builds synthetic soundbanks and checks all eight
+`-1`/`-2` variant-array, file-detail and parameter combinations, including relative
+and cross-bank name references. It needs Python 3, but no game files or Oodle.
