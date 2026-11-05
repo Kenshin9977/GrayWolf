@@ -76,9 +76,8 @@ public:
         // built before a growth that may move the storage an argument refers to
         T Value(std::forward<Args>(A)...);
         if (Count == Capacity) Grow(Capacity + (Capacity / 2) + 1);
-        T* Slot = ::new (static_cast<void*>(data() + Count)) T(Value);
-        Count++;
-        return *Slot;
+        ::new (static_cast<void*>(data() + Count)) T(Value);
+        return data()[Count++];
     }
     void push_back(const T& Value) { emplace_back(Value); }
 

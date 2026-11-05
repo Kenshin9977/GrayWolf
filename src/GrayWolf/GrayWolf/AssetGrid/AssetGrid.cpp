@@ -3,6 +3,7 @@
 #include "AssetGrid.h"
 #include "CellRenderers.h"
 #include "GridServices.h"
+#include "PickList.h"          // the cells' selection
 #include "SettingsManager.h"   // the cell size
 
 #include "imgui.h"
@@ -123,6 +124,7 @@ void AssetGrid::DrawSizeSlider()
 }
 
 void AssetGrid::Draw(int Count, const std::function<AssetGridItem(int)>& Item, const std::function<bool(int)>& Selected,
+                     const std::function<void(int, bool)>& Pick, const std::function<void(bool)>& PickAll,
                      const std::function<void(int)>& OnItem, int ScrollTo)
 {
     Services->Jobs.DrainUi();
@@ -174,72 +176,79 @@ void AssetGrid::Draw(int Count, const std::function<AssetGridItem(int)>& Item, c
         const ImU32 ColCell = IM_COL32(255, 255, 255, 8), ColName = ImGui::GetColorU32(ImGuiCol_Text), ColKind = ImGui::GetColorU32(ImGuiCol_TextDisabled);
         const ImU32 ColGame = IM_COL32(214, 216, 222, 255);
         int Visible = 0;
-        ImGuiListClipper Clipper;
-        Clipper.Begin(Rows, CellH + Gap);
-        while (Clipper.Step())
-            for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
-            {
-                const ImVec2 RowPos = ImGui::GetCursorScreenPos();
-                for (int Col = 0; Col < Cols; Col++)
+        const PickList::List Picks{ PickList::Selection, Count, Pick, PickAll, ImGuiMultiSelectFlags_BoxSelect2d, Cols, CellH + Gap };
+        PickList::Rows(Picks, [&](ImGuiListClipper& Clipper) {
+            while (Clipper.Step())
+                for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
                 {
-                    const int i = Row * Cols + Col;
-                    if (i >= Count) break;
-                    const AssetGridItem A = Item(i);
-                    if (!A.Path) continue;
-                    const ImVec2 Min(RowPos.x + Col * (CellW + Gap), RowPos.y), Max(Min.x + CellW, Min.y + CellH);
-                    ImGui::SetCursorScreenPos(Min);
-                    ImGui::PushID(A.Id);
-                    ImGui::InvisibleButton("##cell", ImVec2(CellW, CellH));
-                    const bool Hovered = ImGui::IsItemHovered();
-                    const bool IsSel = Selected(i);
-                    DL->AddRectFilled(Min, Max, IsSel ? ColSel : Hovered ? ColHover : ColCell, Em * 0.3f);
-
-                    const ImVec2 TMin(Min.x + Pad, Min.y + Pad), TMax(TMin.x + Thumb, TMin.y + Thumb);
-                    IAssetCellRenderer* R = A.Kind >= 0 && A.Kind < AssetKind::Count ? Renderers[A.Kind].get() : nullptr;
-                    DL->PushClipRect(TMin, TMax, true);
-                    if (R) R->Draw(X, A, DL, TMin, TMax, Hovered);
-                    else DrawAssetKindIcon(DL, TMin, TMax, A.Kind);
-                    DL->PopClipRect();
-                    Visible++;
-
-                    const float TextX0 = Min.x + Pad, TextX1 = Max.x - Pad;
-                    const float NameY = TMax.y + Pad * 0.6f;
-                    const char* Name = A.Name ? A.Name->c_str() : "";
-                    ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY), ImVec2(TextX1, NameY + TextH), TextX1, Name, nullptr, nullptr);
-                    // the game first (one asset of two games is two cells alike otherwise), then the kind
-                    float KindX = TextX0;
-                    if (A.Game && !A.Game->empty() && DrawGame)
+                    const ImVec2 RowPos = ImGui::GetCursorScreenPos();
+                    for (int Col = 0; Col < Cols; Col++)
                     {
-                        const float Side = std::round(TextH * 0.85f);
-                        DrawGame(DL, *A.Game, ImVec2(TextX0, NameY + TextH + (TextH - Side) * 0.5f), Side);
-                        KindX = std::min(TextX1, TextX0 + Side + Pad * 0.6f);
-                    }
-                    else if (A.Game && !A.Game->empty())
-                    {
-                        const std::string GameText = *A.Game + "  \xC2\xB7  ";
-                        ImGui::PushStyleColor(ImGuiCol_Text, ColGame);
-                        ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, GameText.c_str(), nullptr, nullptr);
+                        const int i = Row * Cols + Col;
+                        if (i >= Count) break;
+                        const AssetGridItem A = Item(i);
+                        if (!A.Path) continue;
+                        const ImVec2 Min(RowPos.x + Col * (CellW + Gap), RowPos.y), Max(Min.x + CellW, Min.y + CellH);
+                        ImGui::SetCursorScreenPos(Min);
+                        ImGui::PushID(A.Id);
+                        // a Selectable for PickList, drawn below (its own highlight is transparent)
+                        const bool IsSel = Selected(i);
+                        PickList::Item(i);
+                        ImGui::PushStyleColor(ImGuiCol_Header, 0);
+                        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
+                        ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
+                        ImGui::Selectable("##cell", IsSel, ImGuiSelectableFlags_None, ImVec2(CellW, CellH));
+                        ImGui::PopStyleColor(3);
+                        const bool Hovered = ImGui::IsItemHovered();
+                        DL->AddRectFilled(Min, Max, IsSel ? ColSel : Hovered ? ColHover : ColCell, Em * 0.3f);
+
+                        const ImVec2 TMin(Min.x + Pad, Min.y + Pad), TMax(TMin.x + Thumb, TMin.y + Thumb);
+                        IAssetCellRenderer* R = A.Kind >= 0 && A.Kind < AssetKind::Count ? Renderers[A.Kind].get() : nullptr;
+                        DL->PushClipRect(TMin, TMax, true);
+                        if (R) R->Draw(X, A, DL, TMin, TMax, Hovered);
+                        else DrawAssetKindIcon(DL, TMin, TMax, A.Kind);
+                        DL->PopClipRect();
+                        Visible++;
+
+                        const float TextX0 = Min.x + Pad, TextX1 = Max.x - Pad;
+                        const float NameY = TMax.y + Pad * 0.6f;
+                        const char* Name = A.Name ? A.Name->c_str() : "";
+                        ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY), ImVec2(TextX1, NameY + TextH), TextX1, Name, nullptr, nullptr);
+                        // the game first (one asset of two games is two cells alike otherwise), then the kind
+                        float KindX = TextX0;
+                        if (A.Game && !A.Game->empty() && DrawGame)
+                        {
+                            const float Side = std::round(TextH * 0.85f);
+                            DrawGame(DL, *A.Game, ImVec2(TextX0, NameY + TextH + (TextH - Side) * 0.5f), Side);
+                            KindX = std::min(TextX1, TextX0 + Side + Pad * 0.6f);
+                        }
+                        else if (A.Game && !A.Game->empty())
+                        {
+                            const std::string GameText = *A.Game + "  \xC2\xB7  ";
+                            ImGui::PushStyleColor(ImGuiCol_Text, ColGame);
+                            ImGui::RenderTextEllipsis(DL, ImVec2(TextX0, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, GameText.c_str(), nullptr, nullptr);
+                            ImGui::PopStyleColor();
+                            KindX = std::min(TextX1, TextX0 + ImGui::CalcTextSize(GameText.c_str()).x);
+                        }
+                        std::string KindText = AssetKindName(A.Kind);
+                        if (A.Format && !A.Format->empty()) KindText += "  \xC2\xB7  " + *A.Format;
+                        ImGui::PushStyleColor(ImGuiCol_Text, ColKind);
+                        if (KindX < TextX1)
+                            ImGui::RenderTextEllipsis(DL, ImVec2(KindX, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, KindText.c_str(), nullptr, nullptr);
                         ImGui::PopStyleColor();
-                        KindX = std::min(TextX1, TextX0 + ImGui::CalcTextSize(GameText.c_str()).x);
+                        (void)ColName;
+                        if (Hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay))
+                        {
+                            if (A.Game && !A.Game->empty()) ImGui::SetTooltip("%s\n%s", Name, GameTitle ? GameTitle(*A.Game).c_str() : A.Game->c_str());
+                            else ImGui::SetTooltip("%s", Name);
+                        }
+                        OnItem(i);
+                        ImGui::PopID();
                     }
-                    std::string KindText = AssetKindName(A.Kind);
-                    if (A.Format && !A.Format->empty()) KindText += "  \xC2\xB7  " + *A.Format;
-                    ImGui::PushStyleColor(ImGuiCol_Text, ColKind);
-                    if (KindX < TextX1)
-                        ImGui::RenderTextEllipsis(DL, ImVec2(KindX, NameY + TextH), ImVec2(TextX1, NameY + 2 * TextH), TextX1, KindText.c_str(), nullptr, nullptr);
-                    ImGui::PopStyleColor();
-                    (void)ColName;
-                    if (Hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay))
-                    {
-                        if (A.Game && !A.Game->empty()) ImGui::SetTooltip("%s\n%s", Name, GameTitle ? GameTitle(*A.Game).c_str() : A.Game->c_str());
-                        else ImGui::SetTooltip("%s", Name);
-                    }
-                    OnItem(i);
-                    ImGui::PopID();
+                    ImGui::SetCursorScreenPos(RowPos);
+                    ImGui::Dummy(ImVec2(std::max(1.0f, Avail), CellH));
                 }
-                ImGui::SetCursorScreenPos(RowPos);
-                ImGui::Dummy(ImVec2(std::max(1.0f, Avail), CellH));
-            }
+        });
         LastVisible = Visible;
     }
     ImGui::EndChild();

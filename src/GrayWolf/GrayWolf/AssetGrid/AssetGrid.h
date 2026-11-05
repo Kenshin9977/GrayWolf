@@ -81,9 +81,11 @@ public:
     void SetRenderer(int Kind, std::shared_ptr<IAssetCellRenderer> Renderer);
 
     // Fills the rest of the window with Count cells. Item(i) describes cell i, Selected(i) highlights
-    // it, OnItem(i) runs right after cell i's item is submitted (clicks, its context menu: the
+    // it, Pick(i, On) / PickAll(On) select or unselect cells (PickList: Shift/Ctrl+click, Ctrl+A, a
+    // box), OnItem(i) runs right after cell i's item is submitted (clicks, its context menu: the
     // ImGui "last item" is the cell). ScrollTo >= 0 brings that cell into view.
     void Draw(int Count, const std::function<AssetGridItem(int)>& Item, const std::function<bool(int)>& Selected,
+              const std::function<void(int, bool)>& Pick, const std::function<void(bool)>& PickAll,
               const std::function<void(int)>& OnItem, int ScrollTo = -1);
     // The cell size slider (the shell puts it on its toolbar).
     void DrawSizeSlider();

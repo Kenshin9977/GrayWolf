@@ -9,6 +9,7 @@
 #include "ImGuiLoadGamePanel.Common.h"
 #include "ImGuiDialogs.h"
 #include "ImGuiBlender.h"
+#include "PickList.h"
 #include "AppLog.h"
 #include "DiskGame.h"
 #include "ExportNaming.h"
@@ -447,7 +448,7 @@ void LoadGamePanel::DoDiskExport()
 bool LoadGamePanel::Working()
 {
     if (Busy.load() || Detecting || !ScannedOnce) return true;
-    if (Disk == nullptr) return false;
+    if (Disk == nullptr || !Shown) return false;
     std::lock_guard<std::mutex> Lock(Mutex);
     return DiskZonesFor != ListedFor(*Disk, DiskOptions(*Disk, GameBuf));
 }
@@ -529,18 +530,6 @@ void LoadGamePanel::DrawZoneTab()
 
     const size_t Selected = (size_t)std::count(DiskZoneFlags.begin(), DiskZoneFlags.end(), 1);
     ImGui::TextDisabled("%s / %s zones picked", Thousands(Selected).c_str(), Thousands(DiskZoneNames.size()).c_str());
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Pick all shown##diskzones"))
-    {
-        for (const auto Idx : Visible) DiskZoneFlags[Idx] = 1;
-        Persist();
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear##diskzones"))
-    {
-        std::fill(DiskZoneFlags.begin(), DiskZoneFlags.end(), 0);
-        Persist();
-    }
 }
 
 void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)
@@ -558,7 +547,11 @@ void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)
     ImGui::TableSetupColumn("Holds", ImGuiTableColumnFlags_WidthStretch | ImGuiTableColumnFlags_PreferSortDescending, 2.6f);
     ImGui::TableSetupColumn("On disk", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_PreferSortDescending,
                             ImGui::CalcTextSize("On disk").x + ImGui::GetFontSize() * 2.5f);
-    ImGui::TableHeadersRow();
+    const size_t PickedShown = (size_t)std::count_if(Visible.begin(), Visible.end(), [&](uint32_t Z) { return DiskZoneFlags[Z] != 0; });
+    PickList::HeadersRow(PickedShown, Visible.size(), [&](bool On) {
+        for (const auto Z : Visible) DiskZoneFlags[Z] = On;
+        Persist();
+    }, "Every zone listed (this group and filter)");
     if (ImGuiTableSortSpecs* Specs = ImGui::TableGetSortSpecs(); Specs != nullptr && Specs->SpecsCount > 0)
     {
         DiskZoneSortColumn = Specs->Specs[0].ColumnIndex;
@@ -591,46 +584,53 @@ void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)
         Rows.push_back(Z);
     }
 
-    ImGuiListClipper Clipper;
-    Clipper.Begin((int)Rows.size());
-    while (Clipper.Step())
-        for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
-        {
-            ImGui::TableNextRow();
-            if (Rows[Row] < 0)
+    // a header row is no zone: a range over it skips it
+    bool Changed = false;
+    const PickList::List Picks{ PickList::Checks, (int)Rows.size(), [&](int Row, bool On) {
+        if (Rows[Row] >= 0) { DiskZoneFlags[(size_t)Rows[Row]] = On; Changed = true; }
+    } };
+    PickList::Rows(Picks, [&](ImGuiListClipper& Clipper) {
+        while (Clipper.Step())
+            for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
             {
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextColored(ImVec4(0.62f, 0.71f, 0.83f, 1.0f), "%s", GroupNames[-1 - Rows[Row]]);
-                continue;
-            }
-            const uint32_t Idx = (uint32_t)Rows[Row];
-            ImGui::PushID((int)Idx);
-            ImGui::TableSetColumnIndex(0);
-            bool Checked = DiskZoneFlags[Idx] != 0;
-            if (ImGui::Checkbox(Label(Idx).c_str(), &Checked)) { DiskZoneFlags[Idx] = Checked; Persist(); }
-            ImGui::TableSetColumnIndex(1);
-            if (DiskZoneGroups[Idx] == 1 || DiskZoneLevels[Idx].empty()) ImGui::TextDisabled("%s", DiskZoneNames[Idx].c_str());
-            else ImGui::TextDisabled("of %s", DiskZoneLevels[Idx].c_str());   // a variant: its name is in the first column
-            ImGui::TableSetColumnIndex(2);
-            if (!Counted)
-                ImGui::TextDisabled("\xE2\x80\x93");   // not indexed yet
-            else
-            {
-                const auto& Counts = DiskZoneCounts[Idx];
-                ImGui::TextDisabled("%s", Counts.empty() ? "\xE2\x80\x93" : Holds(Counts).c_str());
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !Counts.empty())
+                ImGui::TableNextRow();
+                if (Rows[Row] < 0)
                 {
-                    std::string Tip;
-                    for (const auto& [K, N] : Counts) Tip += (Tip.empty() ? "" : "\n") + KindCount(K, N);
-                    ImGui::SetTooltip("%s\n(from the install index: the assets stored in this zone)", Tip.c_str());
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextColored(ImVec4(0.62f, 0.71f, 0.83f, 1.0f), "%s", GroupNames[-1 - Rows[Row]]);
+                    continue;
                 }
+                const uint32_t Idx = (uint32_t)Rows[Row];
+                ImGui::PushID((int)Idx);
+                ImGui::TableSetColumnIndex(0);
+                bool Checked = DiskZoneFlags[Idx] != 0;
+                PickList::Item(Row);
+                ImGui::Checkbox(Label(Idx).c_str(), &Checked);   // the scope applies it
+                ImGui::TableSetColumnIndex(1);
+                if (DiskZoneGroups[Idx] == 1 || DiskZoneLevels[Idx].empty()) ImGui::TextDisabled("%s", DiskZoneNames[Idx].c_str());
+                else ImGui::TextDisabled("of %s", DiskZoneLevels[Idx].c_str());   // a variant: its name is in the first column
+                ImGui::TableSetColumnIndex(2);
+                if (!Counted)
+                    ImGui::TextDisabled("\xE2\x80\x93");   // not indexed yet
+                else
+                {
+                    const auto& Counts = DiskZoneCounts[Idx];
+                    ImGui::TextDisabled("%s", Counts.empty() ? "\xE2\x80\x93" : Holds(Counts).c_str());
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !Counts.empty())
+                    {
+                        std::string Tip;
+                        for (const auto& [K, N] : Counts) Tip += (Tip.empty() ? "" : "\n") + KindCount(K, N);
+                        ImGui::SetTooltip("%s\n(from the install index: the assets stored in this zone)", Tip.c_str());
+                    }
+                }
+                ImGui::TableSetColumnIndex(3);
+                if (Counted) ImGui::TextDisabled("%s", DiskGame::Sizes::Text(DiskZoneFootprints[Idx]).c_str());
+                ImGui::PopID();
             }
-            ImGui::TableSetColumnIndex(3);
-            if (Counted) ImGui::TextDisabled("%s", DiskGame::Sizes::Text(DiskZoneFootprints[Idx]).c_str());
-            ImGui::PopID();
-        }
+    });
     ImGui::PopStyleVar();
     ImGui::EndTable();
+    if (Changed) Persist();
 }
 
 // The output folder, the kinds a zone export writes, the game's settings, the name filter
@@ -728,7 +728,7 @@ void LoadGamePanel::DrawOptions()
 
     // the game's settings, each while one of the kinds it concerns is ticked or picked
     std::set<DiskGame::Kind> Picked;
-    for (const auto& A : AssetPicks) Picked.insert(A.K);
+    for (const auto& [K, N] : AssetPicks.Kinds) Picked.insert(K);
     bool AnySetting = false;
     for (const DiskGame::Setting* Each : Disk->AllSettings())
     {
@@ -967,7 +967,8 @@ void LoadGamePanel::StartExport()
         std::string Why;
         if (!DiskGame::RunLanguages(*Disk, Options, std::string(), Spoken, Why)) Spoken = Languages::Choice();
         std::set<size_t> Zones;
-        for (const auto& A : AssetPicks)
+        auto Assets = std::make_shared<DiskGame::Selection>(AssetPicks.Assets());
+        for (const auto& A : *Assets)
         {
             ExportKinds.insert(A.K);
             const auto In = Ix->DefinedIn(A);
@@ -975,7 +976,7 @@ void LoadGamePanel::StartExport()
             if (!In.empty()) Zones.insert(Kept != In.end() ? *Kept : In.front());
         }
         for (const size_t Z : Zones) DiskZonesToExport.push_back(Ix->Zones()[Z]);
-        ExportOnly = std::make_shared<DiskGame::Selection>(AssetPicks);
+        ExportOnly = std::move(Assets);
     }
     else
         for (size_t i = 0; i < DiskZoneNames.size(); i++)
