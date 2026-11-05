@@ -46,7 +46,7 @@ public:
     // opened), dismiss (each true), languages (the languages exported: "auto", "all", "auto,en"),
     // languages_open (true: their list dropped down, in the options popup)
     void Script(const std::string& StepJson);
-    // A worker runs or is about to (the zone list not read yet): ui-record holds its frames meanwhile
+    // A worker runs or is about to (the zone list not read yet, the tab shown): ui-record holds its frames meanwhile
     bool Working();
     // A spinner or a progress bar was drawn this frame: ui-record times the waits without one
     bool ShowedProgress() const { return DrewIndicator; }
@@ -139,6 +139,7 @@ private:
     int InstallIndex = -1;
     bool ScannedOnce = false;
     bool AutoScanStarted = false;
+    bool Shown = false;   // the tab drawn this frame (hidden behind Library, no zone list is read)
 
     // The disk game GameBuf is read with (see ChooseDiskGame) and the GameBuf it was chosen for.
     const DiskGame::IDiskGame* Disk = nullptr;
@@ -200,10 +201,33 @@ private:
     std::vector<uint32_t> AssetHits;             // indices into DiskAssets->Rows
     std::map<DiskGame::Kind, size_t> AssetHitKinds;
     size_t AssetHitsTotal = 0;                   // before the cap
+    std::vector<uint32_t> AssetMatches;          // every hit, past the cap too (the header's box)
+    size_t AssetMatchesPicked = 0;               // how many of them are picked, as of
+    uint64_t AssetMatchesPickedAt = ~0ull;       // this AssetPicks.Version
     size_t AssetHitZones = 0;                    // the zones the hits are in
     std::string AssetSearchedFor;                // the query and chips AssetHits answer
     const AssetRows* AssetSearchedIn = nullptr;
-    DiskGame::Selection AssetPicks;              // what the asset tab exports
+    // what the asset tab exports: a flag per row of the rows they were made in (300k picked at once
+    // is a pass over bytes, not 300k set inserts), the kinds counted as they change
+    struct RowPicks
+    {
+        std::shared_ptr<const AssetRows> Rows;
+        std::shared_ptr<const DiskGame::ZoneIndex> Ix;
+        std::vector<uint8_t> On;
+        size_t Count = 0;
+        std::map<DiskGame::Kind, size_t> Kinds;
+        uint64_t Version = 0;   // bumped on every change
+        bool Has(uint32_t R) const { return R < On.size() && On[R] != 0; }
+        bool empty() const { return Count == 0; }
+        size_t size() const { return Count; }
+        const DiskGame::AssetId& Asset(uint32_t R) const { return Ix->Defined(Rows->Rows[R].first)[Rows->Rows[R].second]; }
+        void Set(uint32_t R, bool Pick);
+        void Clear();
+        // onto other rows (an index rebuilt): the same assets picked in them
+        void Rebind(std::shared_ptr<const AssetRows> NewRows, std::shared_ptr<const DiskGame::ZoneIndex> NewIx);
+        DiskGame::Selection Assets() const;
+    };
+    RowPicks AssetPicks;
     int AssetFocus = -1;                         // the row shown in the side pane (index into Rows)
     bool ExportByAsset = true;                   // the tab shown: what the bar exports
     int WantTab = -1;                            // a tab to select on the next frame (0 asset, 1 zone)

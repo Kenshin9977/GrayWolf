@@ -368,7 +368,7 @@ void LoadGamePanel::Draw(ID3D11Device* Dev)
     ImGuiWindowClass First;
     First.TabItemFlagsOverrideSet = ImGuiTabItemFlags_Leading;
     ImGui::SetNextWindowClass(&First);
-    ImGui::Begin(Theme::ExtractWindow);
+    Shown = ImGui::Begin(Theme::ExtractWindow);
     if (DiskChosenFor != GameBuf) ChooseDiskGame();
     const bool Busyish = Busy.load();
 

@@ -264,7 +264,7 @@ namespace ShellUi
         size_t ShotSelected = 0; int ShotSelectWait = 0;   // ui-grid-shot --select: the names selected so far, frames left before the next
         int Selected = -1;
         bool ScrollToSelected = false; // set on keyboard nav so the table scrolls the new row into view
-        std::set<int> MultiSel; // Ctrl+click picks (into Models), independent of Selected - "View together" target
+        std::set<int> MultiSel; // the rows selected (into Models; PickList's clicks), Selected alone when empty - "View together" target
         AssetsTab Assets;
         ViewportState Viewport;
         std::unique_ptr<GridShot> Shot;

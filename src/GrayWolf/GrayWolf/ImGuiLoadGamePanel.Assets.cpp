@@ -8,6 +8,7 @@
 #include "ImGuiLoadGamePanel.h"
 #include "ImGuiLoadGamePanel.Common.h"
 #include "ImGuiDialogs.h"
+#include "PickList.h"
 #include "AppLog.h"
 #include "DiskGame.h"
 #include "ExportNaming.h"
@@ -84,6 +85,52 @@ void LoadGamePanel::KeepIndex(std::unique_ptr<DiskGame::ZoneIndex> Ix)
     DiskIndexDate = Day;
 }
 
+void LoadGamePanel::RowPicks::Set(uint32_t R, bool Pick)
+{
+    if (!Rows || R >= Rows->Rows.size()) return;
+    if (On.size() != Rows->Rows.size()) On.assign(Rows->Rows.size(), 0);
+    if ((On[R] != 0) == Pick) return;
+    On[R] = Pick;
+    const DiskGame::Kind K = Asset(R).K;
+    if (Pick) { Count++; Kinds[K]++; }
+    else
+    {
+        Count--;
+        if (--Kinds[K] == 0) Kinds.erase(K);
+    }
+    Version++;
+}
+
+void LoadGamePanel::RowPicks::Clear()
+{
+    std::fill(On.begin(), On.end(), 0);
+    Count = 0;
+    Kinds.clear();
+    Version++;
+}
+
+void LoadGamePanel::RowPicks::Rebind(std::shared_ptr<const AssetRows> NewRows, std::shared_ptr<const DiskGame::ZoneIndex> NewIx)
+{
+    const DiskGame::Selection Kept = Assets();
+    Rows = std::move(NewRows);
+    Ix = std::move(NewIx);
+    On.clear();
+    Count = 0;
+    Kinds.clear();
+    Version++;
+    if (Kept.empty() || !Rows || !Ix) return;
+    for (uint32_t R = 0; R < (uint32_t)Rows->Rows.size(); R++)
+        if (Kept.count(Asset(R))) Set(R, true);
+}
+
+DiskGame::Selection LoadGamePanel::RowPicks::Assets() const
+{
+    DiskGame::Selection S;
+    for (uint32_t R = 0; R < (uint32_t)On.size(); R++)
+        if (On[R]) S.insert(Asset(R));
+    return S;
+}
+
 // The rows matching the query, the kinds on and "picked only"; the counts per kind before the
 // kinds are applied (the chips show them). Nothing is done while none of these changed.
 void LoadGamePanel::Search()
@@ -101,6 +148,8 @@ void LoadGamePanel::Search()
     AssetSearchedIn = Rows.get();
     AssetSearchedFor = Key;
     AssetHits.clear();
+    AssetMatches.clear();
+    AssetMatchesPickedAt = ~0ull;
     AssetHitKinds.clear();
     AssetHitsTotal = 0;
     AssetHitZones = 0;
@@ -113,10 +162,11 @@ void LoadGamePanel::Search()
         if (!Query.empty() && Rows->Lower[R].find(Query) == std::string::npos) continue;
         const auto [Z, I] = Rows->Rows[R];
         const DiskGame::AssetId& A = Ix->Defined(Z)[I];
-        if (AssetPickedOnly && !AssetPicks.count(A)) continue;
+        if (AssetPickedOnly && !AssetPicks.Has(R)) continue;
         AssetHitKinds[A.K]++;
         if (AssetKindsOff.count(A.K)) continue;
         AssetHitsTotal++;
+        AssetMatches.push_back(R);
         if (!ZoneSeen[Z]) { ZoneSeen[Z] = 1; AssetHitZones++; }
         if (AssetHits.size() < ShownAtMost) AssetHits.push_back(R);
     }
@@ -149,12 +199,13 @@ void LoadGamePanel::DrawAssetTab()
         // the picks belong to the zone list they were made in: another game or folder starts over
         if (AssetPicksFor != DiskZonesFor)
         {
-            AssetPicks.clear();
+            AssetPicks.Clear();
             AssetFocus = -1;
             AssetPicksFor = DiskZonesFor;
             AssetSearchedFor.clear();
         }
     }
+    if (AssetPicks.Rows != Rows) AssetPicks.Rebind(Rows, Ix);   // an index rebuilt: the same assets picked in it
 
     // not indexed yet: the one thing to do, and the way around it
     if (ZoneCount == 0)
@@ -260,6 +311,12 @@ void LoadGamePanel::DrawAssetTab()
                                 Thousands(AssetHitsTotal).c_str(), Thousands(AssetHitZones).c_str(), Thousands(AssetHits.size()).c_str());
         else
             ImGui::TextDisabled("%s results in %s zones", Thousands(AssetHitsTotal).c_str(), Thousands(AssetHitZones).c_str());
+        // how many results are picked, the ones past the list's cap too (the header's box)
+        if (AssetMatchesPickedAt != AssetPicks.Version)
+        {
+            AssetMatchesPicked = (size_t)std::count_if(AssetMatches.begin(), AssetMatches.end(), [&](uint32_t R) { return AssetPicks.Has(R); });
+            AssetMatchesPickedAt = AssetPicks.Version;
+        }
 
         const ImGuiTableFlags Flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                                       ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
@@ -271,38 +328,38 @@ void LoadGamePanel::DrawAssetTab()
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 3.0f);
             ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("material").x + ImGui::GetFontSize());
             ImGui::TableSetupColumn("Zone", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-            ImGui::TableHeadersRow();
-            ImGuiListClipper Clipper;
-            Clipper.Begin((int)AssetHits.size());
-            while (Clipper.Step())
-                for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
-                {
-                    const uint32_t R = AssetHits[Row];
-                    const auto [Z, I] = Rows->Rows[R];
-                    const DiskGame::AssetId& A = Ix->Defined(Z)[I];
-                    ImGui::PushID((int)R);
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-                    bool Picked = AssetPicks.count(A) != 0;
-                    if (ImGui::Checkbox("##pick", &Picked))
+            PickList::HeadersRow(AssetMatchesPicked, AssetMatches.size(), [&](bool On) {
+                for (const uint32_t R : AssetMatches) AssetPicks.Set(R, On);
+            }, "Every result of this search and these kinds");
+            const PickList::List Picks{ PickList::Checks, (int)AssetHits.size(), [&](int Row, bool On) { AssetPicks.Set(AssetHits[Row], On); } };
+            PickList::Rows(Picks, [&](ImGuiListClipper& Clipper) {
+                while (Clipper.Step())
+                    for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
                     {
-                        if (Picked) AssetPicks.insert(A);
-                        else AssetPicks.erase(A);
+                        const uint32_t R = AssetHits[Row];
+                        const auto [Z, I] = Rows->Rows[R];
+                        const DiskGame::AssetId& A = Ix->Defined(Z)[I];
+                        ImGui::PushID((int)R);
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        bool Picked = AssetPicks.Has(R);
+                        PickList::Item(Row);
+                        ImGui::Checkbox("##pick", &Picked);   // the scope applies it
+                        ImGui::TableSetColumnIndex(1);
+                        if (ImGui::Selectable(A.Name.c_str(), AssetFocus == (int)R,
+                                              ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick))
+                        {
+                            AssetFocus = (int)R;
+                            // a double click previews it
+                            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && A.K != DiskGame::Kind::Anim) StartPreview(A);
+                        }
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::TextDisabled("%s", DiskGame::KindName(A.K));
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::TextDisabled("%s", Ix->Zones()[Z].c_str());
+                        ImGui::PopID();
                     }
-                    ImGui::TableSetColumnIndex(1);
-                    if (ImGui::Selectable(A.Name.c_str(), AssetFocus == (int)R,
-                                          ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick))
-                    {
-                        AssetFocus = (int)R;
-                        // a double click previews it
-                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && A.K != DiskGame::Kind::Anim) StartPreview(A);
-                    }
-                    ImGui::TableSetColumnIndex(2);
-                    ImGui::TextDisabled("%s", DiskGame::KindName(A.K));
-                    ImGui::TableSetColumnIndex(3);
-                    ImGui::TextDisabled("%s", Ix->Zones()[Z].c_str());
-                    ImGui::PopID();
-                }
+            });
             ImGui::PopStyleVar();
             ImGui::EndTable();
         }
@@ -310,7 +367,7 @@ void LoadGamePanel::DrawAssetTab()
     ImGui::EndChild();
     if (!ShowPane)
     {
-        ImGui::TextDisabled("Tick an asset to pick it for export; click its name to see where it is stored, double-click to preview it.");
+        ImGui::TextDisabled("Tick to pick for export (Shift+click: every row between), click a name to see where it is, double-click to preview.");
         return;
     }
     if (Wide) ImGui::SameLine();
@@ -340,12 +397,8 @@ void LoadGamePanel::DrawAssetTab()
             if (In.size() > 6) ImGui::TextDisabled("and %zu more", In.size() - 6);
         }
         ImGui::Spacing();
-        const bool Picked = AssetPicks.count(A) != 0;
-        if (ImGui::Button(Picked ? "Unpick" : "Pick", ImVec2(ImGui::GetFontSize() * 6.0f, 0)))
-        {
-            if (Picked) AssetPicks.erase(A);
-            else AssetPicks.insert(A);
-        }
+        const bool Picked = AssetPicks.Has((uint32_t)AssetFocus);
+        if (ImGui::Button(Picked ? "Unpick" : "Pick", ImVec2(ImGui::GetFontSize() * 6.0f, 0))) AssetPicks.Set((uint32_t)AssetFocus, !Picked);
         ImGui::SameLine();
         ImGui::BeginDisabled(A.K == DiskGame::Kind::Anim);
         if (ImGui::Button("Preview", ImVec2(ImGui::GetFontSize() * 6.0f, 0))) StartPreview(A);
@@ -363,18 +416,21 @@ void LoadGamePanel::DrawAssetTab()
         ImGui::Separator();
         ImGui::Text("Picked (%s)", Thousands(AssetPicks.size()).c_str());
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear##picks")) AssetPicks.clear();
+        if (ImGui::SmallButton("Clear##picks")) AssetPicks.Clear();
         size_t Shown = 0;
-        for (auto It = AssetPicks.begin(); It != AssetPicks.end() && Shown < 12; Shown++)
+        for (uint32_t R = 0; R < (uint32_t)AssetPicks.On.size() && Shown < 12; R++)
         {
-            ImGui::PushID((int)Shown);
+            if (!AssetPicks.On[R]) continue;
+            const DiskGame::AssetId& A = AssetPicks.Asset(R);
+            ImGui::PushID((int)R);
             const bool Remove = ImGui::SmallButton("x");
             ImGui::SameLine();
-            ImGui::TextDisabled("%s", DiskGame::KindName(It->K));
+            ImGui::TextDisabled("%s", DiskGame::KindName(A.K));
             ImGui::SameLine();
-            ImGui::TextUnformatted(It->Name.c_str());
+            ImGui::TextUnformatted(A.Name.c_str());
             ImGui::PopID();
-            It = Remove ? AssetPicks.erase(It) : std::next(It);
+            if (Remove) AssetPicks.Set(R, false);
+            Shown++;
         }
         if (AssetPicks.size() > 12) ImGui::TextDisabled("and %s more (\"Picked only\" lists them)", Thousands(AssetPicks.size() - 12).c_str());
     }
@@ -424,7 +480,11 @@ void LoadGamePanel::Script(const std::string& StepJson)
     if (St.contains("focus")) AssetFocus = Row(St["focus"].get<std::string>());
     if (St.contains("pick"))
         for (const auto& N : St["pick"])
-            if (const int R = Row(N.get<std::string>()); R >= 0) AssetPicks.insert(Asset(R));
+            if (const int R = Row(N.get<std::string>()); R >= 0)
+            {
+                if (AssetPicks.Rows != Rows) AssetPicks.Rebind(Rows, Ix);
+                AssetPicks.Set((uint32_t)R, true);
+            }
     if (St.contains("preview"))
         if (const int R = Row(St["preview"].get<std::string>()); R >= 0) StartPreview(Asset(R));
     if (St.contains("export") && St["export"].get<bool>()) StartExport();

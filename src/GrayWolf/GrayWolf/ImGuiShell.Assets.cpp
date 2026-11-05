@@ -10,6 +10,7 @@
 #include "FxPreviewCells.h"    // an effect in its grid cell
 #include "ImGuiTheme.h"        // icons, pills
 #include "GameBadges.h"        // a game's icon and title
+#include "PickList.h"          // Shift/Ctrl+click, Ctrl+A, a box
 
 #include "imgui.h"
 #include <nlohmann/json.hpp>   // filter presets
@@ -421,10 +422,10 @@ namespace ShellUi
             }
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%d / %d assets", (int)A.View.size(), (int)S.Catalog.Models.size());
-            if (!S.MultiSel.empty())
+            if (S.MultiSel.size() > 1)
             {
                 ImGui::SameLine();
-                ImGui::TextDisabled("\xC2\xB7  %d selected (Ctrl+click to add)", (int)S.MultiSel.size());
+                ImGui::TextDisabled("\xC2\xB7  %d selected (Ctrl / Shift+click)", (int)S.MultiSel.size());
                 ImGui::SameLine();
                 if (ImGui::SmallButton("View together")) LoadMerged(S, S.MultiSel);
                 ImGui::SameLine();
@@ -450,7 +451,7 @@ namespace ShellUi
                 else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) { CurPos = (CurPos < 0) ? 0 : std::max(CurPos - Step, 0); Moved = true; }
                 else if (A.GridView && ImGui::IsKeyPressed(ImGuiKey_RightArrow)) { CurPos = (CurPos < 0) ? 0 : std::min(CurPos + 1, (int)View.size() - 1); Moved = true; }
                 else if (A.GridView && ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) { CurPos = (CurPos < 0) ? 0 : std::max(CurPos - 1, 0); Moved = true; }
-                if (Moved) { LoadSelection(S, View[CurPos]); S.ScrollToSelected = true; }
+                if (Moved) { S.MultiSel.clear(); LoadSelection(S, View[CurPos]); S.ScrollToSelected = true; }
             }
             // Ctrl+C copies the selection's name(s) - same focus/active-item gate as the nav above, but
             // not gated on View: a multi-pick can still include rows the current type tab is hiding.
@@ -459,12 +460,26 @@ namespace ShellUi
                 CopySelection(S, false);
         }
 
-        // A row's or a cell's click: Ctrl+click builds a selection for "View together" without disturbing the
-        // live preview; a plain click previews normally and starts a fresh pick set.
+        // A row's or a cell's click: a plain click previews it; Ctrl or Shift+click builds a selection
+        // for "View together" without disturbing the live preview (PickList sets MultiSel either way).
         void ClickAsset(ShellState& S, int idx)
         {
-            if (ImGui::GetIO().KeyCtrl) { if (S.MultiSel.count(idx)) S.MultiSel.erase(idx); else S.MultiSel.insert(idx); }
-            else { S.MultiSel.clear(); LoadSelection(S, idx); }
+            if (!ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift) LoadSelection(S, idx);
+        }
+
+        // highlighted: in MultiSel, or the previewed one when nothing else is selected
+        bool IsSelected(const ShellState& S, int idx) { return S.MultiSel.empty() ? S.Selected == idx : S.MultiSel.count(idx) != 0; }
+
+        // the View's rows into MultiSel (the list's or the grid's PickList)
+        void PickRow(ShellState& S, int Row, bool On)
+        {
+            if (On) S.MultiSel.insert(S.Assets.View[Row]);
+            else S.MultiSel.erase(S.Assets.View[Row]);
+        }
+        void PickAllRows(ShellState& S, bool On)
+        {
+            S.MultiSel.clear();
+            if (On) S.MultiSel.insert(S.Assets.View.begin(), S.Assets.View.end());
         }
 
         // Right-click outside the current selection selects first (Explorer-style), so "Copy name"
@@ -506,7 +521,9 @@ namespace ShellUi
                     It.SizeBytes = M.SizeBytes; It.Written = M.Written; It.Id = View[Row];
                     return It;
                 },
-                [&](int Row) { return View[Row] == S.Selected || S.MultiSel.count(View[Row]) != 0; },
+                [&](int Row) { return IsSelected(S, View[Row]); },
+                [&](int Row, bool On) { PickRow(S, Row, On); },
+                [&](bool On) { PickAllRows(S, On); },
                 [&](int Row) {
                     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) ClickAsset(S, View[Row]);
                     AssetContextMenu(S, View[Row]);
@@ -554,50 +571,53 @@ namespace ShellUi
             const auto& View = A.View;
 
             // only the rows on screen are submitted (and the selected one, to scroll it into view)
-            ImGuiListClipper Clipper;
-            Clipper.Begin((int)View.size());
-            if (S.ScrollToSelected)
-                for (int k = 0; k < (int)View.size(); k++)
-                    if (View[k] == S.Selected) { Clipper.IncludeItemByIndex(k); break; }
-            while (Clipper.Step())
-            for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
-            {
-                const int idx = View[Row];
-                const Item& M = Models[idx];
-                const char* Ty = (M.Kind == 0) ? "model" : (M.Kind == 1) ? "image" : (M.Kind == 2) ? "audio" : (M.Kind == 3) ? "anim" : (M.Kind == 4) ? "map" : "fx";
-                ImGui::PushID(idx); // names can repeat (e.g. shared texture stems) - disambiguate the row
-                ImGui::TableNextRow();
-                if (S.ScrollToSelected && S.Selected == idx) { ImGui::SetScrollHereY(); S.ScrollToSelected = false; }
-                ImGui::TableSetColumnIndex(0);
-                if (ImGui::Selectable(M.Name.c_str(), S.Selected == idx || S.MultiSel.count(idx) != 0, ImGuiSelectableFlags_SpanAllColumns))
-                    ClickAsset(S, idx);
-                AssetContextMenu(S, idx);
-                ImGui::TableSetColumnIndex(1);
-                if (!M.Game.empty())
+            const PickList::List Picks{ PickList::Selection, (int)View.size(), [&](int Row, bool On) { PickRow(S, Row, On); },
+                                        [&](bool On) { PickAllRows(S, On); }, ImGuiMultiSelectFlags_BoxSelect1d };
+            PickList::Rows(Picks, [&](ImGuiListClipper& Clipper) {
+                if (S.ScrollToSelected)
+                    for (int k = 0; k < (int)View.size(); k++)
+                        if (View[k] == S.Selected) { Clipper.IncludeItemByIndex(k); break; }
+                while (Clipper.Step())
+                for (int Row = Clipper.DisplayStart; Row < Clipper.DisplayEnd; Row++)
                 {
-                    const float Side = ImGui::GetTextLineHeight();
-                    GameBadges::Draw(ImGui::GetWindowDrawList(), S.Dev.Get(), M.Game, ImGui::GetCursorScreenPos(), Side);
-                    ImGui::Dummy(ImVec2(Side, Side));
-                    ImGui::SameLine();
-                    ImGui::TextUnformatted(GameBadges::ShortTitle(M.Game).c_str());
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", GameBadges::Title(M.Game).c_str());
+                    const int idx = View[Row];
+                    const Item& M = Models[idx];
+                    const char* Ty = (M.Kind == 0) ? "model" : (M.Kind == 1) ? "image" : (M.Kind == 2) ? "audio" : (M.Kind == 3) ? "anim" : (M.Kind == 4) ? "map" : "fx";
+                    ImGui::PushID(idx); // names can repeat (e.g. shared texture stems) - disambiguate the row
+                    ImGui::TableNextRow();
+                    if (S.ScrollToSelected && S.Selected == idx) { ImGui::SetScrollHereY(); S.ScrollToSelected = false; }
+                    ImGui::TableSetColumnIndex(0);
+                    PickList::Item(Row);
+                    if (ImGui::Selectable(M.Name.c_str(), IsSelected(S, idx), ImGuiSelectableFlags_SpanAllColumns))
+                        ClickAsset(S, idx);
+                    AssetContextMenu(S, idx);
+                    ImGui::TableSetColumnIndex(1);
+                    if (!M.Game.empty())
+                    {
+                        const float Side = ImGui::GetTextLineHeight();
+                        GameBadges::Draw(ImGui::GetWindowDrawList(), S.Dev.Get(), M.Game, ImGui::GetCursorScreenPos(), Side);
+                        ImGui::Dummy(ImVec2(Side, Side));
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(GameBadges::ShortTitle(M.Game).c_str());
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", GameBadges::Title(M.Game).c_str());
+                    }
+                    ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("%s", Ty);
+                    ImGui::TableSetColumnIndex(3); if (M.Kind == 0 || M.Kind == 3) ImGui::Text("%u", M.Bones);
+                    ImGui::TableSetColumnIndex(4); if (M.Kind == 0 || M.Kind == 4) ImGui::Text("%u", M.Meshes);
+                    ImGui::TableSetColumnIndex(5); if (M.Kind == 0) ImGui::Text("%u", M.Mats);
+                    ImGui::TableSetColumnIndex(6);
+                    if (M.Kind == 1 && M.ImgW > 0) ImGui::Text("%dx%d", M.ImgW, M.ImgH);
+                    else if (M.Kind == 4) ImGui::Text("%uv / %ut", M.Verts, M.Tris);
+                    ImGui::TableSetColumnIndex(7); ImGui::TextDisabled("%s", M.Format.c_str());
+                    ImGui::TableSetColumnIndex(8);
+                    { std::string Sz = FormatSize(M.SizeBytes);
+                      float Tw = ImGui::CalcTextSize(Sz.c_str()).x;
+                      float Av = ImGui::GetContentRegionAvail().x;
+                      if (Av > Tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (Av - Tw)); // right-align sizes
+                      ImGui::TextUnformatted(Sz.c_str()); }
+                    ImGui::PopID();
                 }
-                ImGui::TableSetColumnIndex(2); ImGui::TextDisabled("%s", Ty);
-                ImGui::TableSetColumnIndex(3); if (M.Kind == 0 || M.Kind == 3) ImGui::Text("%u", M.Bones);
-                ImGui::TableSetColumnIndex(4); if (M.Kind == 0 || M.Kind == 4) ImGui::Text("%u", M.Meshes);
-                ImGui::TableSetColumnIndex(5); if (M.Kind == 0) ImGui::Text("%u", M.Mats);
-                ImGui::TableSetColumnIndex(6);
-                if (M.Kind == 1 && M.ImgW > 0) ImGui::Text("%dx%d", M.ImgW, M.ImgH);
-                else if (M.Kind == 4) ImGui::Text("%uv / %ut", M.Verts, M.Tris);
-                ImGui::TableSetColumnIndex(7); ImGui::TextDisabled("%s", M.Format.c_str());
-                ImGui::TableSetColumnIndex(8);
-                { std::string Sz = FormatSize(M.SizeBytes);
-                  float Tw = ImGui::CalcTextSize(Sz.c_str()).x;
-                  float Av = ImGui::GetContentRegionAvail().x;
-                  if (Av > Tw) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (Av - Tw)); // right-align sizes
-                  ImGui::TextUnformatted(Sz.c_str()); }
-                ImGui::PopID();
-            }
+            });
             ImGui::EndTable();
         }
     }

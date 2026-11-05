@@ -115,6 +115,7 @@ namespace ShellUi
         float OrbitRadPerSec = 0;
         nlohmann::json Camera;        // the camera step waiting for the selection to show
         bool Holding = false, Done = false, Failed = false;
+        bool TimedOut = false;        // this step's selection held past HoldTimeout: recorded as it is
         std::string Error, Timeline;
         // per step, in real seconds: how long it took (its waits and holds) and how long Load Game
         // worked with no spinner or progress bar shown (steps.tsv, ux-check.py reads it)
@@ -129,16 +130,22 @@ namespace ShellUi
 
         double Now() const { return (double)GetTickCount64() / 1000.0; }
 
-        // A selection still loading: its frames are held (written once it shows)
-        bool Loading(const ShellState& S) const
+        // A selection still loading: its frames are held (written once it shows). What it waits for, else null
+        const char* Loading(const ShellState& S) const
         {
             const ViewportState& V = S.Viewport;
-            if (S.Catalog.Walking() || S.SelectFirstModel || V.Loader.Busy() || V.AnimRigLoading) return true;
-            if (S.LoadGameWorking || !S.SelectWhenListed.empty() || !S.LoadGameScript.empty()) return true;
-            if (S.Assets.GridView && S.Assets.Grid && !S.Assets.Grid->Settled()) return true;
+            if (S.Catalog.Walking()) return "folder listing";
+            if (S.SelectFirstModel) return "first selection";
+            if (V.Loader.Busy()) return "model load";
+            if (V.AnimRigLoading) return "anim rig";
+            if (S.LoadGameWorking) return "Load Game";
+            if (!S.SelectWhenListed.empty()) return "Load Game preview";
+            if (!S.LoadGameScript.empty()) return "Load Game script";
+            if (S.Assets.GridView && S.Assets.Grid && !S.Assets.Grid->Settled()) return "grid thumbnails";
             const int Kind = S.Selected >= 0 && S.Selected < (int)S.Catalog.Models.size() ? S.Catalog.Models[S.Selected].Kind : -1;
-            if (Kind == 5 && !V.FxPanel.Loaded()) return true;
-            return Kind == 3 && V.AnimClipOk && (V.AnimRigPaths.empty() || !V.AnimBindOk);
+            if (Kind == 5 && !V.FxPanel.Loaded()) return "fx";
+            if (Kind == 3 && V.AnimClipOk && (V.AnimRigPaths.empty() || !V.AnimBindOk)) return "anim bind";
+            return nullptr;
         }
 
         // the asset of that name, else the first whose name starts with it (a sound's "name.SN55.pc.snd")
@@ -169,6 +176,7 @@ namespace ShellUi
                 Times.push_back({ St.value("label", "step " + std::to_string(Next)), Now() });
                 ViewportState& V = S.Viewport;
                 Settle = 3;
+                TimedOut = false;
                 if (St.contains("label"))
                     Timeline += std::to_string(Written) + "\t" + St["label"].get<std::string>() + "\n";
                 if (St.contains("type")) S.Assets.TypeFilter = TypeIndex(St["type"].get<std::string>());
@@ -251,15 +259,18 @@ namespace ShellUi
         P->LastNow = Now;
         // the steps wait for the folder to be listed and its first selection
         if (!P->Done && P->Next == 0 && !S.Catalog.Walking() && !S.SelectFirstModel) P->RunSteps(S);
-        P->Holding = P->Next > 0 && (P->Settle > 0 || P->Loading(S));
+        const char* Why = P->Next > 0 && !P->TimedOut ? P->Loading(S) : nullptr;
+        P->Holding = P->Next > 0 && (P->Settle > 0 || Why != nullptr);
         if (P->Settle > 0) P->Settle--;
         if (P->Holding && P->HoldStarted < 0) P->HoldStarted = P->Now();
         if (!P->Holding) P->HoldStarted = -1;
         if (P->Holding && P->Now() - P->HoldStarted > P->O.HoldTimeout)
         {
-            P->Fail("frame " + std::to_string(P->Written) + ": still loading after " + std::to_string((int)P->O.HoldTimeout) + " s, recorded anyway");
+            P->Fail("frame " + std::to_string(P->Written) + ": still waiting for " + (Why ? Why : "settle") + " after " +
+                    std::to_string((int)P->O.HoldTimeout) + " s, recorded anyway");
             P->Holding = false;
-            P->HoldStarted = 1e18;   // not again for this selection
+            P->HoldStarted = -1;
+            P->TimedOut = true;   // not held again until the next step
         }
         // a held frame moves time on by next to nothing (ImGui wants a step above 0)
         ImGui::GetIO().DeltaTime = P->Holding || P->Next == 0 ? 1e-5f : 1.0f / (float)P->O.Fps;
