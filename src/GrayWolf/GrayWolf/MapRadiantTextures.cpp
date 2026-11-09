@@ -6,6 +6,7 @@
 #include "MapRadiantGeometry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -173,7 +174,17 @@ DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats)
         Cells.emplace(Grid[I].first, std::make_pair((uint32_t)I, (uint32_t)J));
         I = J;
     }
-    Stamp.assign(Tris.size(), 0);
+}
+
+void Add(RadiantTextureStats& Into, const RadiantTextureStats& S)
+{
+    Into.Sides += S.Sides, Into.SidesTextured += S.SidesTextured, Into.SidesSplit += S.SidesSplit, Into.SidesNoFit += S.SidesNoFit;
+    Into.SidesMixedMaps += S.SidesMixedMaps, Into.SidesUvMissed += S.SidesUvMissed, Into.SidesUndrawn += S.SidesUndrawn;
+    Into.BrushesTextured += S.BrushesTextured;
+    Into.UvExact += S.UvExact, Into.UvBelow1e3 += S.UvBelow1e3, Into.UvBelow1e2 += S.UvBelow1e2, Into.UvBelow1e1 += S.UvBelow1e1, Into.UvAbove += S.UvAbove;
+    Into.UvErrorSum += S.UvErrorSum;
+    Into.TrianglesDrawn += S.TrianglesDrawn, Into.TrianglesRemoved += S.TrianglesRemoved, Into.TrianglesColoured += S.TrianglesColoured;
+    for (int K = 0; K < 4; K++) Into.Distance[K] += S.Distance[K], Into.Coverage[K] += S.Coverage[K];
 }
 
 bool DrawnWorld::Removed(size_t Object, size_t Surf, size_t K) const
@@ -182,9 +193,13 @@ bool DrawnWorld::Removed(size_t Object, size_t Surf, size_t K) const
 }
 
 bool DrawnWorld::Texture(const std::vector<V3>& Face, const V3& N, double D, const V3& WrittenN, uint32_t Whose, const HiddenTest* Hidden,
-                         SideTexture& Out, RadiantTextureStats& Stats)
+                         SideTexture& Out, RadiantTextureStats& Stats, Scratch* Mine)
 {
     if (Face.size() < 3 || Tris.empty()) return false;
+    Scratch& Sc = Mine ? *Mine : Own;
+    std::vector<uint32_t>& Stamp = Sc.Stamp;
+    uint32_t& Query = Sc.Query;
+    if (Stamp.size() != Tris.size()) Stamp.assign(Tris.size(), 0), Query = 0;
     // the triangles on the face's plane overlapping it: their area inside it, whole or not
     struct Hit
     {
@@ -470,9 +485,8 @@ bool DrawnWorld::Texture(const std::vector<V3>& Face, const V3& N, double D, con
     {
         if (!InMain(I) || !Hits[I].Whole) continue;
         const Tri& T = Tris[Hits[I].Tri];
-        char& G = Gone[T.Object][T.Surf][T.K];
-        if (!G) Stats.TrianglesRemoved++;
-        G = 1;
+        // another thread may mark it too: counted once
+        if (!std::atomic_ref<char>(Gone[T.Object][T.Surf][T.K]).exchange(1)) Stats.TrianglesRemoved++;
     }
     if (MaterialArea - Groups[Main].Area > Split * MaterialArea) Stats.SidesMixedMaps++;
     Out.Material = Names[Material];

@@ -17,6 +17,8 @@
 #include "SoundAliasCsv.h"
 #include "VirtualGameSession.h"
 
+#include <wolff/ZoneLinks.h>
+
 #include <functional>
 #include <map>
 #include <set>
@@ -40,62 +42,18 @@ namespace Treyarch
     enum class EffectLayout;
 }
 
-// Every pointer of a layout walk, resolved: inline links, asset-list references, data back
-// references through the stream layout, and (DerefAssetPointers) asset pointers followed the way
-// resolve_deref does. In application order; Counters say how many of each kind and how many stay
-// unresolved. What ZonekitZone serves the live code, and what any other reader of a zone uses.
-struct ResolvedLinks
-{
-    std::vector<std::pair<int64_t, int64_t>> Links;   // pointer field -> where its data is
-    std::map<std::string, size_t> Counters;           // links_inline/asset/data/deref, refs_unresolved
-};
-// What resolving a partial walk's links (ZoneTables::PartialWalk::Merged) takes from the zone's
-// resume points instead of the reads it lacks: where each listed asset starts and its cursors there,
-// the resident slots as the walks reserved them, the zone's keys and its assets by hash
-struct ResolveHints
-{
-    const std::vector<ZoneTables::ZoneResult::ResumePoint>* Points = nullptr;
-    const std::vector<std::pair<uint64_t, int64_t>>* Keys = nullptr;               // every key of the zone, in stream order
-    const std::map<std::pair<std::string, uint64_t>, int64_t>* ByHash = nullptr;   // (type name, "" any; hash) -> asset
-    // Keys by key, the first of each (the filing the game's map keeps): built on the first use and
-    // kept, a partial walk's rounds and links asking it again and again (millions of keys)
-    const std::unordered_map<uint64_t, int64_t>& Keyed() const;
-
-private:
-    mutable std::shared_ptr<const std::unordered_map<uint64_t, int64_t>> KeyedOnce;
-};
-ResolvedLinks ResolveLinks(const ZoneTables::ZoneResult& R, const ZoneTables::StreamRules& Rules, bool DerefAssetPointers,
-                           ByteView Zone = {}, const ResolveHints* Hints = nullptr);
-// The resume points a partial walk's links reach that it has not walked yet: the owners of its back
-// references' targets (data, slots, listed assets, keys, hashes) and of its inline links' targets
-std::set<size_t> MissingOwners(const ZoneTables::ZoneResult& M, const ZoneTables::StreamRules& Rules,
-                               const ZoneTables::PartialWalk& Walk, const ResolveHints& Hints);
-// Targets walked, then every resume point their links reach (MissingOwners), round after round;
-// Seen: the walks a round has looked at already (kept between calls). False when a walk fails or
-// more than AtMost points are walked. On the walker's stack (ZoneTables::WalkOnLargeStack).
-bool WalkReached(ZoneTables::PartialWalk& Walk, const std::vector<size_t>& Targets, const ZoneTables::StreamRules& Rules,
-                 const ResolveHints& Hints, std::set<size_t>& Seen, size_t& Rounds, size_t AtMost = 4000);
-
-// What a walk with this profile depends on (its tables, its stream layout), hashed: the key of
-// anything kept from one (the install index, BO4's material books).
-std::string ProfileKey(const ExportWriters::LoadedProfile& Loaded);
-
+// The pointers of a layout walk resolved, partial walks grown, the profile cache and its key, a
+// zone walked with a profile: Wolff's (wolff/ZoneLinks.h)
+using wolff::ZoneTables::MissingOwners;
+using wolff::ZoneTables::ProfileKey;
+using wolff::ZoneTables::ProfileWalk;
+using wolff::ZoneTables::ResolveHints;
+using wolff::ZoneTables::ResolvedLinks;
+using wolff::ZoneTables::ResolveLinks;
+using wolff::ZoneTables::WalkReached;
 // A fast file's zone walked by the zonekit tables of its game (DiskGame::Detect), the layout on:
-// what the commands reporting on one zone read (decompress-ff).
-struct ProfileWalk
-{
-    std::string Profile;              // the zonekit profile walked with
-    int PointerSize = 8;              // its pointer fields' width
-    ZoneTables::ZoneResult R;
-    size_t Reached = 0;               // the zone-level assets the walk entered
-    size_t Walked = 0;                // ... and read whole
-    bool Complete = false;            // walked to the end of the zone
-    std::unordered_map<int64_t, int64_t> Links;   // inline pointer field -> where its data is
-
-    // The text an inline string pointer at Field names, "" when it is not one
-    std::string String(ByteView Zone, int64_t Field) const;
-};
-// False with Error when the file's game is not read by zonekit tables or its profile does not load
+// what the commands reporting on one zone read (decompress-ff). False with Error when the file's
+// game is not read by zonekit tables or its profile does not load
 bool WalkWithProfile(const std::string& FastFilePath, ByteView Zone, ProfileWalk& Out,
                      std::string& Error);
 
@@ -138,6 +96,10 @@ private:
     // the zone neither read nor walked; false otherwise
     bool OpenFromHeads(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap);
     void WriteResume(const std::string& File) const;
+    // the resume index's types: one per kind at its place in DiskGame::Kinds (the ids its files
+    // keep), named by the zone's type of it (ModelType, AnimType, ImageType, the materials'), else
+    // by the kind's name (a kind no single type of the zone holds)
+    std::vector<std::string> ResumeTypes() const;
     // the heads the game keeps (Heads) are beside the resume index File, or it keeps none
     bool HeadsKept(const std::string& ResumeFile) const;
     // one of Assets is among those the zone defines (DefinesAt)

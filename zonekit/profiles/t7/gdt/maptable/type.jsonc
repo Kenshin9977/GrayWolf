@@ -1,5 +1,0 @@
-{
-  // maptable (90), HydraX MapTable.cs: a converter (the maptable entry and a maptableentry per map)
-  "zone_type": "maptable",
-  "converter": "t7_maptable"
-}

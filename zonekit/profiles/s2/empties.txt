@@ -1,7 +1,0 @@
-# Generated from the recording - do not hand edit.
-# actions whose count-0 allocation still aligns the block cursor
-aipaths|2
-f4aaa40|3
-f4ab8f0|3
-phys_collmap|3
-stringtable|2

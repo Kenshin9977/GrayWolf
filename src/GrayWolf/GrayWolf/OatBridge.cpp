@@ -60,11 +60,13 @@ namespace
     }
 
     // Runs a child process in WorkDir with stdout/stderr captured to LogPath, mirrored into Log.
-    // Its exit code; a process still running after TimeoutMs is killed (RunTimedOut). Env: variables
-    // set in the child's environment.
-    constexpr DWORD RunFailed = 0xFFFFFFF0, RunTimedOut = 0xFFFFFFF1;
+    // Its exit code; a process still running after TimeoutMs is killed (RunTimedOut), as is one Poll
+    // (called every half second while it runs) answers false for (RunCancelled). Env: variables set
+    // in the child's environment.
+    constexpr DWORD RunFailed = 0xFFFFFFF0, RunTimedOut = 0xFFFFFFF1, RunCancelled = 0xFFFFFFF2;
     DWORD RunProcess(const std::wstring& Cmd, const std::string& WorkDir, const std::string& LogPath, std::string& Log,
-                     DWORD TimeoutMs = INFINITE, const std::vector<std::pair<std::wstring, std::wstring>>& Env = {})
+                     DWORD TimeoutMs = INFINITE, const std::vector<std::pair<std::wstring, std::wstring>>& Env = {},
+                     const std::function<bool()>& Poll = {})
     {
         SECURITY_ATTRIBUTES Sa{};
         Sa.nLength = sizeof(Sa);
@@ -93,14 +95,25 @@ namespace
         if (!Ok) { Log = "CreateProcess failed"; return RunFailed; }
 
         DWORD ExitCode = 1;
-        if (WaitForSingleObject(Pi.hProcess, TimeoutMs) == WAIT_TIMEOUT)
+        const ULONGLONG Start = GetTickCount64();
+        DWORD Stopped = 0;   // RunTimedOut or RunCancelled when it was killed
+        for (;;)
         {
-            TerminateProcess(Pi.hProcess, RunTimedOut);
-            WaitForSingleObject(Pi.hProcess, INFINITE);
-            ExitCode = RunTimedOut;
+            const ULONGLONG Spent = GetTickCount64() - Start;
+            const DWORD Left = TimeoutMs == INFINITE ? INFINITE : (Spent >= TimeoutMs ? 0 : (DWORD)(TimeoutMs - Spent));
+            const DWORD Wait = Poll ? (std::min)(Left, (DWORD)500) : Left;
+            if (WaitForSingleObject(Pi.hProcess, Wait) != WAIT_TIMEOUT) break;
+            if (Left != INFINITE && Wait >= Left) Stopped = RunTimedOut;
+            else if (Poll && !Poll()) Stopped = RunCancelled;
+            if (Stopped)
+            {
+                TerminateProcess(Pi.hProcess, Stopped);
+                WaitForSingleObject(Pi.hProcess, INFINITE);
+                break;
+            }
         }
-        else
-            GetExitCodeProcess(Pi.hProcess, &ExitCode);
+        if (Stopped) ExitCode = Stopped;
+        else GetExitCodeProcess(Pi.hProcess, &ExitCode);
         CloseHandle(Pi.hProcess);
         CloseHandle(Pi.hThread);
 
@@ -129,6 +142,16 @@ namespace
         const DWORD N = SearchPathW(nullptr, Name, nullptr, MAX_PATH, Found, nullptr);
         return N > 0 && N < MAX_PATH ? fs::path(Found).string() : std::string();
     }
+}
+
+unsigned long RunTool(const std::string& Exe, const std::vector<std::string>& Args, const std::string& WorkDir, const std::string& LogPath,
+                      const std::vector<std::pair<std::string, std::string>>& Env, const std::function<bool()>& Poll, std::string& Log)
+{
+    CommandLine Cmd(Exe);
+    for (const auto& A : Args) Cmd.AddQ(A);
+    std::vector<std::pair<std::wstring, std::wstring>> Wide;
+    for (const auto& [N, V] : Env) Wide.emplace_back(Strings::ToUnicodeString(N), Strings::ToUnicodeString(V));
+    return RunProcess(Cmd.Text, WorkDir, LogPath, Log, INFINITE, Wide, Poll);
 }
 
 std::filesystem::path ToolScratchPath(const char* Prefix)

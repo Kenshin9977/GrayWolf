@@ -1,7 +1,0 @@
-{
-  // A porting type: this title's weapons (the layouts here, named by the hash at their offset 0)
-  // ported to Black Ops III's bulletweapon.gdf by porting.jsonc. The target's entries are in
-  // profiles/t7/gdt/target. The format: Gdt.h.
-  "names": "hash",
-  "target": "t7/gdt/target"
-}

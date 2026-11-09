@@ -1,6 +1,0 @@
-{
-  // playersoundstable (28), HydraX PlayerSoundsTable.cs: data only; core_specialists loads its
-  // tables inline in the player characters' bodies
-  "gdf": "playersoundstable.gdf",
-  "nested": true
-}

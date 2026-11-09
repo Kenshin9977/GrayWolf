@@ -624,7 +624,11 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
         C.SoundHeaders = Previous->SoundHeaders;
     }
     C.Formats = FormatsNow();
-    for (const auto& [Key, Value] : Options.Settings) C.Settings += (C.Settings.empty() ? "" : ";") + Key + "=" + Value;
+    for (const auto& [Key, Value] : Options.Settings)
+        if (Key != ModToolsOutput.Key) C.Settings += (C.Settings.empty() ? "" : ";") + Key + "=" + Value;
+    // the samples go to the measuring folder alone, never into a mod tools tree
+    ExportOptions Sampled = Options;
+    Sampled.Settings[ModToolsOutput.Key] = "off";
     // the kinds measured before in the same formats and settings and not asked again: kept
     if (Previous != nullptr && Previous->Formats == C.Formats && Previous->Settings == C.Settings)
         for (const auto& [K, S] : Previous->Kinds)
@@ -683,7 +687,7 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
         Ctx.Only = std::move(Only);
         std::atomic<bool> Stop{ false };
         const auto Start = std::chrono::steady_clock::now();
-        const Totals T = Export(Game, Options, Paths, Ctx, [&](const Progress& P) {
+        const Totals T = Export(Game, Sampled, Paths, Ctx, [&](const Progress& P) {
             if (P.FromWatchdog) return;
             if (P.Current == K) R.Count = std::max(R.Count, P.Count), R.Done = std::max(R.Done, P.Done);
             const double Took = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
@@ -762,7 +766,7 @@ Calibration Measure(const IDiskGame& Game, const ExportOptions& Options, const s
             }
         };
         if (Step) Step("reading the sounds' headers of " + std::to_string(Paths.size()) + " zone(s)...");
-        const Totals T = Export(Game, Options, Paths, Ctx, [&](const Progress& P) {
+        const Totals T = Export(Game, Sampled, Paths, Ctx, [&](const Progress& P) {
             if (P.FromWatchdog) return;
             if (P.Zone != At)
             {

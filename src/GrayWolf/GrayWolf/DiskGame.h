@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
+#include <wolff/InstallIndex.h>
 
 #include "Languages.h"
 
@@ -151,11 +152,7 @@ namespace DiskGame
     // - a sound: Bytes its data as stored (SoundHeader::Stored), A its frames, B its rate, C its
     //   channels | its SoundHeader::Form << 8 | KeptUnderWav << 12 | its bits << 16
     // - a model: A its vertices, B its triangles; an anim: A its frames, B its bones
-    struct Weight
-    {
-        uint64_t Bytes = 0;
-        uint32_t A = 0, B = 0, C = 0;
-    };
+    using Weight = wolff::AssetWeight;
 
     // A choice a game takes, shown in the GUI only while one of its kinds is ticked; the CLI maps
     // its own flag onto the same key. Of() is the value a run asked for, or the default.
@@ -211,6 +208,9 @@ namespace DiskGame
     // map_radiant: also the map as a Radiant source (MapRadiantWriter.h): <map>.map, its clip map's
     // brushes, entities and model placements, its world and models as XMODEL_EXPORT, for the mod tools
     extern const Setting MapRadiant;
+    // map_surfaces: the drawn world no brush side draws, in the Radiant source, as models (tiles of
+    // the world, few for Radiant to draw) or a patch per triangle
+    extern const Setting MapSurfaces;
     // material_gdt: also Black Ops III Mod Tools GDT entries for the exported materials (MaterialGdt.h):
     // the models' as source_data/graywolf_<out folder>.gdt (their XMODEL_EXPORT files naming them),
     // a map's in its Radiant GDT (with map_radiant)
@@ -218,6 +218,13 @@ namespace DiskGame
     // sound_aliases: also the zone's sound aliases as a Black Ops III Mod Tools alias CSV beside the
     // audio (SoundAliasCsv.h), sounds/<zone>.csv
     extern const Setting SoundAliases;
+    // mod_tools: the mod tools files above (the Radiant map, the GDTs, the alias CSVs and the files
+    // they name) written into an installed Black Ops III Mod Tools tree, in GrayWolf names, instead
+    // of under the export folder (ModToolsTree.h)
+    extern const Setting ModToolsOutput;
+    // bo3_usermap: with the map's Radiant source in a Mod Tools tree, a ZM usermap around it,
+    // zm_<map> (ModToolsUsermap.h), then (build) compiled, lit and linked as the launcher does
+    extern const Setting Bo3Usermap;
     // map_collision: also the map's collision as JSON (MapCollisionWriter.h):
     // <map>_collision.json, its clip map's brushes, brush models and triangles
     extern const Setting MapCollision;
@@ -345,6 +352,16 @@ namespace DiskGame
         std::vector<std::string> Unresolved;       // "<kind> <name>: <why>", a dependency not pulled
         std::vector<std::string> IndexRenamed;     // the install index built by the run: ZoneIndex::Renamed
         bool Cancelled = false;
+        // the Black Ops III Mod Tools tree written into (the mod_tools setting, ModToolsTree.h): its
+        // root ("" when off), the files a user opens there, those set aside as .bak, the files linked
+        // or copied in, what is left to do in the mod tools; Error when no tree was found
+        struct ModToolsWritten
+        {
+            std::string Root, Error;
+            std::vector<std::string> Files, Next;
+            std::vector<std::pair<std::string, std::string>> Kept;
+            size_t Placed = 0, NotPlaced = 0;
+        } ModTools;
         // where the time went (time_<phase>_ms, rate_<kind>..., slowest_<n>), as the run log sums it
         std::vector<std::pair<std::string, std::string>> Timing;
         void Fail(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why);
@@ -668,8 +685,8 @@ namespace DiskGame
                                                 const std::string& Install,
                                                 const std::function<void(size_t Done, size_t Count)>& Step,
                                                 const std::atomic<bool>* Cancel, std::string& Error);
-        const std::vector<std::string>& Zones() const { return Names; }   // as ListZones names them
-        uint64_t Footprint(size_t Zone) const { return Sizes[Zone]; }
+        const std::vector<std::string>& Zones() const { return Ix.Zones(); }   // as ListZones names them
+        uint64_t Footprint(size_t Zone) const { return Ix.Footprint(Zone); }
         const std::vector<AssetId>& Defined(size_t Zone) const;
         // what each of Defined(Zone) weighs, in its order (none known: an index of before weights)
         const std::vector<Weight>& Weights(size_t Zone) const;
@@ -687,40 +704,16 @@ namespace DiskGame
         size_t Entries = 0;
 
     private:
-        // File read in when its key is Key (any key when Key is empty); false when it is not
-        bool Load(const std::string& Key);
-        void Add(size_t Zone, AssetId A, Weight W = {});
-        // the kept file read in place (its lookups and lists read from it, nothing loaded whole),
-        // or written from what is in memory; false when it is missing, another format or another key
-        bool LoadMapped(const std::string& Path, const std::string& Key);
-        bool SaveMapped(const std::string& Path, const std::string& Key) const;
-        struct Mapped;
-        std::shared_ptr<const Mapped> Map;
-        std::shared_ptr<std::mutex> MappedLock = std::make_shared<std::mutex>();   // Defined's reads of Map
-
-        std::vector<std::string> Names;
-        std::vector<uint64_t> Sizes;
-        mutable std::vector<std::vector<AssetId>> Assets;   // a mapped index's: each zone's read when asked
+        // Wolff's index (wolff/InstallIndex.h), its types the kinds' names in Kinds' order (a type's
+        // id is the kind's value, as the files keep it)
+        static wolff::TypeList Types();
+        // what the file at File says, read in place, else the text index of before; the zones' lists
+        // are read when asked
+        void Took();
+        wolff::InstallIndex Ix{ Types() };
+        mutable std::vector<std::vector<AssetId>> Assets;   // each zone's, read from Ix when asked
         mutable std::vector<std::vector<Weight>> AssetWeights;   // beside Assets, read with them
-        // (hashed: an index of every zone of an install holds millions of entries; an asset's name
-        // compares without case, as AssetId's order does)
-        struct AssetHash
-        {
-            size_t operator()(const AssetId& A) const;
-        };
-        struct AssetSame
-        {
-            bool operator()(const AssetId& A, const AssetId& B) const { return !(A < B) && !(B < A); }
-        };
-        struct PartHash
-        {
-            size_t operator()(const std::pair<std::string, uint64_t>& P) const
-            {
-                return std::hash<std::string>()(P.first) ^ (size_t)(P.second * 0x9E3779B97F4A7C15ull);
-            }
-        };
-        std::unordered_map<AssetId, std::vector<size_t>, AssetHash, AssetSame> Where;
-        std::unordered_map<std::pair<std::string, uint64_t>, std::vector<size_t>, PartHash> PartsWhere;
+        std::shared_ptr<std::mutex> Lock = std::make_shared<std::mutex>();   // Defined's reads of Ix
     };
 
     // The display names of an install's levels ("zm_highrise" -> "Die Rise"), read from the

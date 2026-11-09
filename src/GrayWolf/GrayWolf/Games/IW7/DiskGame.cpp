@@ -23,6 +23,7 @@
 #include "Games/IW7/EntityKeys.h"
 #include "Games/IW7/HavokShapes.h"
 #include "Games/IW7/VfxLayout.h"
+#include <wolff/Iw7.h>
 #include "MapRadiantWriter.h"
 #include "PAKSupport.h"
 #include "SABSupport.h"
@@ -65,33 +66,10 @@ namespace
     constexpr uint8_t MapTypeCube = 5;
     constexpr int StreamLevels = 4;
 
-    // Streamed data: the .ff header holds the shared-stream count at 0xc4 and the image-stream
-    // count at 0xcc, then from 0xd0 that many 24-byte records {start, end, pak index in the low
-    // 16 bits} (shared first) into assetfile<index>.pak / imagefile<index>.pak, four per streamed
-    // image (its four levels) in the order the zone loads its streamed images. An empty range has
-    // no data.
-    struct StreamRecord
-    {
-        uint64_t Start = 0, End = 0, Pak = 0;
-    };
-    constexpr uint64_t SharedCountAt = 0xc4, ImageCountAt = 0xcc, RecordsAt = 0xd0;
-
-    std::vector<StreamRecord> ReadImageStreams(const std::string& FastFilePath)
-    {
-        std::vector<StreamRecord> Out;
-        std::ifstream F(FastFilePath, std::ios::binary);
-        uint32_t Shared = 0, Images = 0;
-        F.seekg(SharedCountAt);
-        F.read(reinterpret_cast<char*>(&Shared), 4);
-        F.seekg(ImageCountAt);
-        F.read(reinterpret_cast<char*>(&Images), 4);
-        if (!F || Shared > (1u << 20) || Images > (1u << 20)) return Out;
-        Out.resize(Images);
-        F.seekg((std::streamoff)(RecordsAt + (uint64_t)Shared * sizeof(StreamRecord)));
-        F.read(reinterpret_cast<char*>(Out.data()), (std::streamsize)Images * sizeof(StreamRecord));
-        if (!F) Out.clear();
-        return Out;
-    }
+    // Streamed data: the .ff header's records into assetfile<index>.pak / imagefile<index>.pak
+    // (wolff/Iw7.h), four per streamed image (its four levels) in the order the zone loads them
+    using wolff::Iw7::StreamRecord;
+    using wolff::Iw7::ReadImageStreams;
 
     // A level's bytes in a DXGI format TranslateBC writes, 0 for any other
     uint64_t TopLevelBytes(uint8_t Format, uint32_t Width, uint32_t Height)
@@ -109,51 +87,8 @@ namespace
         }
     }
 
-    // The shared stream (block 4) a level's zone keeps out of it: per streamed xmodelsurfs, a record
-    // into assetfile<index>.pak holding a 0x8000-byte signed header, then the IWC compressor
-    // ("\x02IWC", u64 size, then LZ4 blocks {u32 packed, u64 size} padded to 4) of a one-asset
-    // stream: its XAsset {type, header} and the asset as the loader reads it.
-    std::vector<uint8_t> ReadSharedRecord(const std::string& Pak, uint64_t Start, uint64_t End)
-    {
-        std::vector<uint8_t> Out;
-        if (End <= Start || End - Start > (256u << 20)) return Out;
-        std::ifstream F(Pak, std::ios::binary);
-        std::vector<uint8_t> Raw((size_t)(End - Start));
-        F.seekg((std::streamoff)Start);
-        F.read(reinterpret_cast<char*>(Raw.data()), (std::streamsize)Raw.size());
-        if (!F) return Out;
-        constexpr uint32_t Compressor = 0x43574902;
-        size_t At = 0;
-        for (const size_t Candidate : { (size_t)0x8000, (size_t)0 })
-            if (Candidate + 16 <= Raw.size() && ExportNaming::At<uint32_t>(Raw, (int64_t)Candidate) == Compressor) { At = Candidate + 16; break; }
-        if (At == 0) return Out;
-        const uint64_t Total = ExportNaming::At<uint64_t>(Raw, (int64_t)At - 12);
-        if (Total > (512u << 20)) return Out;
-        Out.reserve((size_t)Total);
-        while (Out.size() < Total && At + 12 <= Raw.size())
-        {
-            const uint32_t Packed = ExportNaming::At<uint32_t>(Raw, (int64_t)At);
-            const uint64_t Size = ExportNaming::At<uint64_t>(Raw, (int64_t)At + 4);
-            At += 12;
-            if (Packed == 0 || Size == 0 || At + Packed > Raw.size() || Out.size() + Size > Total) break;
-            const size_t Was = Out.size();
-            Out.resize(Was + (size_t)Size);
-            if (Compression::DecompressLZ4Block((const int8_t*)Raw.data() + At, (int8_t*)Out.data() + Was, (int32_t)Packed, (int32_t)Size) != (uint32_t)Size)
-                return {};
-            At = (At + Packed + 3) & ~(size_t)3;
-        }
-        if (Out.size() != Total) Out.clear();
-        return Out;
-    }
-
-    // The paks sit beside the base zones, a localized zone one folder down (french\fra_<zone>.ff)
-    fs::path PakDir(const std::string& FastFilePath, const std::string& Pak)
-    {
-        const fs::path Dir = fs::path(FastFilePath).parent_path();
-        std::error_code Ec;
-        if (fs::exists(Dir / Pak, Ec)) return Dir;
-        return Dir.parent_path();
-    }
+    // The paks sit beside the base zones, a localized zone one folder down (wolff::Iw7::PakDir)
+    using wolff::Iw7::PakDir;
 
     // A name-only material header names a material of the zones the game loads first: the common
     // zones (common*, global*, code_pre_gfx, code_post_gfx and their patch_ zones) and each level's
@@ -536,38 +471,13 @@ namespace
         return Result;
     }
 
-    // The shared stream's records appended after the zone, each a one-asset stream walked on its own
-    // (LinkShared): the zone walk ends where the zone does.
+    // The shared stream's records appended after the zone (wolff::Iw7::AppendSharedStream), each a
+    // one-asset stream walked on its own (LinkShared): the zone walk ends where the zone does.
     bool IW7Zone::LoadBytes(ZoneBytes& Zone, std::string& Error)
     {
         if (!ZonekitZone::LoadBytes(Zone, Error)) return false;
         ZoneEnd = (int64_t)Zone.size();
-        std::ifstream F(FastFilePath(), std::ios::binary);
-        uint32_t Shared = 0;
-        F.seekg(SharedCountAt);
-        F.read(reinterpret_cast<char*>(&Shared), 4);
-        if (!F || Shared > (1u << 20)) return true;
-        std::vector<StreamRecord> Records(Shared);
-        F.seekg(RecordsAt);
-        F.read(reinterpret_cast<char*>(Records.data()), (std::streamsize)Shared * sizeof(StreamRecord));
-        if (!F) return true;
-        // read side by side, then appended in order with the room made once (a zone of hundreds of
-        // MB grown record by record was copied again at each growth)
-        std::vector<std::vector<uint8_t>> Read(Records.size());
-        std::for_each(std::execution::par, Records.begin(), Records.end(), [&](const StreamRecord& R) {
-            const std::string Pak = std::format("assetfile{}.pak", (unsigned long long)(R.Pak & 0xffff));
-            Read[(size_t)(&R - Records.data())] = ReadSharedRecord((PakDir(FastFilePath(), Pak) / Pak).string(), R.Start, R.End);
-        });
-        size_t Adding = 0;
-        for (const auto& One : Read)
-            if (One.size() > 16) Adding += One.size();
-        Zone.reserve(Zone.size() + Adding);
-        for (const auto& One : Read)
-        {
-            if (One.size() <= 16) continue;
-            SharedAssets.emplace_back((int64_t)Zone.size(), (int64_t)One.size());
-            Zone.insert(Zone.end(), One.begin(), One.end());
-        }
+        wolff::Iw7::AppendSharedStream(FastFilePath(), Zone, SharedAssets);
         return true;
     }
 

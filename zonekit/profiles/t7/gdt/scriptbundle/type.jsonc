@@ -1,7 +1,0 @@
-{
-  // scriptbundle (69), HydraX ScriptBundle.cs: a converter (key/value lists, the GDF from the
-  // bundle type); properties.json: HydraX's keys per bundle type, for their case
-  "zone_type": "scriptbundle",
-  "converter": "t7_scriptbundle",
-  "constants": { "configstringFileType": "SCRIPTBUNDLE" }
-}

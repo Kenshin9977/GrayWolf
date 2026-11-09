@@ -1,7 +1,0 @@
-{
-  // animselectortable (75), HydraX AnimationSelectorTable.cs: a converter writing the .ai_ast file
-  // (no GDT entry) in "files", the Mod Tools' share/raw folder
-  "zone_type": "animselectortable",
-  "converter": "t7_animselectortable",
-  "files": "animtables/"
-}

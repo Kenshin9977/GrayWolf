@@ -1,7 +1,0 @@
-{
-  // animmappingtable (76), HydraX AnimationMappingTable.cs: a converter writing the .ai_am file (no
-  // GDT entry) in "files", the Mod Tools' share/raw folder
-  "zone_type": "animmappingtable",
-  "converter": "t7_animmappingtable",
-  "files": "animtables/"
-}

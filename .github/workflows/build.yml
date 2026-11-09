@@ -35,10 +35,10 @@ jobs:
       VCPKG_ROOT: C:\gw-vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: C:\gw-vcpkg-cache
       VCPKG_BINARY_SOURCES: clear;files,C:\gw-vcpkg-cache,readwrite
-      # BUILDING.md's list; casclib comes from vcpkg-overlay-ports
+      # BUILDING.md's list; casclib and wolff (its published repository, pinned) come from vcpkg-overlay-ports
       VCPKG_PACKAGES: >-
         opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz libdeflate lz4
-        xxhash lzo nlohmann-json stb tinygltf
+        xxhash lzo nlohmann-json stb tinygltf wolff
         imgui[docking-experimental,dx11-binding,win32-binding]
 
     steps:

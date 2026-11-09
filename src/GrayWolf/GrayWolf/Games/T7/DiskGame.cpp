@@ -197,6 +197,7 @@ namespace
         void ExportData(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportWeaponStats(const DiskGame::Context& C, DiskGame::Totals& T);
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        void CheckBrushModels(const Maps::MapScene& Scene, const Maps::WorldLayout& L, uint32_t ClipModels);
 
         // The raw pointer field at Pos, unrelocated: the exact "== FollowsInline" test that gates a
         // deferred field, as opposed to Landed()'s "does it resolve at all".
@@ -791,6 +792,31 @@ namespace
     constexpr int64_t WorldStateCount = 0xe8, WorldStates = 0xf0, StateSkyName = 0x6c, StateSkyStride = 0xf4;
     constexpr int64_t ClipDynCount = 0x1ba, ClipDyns = 0x1c8, DynSize = 0x98;
 
+    // What the game reads of the brush models as a level loads (a ported usermap crashed there,
+    // reading a brush model's surfaces out of the table), as counters: each one's surfaces inside
+    // the world's, each entity's "*N" a brush model the world has (ClipModels: the clip map's
+    // count, which should be the same). A built usermap's zone checked so needs no game run.
+    void T7Zone::CheckBrushModels(const Maps::MapScene& Scene, const Maps::WorldLayout& L, uint32_t ClipModels)
+    {
+        const auto& Img = Image();
+        Counter("map_brush_models") += L.BrushCount;
+        Counter("map_brush_models_clip") += ClipModels;
+        for (uint32_t B = 0; L.Brushes >= 0 && B < L.BrushCount; B++)
+        {
+            const int64_t Brush = L.Brushes + (int64_t)B * L.BrushSize;
+            const uint64_t First = At<uint32_t>(Img, Brush + L.FirstSurface), Count = At<uint32_t>(Img, Brush + L.SurfaceCountAt);
+            if (Count > 0 && First + Count > L.SurfaceCount) Counter("map_brush_models_surfaces_outside")++;
+        }
+        const std::regex Ref(R"re("model"\s+"\*(\d+)")re");
+        for (std::sregex_iterator It(Scene.MapEnts.begin(), Scene.MapEnts.end(), Ref), End; It != End; ++It)
+        {
+            const unsigned long N = std::stoul((*It)[1].str());
+            Counter("map_ents_brush_model_refs")++;
+            if (N >= L.BrushCount) Counter("map_ents_brush_model_refs_outside")++;
+            if (N >= ClipModels) Counter("map_ents_brush_model_refs_outside_clip")++;
+        }
+    }
+
     bool T7Zone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
     {
         const int64_t World = Root("gfx_map");
@@ -860,6 +886,8 @@ namespace
             C.VertexCount = 0xd8, C.Vertices = 0xe0, C.TriangleCount = 0xe8, C.Triangles = 0xf0, C.TriangleIndexBytes = 4;
             AddCollision(Scene, { "col_map" }, C);
             AddTriggers(Scene, 0x18);   // MapEnts' MapTriggers
+            const int64_t Clip = Root("col_map");
+            CheckBrushModels(Scene, L, Clip >= 0 ? At<uint32_t>(Img, Clip + C.ModelCount) : 0);
         }
 
         // ---- the sky: the first named in the first lighting state, a model of this zone found by name

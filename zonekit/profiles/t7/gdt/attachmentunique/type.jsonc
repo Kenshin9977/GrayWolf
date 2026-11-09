@@ -1,9 +1,0 @@
-{
-  // attachmentunique (32), HydraX AttachmentUnique.cs: data only, its sections stitched as HydraX does.
-  // A zone keeps them inside the weapons (the 128 attachment uniques a weapon points at, 0x40),
-  // rarely at its top level.
-  "gdf": "attachmentunique.gdf",
-  "constants": { "configstringFileType": "ATTACHMENTUNIQUEFILE" },
-  "nested": true,
-  "found_in": [ { "zone_type": "weapon", "pointers": "0x40", "count": 128 } ]
-}

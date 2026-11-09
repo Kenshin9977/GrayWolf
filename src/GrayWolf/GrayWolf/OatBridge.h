@@ -1,12 +1,20 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 // A path of its own under the system's temp folder, Prefix_<process>_<n>: where a tool run's
 // inputs and outputs go
 std::filesystem::path ToolScratchPath(const char* Prefix);
+
+// Runs Exe with Args (each quoted) in WorkDir, no window, its output into LogPath and Log, Env's
+// variables set; Poll, called every half second while it runs, stops it when it answers false.
+// Its exit code: 0xFFFFFFF0 when it does not start, 0xFFFFFFF2 when Poll stopped it.
+unsigned long RunTool(const std::string& Exe, const std::vector<std::string>& Args, const std::string& WorkDir, const std::string& LogPath,
+                      const std::vector<std::pair<std::string, std::string>>& Env, const std::function<bool()>& Poll, std::string& Log);
 
 // OatBridge drives ate47's "acts" CLI (a separate process) to extract MODERN Call of Duty
 // fastfiles that our native memory path doesn't cover. Old CoD (IW3-T6) fastfiles are extracted

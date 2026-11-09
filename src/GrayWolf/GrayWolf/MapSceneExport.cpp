@@ -6,8 +6,10 @@
 #include "ExportWriters.h"
 #include "MapSceneWriter.h"
 #include "MaterialDescription.h"
+#include "ModToolsTree.h"
 
 #include <filesystem>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -87,8 +89,14 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
     // without it the map failed), the Cast scene with map_cast
     std::vector<const Maps::ISceneWriter*> Writers = { &Maps::GlbWriter() };
     if (DiskGame::MapCast.Of(C.Settings) == "on") Writers.push_back(&Maps::CastWriter());
+    std::unique_ptr<Maps::ISceneWriter> Radiant;
     if (DiskGame::MapRadiant.Of(C.Settings) == "on")
-        Writers.push_back(&Maps::RadiantWriter(DiskGame::GdtMaterials.Of(C.Settings) == "on"));
+    {
+        Radiant = Maps::RadiantWriter(DiskGame::GdtMaterials.Of(C.Settings) == "on", ModToolsTree::RootOf(C),
+                                      DiskGame::MapSurfaces.Of(C.Settings) == "patches",
+                                      std::filesystem::path(C.OutRoot).filename().string());   // <out>/<game id>
+        Writers.push_back(Radiant.get());
+    }
     if (DiskGame::MapCollision.Of(C.Settings) == "on") Writers.push_back(&Maps::CollisionWriter());
     bool Written = false;
     for (const Maps::ISceneWriter* W : Writers)

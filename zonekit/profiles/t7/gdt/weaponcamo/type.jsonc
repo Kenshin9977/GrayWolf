@@ -1,7 +1,0 @@
-{
-  // weaponcamo (33), HydraX WeaponCamo.cs: a converter (weaponcamo entries of 75 camos and their
-  // weaponcamotable)
-  "zone_type": "weaponcamo",
-  "converter": "t7_weaponcamo",
-  "nested": true
-}

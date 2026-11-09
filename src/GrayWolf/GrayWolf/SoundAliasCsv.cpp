@@ -3,6 +3,7 @@
 #include "SoundAliasCsv.h"
 
 #include "ExportNaming.h"
+#include "ModToolsTree.h"
 
 #include <algorithm>
 #include <cmath>
@@ -179,14 +180,49 @@ void Write(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Z
             if (Held(A[Col::FileSpec])) Kept.push_back(A);
     const std::vector<Alias>& Rows = C.Only ? Kept : R.Aliases;
     if (Rows.empty()) return;
-    const fs::path File = Dir / (ExportNaming::SafeFileName(Zone) + ".csv");
-    std::ofstream Out(File, std::ios::binary | std::ios::trunc);
-    const std::string Csv = Text(Rows);
-    Out.write(Csv.data(), (std::streamsize)Csv.size());
-    if (!Out.good())
+    const std::string Tree = ModToolsTree::RootOf(C);
+    if (!Tree.empty())
     {
-        T.Fail(Zone, DiskGame::Kind::Sound, File.filename().string(), "alias CSV not written");
-        return;
+        // mod_tools: the CSV in the tree's aliases, its files in sound_assets/graywolf/<out folder>/,
+        // the FileSpecs naming them there
+        const std::string Folder = fs::path(C.OutRoot).filename().string();
+        const std::string Prefix = "graywolf\\" + Folder + "\\";
+        const fs::path Assets = fs::path(Tree) / "sound_assets" / "graywolf" / Folder;
+        std::vector<Alias> There = Rows;
+        for (Alias& A : There)
+            for (const Col Spec : { Col::FileSpec, Col::FileSpecSustain, Col::FileSpecRelease })
+            {
+                std::string& Cell = A[Spec];
+                if (Cell.empty()) continue;
+                if (Held(Cell))
+                {
+                    std::string Rel = Cell;
+                    std::replace(Rel.begin(), Rel.end(), '\\', '/');
+                    ModToolsTree::Place(Dir / fs::path(Rel), Assets / fs::path(Rel));
+                    if (ExportNaming::Lower(fs::path(Rel).extension().string()) != ".wav")
+                        ModToolsTree::Warn("The sounds are " + fs::path(Rel).extension().string() +
+                                           " files; the mod tools' sound assets are WAV: export them with the wav audio format");
+                }
+                Cell = Prefix + Cell;
+            }
+        const fs::path File = fs::path(Tree) / "share" / "raw" / "sound" / "aliases" / ("graywolf_" + ExportNaming::SafeFileName(Zone) + ".csv");
+        if (!ModToolsTree::WriteKept(File, Text(There)))
+        {
+            T.Fail(Zone, DiskGame::Kind::Sound, File.filename().string(), "alias CSV not written in the mod tools tree (nor the one there set aside)");
+            return;
+        }
+    }
+    else
+    {
+        const fs::path File = Dir / (ExportNaming::SafeFileName(Zone) + ".csv");
+        std::ofstream Out(File, std::ios::binary | std::ios::trunc);
+        const std::string Csv = Text(Rows);
+        Out.write(Csv.data(), (std::streamsize)Csv.size());
+        if (!Out.good())
+        {
+            T.Fail(Zone, DiskGame::Kind::Sound, File.filename().string(), "alias CSV not written");
+            return;
+        }
     }
     std::set<std::string> Names;
     size_t Cells = 0, Files = 0, Elsewhere = 0;

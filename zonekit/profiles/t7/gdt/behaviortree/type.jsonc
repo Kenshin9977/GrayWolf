@@ -1,7 +1,0 @@
-{
-  // behaviortree (78), HydraX BehaviorTree.cs: a converter writing the .ai_bt file (no GDT entry) in
-  // "files", the Mod Tools' share/raw folder
-  "zone_type": "behaviortree",
-  "converter": "t7_behaviortree",
-  "files": "behavior/"
-}

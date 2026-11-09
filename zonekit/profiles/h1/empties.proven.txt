@@ -1,5 +1,0 @@
-# Actions whose allocation aligns the block cursor even when the count is 0, proven from the
-# machine code; merged into empties.txt when it is generated (too rare to win the vote).
-# menufile +0x10: 0x37767c tests the pointer != 0, then 0x377691 aligns to 8 before the count
-# (AW's menufile|2, won by vote there; MWR's recorded zones hold one menufile only).
-menufile|2

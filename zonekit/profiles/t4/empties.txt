@@ -1,3 +1,0 @@
-# Generated from the recording - do not hand edit.
-# actions whose count-0 allocation still aligns the block cursor
-menufile|2

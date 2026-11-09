@@ -153,6 +153,9 @@ private:
     UiAsync::Cached<std::pair<bool, bool>> OutputState;
     // the install's languages as its launcher's files say (Languages::OfInstall), read on a worker
     UiAsync::Cached<Languages::Detected> InstallLanguage;
+    // the Black Ops III Mod Tools tree the mod_tools setting writes into (ModToolsTree::Resolve), or
+    // "!" and why there is none, looked for on a worker
+    UiAsync::Cached<std::string> ModToolsFound;
     std::string InstallDiskId;     // the disk reader the detected install names (GameInstalls)
     std::string InstallPath;       // that install's folder: its reader holds while the folder is unchanged
 
@@ -251,6 +254,9 @@ private:
         std::string Headline, Detail, OutDir, RunLog;
         std::vector<std::string> ZoneErrors;
         size_t Failures = 0, Written = 0;
+        // written into a Black Ops III Mod Tools tree: its root, the files to open there, the steps left
+        std::string ModToolsRoot;
+        std::vector<std::string> ModToolsFiles, ModToolsNext;
     } LastRun;
     float DiskFraction = 0.0f;                   // the running export's progress, under Mutex
     std::string DiskStep;

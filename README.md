@@ -36,7 +36,7 @@
 </p>
 
 - **Zones read by tables**: each game's fast files are walked by *zonekit* reader tables
-  (`zonekit/profiles/<game>`), generated from the game's own zone loaders and checked against
+  (Wolff's `profiles/<game>`, shipped as `zonekit/profiles/<game>`), generated from the game's own zone loaders and checked against
   them; the zone is then served to GrayWolf's asset readers.
 - **Two front ends, one use case**: a Dear ImGui asset browser (Load Game panel, model, anim and
   map preview, image thumbnails, an audio player) and a command line

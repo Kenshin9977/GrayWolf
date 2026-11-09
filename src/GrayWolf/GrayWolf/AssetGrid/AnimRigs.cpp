@@ -131,13 +131,16 @@ namespace AnimRigs
             return fs::path(Buf).parent_path();
         }
 
-        // preview_rigs.json beside the exe (the build copies it), else in a checkout above it
+        // preview_rigs.json beside the exe (the build copies it to zonekit\profiles), else in a
+        // checkout above it (src\GrayWolf\Resources)
         fs::path TableFile()
         {
             std::error_code Ec;
+            const fs::path Shipped = ExeDir() / "zonekit" / "profiles" / "preview_rigs.json";
+            if (fs::exists(Shipped, Ec)) return Shipped;
             for (fs::path P = ExeDir(); !P.empty() && P != P.parent_path(); P = P.parent_path())
             {
-                const fs::path F = P / "zonekit" / "profiles" / "preview_rigs.json";
+                const fs::path F = P / "src" / "GrayWolf" / "Resources" / "preview_rigs.json";
                 if (fs::exists(F, Ec)) return F;
             }
             return {};

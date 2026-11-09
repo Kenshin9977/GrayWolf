@@ -77,6 +77,7 @@ void ApplyExportOverrides(const CliOptions& Options)
     if (!Options.ImageFormat.empty()) { const std::string V = Strings::ToUpper(Options.ImageFormat); SettingsManager::SetRunSetting("exportimg", V); }
     if (!Options.AudioFormat.empty()) { const std::string V = Strings::ToUpper(Options.AudioFormat); SettingsManager::SetRunSetting("exportsnd", V); }
     if (Options.Lods)                 SettingsManager::SetRunSetting("exportalllods", "true");
+    if (Options.KeepImages)           SettingsManager::SetRunSetting("keep_previous_images", "true");
     if (!Options.Unit.empty())        SettingsManager::SetRunSetting("unit", Options.Unit);
 }
 

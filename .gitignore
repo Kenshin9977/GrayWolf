@@ -365,8 +365,4 @@ tools/_clang_tidy_db/
 # Local notes
 /CLAUDE.md
 
-# A zonekit profile's machine-specific paths (exe, working folders, install), merged over its profile.json
-zonekit/profiles/*/profile.local.json
-
-# String cipher tables: generated from a game's exe, kept local (loaded when present)
-zonekit/profiles/*/strings.cipher.txt
+# (the zonekit profiles and their local files moved to the wolff repository: profiles/)

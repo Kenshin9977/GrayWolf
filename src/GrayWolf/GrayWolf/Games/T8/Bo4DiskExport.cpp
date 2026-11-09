@@ -251,13 +251,9 @@ void DescribeZone(ByteView Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Ou
 
 bool LoadZone(const std::string& Path, ZoneBytes& Zone, std::string& Error)
 {
+    // a .ff with its update patch beside it: the patched zone (Wolff decodes the .fd over the .ff)
     if (Lower(fs::path(Path).extension().string()) == ".ff")
-    {
-        fs::path Patch(Path);
-        Patch.replace_extension(".fd");
-        std::error_code Ec;
-        return FastFile::Decompress(fs::exists(Patch, Ec) ? Patch.string() : Path, Zone, Error);
-    }
+        return FastFile::DecompressLatest(Path, Zone, Error);
     std::ifstream In(Path, std::ios::binary | std::ios::ate);
     if (!In)
     {

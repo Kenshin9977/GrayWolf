@@ -1,9 +1,0 @@
-{
- "note": "Template: asset type id -> name (the game's own enum, from its name table in .rdata/.data), and id -> loader RVA (from the dispatcher's switch or the loader table). Names must match the table names in tables.*.txt.",
- "names": {
-  "0": "<type0>"
- },
- "loaders": {
-  "0": "<0xrva>"
- }
-}

@@ -76,12 +76,13 @@ struct MaterialLookup::State
     std::string Install;
     const std::string& ReaderKey;
     Totals& T;
+    std::function<void(size_t, size_t)> Indexing;
     std::mutex Lock;
     bool IndexTried = false;
     std::unique_ptr<ZoneIndex> Index;
     std::map<size_t, MaterialBook> Books;   // by the index's zone number, read or tried once
-    State(const IDiskGame& G, const ExportOptions& O, std::string I, const std::string& K, Totals& T)
-        : Game(G), Options(O), Install(std::move(I)), ReaderKey(K), T(T) {}
+    State(const IDiskGame& G, const ExportOptions& O, std::string I, const std::string& K, Totals& T, std::function<void(size_t, size_t)> P)
+        : Game(G), Options(O), Install(std::move(I)), ReaderKey(K), T(T), Indexing(std::move(P)) {}
 
     fs::path BookFile(size_t Z) const
     {
@@ -119,8 +120,8 @@ struct MaterialLookup::State
 };
 
 MaterialLookup::MaterialLookup(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
-                               const std::string& ReaderKey, Totals& T)
-    : S(std::make_shared<State>(Game, Options, Install, ReaderKey, T))
+                               const std::string& ReaderKey, Totals& T, std::function<void(size_t, size_t)> Indexing)
+    : S(std::make_shared<State>(Game, Options, Install, ReaderKey, T, std::move(Indexing)))
 {
 }
 
@@ -140,7 +141,7 @@ void MaterialLookup::operator()(IDiskZone& Asking, const std::set<std::string>& 
         St.IndexTried = true;
         if (!Park()) return;
         std::string Error;
-        St.Index = ZoneIndex::For(St.Game, St.Options, St.Install, St.ReaderKey, nullptr, nullptr, Error);
+        St.Index = ZoneIndex::For(St.Game, St.Options, St.Install, St.ReaderKey, St.Indexing, nullptr, Error);
     }
     if (St.Index)
     {

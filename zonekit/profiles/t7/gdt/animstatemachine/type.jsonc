@@ -1,7 +1,0 @@
-{
-  // animstatemachine (77), HydraX AnimationStateMachine.cs: a converter writing the .ai_asm file (no
-  // GDT entry) in "files", the Mod Tools' share/raw folder
-  "zone_type": "animstatemachine",
-  "converter": "t7_animstatemachine",
-  "files": "animstatemachines/"
-}

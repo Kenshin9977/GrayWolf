@@ -1,5 +1,0 @@
-{
-  // flametable (87), HydraX Flametable.cs: data only, the name at 0x1b0
-  "gdf": "flametable.gdf",
-  "constants": { "configstringFileType": "FLAMETABLEFILE" }
-}

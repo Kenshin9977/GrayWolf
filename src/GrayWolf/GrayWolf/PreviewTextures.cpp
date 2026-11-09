@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "PreviewTextures.h"
+#include "AlphaRule.h"
 #include "ModelPreview.h"      // ScratchImageToRGBA8
 #include "ExportNaming.h"      // Lower
 #include "Strings.h"
@@ -34,22 +35,15 @@ namespace
         return (bool)In.read(reinterpret_cast<char*>(Out.data()), Size);
     }
 
-    // The alpha masks something: at least 2% of the (sampled) texels are clear and 80% are either
-    // clear or opaque. A smooth alpha (IW games keep other data there) is not a mask.
+    // The alpha masks something (AlphaTally), judged on a sample of the texels
     bool AlphaUsedIn(const Image& Img)
     {
         if (Img.format != DXGI_FORMAT_R8G8B8A8_UNORM && Img.format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) return false;
         const size_t Step = std::max<size_t>(1, (Img.width * Img.height) / 65536);
-        size_t Seen = 0, Clear = 0, Solid = 0;
+        AlphaTally T;
         for (size_t y = 0; y < Img.height; y++)
-            for (size_t x = (y * 7) % Step; x < Img.width; x += Step)
-            {
-                const uint8_t A = Img.pixels[y * Img.rowPitch + x * 4 + 3];
-                Seen++;
-                Clear += A < 26;
-                Solid += A > 229;
-            }
-        return Seen && Clear * 50 >= Seen && (Clear + Solid) * 5 >= Seen * 4;
+            for (size_t x = (y * 7) % Step; x < Img.width; x += Step) T.Add(Img.pixels[y * Img.rowPitch + x * 4 + 3]);
+        return T.Masks();
     }
 
     // A signed two-channel map (Ghosts' BC5_SNORM normals) as R8G8_UNORM, -1..1 kept as 0..1.

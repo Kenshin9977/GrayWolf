@@ -3,6 +3,7 @@
 #include "DiskGameCli.h"
 #include "DiskGameSizes.h"
 #include "ExportNaming.h"
+#include "ModToolsTree.h"
 
 #include "CliCommands.h"
 #include "CliOptions.h"
@@ -41,8 +42,11 @@ namespace
         { "map_textures", "--map-textures", &CliOptions::MapTextures },
         { "map_cast", "--map-cast", &CliOptions::MapCast },
         { "map_radiant", "--map-radiant", &CliOptions::MapRadiant },
+        { "map_surfaces", "--map-surfaces", &CliOptions::MapSurfaces },
         { "material_gdt", "--material-gdt", &CliOptions::MaterialGdt },
         { "sound_aliases", "--sound-aliases", &CliOptions::SoundAliases },
+        { "mod_tools", "--mod-tools", &CliOptions::ModTools },
+        { "bo3_usermap", "--bo3-usermap", &CliOptions::Bo3Usermap },
         { "map_collision", "--map-collision", &CliOptions::MapCollision },
         { "map_content", "--map-content", &CliOptions::MapContent },
         { "language", "--language", &CliOptions::Language },
@@ -61,6 +65,11 @@ namespace
         if (!Cli.CodLuaExe.empty()) O.Settings["cod_lua_decompiler_exe"] = Cli.CodLuaExe;
         if (!Cli.FfmpegExe.empty()) O.Settings["ffmpeg_exe"] = Cli.FfmpegExe;
         O.GameExe = Cli.GameExe;
+        if (!Cli.ModToolsRoot.empty()) O.Settings["mod_tools_root"] = Cli.ModToolsRoot;
+        // the command line writes into a Black Ops III tree only when told (--mod-tools on), not by
+        // the GUI's default: a script or the regress never touches an install
+        O.Settings["mod_tools"] = "off";
+        O.Settings["bo3_usermap"] = "off";
         O.OatModelFormat = Cli.OatModelFmt;
         O.OatImageFormat = Cli.OatImageFmt;
         O.OatGdt = Cli.OatGdt;
@@ -127,6 +136,12 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
     }
     std::string Error;
     if (!ReadOptions(Game, Options, O, Error) || !ParseKinds(Options.Type, C.Kinds, Error)) return Fail(Error);
+    // --mod-tools on: the tree found before any zone is read
+    if (ModToolsOutput.Of(O) == "on")
+    {
+        O.Settings["mod_tools_root"] = ModToolsTree::Resolve(O.Settings["mod_tools_root"], Error);
+        if (O.Settings["mod_tools_root"].empty()) return Fail("--mod-tools: " + Error);
+    }
     O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons || K == Kind::WeaponStats || K == Kind::MapInfo || K == Kind::Scriptables || K == Kind::MapEnts || K == Kind::AiTypes; }) && !C.Kinds.empty();
     std::vector<std::string> Zones;
     const auto Start = std::chrono::steady_clock::now();
@@ -431,6 +446,7 @@ namespace
         Context C;
         std::string Error;
         if (!ReadOptions(*Game, Options, O, Error)) return Fail(Error);
+        O.Settings[ModToolsOutput.Key] = "off";   // weighed in --out alone
         if (!ParseKinds(Options.Type.empty() ? std::string("image,sound") : Options.Type, C.Kinds, Error)) return Fail(Error);
         std::vector<std::string> Zones;
         if (!Game->Zones(Input, O, Zones, Error))

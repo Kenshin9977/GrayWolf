@@ -4,7 +4,8 @@
 // this process's own in %TEMP%\graywolf-fuzz\<pid>\.
 
 #include "FastFile.h"
-#include "Games/CODOL/IfsArchive.h"
+#include <wolff/Codol.h>
+namespace Ifs = wolff::Ifs;
 #include "SABSupport.h"
 #include "XPAKSupport.h"
 #include "IPAKSupport.h"

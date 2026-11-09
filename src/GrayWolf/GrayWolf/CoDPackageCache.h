@@ -11,7 +11,7 @@
 #include <vector>
 #include <unordered_map>
 
-class CoDFileSystem;
+#include "CoDFileSystem.h"
 
 // A structure that represents a package cache object, this is generic and is used in all of the assets
 struct PackageCacheObject

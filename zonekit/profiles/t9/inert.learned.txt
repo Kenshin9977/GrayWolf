@@ -1,3 +1,0 @@
-# written by emusweep --learn: leaf code with no .pdata entry that faulted and cannot reach the stream
-7ff63bada050  # leaf 0xc7aa050 (no .pdata, no call; called from 0x1bccda3) faulted at 0xc7aa056 writing 0x28 (zone mp_sm_central)
-7ff63bada060  # leaf 0xc7aa060 (no .pdata, no call; called from 0x1bd0533) faulted at 0xc7aa066 writing 0x28 (zone mp_sm_central)

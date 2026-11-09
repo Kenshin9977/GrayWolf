@@ -14,9 +14,7 @@
 #include "Games/CODOL/CodolAnimOwners.h"
 #include "Games/CODOL/CodolReaders.h"
 #include "Games/CODOL/CodolWeapons.h"
-#include "Games/CODOL/FileCrypt.h"
-#include "Games/CODOL/IfsArchive.h"
-#include "Games/CODOL/SealedFastFile.h"
+#include <wolff/Codol.h>
 #include "Games/IW3/LoadDefImage.h"
 #include "Games/IW/Iw32Level.h"
 #include "Games/IW/IWSoundAliases.h"
@@ -35,6 +33,7 @@
 #include <set>
 
 namespace fs = std::filesystem;
+namespace Ifs = wolff::Ifs;
 
 namespace
 {
@@ -207,7 +206,7 @@ namespace
                 const std::string Key = "main/models/" + File;
                 const auto* L = Archives ? Archives->Find(Key) : nullptr;
                 if (L == nullptr || !Archives->Read(*L, Data, Error)) return false;
-                Codol::UnwrapFile(Key, Data);
+                wolff::Codol::UnwrapFile(Key, Data, wolff::DefaultContext(), Ifs::Utf8Path(Archives->Folder()));
                 Counter("models_streamed_surfaces")++;
                 return true;
             });
@@ -323,14 +322,7 @@ namespace
             if (fs::exists(Ifs::Utf8Path(FastFilePath()), Ec)) return ZonekitZone::LoadBytes(Out, Error);
             const auto Archives = Archives_(Error);
             if (!Archives) return false;
-            const auto* L = Archives->Find(std::string(ZoneFolder) + "/" + Name() + ".ff");
-            std::vector<uint8_t> File;
-            if (L == nullptr)
-            {
-                Error = "no " + Name() + ".ff in the install's archives";
-                return false;
-            }
-            return Archives->Read(*L, File, Error) && Codol::DecryptFastFile(File, Out, Error);
+            return wolff::Codol::ReadZone(*Archives, ZoneFolder, Name(), Out, Error);
         }
 
     private:
@@ -409,7 +401,7 @@ namespace
                 if (L == nullptr) continue;
                 std::vector<uint8_t> Data;
                 if (!Archives->Read(*L, Data, Error)) continue;
-                Codol::UnwrapFile(Key, Data);
+                wolff::Codol::UnwrapFile(Key, Data, wolff::DefaultContext(), Ifs::Utf8Path(Archives->Folder()));
                 auto Buffer = std::make_unique<uint8_t[]>(Data.size());
                 std::memcpy(Buffer.get(), Data.data(), Data.size());
                 auto Result = CoDIWITranslator::TranslateIWI(Buffer, (uint32_t)Data.size());
@@ -639,7 +631,7 @@ namespace
                     Sink.Locked([&] { T.Fail(Name(), Kind::Sound, Rel, Archives ? "unread from the archives: " + Error : "archives not opened: " + Error); });
                     continue;
                 }
-                Codol::UnwrapFile(F, Data);
+                wolff::Codol::UnwrapFile(F, Data, wolff::DefaultContext(), Ifs::Utf8Path(Archives->Folder()));
                 WriteSoundFile(C, T, Rel, Data.data(), Data.size(), "sounds_streamed", &Sink);
             }
             Done();

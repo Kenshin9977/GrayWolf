@@ -12,6 +12,8 @@
 #include "Games/GameModule.h"
 #include "MaterialGdt.h"
 #include "MemoryBudget.h"
+#include "ModToolsTree.h"
+#include "ModToolsUsermap.h"
 #include "SettingsManager.h"
 #include "Siren.h"
 #include "WmaSounds.h"
@@ -112,10 +114,16 @@ const Setting MapCast{ "map_cast", "Map scene", { { "off", ".glb (Blender)" }, {
 const Setting MapRadiant{ "map_radiant", "Map source", { { "off", "None" }, { "on", "+ Radiant .map (mod tools)" } },
                           "off", { Kind::Map } };
 
+const Setting MapSurfaces{ "map_surfaces", "Radiant surfaces", { { "models", "As models (fast in Radiant)" }, { "patches", "A patch per triangle" } },
+                           "models", { Kind::Map } };
 const Setting GdtMaterials{ "material_gdt", "Mod tools materials", { { "off", "None" }, { "on", "+ BO3 material GDT" } },
                             "off", { Kind::Model, Kind::Map } };
 const Setting SoundAliases{ "sound_aliases", "Sound aliases", { { "off", "None" }, { "on", "+ alias CSV (BO3 mod tools)" } },
                             "off", { Kind::Sound } };
+const Setting ModToolsOutput{ "mod_tools", "Mod tools files", { { "off", "In the export folder" }, { "on", "Into the BO3 Mod Tools" } },
+                              "on", { Kind::Model, Kind::Map, Kind::Sound } };
+const Setting Bo3Usermap{ "bo3_usermap", "BO3 usermap", { { "off", "None" }, { "create", "Create zm_<map>" }, { "build", "Create, compile, light, link" } },
+                          "create", { Kind::Map } };
 const Setting MapCollision{ "map_collision", "Map collision", { { "off", "None" }, { "on", "+ collision .json (clip map)" } },
                             "off", { Kind::Map } };
 
@@ -127,7 +135,7 @@ const Setting ScriptDecompile{ "decompile", "Compiled scripts and Lua", { { "off
 
 const std::vector<Setting>& CommonSettings()
 {
-    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, GdtMaterials, SoundAliases, MapCollision, MapContent, ScriptDecompile };
+    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile };
     return All;
 }
 
@@ -417,6 +425,15 @@ std::string Report(const Totals& T)
     if (!T.IndexRenamed.empty()) Os << "index_renamed=" << T.IndexRenamed.size() << "\n";
     for (const auto& R : T.IndexRenamed) Os << "index_renamed " << R << "\n";
     if (T.Cancelled) Os << "cancelled=1\n";
+    if (!T.ModTools.Error.empty()) Os << "mod_tools_error=" << T.ModTools.Error << "\n";
+    if (!T.ModTools.Root.empty())
+    {
+        Os << "mod_tools_root=" << T.ModTools.Root << "\nmod_tools_files_placed=" << T.ModTools.Placed << "\n";
+        if (T.ModTools.NotPlaced) Os << "mod_tools_files_not_placed=" << T.ModTools.NotPlaced << "\n";
+        for (const auto& F : T.ModTools.Files) Os << "mod_tools_file " << F << "\n";
+        for (const auto& [Was, Aside] : T.ModTools.Kept) Os << "mod_tools_kept " << Was << " -> " << Aside << "\n";
+        for (const auto& N : T.ModTools.Next) Os << "mod_tools_next " << N << "\n";
+    }
     for (const auto& E : T.ZoneErrors) Os << "zone_error " << E << "\n";
     for (const auto& [K, V] : T.Timing) Os << K << "=" << V << "\n";
     return Os.str();
@@ -492,6 +509,20 @@ namespace
                           const std::string& ReaderKey, Wanted Pending, Context& Run, Ledger& L, Totals& T,
                           Progress& P, const ProgressFn& OnProgress, const std::function<bool()>& Cancelled, RunMonitor& Mon)
     {
+        // --keep-images: an image whose file an earlier run wrote is not pulled (its zone not opened)
+        if (ExportWriters::KeepPreviousImages())
+        {
+            const std::filesystem::path Dir = Run.KindDir(Kind::Image);
+            const std::string Ext = ExportWriters::ImageExtension(ExportWriters::ImageFormatSetting());
+            size_t Kept = 0;
+            for (auto It = Pending.begin(); It != Pending.end();)
+                if (It->first.K == Kind::Image && ExportWriters::HasFile(Dir / (ExportNaming::SafeFileName(It->first.Name) + Ext)))
+                    It = Pending.erase(It), Kept++;
+                else
+                    ++It;
+            if (Kept) Mon.Log(std::to_string(Kept) + " image dependencies already written, kept (--keep-images)");
+            if (Pending.empty()) return;
+        }
         P.ZoneName = "indexing the install";
         P.Current.reset();
         P.Dependencies = true;
@@ -1026,6 +1057,25 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     for (const char* Tool : { "acts_exe", "gsc_tool_exe", "cod_luajit_decompiler_exe", "cod_lua_decompiler_exe", "ffmpeg_exe" })
         if (Run.Settings[Tool].empty()) Run.Settings[Tool] = SettingsManager::GetSetting(Tool, "");
     WmaSounds::UseFfmpeg(Run.Settings["ffmpeg_exe"]);
+    // mod_tools: the tree the mod tools files go into, found once (the CLI names it beforehand, and
+    // fails there when --mod-tools on finds none). On by default: with no tree on this machine, the
+    // files stay in the export folder, as with it off.
+    if (ModToolsOutput.Of(Run.Settings) == "on")
+    {
+        std::string Why;
+        const std::string Tree = ModToolsTree::Resolve(Run.Setting("mod_tools_root"), Why);
+        if (Tree.empty())
+        {
+            Run.Settings["mod_tools"] = "off";
+            Mon.Log("mod tools: " + Why + "; the files stay in the export folder");
+        }
+        else
+        {
+            Run.Settings["mod_tools_root"] = Tree;
+            Mon.Log("mod tools files into " + Tree);
+        }
+    }
+    ModToolsTree::Begin(ModToolsTree::RootOf(Run));
     const bool MaterialGdts = GdtMaterials.Of(Run.Settings) == "on";
     const MaterialGdt::AssetNamesInModelFiles ModToolsNames(MaterialGdts);
     auto Last = std::chrono::steady_clock::now();
@@ -1046,10 +1096,19 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     Run.OnAfter = [&Later](std::function<void()> Work) { Later.push_back(std::move(Work)); };
     Wanted Pending;
     std::string ReaderKey;
-    // a model's name-only material headers, from the zones that define them (DiskGame.Materials.h)
+    // a model's name-only material headers, from the zones that define them (DiskGame.Materials.h);
+    // the install index the first lookup builds (minutes, the first time) reported as it goes, not a
+    // stall of the asset asking
     if (C.PullDependencies && !Zones.empty())
         Run.MaterialsElsewhere = MaterialLookup(Game, Options, !Options.Install.empty() ? Options.Install : Game.InstallOfZone(Zones.front()),
-                                                ReaderKey, T);
+                                                ReaderKey, T, [&](size_t Done, size_t Count) {
+                                                    Mon.Touch();
+                                                    if (!OnProgress) return;
+                                                    Progress I = P;
+                                                    I.Asset = "indexing the install, for materials other zones define: zone " +
+                                                              std::to_string(std::min(Done + 1, Count)) + "/" + std::to_string(Count);
+                                                    OnProgress(I);
+                                                });
     // what the game's readers do not export is reported unsupported; with nothing left, no zone opens
     const std::set<Kind> Declared = Game.Kinds();
     bool Any = false;
@@ -1183,6 +1242,48 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         if (Here) T.Counters[Name] += Here;
     }
     if (const auto It = T.Counters.find(WmaSounds::NoFfmpegCounter); It != T.Counters.end()) Mon.Log(WmaSounds::NoFfmpegMessage(It->second));
+    {
+        ModToolsTree::Record R = ModToolsTree::Take();
+        T.ModTools.Next = ModToolsTree::NextSteps(R);
+        // bo3_usermap: a ZM usermap around each map the run put in the tree, then built when asked
+        const std::string Usermap = Bo3Usermap.Of(Run.Settings);
+        if (!R.Root.empty() && Usermap != "off" && !T.Cancelled)
+            for (const std::string& F : R.Files)
+            {
+                const fs::path P(F);
+                if (ExportNaming::Lower(P.extension().string()) != ".map" || P.parent_path().filename() != "graywolf") continue;
+                const std::string Map = P.stem().string();
+                const ModToolsUsermap::Made M = ModToolsUsermap::Create(R.Root, Map, "graywolf/" + P.filename().string());
+                if (!M.Error.empty())
+                {
+                    Mon.Log("usermap " + M.Name + ": " + M.Error);
+                    T.ModTools.Next.push_back("Usermap " + M.Name + " not made: " + M.Error);
+                    continue;
+                }
+                Mon.Log("usermap " + M.Name + (M.Created ? ": made from the ZM Mod Level template" : ": already there, kept as it is"));
+                if (Usermap != "build")
+                {
+                    T.ModTools.Next.push_back("Build " + M.Name + " in the Mod Tools launcher (Compile, Light, Link), then Run it");
+                    continue;
+                }
+                Mon.Where(M.Name, "building");
+                const auto Steps = ModToolsUsermap::Build(R.Root, M.Name, [&](const std::string& L) { Mon.Log("usermap " + M.Name + " " + L); },
+                                                          [&] { Mon.Touch(); return !Run.Cancelled(); });
+                const bool Built = !Steps.empty() && Steps.size() == 4 && Steps.back().Exit == 0;
+                for (const auto& S : Steps) T.Counters["bo3_usermap_" + S.Label + "_errors"] += S.Errors;
+                T.ModTools.Next.push_back(Built ? "Run " + M.Name + " from the Mod Tools launcher (built: compiled, lit, linked)"
+                                                : M.Name + " did not build: see usermaps\\" + M.Name + "\\graywolf_" +
+                                                      (Steps.empty() ? std::string("gdtdb") : Steps.back().Label) + ".log");
+            }
+        T.ModTools.Root = std::move(R.Root);
+        T.ModTools.Files = std::move(R.Files);
+        T.ModTools.Kept = std::move(R.Kept);
+        T.ModTools.Placed = R.Placed;
+        T.ModTools.NotPlaced = R.NotPlaced;
+        if (!T.ModTools.Root.empty())
+            Mon.Log("mod tools: " + std::to_string(T.ModTools.Files.size()) + " files to open, " + std::to_string(T.ModTools.Placed) +
+                    " files placed, " + std::to_string(T.ModTools.Kept.size()) + " earlier ones set aside, in " + T.ModTools.Root);
+    }
     if (T.Cancelled) Mon.Log("cancelled after " + Ms(Mon.Elapsed()));
     size_t Written = 0;
     for (const auto& [K, V] : T.Kinds) Written += V.Written;

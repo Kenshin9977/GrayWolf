@@ -186,6 +186,7 @@
     <ClCompile Include="XPTOCCache.cpp">
       <Filter>Source Files\Packages</Filter>
     </ClCompile>
+    <ClCompile Include="WolffSetup.cpp" />
     <ClCompile Include="Siren.cpp">
       <Filter>Source Files\Helpers</Filter>
     </ClCompile>
@@ -193,15 +194,6 @@
       <Filter>Source Files\Packages</Filter>
     </ClCompile>
     <ClCompile Include="CoDFileHandle.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="CoDFileSystem.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="WinFileSystem.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="CascFileSystem.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="CoDCDNCache.cpp">

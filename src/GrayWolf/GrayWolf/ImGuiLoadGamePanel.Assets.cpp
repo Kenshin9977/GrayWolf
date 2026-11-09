@@ -506,7 +506,8 @@ void LoadGamePanel::DoPreview()
     WraithX::InitializeAPI();
     const DiskGame::IDiskGame& Game = *Disk;
     const std::string Install = GameBuf;
-    const DiskGame::ExportOptions Options = DiskOptions(Game, Install);
+    DiskGame::ExportOptions Options = DiskOptions(Game, Install);
+    Options.Settings[DiskGame::ModToolsOutput.Key] = "off";   // a preview never writes into a mod tools tree
     const DiskGame::AssetId A = PreviewWanted;
     std::shared_ptr<const DiskGame::ZoneIndex> Ix;
     {

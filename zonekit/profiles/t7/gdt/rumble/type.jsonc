@@ -1,6 +1,0 @@
-{
-  // rumble (71), HydraX Rumble.cs: data only. HydraX also writes each rumble graph (its .rmb in
-  // share/raw/rumble/); the gdt kind writes only the entries, naming the graphs.
-  "gdf": "rumble.gdf",
-  "constants": { "configstringFileType": "RUMBLE" }
-}

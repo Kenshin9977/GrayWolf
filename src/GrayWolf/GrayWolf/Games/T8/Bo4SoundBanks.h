@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-class CoDFileSystem;
+#include "CoDFileSystem.h"
 class ICoDGame;
 
 namespace Bo4SoundBanks

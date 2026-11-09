@@ -70,9 +70,16 @@ namespace Maps
         // its projection fitted to their UVs; the face's whole triangles of it marked removed.
         // Only the triangles of Owner's meshes are looked at. Hidden (when given) tells a point
         // inside another brush: the part of a face it hides needs no drawn triangle.
+        // Several threads may texture faces at once, each with its own Scratch (none: the
+        // world's own, one thread at a time).
         using HiddenTest = std::function<bool(const V3&)>;
+        struct Scratch
+        {
+            std::vector<uint32_t> Stamp;   // the query that last looked at each triangle
+            uint32_t Query = 0;
+        };
         bool Texture(const std::vector<V3>& Face, const V3& N, double D, const V3& Written, uint32_t Owner, const HiddenTest* Hidden,
-                     SideTexture& Out, RadiantTextureStats& Stats);
+                     SideTexture& Out, RadiantTextureStats& Stats, Scratch* Mine = nullptr);
 
         // whether triangle K (indices 3K..3K+2) of Scene.Objects[Object].Surfaces[Surf] is drawn by a brush
         bool Removed(size_t Object, size_t Surf, size_t K) const;
@@ -94,7 +101,9 @@ namespace Maps
         // closest to) whose bounds reach it: (cell, triangle) sorted, a cell's range by its key
         std::vector<std::pair<uint64_t, uint32_t>> Grid;
         std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> Cells;
-        std::vector<uint32_t> Stamp;
-        uint32_t Query = 0;
+        Scratch Own;
     };
+
+    // Stats' counts added to Into
+    void Add(RadiantTextureStats& Into, const RadiantTextureStats& Stats);
 }

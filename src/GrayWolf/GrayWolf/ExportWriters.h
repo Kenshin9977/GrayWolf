@@ -17,6 +17,8 @@
 #include "LiveExport.h"
 #include "ZoneTableWalker.h"
 
+#include <wolff/ZoneLinks.h>
+
 struct XImageDDS;
 struct XImage_t;
 struct XMaterial_t;
@@ -86,7 +88,8 @@ namespace ExportWriters
     // whose content key was already written in this process becomes a hard link to that file, and
     // a DDS whose file already holds exactly its bytes (an earlier run) is left as it is.
     // GH_CONVERT_THREADS=<n> (legacy GH_BO4_CONVERT_THREADS) sets the pool (0 = inline);
-    // GH_NODEDUP=1 (legacy GH_BO4_NODEDUP) turns the dedup off.
+    // GH_NODEDUP=1 (legacy GH_BO4_NODEDUP) turns the dedup off. With keep_previous_images (--keep-images, read once), a
+    // file already there (an earlier run's) is kept: neither built nor written again.
     class ImageSink
     {
     public:
@@ -107,6 +110,8 @@ namespace ExportWriters
         // Queues an image the pool builds first (decompress, translate: the reading thread only
         // reads); a Build that gives nothing writes nothing and is the caller's to count.
         void Write(std::function<std::unique_ptr<XImageDDS>()> Build, const std::string& Path);
+        // keep_previous_images and Path already a file: Write keeps it (counted written)
+        bool Kept(const std::string& Path) const;
 
         // Waits for the pool, then makes the links. A link that cannot be made (target failed, is
         // being written by another thread's zone, NTFS's 1023-link limit) is rebuilt with
@@ -118,8 +123,11 @@ namespace ExportWriters
         struct State;
         std::unique_ptr<State> St;
         std::string Fmt, Ext;
-        bool UseDedup = true;
+        bool UseDedup = true, KeepPrevious = false;
     };
+    // the keep_previous_images setting (--keep-images): images already written are kept (ImageSink), and an image a run
+    // would pull from another zone is not when its file is there
+    bool KeepPreviousImages();
 
     // While one lives, the models ExportModel exports on the thread that made it have their files
     // written by a pool (LiveExport::WriteModelFilesWith): the read and the translation stay on that
@@ -407,11 +415,11 @@ namespace ExportWriters
     bool WriteLocalize(const std::string& Path, const std::vector<std::pair<std::string, std::string>>& Rows,
                        unsigned CodePage = 0);
 
-    // A zonekit profile and its compiled tables, loaded once per name for the process.
-    struct LoadedProfile
+    // A zonekit profile and its compiled tables, loaded once per name for the process (Wolff's
+    // cache; GrayWolf's profile roots set in WolffSetup.cpp).
+    using LoadedProfile = wolff::ZoneTables::LoadedProfile;
+    inline const LoadedProfile* ZoneProfile(const std::string& Name, std::string& Error)
     {
-        ZoneTables::Profile Profile;
-        ZoneTables::Tables* Tables = nullptr;
-    };
-    const LoadedProfile* ZoneProfile(const std::string& Name, std::string& Error);
+        return wolff::ZoneTables::ZoneProfile(Name, Error);
+    }
 }

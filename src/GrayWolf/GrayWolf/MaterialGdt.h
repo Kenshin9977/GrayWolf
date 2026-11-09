@@ -25,13 +25,20 @@ namespace MaterialGdt
     // leading and trailing '_' dropped ("mc/mtl_Foo" -> "mc_mtl_foo", "~mtl_x-1" -> "mtl_x_1").
     // A function of the name alone, so a model file written on its own names what the GDT defines.
     std::string AssetName(const std::string& Source);
+    // Prefix + AssetName(Source), at most 56 characters (BO3's tools keep 64, cod2map asserting on
+    // a cut name; an image's tag may follow): a longer one cut, an 8-digit hash of the source name
+    // after it so it stays its own; so too one AssetName changes ("~tm_x" and "tm_x" two names).
+    // Without a prefix, AssetName(Source) as it is.
+    std::string PrefixedName(const std::string& Prefix, const std::string& Source);
 
     class Builder
     {
     public:
         // BaseImage: an image file (absolute) as the GDT's baseImage, a path below the BO3 root
         // with '/' separators ("" leaves the slot out). Prefix: the counters' ("material_gdt_").
-        Builder(std::function<std::string(const std::filesystem::path& File)> BaseImage, std::string Prefix);
+        // NamePrefix: before every material's asset name and after the "i_" of every image's
+        // (a map's own, so two maps in one mod tools tree never define the same asset).
+        Builder(std::function<std::string(const std::filesystem::path& File)> BaseImage, std::string Prefix, std::string NamePrefix = {});
 
         // A material, its image paths relative to Dir. The first description of an asset name
         // wins: the same material from another model is counted shared, another source name
@@ -56,15 +63,15 @@ namespace MaterialGdt
         };
         struct Material
         {
-            std::string Source, Category, Type;
+            std::string Source, Category, Type, Usage = "<not in editor>";
             std::map<std::string, Image> Slots;                 // colorMap -> image
             std::vector<std::pair<std::string, std::string>> Values;   // other fields set
         };
 
     private:
         std::function<std::string(const std::filesystem::path&)> BaseImageOf;
-        std::string Prefix;
-        std::map<std::string, Material> Defined;                // by asset name
+        std::string Prefix, NamePrefix;
+        std::map<std::string, Material> Defined;               // by asset name
         std::map<std::string, std::set<std::string>> Collisions;
         std::map<std::string, size_t> Count;
         size_t& Counter(const std::string& What) { return Count[Prefix + What]; }
@@ -75,7 +82,8 @@ namespace MaterialGdt
     // The model kind's GDT: every <model>.materials.json under the run's models folder (this run's
     // and earlier ones'), its materials, their images and the models' XMODEL_EXPORT files, as
     // <out>/source_data/graywolf_<out folder>.gdt. Paths assume <out> is copied to
-    // <BO3>/model_export/graywolf/<out folder>/. Counters into T.
+    // <BO3>/model_export/graywolf/<out folder>/. With mod_tools (ModToolsTree.h), the GDT goes into
+    // the tree's source_data and the files it names there. Counters into T.
     void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T);
 
     // While a run with material_gdt on exports, the mod tools' model files (XMODEL_EXPORT, _BIN)

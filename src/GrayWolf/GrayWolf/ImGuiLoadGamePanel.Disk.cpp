@@ -13,6 +13,7 @@
 #include "AppLog.h"
 #include "DiskGame.h"
 #include "ExportNaming.h"
+#include "ModToolsTree.h"
 #include "SettingsManager.h"
 #include "Strings.h"
 #include "WraithX.h"
@@ -429,6 +430,9 @@ void LoadGamePanel::DoDiskExport()
     LastRun.ZoneErrors = T.ZoneErrors;
     LastRun.OutDir = C.OutRoot;
     LastRun.RunLog = DiskGame::RunLogPath(C);
+    LastRun.ModToolsRoot = T.ModTools.Root;
+    LastRun.ModToolsFiles = T.ModTools.Files;
+    LastRun.ModToolsNext = T.ModTools.Next;
     const std::string What = C.Only ? Thousands(C.Only->size()) + (C.Only->size() == 1 ? " asset" : " assets")
                                     : std::to_string(T.ZonesWalked) + (T.ZonesWalked == 1 ? " zone" : " zones");
     size_t Pulled = 0;
@@ -756,6 +760,22 @@ void LoadGamePanel::DrawOptions()
                 if (ImGui::Selectable(L.c_str(), V == Value)) SettingsManager::SetSetting(Key, V);
             ImGui::EndCombo();
         }
+        // mod_tools on: the tree it writes into, or why there is none
+        if (std::string(S.Key) == DiskGame::ModToolsOutput.Key && Value == "on")
+        {
+            bool Looking = false;
+            const std::string Found = ModToolsFound.Get("bo3", 30.0, [] {
+                std::string Why;
+                const std::string Root = ModToolsTree::Resolve(std::string(), Why);
+                return Root.empty() ? "!" + Why : Root;
+            }, &Looking);
+            ImGui::PushTextWrapPos(0.0f);
+            if (Found.empty() || Looking) ImGui::TextDisabled("Looking for the Black Ops III Mod Tools...");
+            else if (Found[0] == '!') ImGui::TextColored(Amber, "%s; the files stay in the export folder", Found.c_str() + 1);
+            else ImGui::TextDisabled("Into %s (map_source\\graywolf, model_export\\graywolf, source_data\\graywolf_*.gdt); "
+                                     "a .map, GDT or alias CSV already there is kept as .bak", Found.c_str());
+            ImGui::PopTextWrapPos();
+        }
     }
 
     // the name filter, for a zone export of a game whose readers can filter
@@ -912,6 +932,27 @@ void LoadGamePanel::DrawLastRun()
         }
         EndBanner();
     }
+    // written into the mod tools: where, and what is left to do there
+    if (!R.ModToolsRoot.empty())
+    {
+        BeginBanner("##lastrun_modtools", ImVec4(0.13f, 0.17f, 0.24f, 1.0f), ImVec4(0.25f, 0.36f, 0.52f, 1.0f));
+        ImGui::TextUnformatted(("Written into the Black Ops III Mod Tools: " + R.ModToolsRoot).c_str());
+        ImGui::PushTextWrapPos(0.0f);
+        for (const auto& F : R.ModToolsFiles) ImGui::BulletText("%s", F.c_str());
+        if (!R.ModToolsNext.empty()) ImGui::TextUnformatted("Left to do:");
+        for (const auto& N : R.ModToolsNext) ImGui::BulletText("%s", N.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::Button("Open mod tools folder")) UiAsync::OpenInShell(R.ModToolsRoot);
+        ImGui::SameLine();
+        if (ImGui::Button("Copy steps"))
+        {
+            std::string All = "Black Ops III Mod Tools: " + R.ModToolsRoot + "\n";
+            for (const auto& F : R.ModToolsFiles) All += "  " + F + "\n";
+            for (const auto& N : R.ModToolsNext) All += "- " + N + "\n";
+            ImGui::SetClipboardText(All.c_str());
+        }
+        EndBanner();
+    }
     if (!R.ZoneErrors.empty() || R.Failures > 0)
     {
         BeginBanner("##lastrun_err", ImVec4(0.23f, 0.13f, 0.14f, 1.0f), ImVec4(0.48f, 0.23f, 0.25f, 1.0f));
@@ -1056,6 +1097,7 @@ void LoadGamePanel::DrawExportBar()
     ImGui::BeginDisabled(Busyish);
     const float Tall = ImGui::GetFrameHeight() * 1.5f;
     if (ImGui::Button("Formats & options", ImVec2(OptionsWidth, Tall)) || OpenOptions) ImGui::OpenPopup("##diskoptions");
+    const ImVec2 OptionsAt = ImGui::GetItemRectMin();
     OpenOptions = false;
     ImGui::SameLine();
     ImGui::BeginDisabled(!Ready);
@@ -1068,10 +1110,16 @@ void LoadGamePanel::DrawExportBar()
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 
-    // a set width, at most most of the window high (scrolled past that): a long path or many kinds
-    // do not push it off the screen
+    // a set width, at most the room above the button high (scrolled past that), its bottom held on
+    // the button every frame: a long path, many kinds or a box ticked that grows it does not push it
+    // off the screen (placed once, where it opened, it grew down past the window)
     const float OptionsW = ImGui::GetFontSize() * 34.0f;
-    ImGui::SetNextWindowSizeConstraints(ImVec2(OptionsW, 0), ImVec2(OptionsW, ImGui::GetMainViewport()->WorkSize.y * 0.8f));
+    const ImGuiViewport* Vp = ImGui::GetMainViewport();
+    const float Gap = ImGui::GetStyle().ItemSpacing.y;
+    const float Room = std::max(ImGui::GetFontSize() * 10.0f, std::min(Vp->WorkSize.y * 0.8f, OptionsAt.y - Vp->WorkPos.y - Gap * 2));
+    const float Left = std::clamp(OptionsAt.x + OptionsWidth - OptionsW, Vp->WorkPos.x + Gap, Vp->WorkPos.x + Vp->WorkSize.x - OptionsW - Gap);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(OptionsW, 0), ImVec2(OptionsW, Room));
+    ImGui::SetNextWindowPos(ImVec2(Left, OptionsAt.y - Gap), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
     if (ImGui::BeginPopup("##diskoptions"))
     {
         DrawOptions();

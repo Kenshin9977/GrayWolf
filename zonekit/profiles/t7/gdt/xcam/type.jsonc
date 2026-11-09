@@ -1,9 +1,0 @@
-{
-  // xcam (84), HydraX XCam.cs: a converter writing the xcam.gdf entry and the .xcam_export file in
-  // "files" (HydraX's folder under the Mod Tools' xanim_export); the entry's filename names it
-  // relative to xanim_export, "filename" its prefix
-  "zone_type": "xcam",
-  "converter": "t7_xcam",
-  "files": "xanim_export/hydra_xcams/",
-  "filename": "hydra_xcams\\"
-}

@@ -7,6 +7,8 @@
 // mod tools' order; conversions after HydraX's BO3 exporter and OAT's T6 dumper (both GPL-3.0).
 // Written with the sound kind when sound_aliases is on: sounds/<zone>.csv, FileSpec relative to
 // that folder (standing for the mod tools' sound_assets), backslashes, the exported extension.
+// With mod_tools (ModToolsTree.h): share/raw/sound/aliases/graywolf_<zone>.csv in the tree, its
+// files in sound_assets/graywolf/<out folder>/.
 
 #include "DiskGame.h"
 #include "ExportNaming.h"

@@ -1,6 +1,0 @@
-{
-  // weapon (23), HydraX Weapon.cs: the fields are data (sections stitched as HydraX does); the
-  // converter picks the GDF (bullet, projectile, turret, dual wield...) as HydraX does
-  "converter": "t7_weapon",
-  "constants": { "configstringFileType": "WEAPONFILE" }
-}

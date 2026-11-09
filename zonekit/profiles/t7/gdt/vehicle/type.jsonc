@@ -1,6 +1,0 @@
-{
-  // vehicle (56), HydraX Vehicle.cs: the fields are data; the converter writes what a table cannot
-  // (the mantle angles, the enums' values HydraX names with a default)
-  "converter": "t7_vehicle",
-  "constants": { "configstringFileType": "VEHICLEFILE" }
-}

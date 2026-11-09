@@ -1,7 +1,0 @@
-{
-  // behaviorstatemachine (79), HydraX BehaviorStateMachine.cs: a converter writing the .ai_bsm file
-  // (no GDT entry) in "files", the Mod Tools' share/raw folder
-  "zone_type": "behaviorstatemachine",
-  "converter": "t7_behaviorstatemachine",
-  "files": "behavior/"
-}

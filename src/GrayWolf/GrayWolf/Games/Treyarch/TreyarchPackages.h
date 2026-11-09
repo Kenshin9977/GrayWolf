@@ -7,7 +7,8 @@
 
 class CoDPackageCache;
 
-// The Treyarch titles' streamed-data packages in a Battle.net CASC install, which the live model,
+// The Treyarch titles' streamed-data packages in a Battle.net CASC install (the fast files pulled out
+// by Wolff's wolff::Packages over the cache's file system), which the live model,
 // image and sound readers take streamed data from (CoDAssets' package cache while a zone holding
 // them is served: ZonekitZone::ServesPackages). Each game
 // names its own package format: Black Ops 4 its .xpak (XPAKCache), Cold War its .xsub (XSUBCache).

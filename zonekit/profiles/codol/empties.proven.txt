@@ -1,3 +1,0 @@
-# actions the machine code shows aligning the cursor whatever their count, too rare to vote
-# 0x4950e0 (0x90-byte elements): if (p48) { pos = align4(pos); p48 = pos; 0x495020(count u16 at +0x44) } (0x49519e)
-f950e0|8

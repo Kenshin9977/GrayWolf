@@ -5,12 +5,13 @@
 #include "CliOptions.h"
 #include "CliSupport.h"
 #include "GameCommand.h"
-#include "Games/CODOL/FileCrypt.h"
-#include "Games/CODOL/IfsArchive.h"
+#include <wolff/Codol.h>
 
 #include <filesystem>
 #include <fstream>
 #include <regex>
+
+namespace Ifs = wolff::Ifs;
 
 // `ifs-extract <install>`: the files of an install's .ifs archives, each at its latest version and
 // unwrapped (FileCrypt.h: images, sounds, model data), as loose files under --out (the archives' own paths: client_shipretail/chinese/<zone>.ff).
@@ -53,7 +54,7 @@ namespace
                 Failed++;
                 continue;
             }
-            Codol::UnwrapFile(Key, Data);
+            wolff::Codol::UnwrapFile(Key, Data, wolff::DefaultContext(), Ifs::Utf8Path(Install.Folder()));
             std::ofstream F(Dst, std::ios::binary);
             F.write(reinterpret_cast<const char*>(Data.data()), (std::streamsize)Data.size());
             if (!F)

@@ -1,4 +1,0 @@
-# Actions whose allocation aligns the block cursor even when the count is 0, proven from the
-# machine code; merged into empties.txt when it is generated (too rare to win the vote).
-# f260350 +0x1a0: 0x260615 tests the pointer != 0, then 0x26062d aligns to 4 before the count.
-f260350|19

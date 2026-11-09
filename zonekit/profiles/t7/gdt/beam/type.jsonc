@@ -1,8 +1,0 @@
-{
-  // beam (101), HydraX Beam.cs: data only
-  // nested: also its assets loaded inline inside another asset (core_common keeps its lasers
-  // steadyaim_*_laser and its playerfxtables cp/mp/zm_playerfx so; the other types may be)
-  "gdf": "beam.gdf",
-  "constants": { "configstringFileType": "BEAM" },
-  "nested": true
-}

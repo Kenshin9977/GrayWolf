@@ -1,6 +1,0 @@
-{
-  // customizationtable (34), HydraX CustomizationTable.cs: a converter (the table's charactercustomizationtable
-  // entry and its heads, body types, body styles and helmet styles, each an entry of its own)
-  "zone_type": "customizationtable",
-  "converter": "t7_customizationtable"
-}

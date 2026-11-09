@@ -23,8 +23,9 @@ if not exist "%MAINDEV%\package_index\*" set "MAINDEV=%MAIN%\src\WraithXCOD\x64\
 if not exist "%WT%\src\GrayWolf\x64\Dev" mkdir "%WT%\src\GrayWolf\x64\Dev"
 call :link "%WT%\src\GrayWolf\x64\Dev\package_index" "%MAINDEV%\package_index"
 for %%D in (oo2core_6_win64.dll oo2core_8_win64.dll) do if exist "%MAINDEV%\%%D" if not exist "%WT%\src\GrayWolf\x64\Dev\%%D" copy /y "%MAINDEV%\%%D" "%WT%\src\GrayWolf\x64\Dev\" >nul
-rem the profiles' local, git-ignored files (string cipher tables, local settings): copied, never overwritten
-for /d %%P in ("%MAIN%\zonekit\profiles\*") do for %%F in (strings.cipher.txt profile.local.json) do if exist "%%P\%%F" if not exist "%WT%\zonekit\profiles\%%~nxP\%%F" copy /y "%%P\%%F" "%WT%\zonekit\profiles\%%~nxP\" >nul
+rem the profiles' local, git-ignored files (string cipher tables, local settings): copied, never
+rem overwritten; only for a branch that still holds zonekit\profiles (they are Wolff's now: ..\wolff\profiles)
+if exist "%WT%\zonekit\profiles\*" for /d %%P in ("%MAIN%\zonekit\profiles\*") do for %%F in (strings.cipher.txt profile.local.json) do if exist "%%P\%%F" if not exist "%WT%\zonekit\profiles\%%~nxP\%%F" copy /y "%%P\%%F" "%WT%\zonekit\profiles\%%~nxP\" >nul
 echo worktree ready: %WT% (main checkout %MAIN%, data from %MAINDEV%)
 exit /b 0
 

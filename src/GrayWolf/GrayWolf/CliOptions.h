@@ -68,14 +68,19 @@ struct CliOptions
     std::string ModelFormat; // --model-format: cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, comma list
     std::string AnimFormat;  // --anim-format: cast|seanim|xanim_export|none, comma list
     std::string ImageFormat; // --image-format: png|tga|dds (sets exportimg)
+    bool KeepImages = false; // --keep-images: an image file already there is neither written nor pulled again
     std::string UiRes;       // --ui-res: 4k|1080|all, which BO4 UI resolution zones to read (4k)
     std::string MapPng;      // --map-png: on|off, PNG copies of map textures for glTF tools (off)
     std::string MapCast;     // --map-cast: on|off, the map also as a Cast scene (off)
     std::string MaterialGdt; // --material-gdt: on|off, BO3 Mod Tools material GDT entries for the exported materials (off)
     std::string MapRadiant;  // --map-radiant: on|off, the map also as a Radiant .map for the mod tools (off)
+    std::string ModTools;      // --mod-tools: on|off, the mod tools files written into a BO3 Mod Tools tree (off)
+    std::string ModToolsRoot;  // --mod-tools-root: that tree (default: the BO3 install found with the mod tools)
     std::string SoundAliases;  // --sound-aliases: on|off, the sound kind also writes the zone's aliases as a BO3 mod tools CSV (off)
     std::string MapContent;  // --map-content: all|terrain, the map's terrain alone (all)
     std::string MapCollision;// --map-collision: on|off, the map's collision also as <map>_collision.json (off)
+    std::string MapSurfaces; // --map-surfaces: models|patches, the Radiant source's drawn world (models)
+    std::string Bo3Usermap;  // --bo3-usermap: off|create|build, a ZM usermap around the map in the Mod Tools tree (off)
     std::string Decompile;   // --decompile[=on|off]: compiled scripts also decompiled (off)
     std::string MapTextures; // --map-textures: full|2k|1k, map textures above it copied smaller (full)
     std::string Language;    // --language: auto|english|french|...: CoD1/CoD2, whose localized archives win (auto: --languages')

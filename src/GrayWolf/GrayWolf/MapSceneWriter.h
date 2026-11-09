@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,7 +40,10 @@ namespace Maps
     const ISceneWriter& GlbWriter();    // MapGlbWriter.cpp: the Blender scene, with its import script
     const ISceneWriter& CastWriter();   // MapCastWriter.cpp: the Cast scene (Maya, the Cast plugins)
     // MapRadiantWriter.cpp: the Radiant source (the mod tools); Materials: with the material GDT
-    // entries of its models' materials (the material_gdt setting)
-    const ISceneWriter& RadiantWriter(bool Materials = false);
+    // entries of its models' materials (the material_gdt setting); Tree: written into a Black Ops III
+    // Mod Tools tree (the mod_tools setting, ModToolsTree.h), "" beside the map; Patches: the drawn
+    // world as a patch per triangle rather than models (the map_surfaces setting); Game: the source
+    // game's id
+    std::unique_ptr<ISceneWriter> RadiantWriter(bool Materials, const std::string& Tree, bool Patches, const std::string& Game);
     const ISceneWriter& CollisionWriter();   // MapCollisionWriter.cpp: the clip map's collision as JSON
 }

@@ -1,8 +1,0 @@
-{
-  // fonticon (21), HydraX fontIcon.cs: a converter writing <name>.csv (no GDT entry) under "files";
-  // "alias_size": the bytes between two aliases (the game loads 12 each, HydraX reads 8)
-  "zone_type": "fonticon",
-  "converter": "t7_fonticon",
-  "files": "",
-  "alias_size": 12
-}

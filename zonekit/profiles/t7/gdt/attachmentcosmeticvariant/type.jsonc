@@ -1,8 +1,0 @@
-{
-  // attachmentcosmeticvariant (89), HydraX AttachmentCosmeticVariant.cs: a converter (variants by index)
-  "zone_type": "attachmentcosmeticvariant",
-  "converter": "t7_attachmentcosmeticvariant",
-  "nested": true,
-  // the variants attachmentcosmeticvariant.gdf has (acv0..acv2): each written, the missing empty
-  "variants": 3
-}

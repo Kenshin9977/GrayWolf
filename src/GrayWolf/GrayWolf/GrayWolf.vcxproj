@@ -108,7 +108,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>..\..\External\OpenAssetTools\build\lib\Release_x64;$(VcpkgInstalled)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wolff.lib;Zydis.lib;Zycore.lib;miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
     <Manifest>
@@ -136,7 +136,7 @@
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
       <SubSystem>Windows</SubSystem>
       <AdditionalLibraryDirectories>..\..\External\OpenAssetTools\build\lib\Release_x64;$(VcpkgInstalled)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wolff.lib;Zydis.lib;Zycore.lib;miniz.lib;deflatestatic.lib;opus.lib;DirectXTex.lib;DirectXTK.lib;fmt.lib;casc.lib;zs.lib;FLAC.lib;ogg.lib;ZoneLoading.lib;ZoneCommon.lib;ObjWriting.lib;ObjLoading.lib;ObjImage.lib;Common.lib;ObjCommon.lib;Parser.lib;Utils.lib;Cryptography.lib;XMemCompress.lib;zlib.lib;lzx.lib;libtomcrypt.lib;libtommath.lib;salsa20.lib;lz4.lib;minilzo.lib;minizip.lib;opengl32.lib;glu32.lib;CLI11.lib;shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <UACExecutionLevel>AsInvoker</UACExecutionLevel>
     </Link>
     <Manifest>
@@ -156,12 +156,10 @@
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="CascFileSystem.cpp" />
     <ClCompile Include="CoDAssets.cpp" />
     <ClCompile Include="LiveGames.cpp" />
     <ClCompile Include="LiveExport.cpp" />
     <ClCompile Include="PackageFileMode.cpp" />
-    <ClCompile Include="Games\GameModule.cpp" />
     <!-- Per-game adapters: every Games\<game>\*.cpp is compiled, so a new game adds files only -->
     <ClCompile Include="Games\*\*.cpp">
       <!-- the same file name in every game folder: one object folder per game -->
@@ -178,13 +176,6 @@
       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
       <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
-    <ClCompile Include="FastFile.cpp" />
-    <ClCompile Include="FastFile.InfinityWard.cpp" />
-    <ClCompile Include="FastFile.Treyarch.cpp" />
-    <ClCompile Include="FastFile.T9.cpp" />
-    <ClCompile Include="FastFile.Sledgehammer.cpp" />
-    <ClCompile Include="VCDiff.cpp" />
-    <ClCompile Include="WorldWar2Crypto.cpp" />
     <ClCompile Include="CoDAssetType.cpp" />
     <ClCompile Include="CoDCDNCache.cpp" />
     <ClCompile Include="CoDCDNDownloader.cpp" />
@@ -220,7 +211,6 @@
     <ClCompile Include="CoDXModelTranslator.cpp" />
     <ClCompile Include="GameReaders.cpp" />
     <ClCompile Include="CoDFileHandle.cpp" />
-    <ClCompile Include="CoDFileSystem.cpp" />
     <ClCompile Include="GltfSceneWriter.cpp" />
     <ClCompile Include="MapGlbWriter.cpp" />
     <ClCompile Include="MapImportScript.cpp" />
@@ -244,6 +234,7 @@
     <ClCompile Include="MapCastWriter.cpp" />
     <ClCompile Include="MapCollision.cpp" />
     <ClCompile Include="MapRadiantWriter.cpp" />
+    <ClCompile Include="RadiantTarget.cpp" />
     <ClCompile Include="MapRadiantTextures.cpp" />
     <ClCompile Include="SoundAliasCsv.cpp" />
     <ClCompile Include="MapCollisionWriter.cpp" />
@@ -263,6 +254,8 @@
     <ClCompile Include="Gdt.cpp" />
     <ClCompile Include="GdtWriter.cpp" />
     <ClCompile Include="MaterialGdt.cpp" />
+    <ClCompile Include="ModToolsTree.cpp" />
+    <ClCompile Include="ModToolsUsermap.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
     <ClCompile Include="Languages.cpp" />
     <ClCompile Include="XboxPackages.cpp" />
@@ -280,7 +273,6 @@
     <ClCompile Include="ImGuiLoadGamePanel.Disk.cpp" />
     <ClCompile Include="ImGuiLoadGamePanel.Assets.cpp" />
     <ClCompile Include="ResumeIndex.cpp" />
-    <ClCompile Include="ZoneMemory.cpp" />
     <ClCompile Include="IWDSoundDecoder.cpp" />
     <ClCompile Include="GameWorldWar2.cpp" />
     <ClCompile Include="IPAKCache.cpp" />
@@ -297,7 +289,6 @@
     <ClCompile Include="CliCommands.Casc.cpp" />
     <ClCompile Include="CliCommands.ZoneWalk.cpp" />
     <ClCompile Include="MemoryBudget.cpp" />
-    <ClCompile Include="ZoneTableWalker.cpp" />
     <ClCompile Include="CliCommands.Audio.cpp" />
     <ClCompile Include="CliCommands.ModelPreview.cpp" />
     <ClCompile Include="CliCommands.Shared.cpp" />
@@ -307,7 +298,7 @@
     <ClCompile Include="SABCache.cpp" />
     <ClCompile Include="SABSupport.cpp" />
     <ClCompile Include="Siren.cpp" />
-    <ClCompile Include="WinFileSystem.cpp" />
+    <ClCompile Include="WolffSetup.cpp" />
     <ClCompile Include="XPAKCache.cpp" />
     <ClCompile Include="XPAKSupport.cpp" />
     <ClCompile Include="XPTOCCache.cpp" />
@@ -328,8 +319,6 @@
     <ClInclude Include="PackageFileMode.h" />
     <ClInclude Include="Games\GameModule.h" />
     <ClInclude Include="FastFile.h" />
-    <ClInclude Include="FastFile.Internal.h" />
-    <ClInclude Include="WorldWar2Crypto.h" />
     <ClInclude Include="ZoneAssetTypes.h" />
     <ClInclude Include="CoDAssetType.h" />
     <ClInclude Include="CoDCDNCache.h" />
@@ -365,7 +354,6 @@
     <ClInclude Include="ModernIwReaders.h" />
     <ClInclude Include="PackedXAnim.h" />
     <ClInclude Include="DBGameAssets.h" />
-    <ClInclude Include="VCDiff.h" />
     <ClInclude Include="DBGameFiles.h" />
     <ClInclude Include="DBGameGenerics.h" />
     <ClInclude Include="CoDFileHandle.h" />
@@ -387,6 +375,8 @@
     <ClInclude Include="MapCastWriter.h" />
     <ClInclude Include="MapCollision.h" />
     <ClInclude Include="MapRadiantWriter.h" />
+    <ClInclude Include="RadiantTarget.h" />
+    <ClInclude Include="AlphaRule.h" />
     <ClInclude Include="MapRadiantTextures.h" />
     <ClInclude Include="MapRadiantGeometry.h" />
     <ClInclude Include="SoundAliasCsv.h" />
@@ -409,6 +399,8 @@
     <ClInclude Include="Gdt.h" />
     <ClInclude Include="GdtWriter.h" />
     <ClInclude Include="MaterialGdt.h" />
+    <ClInclude Include="ModToolsTree.h" />
+    <ClInclude Include="ModToolsUsermap.h" />
     <ClInclude Include="GameInstalls.h" />
     <ClInclude Include="Languages.h" />
     <ClInclude Include="XboxPackages.h" />
@@ -503,13 +495,25 @@
     <Message Importance="high" Text="OpenAssetTools libs not found - building them from the submodule (one-time, several minutes)..." />
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\..\tools\build-oat.ps1&quot;" />
   </Target>
-  <!-- Ship the zonekit profiles (reader tables per game) next to the exe: zone-walk finds
+  <!-- Ship the zonekit profiles (reader tables per game, Wolff's) next to the exe: zone-walk finds
        them at <exe dir>\zonekit\profiles\<game>, the material adapters its shading.txt, the gdt kind
        its gdt\<type>\ folders (Gdt.h), Cold War its strings.cipher.txt (Games\T9\StringCipher.h), the anim
-       preview its reference rigs, preview_rigs.json (AssetGrid\AnimRigs.h). -->
+       preview its reference rigs, preview_rigs.json (AssetGrid\AnimRigs.h, from Resources).
+       The profiles come from the WOLFF (or WOLFF_SOURCE_DIR) checkout when set, else from a wolff
+       checkout beside this one (..\wolff: a table changed there is picked up by the next build),
+       else from the installed wolff package (share\wolff\profiles). -->
   <Target Name="CopyZonekitProfiles" AfterTargets="Build">
+    <PropertyGroup>
+      <GwWolffProfiles Condition="'$(GwWolffProfiles)' == '' and '$(WOLFF)' != '' and Exists('$(WOLFF)\profiles')">$(WOLFF)\profiles</GwWolffProfiles>
+      <GwWolffProfiles Condition="'$(GwWolffProfiles)' == '' and '$(WOLFF_SOURCE_DIR)' != '' and Exists('$(WOLFF_SOURCE_DIR)\profiles')">$(WOLFF_SOURCE_DIR)\profiles</GwWolffProfiles>
+      <GwWolffProfiles Condition="'$(GwWolffProfiles)' == '' and Exists('$(MSBuildProjectDirectory)\..\..\..\..\wolff\profiles')">$(MSBuildProjectDirectory)\..\..\..\..\wolff\profiles</GwWolffProfiles>
+      <GwWolffProfiles Condition="'$(GwWolffProfiles)' == ''">$(VcpkgInstalled)\share\wolff\profiles</GwWolffProfiles>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(GwWolffProfiles)')" Text="Wolff's zonekit profiles not found ($(GwWolffProfiles)): install the wolff port (BUILDING.md) or set WOLFF to a wolff checkout." />
+    <Message Importance="high" Text="zonekit profiles from $(GwWolffProfiles)" />
     <ItemGroup>
-      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\profile.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\types.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\tables.*.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\blocks.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\empties.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\shading.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\strings.cipher.txt;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.json;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\**\gdt\**\*.jsonc;$(MSBuildProjectDirectory)\..\..\..\zonekit\profiles\preview_rigs.json" />
+      <ZonekitProfile Include="$(GwWolffProfiles)\**\profile.json;$(GwWolffProfiles)\**\types.json;$(GwWolffProfiles)\**\tables.*.txt;$(GwWolffProfiles)\**\blocks.txt;$(GwWolffProfiles)\**\empties.txt;$(GwWolffProfiles)\**\shading.txt;$(GwWolffProfiles)\**\strings.cipher.txt;$(GwWolffProfiles)\**\gdt\**\*.json;$(GwWolffProfiles)\**\gdt\**\*.jsonc" />
+      <ZonekitProfile Include="$(MSBuildProjectDirectory)\..\Resources\preview_rigs.json" />
     </ItemGroup>
     <Copy SourceFiles="@(ZonekitProfile)" DestinationFiles="@(ZonekitProfile->'$(OutDir)zonekit\profiles\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>

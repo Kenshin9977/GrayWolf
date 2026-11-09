@@ -368,8 +368,11 @@ int RunZoneDecompress(const CliOptions& Options)
 {
     ZoneBytes Zone;
     std::string Error;
+    // --install: the game whose keys a fast file copied out of it needs
+    wolff::Context Ctx = wolff::DefaultContext();
+    if (!Options.Install.empty()) Ctx.Install = Options.Install;
 
-    if (!FastFile::Decompress(Options.ZoneDecompressIn, Zone, Error))
+    if (!FastFile::Decompress(Options.ZoneDecompressIn, Zone, Error, Ctx))
     {
         CliReport(Options, std::format("result=error\nreason={}\n", Error.c_str()));
         return 5;

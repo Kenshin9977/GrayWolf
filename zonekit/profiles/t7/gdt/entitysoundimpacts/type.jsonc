@@ -1,5 +1,0 @@
-{
-  // entitysoundimpacts (64), HydraX EntitySoundImpacts.cs: data only (HydraX names the struct and
-  // writes the entries entityfximpacts: the GDF is entitysoundimpacts.gdf, as the Mod Tools write it)
-  "gdf": "entitysoundimpacts.gdf"
-}

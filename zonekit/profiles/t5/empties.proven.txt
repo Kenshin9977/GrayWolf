@@ -1,6 +1,0 @@
-# actions the machine code shows aligning the cursor whatever their count, too rare to vote
-# Load_StringTable 0x1e53e0: if (values) { pos = align4(pos); values = pos; Load_StringTableCellArray(1, rows * cols) }; if (cellIndex) { pos = align2(pos); ... }
-stringtable|2
-stringtable|3
-# Load_MenuList 0xd09d0: if (menus) { pos = align4(pos); menus = pos; Load_MenuPtrArray(1, count) }
-menufile|2

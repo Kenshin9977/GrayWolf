@@ -1,3 +1,0 @@
-# actions the machine code shows aligning the cursor whatever their count, too rare to vote
-# Load_MenuList 0x855ba: if (menus) { pos = align4(pos); menus = pos; Load_MenuPtr array (count) }
-menufile|2

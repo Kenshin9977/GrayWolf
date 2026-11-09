@@ -1,9 +1,0 @@
-{
-  // laser (100), HydraX Laser.cs: data only
-  // HydraX names the block's GDF flametable, a slip: laser.gdf
-  // nested: also its assets loaded inline inside another asset (core_common keeps its lasers
-  // steadyaim_*_laser and its playerfxtables cp/mp/zm_playerfx so; the other types may be)
-  "gdf": "laser.gdf",
-  "constants": { "configstringFileType": "LASER" },
-  "nested": true
-}

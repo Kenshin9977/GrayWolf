@@ -361,7 +361,21 @@ ImageSink::ImageSink(std::string Format) : St(std::make_unique<State>()), Fmt(st
 {
     Ext = ImageExtension(Fmt);
     UseDedup = !EnvSet("GH_NODEDUP", "GH_BO4_NODEDUP");
+    KeepPrevious = KeepPreviousImages();
     Times().Workers = St->Pool.Workers();
+}
+
+bool KeepPreviousImages()
+{
+    return SettingsManager::GetSetting("keep_previous_images") == "true";
+}
+
+bool ImageSink::Kept(const std::string& Path) const
+{
+    if (!KeepPrevious || !HasFile(Path)) return false;
+    std::lock_guard<std::mutex> G(St->StatsLock);
+    St->Stats.Written++;
+    return true;
 }
 
 ImageSink::~ImageSink() = default;
@@ -379,6 +393,7 @@ bool ImageSink::LinkIfKnown(uint64_t Key, const std::string& Path, size_t Tag)
 
 void ImageSink::Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path)
 {
+    if (Kept(Path)) return;
     // a std::function is copyable: the image goes in shared
     St->Pool.Post([S = St.get(), F = Fmt, D = std::shared_ptr<XImageDDS>(std::move(Dds)), Path]() {
         const auto Start = std::chrono::steady_clock::now();
@@ -392,6 +407,7 @@ void ImageSink::Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path)
 
 void ImageSink::Write(std::function<std::unique_ptr<XImageDDS>()> Build, const std::string& Path)
 {
+    if (Kept(Path)) return;
     St->Pool.Post([S = St.get(), F = Fmt, B = std::move(Build), Path]() {
         const auto Start = std::chrono::steady_clock::now();
         std::unique_ptr<XImageDDS> D;
@@ -1232,24 +1248,4 @@ int SoundFiles::Write(const CoDSound_t& Sound, const std::filesystem::path& Dir,
     return Code;
 }
 
-const LoadedProfile* ZoneProfile(const std::string& Name, std::string& Error)
-{
-    static std::mutex Lock;
-    static std::unordered_map<std::string, std::unique_ptr<LoadedProfile>> Cache;
-    std::lock_guard<std::mutex> Guard(Lock);
-    auto It = Cache.find(Name);
-    if (It != Cache.end()) return It->second.get();
-    auto L = std::make_unique<LoadedProfile>();
-    if (!ZoneTables::LoadProfile(Name, L->Profile, Error)) return nullptr;
-    try
-    {
-        L->Tables = ZoneTables::LoadTables(L->Profile.TablePaths);
-    }
-    catch (const std::exception& E)
-    {
-        Error = E.what();
-        return nullptr;
-    }
-    return (Cache[Name] = std::move(L)).get();
-}
 }

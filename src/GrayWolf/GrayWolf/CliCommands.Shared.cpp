@@ -25,6 +25,10 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
     App.add_option("--anim-format", Options.AnimFormat,
         "cast|seanim|xanim_export|none, or a comma list (cast,seanim)")->group("Shared options");
     App.add_option("--image-format", Options.ImageFormat, "png|tga|dds")->group("Shared options");
+    App.add_flag("--keep-images", Options.KeepImages,
+                 "keep the image files an earlier run wrote: neither decoded nor written again, nor pulled from other zones "
+                 "(a re-export whose geometry alone changes)")
+        ->group("Shared options");
     App.add_option("--ui-res", Options.UiRes,
                    "4k|1080|all: BO4 UI texture zones to read, 4K (default) or 1080p (the same images at half size)")
         ->group("Shared options");
@@ -52,6 +56,26 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
     App.add_option("--sound-aliases", Options.SoundAliases,
                    "on|off: the sound kind also writes each zone's sound aliases as a Black Ops III mod tools alias CSV "
                    "(sounds/<zone>.csv, FileSpec relative to sounds/), to port sounds with their behaviour (off: audio only)")
+        ->group("Shared options");
+    App.add_option("--mod-tools", Options.ModTools,
+                   "on|off: write the mod tools files (--map-radiant's map, --material-gdt's GDTs, --sound-aliases' CSVs and the "
+                   "files they name) into an installed Black Ops III Mod Tools tree, in GrayWolf names (map_source/graywolf/, "
+                   "model_export/graywolf/, source_data/graywolf_*.gdt, share/raw/sound/aliases/graywolf_*.csv, "
+                   "sound_assets/graywolf/); a .map, GDT or CSV already there with other bytes is renamed .bak first, never "
+                   "overwritten (off: under --out)")
+        ->group("Shared options");
+    App.add_option("--mod-tools-root", Options.ModToolsRoot,
+                   "--mod-tools on: the Black Ops III folder with the Mod Tools (default: graywolf.json's bo3_mod_tools_root, "
+                   "else the BO3 install found with them)")
+        ->check(CLI::ExistingDirectory)->group("Shared options");
+    App.add_option("--map-surfaces", Options.MapSurfaces,
+                   "models|patches: with --map-radiant, the drawn world no brush draws as models, tiles of the world "
+                   "(the default: few objects for Radiant), or a patch per triangle")
+        ->group("Shared options");
+    App.add_option("--bo3-usermap", Options.Bo3Usermap,
+                   "off|create|build: with --map-radiant and --mod-tools on, a ZM usermap around the map, made as the Mod Tools "
+                   "launcher makes one (usermaps/zm_<map>/, map_source/zm/zm_<map>.map holding the map as a prefab; one already "
+                   "there is kept); build: then compiled, lit and linked as the launcher's Compile, Light and Link do (minutes)")
         ->group("Shared options");
     App.add_option("--map-collision", Options.MapCollision,
                    "on|off: also write the map's collision as <map>_collision.json (the clip map's brushes, brush "

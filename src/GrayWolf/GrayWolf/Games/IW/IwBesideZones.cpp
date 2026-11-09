@@ -39,22 +39,9 @@ size_t Set::Load(const std::vector<std::string>& Paths, const ExportWriters::Loa
         if (Z->R.ParseFailed) return;
         Z->Size = Z->Bytes.size();
         // its resume index, for the partial opens to come (read before its own links are written)
+        // (its points, keys and assets by hash: the profile keys its references)
         if (!IndexFiles[K].empty() && !Z->R.Resume.empty())
-        {
-            ZoneResume Ix;
-            Ix.Size = Z->Bytes.size();
-            Ix.Points = Z->R.Resume;
-            Ix.Keys.assign(Z->R.Keys.begin(), Z->R.Keys.end());
-            const uint64_t Mask = Loaded.Profile.Rules.AssetHashMask;
-            for (const auto& I : Z->R.Instances)
-                if (I.Pos >= 0 && (uint64_t)I.Pos + 8 <= Z->Bytes.size() && I.Owner < Z->R.OwnerNames.size())
-                {
-                    const uint64_t H = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & Mask;
-                    Ix.ByHash.try_emplace({ Z->R.OwnerNames[I.Owner], H }, I.Pos);
-                    Ix.ByHash.try_emplace({ std::string(), H }, I.Pos);
-                }
-            ResumeIndex::Save(IndexFiles[K], Ix);
-        }
+            ResumeIndex::Save(IndexFiles[K], ResumeIndex::FromWalk(Z->R, Z->Bytes, Loaded.Profile.Rules, {}, {}));
         Read[K] = std::move(Z);
     };
     // a lazy zone: placed from its resume index, read when a reference reaches it (Reach)
