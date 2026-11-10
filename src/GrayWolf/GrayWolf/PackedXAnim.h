@@ -109,8 +109,12 @@ namespace PackedXAnim
 
         auto AnimData = CoDAssets::GameInstance->Read<TAnim>(Animation->AssetPointer);
 
-        // No stream info: never encountered, not handled
-        if (AnimData.DataInfo.StreamInfoPtr == 0)
+        // No stream info: an anim of no bone has none (a camera's or a notetrack's: MWIII's void,
+        // void_loop, iw8_mp_end_game_*_cam_*), written with its notetracks and delta parts; with
+        // bones, never encountered, not handled; with neither notetracks nor delta parts, a header of
+        // its hash only (another zone's anim, its zone's IsReference): nothing to write
+        if (AnimData.DataInfo.StreamInfoPtr == 0 &&
+            (AnimData.TotalBoneCount != 0 || (AnimData.NotetrackCount == 0 && AnimData.DeltaPartsPtr == 0)))
         {
             return nullptr;
         }
@@ -195,7 +199,9 @@ namespace PackedXAnim
 
         uint32_t bufferSize = 0;
 
-        for (size_t i = 0; i < animHeader.DataInfo.OffsetCount; i++)
+        // an anim of no bone has no stream info (Read): no buffer to fetch
+        const size_t Offsets = animHeader.DataInfo.StreamInfoPtr != 0 ? animHeader.DataInfo.OffsetCount : 0;
+        for (size_t i = 0; i < Offsets; i++)
         {
             auto StreamInfo = CoDAssets::GameInstance->Read<TStreamInfo>(animHeader.DataInfo.StreamInfoPtr + i * 16);
 
@@ -228,7 +234,7 @@ namespace PackedXAnim
 
         BufferState state{};
 
-        state.OffsetCount = animHeader.DataInfo.OffsetCount;
+        state.OffsetCount = Offsets;
         state.PackedPerFrameInfo = animPackedInfo.get();
 
         size_t currentBoneIndex = 0;

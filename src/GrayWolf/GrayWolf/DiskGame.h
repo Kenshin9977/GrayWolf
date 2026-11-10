@@ -607,6 +607,9 @@ namespace DiskGame
         // Pulling a dependency after every zone, whose total is not known ahead of time: an ETA
         // (see Eta below) shows this as its own phase instead of a number it cannot back up.
         bool Dependencies = false;
+        // Work within a zone that is not its assets (the install index made in the middle of a
+        // zone's export): shown instead of the kind, with Done of Count; "" when none
+        std::string Phase;
     };
     using ProgressFn = std::function<void(const Progress&)>;
 
@@ -685,6 +688,24 @@ namespace DiskGame
                                                 const std::string& Install,
                                                 const std::function<void(size_t Done, size_t Count)>& Step,
                                                 const std::atomic<bool>* Cancel, std::string& Error);
+        // What a build tells the run it happens in when its caller gave no Step of its own (a
+        // reader asking for the index in the middle of a zone's export): said in the run's log,
+        // stepped on its progress, stopped by its cancel. Set by Export for its run, one at a time.
+        struct Reporter
+        {
+            std::function<void(const std::string&)> Log;
+            std::function<void(size_t Done, size_t Count)> Step;
+            std::function<void()> Finished;
+            const std::atomic<bool>* Cancel = nullptr;
+        };
+        class ReporterScope
+        {
+        public:
+            explicit ReporterScope(Reporter R);
+            ~ReporterScope();
+            ReporterScope(const ReporterScope&) = delete;
+            ReporterScope& operator=(const ReporterScope&) = delete;
+        };
         const std::vector<std::string>& Zones() const { return Ix.Zones(); }   // as ListZones names them
         uint64_t Footprint(size_t Zone) const { return Ix.Footprint(Zone); }
         const std::vector<AssetId>& Defined(size_t Zone) const;

@@ -284,6 +284,70 @@ std::unique_ptr<ZoneIndex> ZoneIndex::Build(const IDiskGame& Game, const ExportO
     return For(Game, Options, Install, ReaderKey, Step, Cancel, Error, false);
 }
 
+namespace
+{
+    std::mutex ReporterLock;
+    std::shared_ptr<const ZoneIndex::Reporter> CurrentReporter;
+
+    std::shared_ptr<const ZoneIndex::Reporter> Reporting()
+    {
+        const std::lock_guard<std::mutex> G(ReporterLock);
+        return CurrentReporter;
+    }
+
+    // The install's zone files as they are now: each listed zone's size and write time, with its
+    // update patch's (.fp, .fd) beside, and a CASC install's build file. A game update that
+    // rewrites a zone changes it, and so the index's key: the index is made again. Kept a few
+    // minutes per install (the readers ask for the index more than once a run; 16 000 files).
+    std::string FilesStamp(const std::string& Install, const std::vector<std::string>& Names)
+    {
+        static std::mutex Lock;
+        static std::map<std::string, std::pair<std::chrono::steady_clock::time_point, std::string>> Kept;
+        std::string Of = Lower(fs::absolute(Install).string()) + "|" + std::to_string(Names.size());
+        if (!Names.empty()) Of += "|" + Names.front() + "|" + Names.back();
+        const auto Now = std::chrono::steady_clock::now();
+        {
+            const std::lock_guard<std::mutex> G(Lock);
+            if (const auto It = Kept.find(Of); It != Kept.end() && Now - It->second.first < std::chrono::minutes(5)) return It->second.second;
+        }
+        std::string Text;
+        std::error_code Ec;
+        const auto Add = [&](const fs::path& P) {
+            const auto Size = fs::file_size(P, Ec);
+            if (Ec) return false;
+            const auto When = fs::last_write_time(P, Ec);
+            if (Ec) return false;
+            Text += P.filename().string() + " " + std::to_string(Size) + " " + std::to_string(When.time_since_epoch().count()) + "\n";
+            return true;
+        };
+        const fs::path Root(Install);
+        for (const auto& N : Names)
+            for (fs::path P : { Root / N, Root / (N + ".ff") })
+                if (fs::is_regular_file(P, Ec) && Add(P))
+                {
+                    for (const char* Patch : { ".fp", ".fd" }) Add(fs::path(P).replace_extension(Patch));
+                    break;
+                }
+        for (const char* Build : { ".build.info", ".product.db" }) Add(Root / Build);
+        const std::string Stamp = Hex16(Fnv1a(Text));
+        const std::lock_guard<std::mutex> G(Lock);
+        Kept[Of] = { Now, Stamp };
+        return Stamp;
+    }
+}
+
+ZoneIndex::ReporterScope::ReporterScope(Reporter R)
+{
+    const std::lock_guard<std::mutex> G(ReporterLock);
+    CurrentReporter = std::make_shared<const Reporter>(std::move(R));
+}
+
+ZoneIndex::ReporterScope::~ReporterScope()
+{
+    const std::lock_guard<std::mutex> G(ReporterLock);
+    CurrentReporter.reset();
+}
+
 std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
                                           const std::string& ReaderKey, const std::function<void(size_t, size_t)>& Step,
                                           const std::atomic<bool>* Cancel, std::string& Error, bool AcceptUnweighed)
@@ -293,9 +357,10 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     std::vector<std::string> Names;
     if (!Game.IndexedZones(Install, Options, Names, Error)) return nullptr;
     Siren::AddSearchDir(fs::path(Install).wstring());
+    const std::string Stamp = FilesStamp(Install, Names);
     const auto KeyOf = [&](int Version) {
         std::string KeyText = "format " + std::to_string(Version) + "\n" + Game.Id() + "\n" + Lower(fs::absolute(Install).string()) +
-                              "\n" + ReaderKey + "\n";
+                              "\n" + ReaderKey + "\nfiles " + Stamp + "\n";
         for (const auto& N : Names) KeyText += N + "\n";
         return Hex16(Fnv1a(KeyText));
     };
@@ -327,8 +392,28 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     }
 
     // built: every zone opened by a pool of workers (wolff::BuildZones), each result kept per zone
-    // and added in zone order, so the file is the one a serial build writes
+    // and added in zone order, so the file is the one a serial build writes. Said in the run's log
+    // first: made once per install, again only when the game's files (or GrayWolf's readers) change
     Out->Built = true;
+    std::error_code Had;
+    const bool Stale = fs::exists(File, Had) || fs::exists(TextFile, Had);
+    const auto Report = Reporting();
+    if (Report && Report->Log)
+        Report->Log(Stale ? "install index out of date (the game's files changed since it was made, or GrayWolf's readers did): "
+                            "made again, once, " + std::to_string(Names.size()) + " zones"
+                          : "making the install index, once for this install: " + std::to_string(Names.size()) +
+                            " zones; later exports read it, made again only when the game's files change");
+    const auto& Stepping = Step || !Report ? Step : Report->Step;
+    const std::atomic<bool>* Stopping = Cancel || !Report ? Cancel : Report->Cancel;
+    // stepped through the run's reporter: told when the build ends, whatever way (its phase cleared)
+    struct Ending
+    {
+        const Reporter* R;
+        ~Ending()
+        {
+            if (R && R->Finished) R->Finished();
+        }
+    } End{ !Step && Report ? Report.get() : nullptr };
     ExportOptions Indexing = Options;
     Indexing.Indexing = true;
     wolff::IndexBuild B;
@@ -347,8 +432,8 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
         return true;
     };
     B.Read = [&](size_t, const std::string& Path) { return ReadZone(Game, Indexing, Path); };
-    B.Step = Step;
-    B.Cancel = Cancel;
+    B.Step = Stepping;
+    B.Cancel = Stopping;
     // 8 workers by default and at most, 1 for a game whose IndexInParallel is false; a budget of
     // GRAYWOLF_INDEX_BUDGET_MB (4096 by default)
     B.Threads = Game.IndexInParallel() ? (Options.Threads ? Options.Threads : 8) : 1;

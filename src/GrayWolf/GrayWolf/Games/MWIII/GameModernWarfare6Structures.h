@@ -356,11 +356,16 @@ struct MW6SndAsset
     uint32_t FrameRate;
     uint32_t Unk9;
     uint8_t Unk10;
-    uint8_t Unk11;
+    // 5 Opus (seek table + packets). 4 (global's 65): reverb impulse responses, 4 channels at 48 kHz in
+    // blocks of 64 KB whose energy decays block by block but not within one (spectral partitions of a
+    // convolution, not samples); 2 (ingame's 75): "ADM3", a procedural sound model of some 40 "SMP2"
+    // clips (each with its rate and a control value) and "RMP1" records
+    uint8_t Format;
     uint8_t Unk12;
     uint8_t ChannelCount;
     uint64_t Unk13;
 };
+constexpr uint8_t MW6SoundOpus = 5;
 #pragma pack(pop)
 static_assert(sizeof(MW6XModelLod) == 0x48, "MW6XModelLod is 0x48 bytes");
 static_assert(sizeof(MW6XModelMesh) == 0x50, "MW6XModelMesh (xmodelsurfs) is 0x50 bytes");

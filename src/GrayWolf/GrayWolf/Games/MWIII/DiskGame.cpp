@@ -240,7 +240,12 @@ namespace
         void Fixups() override
         {
             Served(true);
+            // the zone's script strings, decrypted (the notetracks name theirs by slot, MW6XAnimNotetrack
+            // u32 0): one the profile's cipher table cannot decrypt is left empty, named by its slot
             Slots = InlineScriptStrings(Zone());
+            for (auto& S : Slots)
+                if (std::string Text; CipherDecrypt(S, Text)) S = std::move(Text);
+                else S.clear(), Counter("strings_not_decrypted")++;
             Counter("lods_without_surfaces") += LinkLods();
         }
 
@@ -267,7 +272,31 @@ namespace
             if (K == Kind::Image) return At<uint8_t>(Image(), Pos + ImageMipCount) == 0 && PointerAt(Pos + ImagePixels) == 0;
             // a material (0x78) with neither images (u8 0x18) nor techset (0x20; the campaign's 0x28)
             if (K == Kind::Material) return At<uint8_t>(Image(), Pos + 0x18) == 0 && PointerAt(Pos + (Campaign ? 0x28 : 0x20)) == 0;
+            // an xanim (MW6XAnim, 0xd0) of its hash only: no bones (8), no notetracks (0x18, count u8
+            // 0x72), no delta parts (0x20), no frame (u16 0x56), no stream info (0xc8): every byte
+            // after the hash is 0 in global_shared_mp's 78 of 412 and ingame_base_mp's 167 of 2 135.
+            // code_post_gfx's void has no bone and no frame either but a notetrack: an anim of its own.
+            // The campaign's xanim is the same 0xd0 (ingame_sp_jup 434 of 7 961, sp_jup_hijack 564)
+            if (K == Kind::Anim)
+                return PointerAt(Pos + 0x8) == 0 && PointerAt(Pos + 0x18) == 0 && At<uint8_t>(Image(), Pos + 0x72) == 0 &&
+                       PointerAt(Pos + 0x20) == 0 && At<uint16_t>(Image(), Pos + 0x56) == 0 && PointerAt(Pos + 0xc8) == 0;
             return false;
+        }
+        // an xanim whose keys (its stream list 0xc8, u32 count 0xac, 0x10-byte {key, u32 size}) are in
+        // no package found: without --install, or streamed on demand; read, its keys would be garbage
+        const char* Unwritable(Kind K, int64_t Pos) const override
+        {
+            if (K != Kind::Anim || PointerAt(Pos + 0xc8) == 0) return nullptr;
+            const int64_t List = Off(PointerAt(Pos + 0xc8));
+            const uint32_t Count = At<uint32_t>(Image(), Pos + 0xac);
+            if (List < 0 || List + (int64_t)Count * 0x10 > (int64_t)Image().size()) return nullptr;
+            auto* Held = ZonePackages();
+            if (Held != nullptr) Held->WaitForPackageCacheLoad();
+            // (a key 0 is an empty buffer: the campaign's head looks have one of four)
+            for (uint32_t S = 0; S < Count; S++)
+                if (const uint64_t Key = At<uint64_t>(Image(), List + (int64_t)S * 0x10); Key != 0 && (Held == nullptr || !Held->Exists(Key)))
+                    return "anims_data_not_installed";
+            return nullptr;
         }
         // (a transient zone is indexed for its parts only: a reference is not pulled from one, as an
         // export of a global zone would then open thousands of them)
@@ -284,7 +313,7 @@ namespace
                     if (!IsReference(K, N, I.Pos) && (K == Kind::Image || Materials.insert(N).second)) Out.push_back({ { K, N }, I.Pos });
                 }
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1+materials1" : "_images1+parts2+materials1"); }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + (Campaign ? "_images1+materials1+anims1" : "_images1+parts2+materials1+anims1"); }
         // what other zones' LODs name and this one holds (the install index's parts): its
         // xmodelsurfs with surfaces, by name hash (multiplayer)
         void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
@@ -522,7 +551,34 @@ namespace
                     Counter("sounds_without_data")++;
                     continue;
                 }
+                // the data the game streams on demand (English voice-over): listed by the *_cdn.xpak
+                // packages, in no .xsub of the install until the game downloads it
+                const uint64_t Key = S.StreamKey != 0 ? S.StreamKey : S.StreamKeyEx;
+                if (!CoDAssets::GamePackageCache->Exists(Key))
+                {
+                    Counter("sounds_not_installed")++;
+                    T.Lacks(Name(), Kind::Sound, Full, "streamed on demand (the game downloads it): in no package of the install");
+                    continue;
+                }
                 Kt.Seen++;
+                // not Opus (MW6SndAsset::Format: reverb impulse responses, procedural sound models):
+                // no decoder yet, the game's object kept as it is, <name>.sound<format>.bin
+                if (S.Format != MW6SoundOpus)
+                {
+                    // sized as ReadXSound asks (the package object's own size is what comes back)
+                    const uint64_t Size = (uint64_t)(S.StreamKey != 0 ? S.Size : S.LoadedSize + 32) + S.SeekTableSize;
+                    uint32_t Got = 0;
+                    const auto Data = CoDAssets::GamePackageCache->ExtractPackageObject(Key, (int32_t)((Size + 4095ull) & ~15ull), Got);
+                    const fs::path File = fs::path(Dir) / (ExportNaming::SafeFileName(fs::path(Full).stem().string()) + ".sound" + std::to_string(S.Format) + ".bin");
+                    if (Data && Got && ExportWriters::WriteBytes(File, (const uint8_t*)Data.get(), Got))
+                    {
+                        Kt.Written++;
+                        Counter("sounds_raw_format_" + std::to_string(S.Format))++;
+                    }
+                    else
+                        T.Fail(Name(), Kind::Sound, Full, "format " + std::to_string(S.Format) + ": its data not read");
+                    continue;
+                }
                 CoDSound_t Sound;
                 Sound.AssetName = ExportNaming::SafeFileName(fs::path(Full).stem().string());
                 Sound.FullPath = fs::path(Full).parent_path().string();
@@ -990,7 +1046,7 @@ namespace
             }
             if (!S.Anims.empty()) F.Sets.push_back(std::move(S));
         }
-        const auto Text = [this](uint32_t Slot) { return Slot > 0 && Slot < Slots.size() ? Decrypted(Slots[Slot]) : std::string(); };
+        const auto Text = [this](uint32_t Slot) { return Slot > 0 && Slot < Slots.size() ? Slots[Slot] : std::string(); };
         const auto IsSet = [&](const std::string& N) { return SetHashes.count(IwctxReaders::AssetHash(N) & HashMask) != 0; };
         const auto IsModel = [&](const std::string& N) { return ModelHashes.count(IwctxReaders::AssetHash(N) & HashMask) != 0; };
         for (const auto& I : Walk().Instances)

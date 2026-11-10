@@ -97,7 +97,10 @@ const StringCipher::Table* StringCipher::Load(const std::string& Dir, std::strin
     if (T == nullptr)
     {
         T = std::make_unique<Table>();
-        T->Loaded = Read((std::filesystem::path(Dir) / "strings.cipher.txt").string(), *T);
+        // GRAYWOLF_NO_STRING_CIPHER=1: as on a machine without the tables (they are not shipped),
+        // for the regress's checks of what a user gets
+        if (GetEnvironmentVariableA("GRAYWOLF_NO_STRING_CIPHER", nullptr, 0) != 0) T->Error = "GRAYWOLF_NO_STRING_CIPHER";
+        else T->Loaded = Read((std::filesystem::path(Dir) / "strings.cipher.txt").string(), *T);
     }
     Error = T->Error;
     return T->Loaded ? T.get() : nullptr;

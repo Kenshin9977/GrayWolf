@@ -73,6 +73,8 @@ public:
     // Packages the zone holds and serves as CoDAssets' package cache whenever it is served (the
     // live readers stream mesh, pixel and sound data from there), set before Open
     void ServesPackages(std::shared_ptr<CoDPackageCache> Packages) { Held = std::move(Packages); }
+    // Those packages, served or not (nullptr: none, the export has no --install)
+    CoDPackageCache* ZonePackages() const { return Held.get(); }
     // Loads, walks and relocates; false with Error when the zone does not read. Inside a
     // DiskGame::PartialScope, a zone that OpensPartially walks only the assets asked and what they
     // reach, from its resume index (ResumeIndex.h); without the index, or when the walk falls short,

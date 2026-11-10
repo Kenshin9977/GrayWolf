@@ -122,6 +122,8 @@ std::unique_ptr<XImageDDS> GameModernWarfare6::ReadXImage(const CoDImage_t* Imag
 std::unique_ptr<XSound> GameModernWarfare6::ReadXSound(const CoDSound_t* Sound)
 {
     auto SoundData = CoDAssets::GameInstance->Read<MW6SndAsset>(Sound->AssetPointer);
+    // only Opus is read as Opus (another format came out as a .opus of its headers alone)
+    if (SoundData.Format != MW6SoundOpus) return nullptr;
 
     // a streamed sound, else the loaded one in the packages (its 32-byte header before the seek table)
     const bool Streamed = SoundData.StreamKey != 0;

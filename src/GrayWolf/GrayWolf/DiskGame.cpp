@@ -1048,6 +1048,27 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     Context Run = C;
     if (Run.Limit > 0) Run.LimitSeen = std::make_shared<Context::Limited>();
     if (Cancel != nullptr) Run.Cancel = Cancel;
+    // the install index made in the middle of a zone's export (a reader asking for it, its caller
+    // stepping nothing): said in the log, its own phase on the progress, stopped by the run's cancel.
+    // The zone's thread waits on the build meanwhile: P is not moving under the workers' steps.
+    std::mutex IndexStepLock;
+    const ZoneIndex::ReporterScope IndexReporter({
+        [&](const std::string& Line) { Mon.Log(Line); },
+        [&](size_t Done, size_t Count) {
+            const std::lock_guard<std::mutex> G(IndexStepLock);
+            Mon.Touch();
+            if (!OnProgress) return;
+            Progress Q = P;
+            Q.Phase = "making the install index (once)";
+            Q.Done = Done;
+            Q.Count = Count;
+            Q.Asset.clear();
+            OnProgress(Q);
+        },
+        [&] {
+            if (OnProgress) OnProgress(P);
+        },
+        Run.Cancel });
     Run.Settings = Options.Settings;
     Run.Languages = Spoken;
     if (!Options.ActsExe.empty()) Run.Settings["acts_exe"] = Options.ActsExe;
@@ -1290,6 +1311,30 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     Mon.Log("=== export end: " + std::to_string(T.ZonesWalked) + "/" + std::to_string(T.Zones) + " zones read to their end, " +
             std::to_string(Written) + " files written, " + std::to_string(T.Failures.size()) + " failures" +
             (T.Cancelled ? ", cancelled" : ""));
+    // what did not go, by zone, kind and reason with a first name, in the log the GUI points to;
+    // every line in failures.txt beside it ("<zone>: <kind> <name> <why>", Fail's and Lacks')
+    if (!T.Failures.empty() || !T.Absent.empty())
+    {
+        std::map<std::string, std::pair<size_t, std::string>> Groups;
+        const auto Group = [&](const char* What, const std::string& Line) {
+            const size_t Colon = Line.find(": ");
+            const std::string Zone = Line.substr(0, Colon), Rest = Colon == std::string::npos ? Line : Line.substr(Colon + 2);
+            const size_t K = Rest.find(' '), N = K == std::string::npos ? K : Rest.find(' ', K + 1);
+            const std::string Why = N == std::string::npos ? std::string() : Rest.substr(N + 1);
+            auto& G = Groups[std::string(What) + " " + Zone + ": " + Rest.substr(0, K) + (Why.empty() ? "" : ", " + Why)];
+            if (G.first++ == 0) G.second = K == std::string::npos ? Rest : Rest.substr(K + 1, N - K - 1);
+        };
+        for (const auto& F : T.Failures) Group("failed", F);
+        for (const auto& A : T.Absent) Group("not installed", A);
+        for (const auto& [G, V] : Groups) Mon.Log("  " + std::to_string(V.first) + " " + G + " (e.g. " + V.second + ")");
+        const fs::path List = fs::path(RunLogPath(C)).parent_path() / "failures.txt";
+        if (std::ofstream Out(List, std::ios::binary); Out)
+        {
+            for (const auto& F : T.Failures) Out << "failed " << F << "\n";
+            for (const auto& A : T.Absent) Out << "not installed " << A << "\n";
+            Mon.Log("  each one: " + List.string());
+        }
+    }
     Mon.Summarize(T);
     return T;
 }

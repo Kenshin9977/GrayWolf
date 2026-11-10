@@ -399,7 +399,7 @@ void LoadGamePanel::DoDiskExport()
         const float Within = P.Count ? (float)P.Done / (float)P.Count : 0.0f;
         size_t Written = 0;
         for (const auto& [K, V] : P.Running->Kinds) Written += V.Written;
-        std::string Where = P.Current ? DiskGame::KindFolder(*P.Current) : std::string("reading");
+        std::string Where = !P.Phase.empty() ? P.Phase : P.Current ? DiskGame::KindFolder(*P.Current) : std::string("reading");
         if (P.Count) Where += " " + Thousands(P.Done) + "/" + Thousands(P.Count);
         if (!P.Asset.empty()) Where += " " + P.Asset;
         std::lock_guard<std::mutex> Lk(Mutex);
