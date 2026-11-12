@@ -154,3 +154,33 @@ bool DecodeIWDSound(ByteView Raw, std::vector<uint8_t>& OutWav)
     std::memcpy(OutWav.data() + Base, Samples.data(), DataBytes);
     return true;
 }
+
+bool IWDSoundDecodedHeader(ByteView Head, size_t RawSize, std::vector<uint8_t>& WavHeader, uint32_t& DataBytes)
+{
+    // DecodeIWDSound's gates and sample count, from its header alone
+    if (RawSize < 32 || Head.size() < 24) return false;
+    const uint32_t Rate = (uint32_t)ReadU32(Head, 8);
+    const uint32_t Channels = (uint32_t)ReadU32(Head, 12);
+    const uint32_t DataOffset = (uint32_t)ReadU32(Head, 16);
+    const uint32_t BlockSize = (uint32_t)ReadU32(Head, 20);
+    if (Rate < 8000 || Rate > 96000) return false;
+    if (Channels != 1 && Channels != 2) return false;
+    if (DataOffset < 16 || DataOffset >= RawSize) return false;
+    if (BlockSize < 64 || BlockSize > 1u * 1024 * 1024) return false;
+    const uint32_t FrameCount = (uint32_t)ReadU32(Head, 4);
+    const size_t PreamblePerBlock = (size_t)7 * Channels, RealBlock = (size_t)262 * Channels;
+    // each block (a final partial one too): its two preamble samples a channel, then two a byte
+    size_t Samples = 0;
+    for (size_t b = DataOffset; b + PreamblePerBlock <= RawSize; b += RealBlock)
+    {
+        const size_t End = (b + RealBlock <= RawSize) ? (b + RealBlock) : RawSize;
+        Samples += 2 * (size_t)Channels + 2 * (End - b - PreamblePerBlock);
+    }
+    if (Samples == 0) return false;
+    const size_t TargetSamples = (size_t)FrameCount * Channels;
+    if (FrameCount > 0 && TargetSamples <= Samples) Samples = TargetSamples;
+    DataBytes = (uint32_t)(Samples * sizeof(int16_t));
+    WavHeader.clear();
+    AppendWavHeader(WavHeader, DataBytes, (uint16_t)Channels, Rate);
+    return true;
+}

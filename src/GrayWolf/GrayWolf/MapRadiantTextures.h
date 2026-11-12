@@ -32,7 +32,7 @@ namespace Maps
         size_t UvExact = 0, UvBelow1e3 = 0, UvBelow1e2 = 0, UvBelow1e1 = 0, UvAbove = 0;
         double UvErrorSum = 0;
         size_t TrianglesDrawn = 0, TrianglesRemoved = 0;
-        size_t TrianglesColoured = 0;   // drawn with vertex colours (a blend, a tint) no brush side carries: left out of the matching
+        size_t TrianglesColoured = 0;   // drawn with vertex colours (a tint, an alpha fade; MapScene's Tint) no brush side carries: left out of the matching
         // the matched triangles' farthest vertex from the side's plane: 0, below 1e-3, 1e-2, the tolerance (what the tolerance rests on)
         size_t Distance[4] = { 0, 0, 0, 0 };
         // the share of a textured side's face its drawn triangles cover: below 10%, 50%, 90%, the rest
@@ -41,6 +41,14 @@ namespace Maps
 
     // a tool material's name (lower case): caulk, clip, trigger, sky, ...
     bool RadiantTool(const std::string& Lower);
+    // a material only the shadows draw (BO1's shadowcaster, its texture the word SHADOW): no surface
+    bool ShadowCaster(const std::string& Material);
+    // a material drawing the source's sky (its technique set "wc_sky": BO1's sky_day, a box around
+    // the level): no surface, the target draws its own sky (as a lit box BO1 mp_firingrange's, 5760
+    // units up, kept the sun off the level's light bake)
+    bool SourceSky(const MapScene& Scene, const std::string& Material);
+    // a drawn surface the Radiant source leaves out (ShadowCaster, SourceSky)
+    inline bool NoSurface(const MapScene& Scene, const std::string& Material) { return ShadowCaster(Material) || SourceSky(Scene, Material); }
     // Quake 3's texture axes (s, t) of a plane of normal N, as Radiant projects onto it
     void RadiantBaseAxes(const std::array<double, 3>& N, std::array<double, 3>& S, std::array<double, 3>& T);
 
@@ -58,8 +66,9 @@ namespace Maps
         using V3 = std::array<double, 3>;
 
         // Scene.Objects' drawn triangles, tool materials and vertex-coloured triangles left out
-        // (counted in Stats)
-        DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats);
+        // (counted in Stats), and those Skip (when given) tells (object, surface, triangle)
+        using SkipTest = std::function<bool(size_t Object, size_t Surf, size_t K)>;
+        DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats, const SkipTest& Skip = nullptr);
 
         // whose a mesh is: 0 the world's, N brush model N's ("brushmodel_<N>")
         static uint32_t Owner(const std::string& MeshName);
@@ -101,6 +110,7 @@ namespace Maps
         // closest to) whose bounds reach it: (cell, triangle) sorted, a cell's range by its key
         std::vector<std::pair<uint64_t, uint32_t>> Grid;
         std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> Cells;
+        std::vector<uint32_t> Large;   // the triangles across too many cells for the grid, in their order
         Scratch Own;
     };
 

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <string>
 #include <vector>
@@ -78,6 +79,16 @@ namespace ExportNaming
         {
             return (double)F;
         }
+    }
+
+    // A folder an asset's name gives, kept below the folder it is joined to: its root ("/amb/..."
+    // joined to the output folder is the drive's \amb), "." and ".." dropped
+    inline std::filesystem::path SafeSubPath(const std::filesystem::path& P)
+    {
+        std::filesystem::path Out;
+        for (const auto& Part : P.relative_path())
+            if (Part != "." && Part != ".." && !Part.empty()) Out /= Part;
+        return Out;
     }
 
     // The T at Off in a zone (or any buffer), T{} when it does not fit.

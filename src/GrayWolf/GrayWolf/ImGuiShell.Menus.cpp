@@ -6,6 +6,7 @@
 #include "UiAsync.h"           // shell opens off the frame
 #include "Strings.h"
 #include "SettingsManager.h"   // exportsnd
+#include "ExportFormats.h"     // the sound formats offered
 #include "ImGuiUpdates.h"      // Settings > Updates, the new-version banner
 #include "ImGuiBlender.h"      // Settings > Blender
 
@@ -23,18 +24,11 @@ namespace ShellUi
         if (!ImGui::BeginMenu("Settings")) return;   // appended to the Settings menu ImGuiUpdates opens
         if (ImGui::BeginMenu("Sounds"))
         {
-            // Opus by default (ExportWriters::SoundFormatSetting)
-            const std::string Current = Strings::ToUpper(SettingsManager::GetSetting("exportsnd", "OPUS"));
-            const struct { const char* Value; const char* Label; const char* Tip; } Formats[] = {
-                { "OPUS", "Opus (default: small, lossy)",
-                  "The game's own Opus packets kept as they are when it stores Opus; any other sound decoded and encoded "
-                  "(64 kb/s a channel, 48 kHz). About a tenth of WAV's size." },
-                { "WAV", "WAV (lossless)", "As the game keeps them (PCM, ADPCM, MP3), or decoded to 16-bit PCM. The largest files." },
-                { "FLAC", "FLAC (lossless, compressed)", "Lossless, about half of WAV's size." },
-            };
-            for (const auto& F : Formats)
+            // Opus by default (ExportWriters::SoundFormatSetting); also in Extract's Formats & options
+            const std::string Current = Strings::ToUpper(SettingsManager::GetSetting(ExportFormats::SoundSetting, ExportFormats::SoundDefault));
+            for (const auto& F : ExportFormats::Sounds)
             {
-                if (ImGui::MenuItem(F.Label, nullptr, Current == F.Value)) SettingsManager::SetSetting("exportsnd", F.Value);
+                if (ImGui::MenuItem(F.Label, nullptr, Current == F.Setting)) SettingsManager::SetSetting(ExportFormats::SoundSetting, F.Setting);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
             }
             ImGui::EndMenu();

@@ -11,6 +11,7 @@
 #include "PickList.h"
 #include "AppLog.h"
 #include "DiskGame.h"
+#include "ExportFormats.h"
 #include "ExportNaming.h"
 #include "SettingsManager.h"
 #include "WraithX.h"
@@ -538,6 +539,15 @@ void LoadGamePanel::DoPreview()
     // the images as the game stores them (DDS), whatever the export setting: no full size decode
     // and PNG encode for the viewer to decode again (Cold War's skybox: 1.9 s -> 0.6 s)
     SettingsManager::SetRunSetting("exportimg", "DDS");
+    // and the models and anims in Cast alone, which the viewer reads, whatever formats the export
+    // writes (Formats & options may have Cast off: OBJ alone would leave nothing to show)
+    const auto CastOnly = [](const auto& Family, bool Set) {
+        for (const ExportFormats::Format& F : Family)
+            if (!Set) SettingsManager::ClearRunSetting(F.Setting);
+            else SettingsManager::SetRunSetting(F.Setting, &F == &Family[0] ? "true" : "false");   // Cast first
+    };
+    CastOnly(ExportFormats::Models, true);
+    CastOnly(ExportFormats::Anims, true);
     const DiskGame::Totals T = DiskGame::Export(Game, Options, Zones, C, [&](const DiskGame::Progress& P) {
         if (P.FromWatchdog) return;
         std::lock_guard<std::mutex> Lock(Mutex);
@@ -545,6 +555,8 @@ void LoadGamePanel::DoPreview()
         DiskStep = "Preview: " + A.Name + (P.Current ? " (" + DiskGame::KindFolder(*P.Current) + ")" : std::string(" (reading the zone)"));
     }, &DiskCancel);
     SettingsManager::ClearRunSetting("exportimg");
+    CastOnly(ExportFormats::Models, false);
+    CastOnly(ExportFormats::Anims, false);
     size_t Written = 0;
     for (const auto& [K, V] : T.Kinds) Written += V.Written;
     if (T.Cancelled) return;

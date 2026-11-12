@@ -80,6 +80,9 @@ namespace Maps
             size_t ModelSurfaces = 0, MaterialVertices = 0, NameLength = 0, BrushSides = 0;
         };
         virtual Limits HardLimits() const = 0;
+        // the keys a model of the world's (a tile of it, its origin the world's) takes besides its
+        // model and placement, as (key, value) pairs
+        virtual std::vector<std::pair<std::string, std::string>> WorldModelKeys() const { return {}; }
         // a material of the map's by its GDT entry's name (MaterialGdt::PrefixedName)
         std::string MaterialName(const std::string& Material) const;
     };

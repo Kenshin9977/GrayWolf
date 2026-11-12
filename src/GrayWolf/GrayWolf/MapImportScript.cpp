@@ -479,7 +479,7 @@ def material(index):
 # ---- meshes: every primitive of a glTF mesh in one Blender mesh, a material slot each
 def build_mesh(index):
     src = DOC["meshes"][index]
-    pos, nrm, uv, col, idx, mat_of_tri, mats = [], [], [], [], [], [], []
+    pos, nrm, uv, col, wts, idx, mat_of_tri, mats = [], [], [], [], [], [], [], []
     base = 0
     for p in src["primitives"]:
         a = p["attributes"]
@@ -488,6 +488,8 @@ def build_mesh(index):
         nrm.append(accessor(a["NORMAL"]) if "NORMAL" in a else np.zeros_like(P))
         uv.append(accessor(a["TEXCOORD_0"]) if "TEXCOORD_0" in a else np.zeros((len(P), 2), np.float32))
         col.append(accessor(a["COLOR_0"]) if "COLOR_0" in a else np.full((len(P), 4), 255, np.uint8))
+        # a layered material's blend weights (G the second layer's, B the third's, A the fourth's)
+        wts.append(accessor(a["_LAYER_WEIGHTS"]) if "_LAYER_WEIGHTS" in a else np.full((len(P), 4), 255, np.uint8))
         I = accessor(p["indices"]).astype(np.int32) + base
         idx.append(I)
         mat_of_tri.append(np.full(len(I) // 3, len(mats), np.int32))
@@ -513,6 +515,10 @@ def build_mesh(index):
     if (c != 255).any():
         me.color_attributes.new("Col", "BYTE_COLOR", "POINT").data.foreach_set(
             "color_srgb", (c.astype(np.float32) / 255.0).ravel())
+    w = np.concatenate(wts)
+    if (w != 255).any():
+        me.color_attributes.new("LayerWeights", "BYTE_COLOR", "POINT").data.foreach_set(
+            "color_srgb", (w.astype(np.float32) / 255.0).ravel())   # the bytes as they are
     for m in mats:
         me.materials.append(material(m))
     me.validate(clean_customdata=False)   # duplicate faces and the like

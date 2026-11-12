@@ -186,6 +186,7 @@
     <ClCompile Include="DiskGame.cpp" />
     <ClCompile Include="DiskGame.Cli.cpp" />
     <ClCompile Include="DiskGame.Index.cpp" />
+    <ClCompile Include="DiskGame.Cipher.cpp" />
     <ClCompile Include="DiskGame.Materials.cpp" />
     <ClCompile Include="DiskGame.LevelNames.cpp" />
     <ClCompile Include="DiskGame.Monitor.cpp" />
@@ -235,6 +236,8 @@
     <ClCompile Include="MapCollision.cpp" />
     <ClCompile Include="MapRadiantWriter.cpp" />
     <ClCompile Include="RadiantTarget.cpp" />
+    <ClCompile Include="MapRadiantBound.cpp" />
+    <ClCompile Include="MapRadiantLayers.cpp" />
     <ClCompile Include="MapRadiantTextures.cpp" />
     <ClCompile Include="SoundAliasCsv.cpp" />
     <ClCompile Include="MapCollisionWriter.cpp" />
@@ -335,6 +338,7 @@
     <ClInclude Include="Techsets.h" />
     <ClInclude Include="DxilReflection.h" />
     <ClInclude Include="ZoneFormat.h" />
+    <ClInclude Include="ExportFormats.h" />
     <ClInclude Include="ExportNaming.h" />
     <ClInclude Include="VirtualGameSession.h" />
     <ClInclude Include="CoDIWIDecoder.h" />
@@ -377,6 +381,8 @@
     <ClInclude Include="MapRadiantWriter.h" />
     <ClInclude Include="RadiantTarget.h" />
     <ClInclude Include="AlphaRule.h" />
+    <ClInclude Include="MapRadiantBound.h" />
+    <ClInclude Include="MapRadiantLayers.h" />
     <ClInclude Include="MapRadiantTextures.h" />
     <ClInclude Include="MapRadiantGeometry.h" />
     <ClInclude Include="SoundAliasCsv.h" />

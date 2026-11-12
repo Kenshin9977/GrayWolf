@@ -28,7 +28,8 @@ namespace Maps
 {
 namespace
 {
-    GltfSceneWriter::Vertex ToGltf(const Vertex& V)
+    // COLOR_0 is the vertex's tint (white for a material's layer weights: MapScene's Tint)
+    GltfSceneWriter::Vertex ToGltf(const Vertex& V, bool Weights)
     {
         GltfSceneWriter::Vertex O;
         for (int K = 0; K < 3; K++)
@@ -38,7 +39,7 @@ namespace
         }
         O.uv[0] = V.Uv[0];
         O.uv[1] = V.Uv[1];
-        for (int K = 0; K < 4; K++) O.color[K] = V.Color[K];
+        for (int K = 0; K < 4; K++) O.color[K] = Tint(V, Weights)[K];
         return O;
     }
 
@@ -143,13 +144,21 @@ bool WriteGlb(const MapScene& Scene, const std::string& GlbPath, const Materials
         std::vector<GltfSceneWriter::Vertex> V;
         std::vector<uint32_t> I;
         int Material = -1;
+        std::vector<uint8_t> Weights;   // a layered material's: its vertices' colours (_LAYER_WEIGHTS)
     };
     size_t Triangles = 0;
     bool Textured = false;
     const auto Convert = [&](const Surface& Sf) {
         Part P;
+        const bool Weights = Scene.LayerWeights(Sf.Material);
         P.V.reserve(Sf.Vertices.size());
-        for (const auto& X : Sf.Vertices) P.V.push_back(ToGltf(X));
+        for (const auto& X : Sf.Vertices) P.V.push_back(ToGltf(X, Weights));
+        if (Weights)
+        {
+            P.Weights.reserve(Sf.Vertices.size() * 4);
+            for (const auto& X : Sf.Vertices) P.Weights.insert(P.Weights.end(), X.Color, X.Color + 4);
+            Stats.LayerWeightSurfaces++;
+        }
         P.I.reserve(Sf.Indices.size());
         Triangles = 0;
         for (size_t T = 0; T + 2 < Sf.Indices.size(); T += 3)
@@ -167,7 +176,8 @@ bool WriteGlb(const MapScene& Scene, const std::string& GlbPath, const Materials
     const auto AddSurface = [&](const std::string& MeshName, const Surface& Sf) -> int {
         const Part P = Convert(Sf);
         const bool More = Sf.UvSets > 1 && Sf.MoreUvs.size() == Sf.Vertices.size() * (Sf.UvSets - 1) * 2;
-        return W.AddMesh(MeshName, P.V, P.I, P.Material, More ? &Sf.MoreUvs : nullptr, More ? Sf.UvSets - 1 : 0);
+        return W.AddMesh(MeshName, { { &P.V, &P.I, P.Material, More ? &Sf.MoreUvs : nullptr, More ? Sf.UvSets - 1 : 0,
+                                       P.Weights.empty() ? nullptr : &P.Weights } });
     };
 
     for (const Mesh& M : Scene.Objects)
@@ -194,7 +204,7 @@ bool WriteGlb(const MapScene& Scene, const std::string& GlbPath, const Materials
             std::vector<Part> Parts;
             for (const Surface& Sf : It->second.Surfaces) Parts.push_back(Convert(Sf));
             std::vector<GltfSceneWriter::Part> Refs;
-            for (const Part& P : Parts) Refs.push_back({ &P.V, &P.I, P.Material });
+            for (const Part& P : Parts) Refs.push_back({ &P.V, &P.I, P.Material, nullptr, 0, P.Weights.empty() ? nullptr : &P.Weights });
             Idx = W.AddMesh(It->second.Name, Refs);
             if (Idx >= 0)
             {
@@ -357,7 +367,7 @@ std::string Describe(const WriteStats& S)
        << "\ninstances_without_model=" << S.InstancesWithoutModel << "\nsky_meshes=" << S.SkyMeshes
        << "\nlights=" << S.Lights << "\nmaterials=" << S.Materials << "\nimages=" << S.Images
        << "\nmissing_textures=" << S.MissingTextures << "\nalpha_masked=" << S.AlphaMasked
-       << "\nalpha_blended=" << S.AlphaBlended << "\n";
+       << "\nalpha_blended=" << S.AlphaBlended << "\nlayer_weight_surfaces=" << S.LayerWeightSurfaces << "\n";
     return Os.str();
 }
 
@@ -368,7 +378,7 @@ namespace
     public:
         const char* Extension() const override { return ".glb"; }
         bool Write(const MapScene& Scene, const std::string& Path, const Materials::IAdapter& Adapter,
-                   SceneWriteResult& Result, std::string& Error) const override
+                   SceneWriteResult& Result, std::string& Error, const WriteProgress&) const override
         {
             WriteStats Stats;
             if (!WriteGlb(Scene, Path, &Adapter, Stats, Error)) return false;
@@ -377,7 +387,8 @@ namespace
                                 { "map_instances", Stats.Instances },
                                 { "map_instances_without_model", Stats.InstancesWithoutModel },
                                 { "map_lights", Stats.Lights }, { "map_materials", Stats.Materials },
-                                { "map_images", Stats.Images }, { "map_missing_textures", Stats.MissingTextures } };
+                                { "map_images", Stats.Images }, { "map_missing_textures", Stats.MissingTextures },
+                                { "map_layer_weight_surfaces", Stats.LayerWeightSurfaces } };
             // Auto alpha on colour maps a dependency writes: judged once they are
             if (!Stats.AlphaLater.empty())
             {

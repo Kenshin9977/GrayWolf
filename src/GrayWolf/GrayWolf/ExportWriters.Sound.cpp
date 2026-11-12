@@ -454,6 +454,11 @@ bool WriteSound(const SoundSource& S, const std::filesystem::path& Path, const s
     return false;
 }
 
+void CountSound(const char* Name)
+{
+    Count(Name);
+}
+
 std::map<std::string, size_t> SoundCounters()
 {
     std::lock_guard<std::mutex> Lock(CountersLock);

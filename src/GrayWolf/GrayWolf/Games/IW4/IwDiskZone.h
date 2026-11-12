@@ -56,7 +56,9 @@ namespace Iw64
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
         // an image of the .iwd archives (its record alone in the zone): its .iwi's (Sizes::IwiWeight)
         void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "|iw64 images 1"; }
+        // (+sounds2: every sound listed from its header, no cap: a zone the dry run stopped at its cap
+        // listed them too)
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "|iw64 images 1+sounds2"; }
         // the level of a map zone (Games/IW4/IwMap.cpp): world, placements, entity models, lights, sky
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
 
@@ -110,6 +112,11 @@ namespace Iw64
                        std::string& Error) const override;
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override;
+        // its zones open on the index's workers: before its session a zone only decompresses its fast
+        // file and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the loaded
+        // sounds in the zone, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
         // the anims' weapons, player types and characters (Games/IwClassic/IwClassicAnimOwners.h)
         std::vector<std::string> AnimOwnerDocuments() const override;
         void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override;

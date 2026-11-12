@@ -240,11 +240,7 @@ namespace
             GameBlackOps6::PerformInitialSetup();
             // the package index's bo6_names.wni (the campaign's too): names found for the game's
             // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
-            static std::once_flag Names;
-            std::call_once(Names, [] {
-                CoDAssets::AssetNameCache.LoadIndex(
-                    (fs::path(FileSystems::GetApplicationPath()) / "package_index" / "bo6_names.wni").string());
-            });
+            IwctxReaders::LoadGameNames({ "bo6_names.wni" });
             return { SlotString, Campaign ? GameBlackOps6::LoadXImageCampaign : GameBlackOps6::LoadXImage };
         }
 
@@ -1121,6 +1117,14 @@ namespace
         // its zones open on the index's workers: their decompression and walk share nothing, its
         // handlers and fixups run under the session lock, ResolveZones is serialized
         bool IndexInParallel() const override { return true; }
+
+        // the string cipher's strings (DiskGame::EnsureStringCipher): the zones' script strings
+        const DiskGame::CipherSource* CipherStrings() const override
+        {
+            static const DiskGame::CipherSource Multiplayer = IwctxReaders::ScriptStringCipher("bo6"),
+                                                Solo = IwctxReaders::ScriptStringCipher("bo6sp");
+            return Campaign ? &Solo : &Multiplayer;
+        }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {

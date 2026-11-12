@@ -26,8 +26,9 @@ namespace Iw3Family
         IwdZone(const std::string& Path, std::string InstallDir);
         ~IwdZone() override;
 
-        // the index keeps what Defines gives: its images and loaded sounds too
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images_sounds1"; }
+        // the index keeps what Defines gives: its images and loaded sounds too (+sounds2: every sound
+        // listed from its header, no cap: a zone the dry run stopped at its cap listed them too)
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images_sounds1+sounds2"; }
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override;
 
     protected:

@@ -15,3 +15,8 @@
 // Returns false if the buffer is not a recognisable IWD sound. On success OutWav holds a
 // complete little-endian RIFF/WAVE PCM16 file.
 bool DecodeIWDSound(ByteView Raw, std::vector<uint8_t>& OutWav);
+
+// What DecodeIWDSound makes of a file of RawSize bytes whose first bytes are Head (its 24-byte
+// header suffices), without decoding: the 44-byte header of the WAV it writes (WavHeader) and the
+// bytes of its samples. False exactly where DecodeIWDSound would give false.
+bool IWDSoundDecodedHeader(ByteView Head, size_t RawSize, std::vector<uint8_t>& WavHeader, uint32_t& DataBytes);

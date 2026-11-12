@@ -68,6 +68,9 @@ public:
         int material;
         const std::vector<float>* moreUvs = nullptr;
         uint32_t moreSets = 0;
+        // four bytes per vertex written as the custom attribute _LAYER_WEIGHTS (a layered material's
+        // blend weights, kept out of COLOR_0, which glTF multiplies into the colour); none when null
+        const std::vector<uint8_t>* layerWeights = nullptr;
     };
     int AddMesh(const std::string& name, const std::vector<Part>& parts);
 
@@ -91,7 +94,7 @@ private:
     struct BufferView { size_t offset, length; int target; }; // target: 0=none,34962 array,34963 element
     struct Accessor { int bufferView, componentType, count; std::string type; bool normalized;
                       std::vector<double> min, max; bool hasBounds; };
-    struct Primitive { int posAcc, normAcc, uvAcc, colAcc, idxAcc, material; std::vector<int> moreUvAcc; };
+    struct Primitive { int posAcc, normAcc, uvAcc, colAcc, idxAcc, material; std::vector<int> moreUvAcc; int weightsAcc = -1; };
     struct Mesh { std::string name; std::vector<Primitive> prims; };
     struct Material { std::string name; int baseColorImage; float rgba[4]; Alpha alpha; float cutoff; };
     struct Image { std::string name; int bufferView; std::string uri; };

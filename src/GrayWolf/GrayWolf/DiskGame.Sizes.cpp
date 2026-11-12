@@ -379,9 +379,18 @@ bool FlacStreamInfo(const uint8_t* Data, size_t Size, uint32_t& Rate, uint32_t& 
     return Rate != 0;
 }
 
-SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Name)
+// HeaderOf from the first Have bytes of S.Data (S.Size its whole size): Cut set, and the header not
+// to be trusted, when it would read past them
+static SoundHeader HeaderIn(const ExportWriters::SoundSource& S, const std::string& Name, size_t Have, bool& Cut)
 {
     using Form = ExportWriters::SoundSource::Form;
+    Have = std::min(Have, S.Size);
+    Cut = false;
+    const auto Present = [&](uint64_t End) {
+        if (End <= Have) return true;
+        Cut = true;
+        return false;
+    };
     SoundHeader H;
     H.Name = Name;
     H.Stored = S.Size;
@@ -403,10 +412,18 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
     if (Ext == ".flac")
     {
         H.Is = SoundHeader::Form::Flac;
+        if (S.Size >= 26 && !Present(26)) return H;
         FlacStreamInfo(S.Data, S.Size, H.Rate, H.Channels, H.Bits, H.Frames);
         return H;
     }
-    // a WMA, decoded under WAV (WmaSounds): its length from its ASF header
+    // a WMA, decoded under WAV (WmaSounds): its length from its ASF header (its objects walked to
+    // the file's end: read whole)
+    if (S.Size >= 30)
+    {
+        static const uint8_t Asf[4] = { 0x30, 0x26, 0xb2, 0x75 };
+        if (!Present(16)) return H;
+        if (std::memcmp(S.Data, Asf, 4) == 0 && !Present(S.Size)) return H;
+    }
     if (AsfStreamInfo(S.Data, S.Size, H.Rate, H.Channels, H.Frames))
     {
         H.Is = SoundHeader::Form::Decoded, H.Bits = 16;
@@ -415,28 +432,40 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
     // a .wav file (or another, written as it is under WAV): its fmt and data chunks, or a FLAC
     // stream behind its header (WWII)
     H.Is = SoundHeader::Form::Wav;
-    if (Ext != ".wav" || S.Size < 12 || std::memcmp(S.Data, "RIFF", 4) != 0) return H;
+    if (Ext != ".wav" || S.Size < 12 || !Present(4) || std::memcmp(S.Data, "RIFF", 4) != 0) return H;
     uint16_t Tag = 0, Bits = 0, Channels = 0, BlockAlign = 0, PerBlock = 0;
     uint32_t Rate = 0, Fact = 0, AvgBytes = 0, Decoded = 0;
     for (size_t At = 12; At + 8 <= S.Size;)
     {
         uint32_t Len = 0;
+        if (!Present(At + 8)) return H;
         std::memcpy(&Len, S.Data + At + 4, 4);
         const uint8_t* Body = S.Data + At + 8;
         if (std::memcmp(S.Data + At, "fmt ", 4) == 0 && Len >= 16 && At + 8 + 16 <= S.Size)
         {
+            if (!Present(At + 8 + 16) || (Len >= 20 && At + 8 + 20 <= S.Size && !Present(At + 8 + 20))) return H;
             std::memcpy(&Tag, Body, 2), std::memcpy(&Channels, Body + 2, 2), std::memcpy(&Rate, Body + 4, 4), std::memcpy(&Bits, Body + 14, 2);
             std::memcpy(&BlockAlign, Body + 12, 2), std::memcpy(&AvgBytes, Body + 8, 4);
             // IMA ADPCM's samples per block, after its extra size
             if (Len >= 20 && At + 8 + 20 <= S.Size) std::memcpy(&PerBlock, Body + 18, 2);
         }
         else if (std::memcmp(S.Data + At, "fact", 4) == 0 && Len >= 4 && At + 12 <= S.Size)
-            std::memcpy(&Fact, Body, 4);   // a compressed WAV's sample count
+        {
+            // a compressed WAV's sample count
+            if (!Present(At + 12)) return H;
+            std::memcpy(&Fact, Body, 4);
+        }
         else if (std::memcmp(S.Data + At, "dpds", 4) == 0 && Len >= 4 && At + 8 + Len <= S.Size)
-            std::memcpy(&Decoded, Body + (Len / 4 - 1) * 4, 4);   // an xWMA's decoded bytes, its last packet's running total
+        {
+            // an xWMA's decoded bytes, its last packet's running total
+            if (!Present(At + 8 + (uint64_t)(Len / 4) * 4)) return H;
+            std::memcpy(&Decoded, Body + (Len / 4 - 1) * 4, 4);
+        }
         else if (std::memcmp(S.Data + At, "data", 4) == 0)
         {
             const uint64_t Data = std::min<uint64_t>(Len, S.Size - (At + 8));
+            if (Data >= 4 && (!Present(At + 12) || (std::memcmp(Body, "fLaC", 4) == 0 && !Present(At + 8 + std::min<uint64_t>(Data, 26)))))
+                return H;
             if (Data >= 4 && std::memcmp(Body, "fLaC", 4) == 0) FlacStreamInfo(Body, (size_t)Data, H.Rate, H.Channels, H.Bits, H.Frames);
             else if (Tag == 1 && Channels && Bits >= 8)
             {
@@ -467,6 +496,19 @@ SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Nam
         At += 8 + Len + (Len & 1);
     }
     return H;
+}
+
+SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Name)
+{
+    bool Cut = false;
+    return HeaderIn(S, Name, S.Size, Cut);
+}
+
+bool HeaderOfHead(const ExportWriters::SoundSource& S, const std::string& Name, size_t Have, SoundHeader& Out)
+{
+    bool Cut = false;
+    Out = HeaderIn(S, Name, Have, Cut);
+    return !Cut;
 }
 
 uint64_t SoundBytes(const SoundRow& R, const std::string& Format, bool& Exact)

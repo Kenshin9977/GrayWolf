@@ -23,6 +23,8 @@
 #include <set>
 #include <unordered_map>
 
+#include "Games/Common/Adm3.h"
+#include "Games/Common/ImpulseResponse.h"
 #include "Games/Common/StringCipher.h"
 
 #define XXH_INLINE_ALL
@@ -112,6 +114,10 @@ namespace
 {
     // why this thread's last ReadXSound gave no sound, or what its frames failed at (ExportSounds' report)
     thread_local std::string SoundWhy;
+    // the ADM3 object this thread's last ReadXSound found instead of Opus (Adm3.h), empty if none
+    thread_local std::vector<uint8_t> SoundAdm3;
+    // this thread's last ReadXSound gave an impulse response (ImpulseResponse.h)
+    thread_local bool SoundWasIr = false;
 }
 
 std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const SoundLayout& L)
@@ -124,6 +130,7 @@ std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const 
     if (Rate == 0) return nullptr;
     SoundWhy = "no data in the zone or the packages";
     std::unique_ptr<uint8_t[]> Data;
+    std::unique_ptr<XSound> Ir;
     const uint8_t* Opus = nullptr;
     size_t Size = 0, Held = 0;
     // the .xsub object: its header (32 bytes {u64 0, u64 -4, u64 payload} when tagged; an untagged
@@ -142,17 +149,27 @@ std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const 
         uint64_t Tag = 0;
         if (Got >= 16) std::memcpy(&Tag, Data.get() + 8, 8);
         const size_t Header = Tag == 0xFFFFFFFFFFFFFFFCull ? 32 : 0, Skip = Header + (size_t)Seek;
-        // a few objects hold no Opus but an "ADM3" stream (one frame, seek table 0; Black Ops 6's
-        // zombies' music, 3 of zm_t10_quartz's 1 979 sounds): no reader for it
+        // a few objects hold no Opus but an "ADM3" engine model (one frame, seek table 0; Black Ops
+        // 6's zombies, Modern Warfare 4's vehicles): written by ExportSounds (Adm3.h)
         if (Got >= Header + 4 && std::memcmp(Data.get() + Header, "ADM3", 4) == 0)
         {
-            SoundWhy = std::format(".xsub object {:016x} is an ADM3 stream, not Opus: not read", Key);
+            SoundWhy = std::format(".xsub object {:016x} is an ADM3 engine model, not Opus", Key);
+            SoundAdm3.assign(Data.get() + Header, Data.get() + Got);
+            return;
+        }
+        // or a reverb impulse response as its convolution's spectra (codec 4, frame count 0)
+        if (Got >= Header + 0x20 && ImpulseResponse::Is(Data.get() + Header, Got - Header))
+        {
+            SoundWhy = std::format(".xsub object {:016x}: an impulse response not read", Key);
+            Ir = ImpulseResponse::Read(Data.get() + Header, Got - Header);
+            SoundWasIr = Ir != nullptr;
             return;
         }
         if (Got >= Skip + 3)
             Opus = Data.get() + Skip, Size = std::min<size_t>(Loaded != 0 ? Loaded : Got - Skip, Got - Skip), Held = Got - Skip;
     };
     FromKey(S.Key);
+    if (Ir) return Ir;
     // else the frames the zone keeps (primed, or loaded with it)
     if (Opus == nullptr && S.ZoneFrames >= 0 && Mapped(Read<uint64_t>(At + S.ZoneFrames)))
     {
@@ -162,6 +179,7 @@ std::unique_ptr<XSound> IwctxReaders::ReadXSound(const CoDSound_t* Sound, const 
         Opus = Data.get(), Size = L.ZoneCappedByLoaded ? std::min<size_t>(Loaded != 0 ? Loaded : Got, Got) : Got, Held = Got;
     }
     if (Opus == nullptr && S.ZoneFrames >= 0 && Read<uint64_t>(At + S.ZoneFrames) == 0) FromKey(S.KeyElse);
+    if (Ir) return Ir;
     if (Opus == nullptr || Size < 3) return nullptr;
     SoundWhy = "its Opus frames do not decode";
     // packets {u16 size, Opus packet}: the first one's TOC byte says mono or stereo
@@ -185,7 +203,7 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
         Kt.Seen++;
         CoDSound_t Sound;
         Sound.AssetName = ExportNaming::SafeFileName(std::filesystem::path(E.Full).stem().string());
-        Sound.FullPath = std::filesystem::path(E.Full).parent_path().string();
+        Sound.FullPath = ExportNaming::SafeSubPath(std::filesystem::path(E.Full).parent_path()).string();
         Sound.AssetPointer = E.Address;
         Sound.FrameRate = E.Rate;
         Sound.FrameCount = E.Frames;
@@ -195,17 +213,21 @@ void IwctxReaders::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T,
         std::error_code Ec;
         std::filesystem::create_directories(Dir, Ec);
         SoundWhy.clear();
+        SoundAdm3.clear();
+        SoundWasIr = false;
         // a sound not read is reported on this thread (SoundWhy, thread local, says why); one not
-        // written, on the pool's
-        Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [&Kt, &T, &Zone, Full = E.Full](int Code, const std::string& Crash) {
+        // written, on the pool's. An ADM3 engine model (not Opus) is written as its clips and tables (Adm3.h)
+        Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [&Kt, &T, &Zone, Dir, Stem = Sound.AssetName, Full = E.Full](int Code, const std::string& Crash) {
             if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+            else if (Crash.empty() && !SoundAdm3.empty() && Adm3::Write(SoundAdm3.data(), SoundAdm3.size(), Dir, Stem, T.Counters)) Kt.Written++;
             else T.Fail(Zone, Kind::Sound, Full, "code " + std::to_string(Code) + " " + (Crash.empty() ? SoundWhy : Crash));
         });
+        if (SoundWasIr) Sink.Locked([&T]() { T.Counters["sounds_impulse_responses"]++; });
     }
     Sink.Finish();
 }
 
-std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string& ProfileDir, size_t ListSize)
+std::vector<std::string> IwctxReaders::RawZoneStrings(ByteView Z, size_t ListSize)
 {
     std::vector<std::string> Out;
     if (Z.size() < ListSize || ListSize < 0x10) return Out;
@@ -214,8 +236,6 @@ std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string
     std::memcpy(&Count, Z.data(), 4);
     std::memcpy(&Ptr, Z.data() + 8, 8);
     if (Ptr == 0) return Out;
-    std::string Error;
-    const auto* Cipher = StringCipher::Load(ProfileDir, Error);
     size_t Pos = ListSize + (size_t)Count * 8;
     for (uint32_t K = 0; K < Count && ListSize + 8 + K * 8ull <= Z.size(); K++)
     {
@@ -223,11 +243,20 @@ std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string
         std::memcpy(&Slot, Z.data() + ListSize + K * 8ull, 8);
         Out.emplace_back();
         if (Slot == 0 || ((Slot >> 61) & 1) == 0) continue;
-        std::string Raw;
-        for (; Pos < Z.size() && Z[Pos] != 0; Pos++) Raw.push_back((char)Z[Pos]);
+        for (; Pos < Z.size() && Z[Pos] != 0; Pos++) Out.back().push_back((char)Z[Pos]);
         Pos++;
-        if (!StringCipher::Decrypt(Cipher, Raw, Out.back())) Out.back().clear();
     }
+    return Out;
+}
+
+std::vector<std::string> IwctxReaders::ZoneStrings(ByteView Z, const std::string& ProfileDir, size_t ListSize)
+{
+    auto Out = RawZoneStrings(Z, ListSize);
+    if (Out.empty()) return Out;
+    std::string Error;
+    const auto* Cipher = StringCipher::Load(ProfileDir, Error);
+    for (auto& S : Out)
+        if (!S.empty() && !StringCipher::Decrypt(Cipher, S, S)) S.clear();
     return Out;
 }
 
@@ -299,7 +328,7 @@ void IwctxReaders::LoadNameIndexes()
     static std::once_flag Once;
     std::call_once(Once, [] {
         const auto Index = std::filesystem::path(FileSystems::GetApplicationPath()) / "package_index";
-        for (const char* F : { "fnv1a_string.wni", "fnv1a_bones.wni" }) CoDAssets::StringCache.LoadIndex((Index / F).string());
+        for (const char* F : { "fnv1a_string.wni", "fnv1a_bones.wni", "fnv1a_v2_bones.wni" }) CoDAssets::StringCache.LoadIndex((Index / F).string());
         // the games name bones by the FNV-1a 64 of the name (the indexes key them by 32 bits): add those keys
         CoDAssets::StringCache.AddDerivedKeys("fnv1a64", [](const std::string& Name) {
             uint64_t H = 0xcbf29ce484222325ull;
@@ -308,9 +337,32 @@ void IwctxReaders::LoadNameIndexes()
         });
         // fnv1a_localize.wni: localize key names, hashed as asset names are
         for (const char* F : { "fnv1a_xmodels.wni", "fnv1a_v2_ximages.wni", "fnv1a_v2_xmaterials.wni", "fnv1a_v2_xanims.wni", "fnv1a_ximages.wni",
-                               "fnv1a_xmaterials.wni", "fnv1a_xsounds.wni", "fnv1a_localize.wni" })
+                               "fnv1a_xmaterials.wni", "fnv1a_xsounds.wni", "fnv1a_v2_xsounds.wni", "fnv1a_v2_animpkgs.wni", "fnv1a_localize.wni" })
             CoDAssets::AssetNameCache.LoadIndex((Index / F).string());
     });
+}
+
+void IwctxReaders::LoadGameNames(std::initializer_list<const char*> Packages)
+{
+    static std::mutex Lock;
+    static std::set<std::string> Loaded;
+    const std::lock_guard<std::mutex> G(Lock);
+    const auto Index = std::filesystem::path(FileSystems::GetApplicationPath()) / "package_index";
+    for (const char* F : Packages)
+        if (Loaded.insert(F).second) CoDAssets::AssetNameCache.LoadIndex((Index / F).string());
+}
+
+DiskGame::CipherSource IwctxReaders::ScriptStringCipher(const char* Profile)
+{
+    DiskGame::CipherSource S;
+    S.Profile = Profile;
+    S.Reads = [](const std::string& Zone) { return !Strings::ToLower(Zone).ends_with("_tr.ff"); };
+    S.Strings = [Profile](const std::string&, ByteView Z, bool, std::vector<std::string>& Script, std::vector<std::string>&) {
+        std::string Error;
+        const auto* Tables = ExportWriters::ZoneProfile(Profile, Error);
+        Script = RawZoneStrings(Z, Tables ? (size_t)Tables->Profile.Rules.ZoneLoadValue("asset_list_size", 0x30) : 0x30);
+    };
+    return S;
 }
 
 // GfxEntityPairs (0x40, 0x28451c0): counts u32 0 (pairs), 4 (keys), 0xc (vectors), 0x10 (string

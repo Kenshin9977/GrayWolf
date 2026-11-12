@@ -401,7 +401,8 @@ void ImageSink::Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path)
         Times().ConvertUs += Micros(Start);
         Times().Converted++;
         std::lock_guard<std::mutex> G(S->StatsLock);
-        if (Ok) S->Stats.Written++; else S->Stats.Failed++;
+        if (Ok) S->Stats.Written++;
+        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path);
     });
 }
 
@@ -418,7 +419,8 @@ void ImageSink::Write(std::function<std::unique_ptr<XImageDDS>()> Build, const s
         Times().ConvertUs += Micros(Start);
         Times().Converted++;
         std::lock_guard<std::mutex> G(S->StatsLock);
-        if (Ok) S->Stats.Written++; else S->Stats.Failed++;
+        if (Ok) S->Stats.Written++;
+        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path);
     });
 }
 
@@ -451,7 +453,7 @@ ImageSinkStats ImageSink::Finish(const std::function<std::unique_ptr<XImageDDS>(
             if (const uint64_t Key = KeyOf ? KeyOf(Tag) : 0) Written()[Key] = LinkPath;
         }
         else
-            St->Stats.Failed++;
+            St->Stats.Failed++, St->Stats.FailedFiles.push_back(LinkPath);
     }
     St->Links.clear();
     Times().LinkUs += Micros(Linking);

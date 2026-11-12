@@ -725,6 +725,13 @@ namespace
             return !Root.empty() && IsInstall(Root) ? Root : IDiskGame::InstallOfZone(Zone);
         }
 
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the sounds in the zone; a
+        // zone of the .ifs archives read through its own file handle, under the package lock too) hold the
+        // session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<CodolZone>(Path, InstallFromZone(Path, Options.Install));

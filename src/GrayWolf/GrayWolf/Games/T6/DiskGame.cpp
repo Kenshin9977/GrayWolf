@@ -20,6 +20,7 @@
 #include "Games/IW3/Iw3Install.h"
 #include "Games/IW3/LoadDefImage.h"
 #include "IPAKCache.h"
+#include "SettingsManager.h"
 
 #include "Image.h"
 #include <miniz/miniz.h>
@@ -331,17 +332,11 @@ namespace
         {
             return StringAt(PointerAt(K == Kind::Image ? Pos + ImageNameAt : Pos));
         }
-        // The level (TreyarchLevel.h, Black Ops II's places above). A world surface's material
-        // may be a composite of two layers, "*<id>(<path>:<path>)": its name is kept whole, as the
-        // file part of the second path would name different composites alike
+        // The level (TreyarchLevel.h, Black Ops II's places above; its composite materials named
+        // whole there)
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override
         {
-            return ReadLevel(Scene, Models, Level(), [this](uint64_t Address) {
-                XMaterial_t M = GameBlackOps2::ReadXMaterial(Address);
-                const std::string Raw = StringAt(PointerAt(Off(Address)));
-                if (!Raw.empty() && Raw[0] == '*') M.MaterialName = ExportNaming::SafeFileName(Raw);
-                return M;
-            });
+            return ReadLevel(Scene, Models, Level(), GameBlackOps2::ReadXMaterial);
         }
 
     private:
@@ -400,7 +395,25 @@ namespace
                                                       At<uint16_t>(Z, Pos + ImageHeight));
         }
 
+        // An image's pixels. A two-channel one (BC5: IWI format 0x0e, DXGI 83/84) is a normal map
+        // stored as its X and Y, its blue 0: its Z is rebuilt when "patchnormals" is on. Measured
+        // over mp_nuketown_2020, zm_transit, angola and common_mp: every image the materials use as
+        // normalMap is BC5 but two, which carry their own Z (glass_clear_wall_n BC3, the RGBA
+        // $identitynormalmap); the BC5 ones they use otherwise are normals too (detail, tension,
+        // camo normals). The material sidecar's "xy" reads either file the same.
         std::unique_ptr<XImageDDS> Decode(int64_t Pos)
+        {
+            bool TwoChannel = false;
+            auto Dds = Pixels(Pos, TwoChannel);
+            if (Dds && TwoChannel && SettingsManager::GetSetting("patchnormals", "true") == "true")
+            {
+                Dds->ImagePatchType = ImagePatch::Normal_Expand;
+                Counter("images_normal_expanded")++;
+            }
+            return Dds;
+        }
+
+        std::unique_ptr<XImageDDS> Pixels(int64_t Pos, bool& TwoChannel)
         {
             const auto& Z = Image();
             if (At<uint8_t>(Z, Pos + ImagePartCount) > 0)
@@ -412,10 +425,16 @@ namespace
                 auto Data = Ipak->ExtractPackageObject(Key, Size);
                 if (!Data) return nullptr;
                 Counter("images_ipak")++;
+                TwoChannel = Size > 4 && Data[4] == 0x0e;   // IWIInfo's format, after the 4-byte header
                 return CoDIWITranslator::TranslateIWI(Data, Size);
             }
             auto Inline = LoadDef(Pos);
-            if (Inline) Counter("images_in_zone")++;
+            if (Inline)
+            {
+                Counter("images_in_zone")++;
+                const uint32_t Format = At<uint32_t>(Z, Off(PointerAt(Pos)) + 4);
+                TwoChannel = Format == 83 || Format == 84;
+            }
             return Inline;
         }
 
@@ -704,6 +723,12 @@ namespace
             };
             TreyarchGscOwners::Fill(*this, Options, Zones, Out, S);
         }
+
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the .sabs/.sabl banks
+        // beside the zone, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {

@@ -66,7 +66,7 @@ namespace
     public:
         const char* Extension() const override { return "_collision.json"; }
         bool Write(const MapScene& Scene, const std::string& Path, const Materials::IAdapter&, SceneWriteResult& Result,
-                   std::string& Error) const override
+                   std::string& Error, const WriteProgress&) const override
         {
             // a level whose game reads no clip map has nothing to write: not a failure
             if (Scene.Collision.Empty() && Scene.Collision.Triangles.empty())

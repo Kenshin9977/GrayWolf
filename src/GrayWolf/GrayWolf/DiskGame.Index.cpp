@@ -15,6 +15,7 @@
 #include "Siren.h"
 
 #include <Windows.h>
+#include <winioctl.h>
 
 #include <algorithm>
 #include <chrono>
@@ -45,13 +46,34 @@ namespace
     using ExportNaming::Hex16;
     using ExportNaming::Lower;
 
-    // What a build's workers take one at a time: ResolveZones (it may extract a zone from a
-    // package) and a sound kind's dry run (its reader may extract its banks from the same storage)
     std::mutex& PackageLock()
     {
-        static std::mutex Lock;
-        return Lock;
+        return IndexPackageLock();
     }
+
+    using Clock = std::chrono::steady_clock;
+    double Since(Clock::time_point From, Clock::time_point To = Clock::now())
+    {
+        return std::chrono::duration<double>(To - From).count();
+    }
+
+    // What one zone's read took, stage by stage, in seconds (the build's report, BuildTimes): its
+    // resolve (waiting for the package lock, then its work), its wait to be admitted (zone order,
+    // the budget), its open (the reader's own steps: load, walk, links, session...), the string
+    // cipher's take, the weights, a sound dry run, its parts, its close
+    struct ZoneTimes
+    {
+        bool Read = false;
+        unsigned Worker = 0;
+        Clock::time_point Start{}, End{};
+        double ResolveWait = 0, Resolve = 0, Admit = 0, Open = 0, Harvest = 0, Weigh = 0, SoundWait = 0, Sounds = 0, Parts = 0, Close = 0;
+        bool SoundsRan = false, SoundsStopped = false;
+        size_t SoundsHanded = 0;    // the sounds a dry run's WriteSound was handed, and their bytes
+        uint64_t SoundBytes = 0;
+        std::vector<std::pair<std::string, double>> Steps;
+        uint64_t File = 0, Footprint = 0;
+        size_t Assets = 0;
+    };
 
     // A sound's name as a key: lower case, '/' between folders, without a sound file's extension
     std::string SoundKey(std::string Name)
@@ -63,14 +85,36 @@ namespace
         return Name;
     }
 
+    // A sound dry run's work, in bytes: its sounds' stored bytes, and DrySoundEach a sound (the
+    // fixed cost of reading one object from the packages: 1.3 ms a sound against 10 ms a MB on
+    // Cold War's CASC, 2026-11-11). A zone whose work is over DrySoundCap is not weighed: a count
+    // of the zone's own data, so the same install gives the same index whatever the machine's load
+    // (a time budget did not: a zone near it was weighed in one build and not in the next).
+    // GRAYWOLF_INDEX_SOUND_CAP_MB overrides the cap (0: none), for measuring.
+    constexpr uint64_t DrySoundEach = 128ull << 10;
+    uint64_t DrySoundCap()
+    {
+        // (measured on Cold War, 2026-11-11, before its sounds came from their headers: 9 of its 540 zones over 384 MB,
+        // fr_core_common 10.5 GB of work (73 651 sounds) and 107 s alone; the 531 others 86 s of dry runs)
+        constexpr uint64_t Default = 384ull << 20;
+        static const uint64_t Cap = [] {
+            char Mb[32] = {};
+            if (GetEnvironmentVariableA("GRAYWOLF_INDEX_SOUND_CAP_MB", Mb, sizeof(Mb)) == 0) return Default;
+            const uint64_t V = std::strtoull(Mb, nullptr, 10);
+            return V == 0 ? ~0ull : V << 20;
+        }();
+        return Cap;
+    }
+
     // Its sounds with their weights, from a dry run of its sound kind that writes nothing: the
     // headers its reader tells (Context::OnSoundHeader), else the sounds it hands WriteSound (their
-    // samples read to know them) while that takes under DryBudget, else none. A sound Out lists
-    // already gets the weight heard for it; the others are added.
-    void WeighSounds(const IDiskZone& Zone, std::vector<std::pair<AssetId, Weight>>& Out)
+    // samples read to know them) while their work, counted as they come, is within DrySoundCap,
+    // else none. A sound Out lists already gets the weight heard for it; the others are added.
+    void WeighSounds(const IDiskZone& Zone, std::vector<std::pair<AssetId, Weight>>& Out, ZoneTimes* Times = nullptr)
     {
-        constexpr double DryBudget = 2.0;
+        const uint64_t Cap = DrySoundCap();
         if (!Zone.Supported().count(Kind::Sound)) return;
+        if (Times) Times->SoundsRan = true;
         std::atomic<bool> Stop{ false };
         Context C;
         std::error_code Ec;
@@ -82,11 +126,15 @@ namespace
         std::vector<std::pair<AssetId, Weight>> Heard;
         C.OnSoundHeader = [&](const SoundHeader& H) { Heard.push_back({ { Kind::Sound, H.Name }, Sizes::SoundWeight(H) }); };
         const fs::path SoundDir = fs::path(C.OutRoot) / KindFolder(Kind::Sound);
-        const auto Start = std::chrono::steady_clock::now();
         Totals T;
+        size_t Handed = 0;
+        uint64_t Bytes = 0;
         {
             const ExportWriters::DrySounds Dry([&](const ExportWriters::SoundSource& S, const fs::path& Path) {
-                if (std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count() > DryBudget)
+                if (Stop.load()) return;
+                Handed++;
+                Bytes += S.Size;
+                if (Bytes + Handed * DrySoundEach > Cap)
                 {
                     Stop.store(true);
                     return;
@@ -94,10 +142,18 @@ namespace
                 const std::string Name = Path.lexically_relative(SoundDir).replace_extension().string();
                 Heard.push_back({ { Kind::Sound, Name }, Sizes::SoundWeight(Sizes::HeaderOf(S, Name)) });
             });
+            const auto Asked = Clock::now();
             const std::lock_guard<std::mutex> G(PackageLock());
+            if (Times) Times->SoundWait = Since(Asked);
             Zone.Export(Kind::Sound, C, T);
         }
         fs::remove_all(C.OutRoot, Ec);
+        if (Times)
+        {
+            Times->SoundsStopped = Stop.load();
+            Times->SoundsHanded = Handed;
+            Times->SoundBytes = Bytes;
+        }
         if (Stop.load()) return;
         // (a name listed more than once, each)
         std::unordered_multimap<std::string, size_t> Listed;
@@ -111,16 +167,64 @@ namespace
         }
     }
 
-    // The zone opened alone: what it defines and holds (nothing when it does not open)
-    wolff::IndexedZone ReadZone(const IDiskGame& Game, const ExportOptions& Options, const std::string& Path)
+    // Whether File is on a drive that seeks (a hard disk): zones loaded side by side from one make it
+    // seek between them, slower than one at a time (Infinite Warfare on a hard disk, 2026-11-11: its
+    // loads 515 s summed on 1 worker, 4 978 s on 8 workers; the build 953 s against 1 123 s)
+    bool OnSpinningDisk(const std::string& File)
+    {
+        wchar_t Volume[MAX_PATH] = {};
+        if (!GetVolumePathNameW(fs::absolute(File).wstring().c_str(), Volume, MAX_PATH)) return false;
+        std::wstring Device = Volume;
+        if (Device.size() < 2 || Device[1] != L':') return false;
+        Device = L"\\\\.\\" + Device.substr(0, 2);
+        const HANDLE H = CreateFileW(Device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (H == INVALID_HANDLE_VALUE) return false;
+        STORAGE_PROPERTY_QUERY Query{};
+        Query.PropertyId = StorageDeviceSeekPenaltyProperty;
+        Query.QueryType = PropertyStandardQuery;
+        DEVICE_SEEK_PENALTY_DESCRIPTOR Seek{};
+        DWORD Got = 0;
+        const bool Asked = DeviceIoControl(H, IOCTL_STORAGE_QUERY_PROPERTY, &Query, sizeof(Query), &Seek, sizeof(Seek), &Got, nullptr) && Got >= sizeof(Seek);
+        CloseHandle(H);
+        return Asked && Seek.IncursSeekPenalty;
+    }
+
+    // The part a zone's entry carries while it waits to be read again (IDiskZone::IndexAgain)
+    constexpr const char* AgainPart = "#index_again";
+    bool WaitsAgain(const wolff::IndexedZone& E)
+    {
+        return std::any_of(E.Parts.begin(), E.Parts.end(), [](const auto& P) { return P.first == AgainPart; });
+    }
+
+    // The zone opened alone: what it defines and holds (nothing when it does not open); its bytes
+    // handed to the string cipher's rebuild (Harvest) while open, as the zone Name
+    wolff::IndexedZone ReadZone(const IDiskGame& Game, const ExportOptions& Options, const std::string& Path, CipherHarvest* Harvest = nullptr,
+                                const std::string& Name = std::string(), ZoneTimes* Times = nullptr, IDiskGame::IndexRide* Ride = nullptr)
     {
         wolff::IndexedZone E;
         E.Done = true;
         std::string Why;
-        const auto Zone = Game.Open(Path, Options, Why);
+        auto At = Clock::now();
+        const auto Lap = [&](double ZoneTimes::*Field) {
+            const auto Now = Clock::now();
+            if (Times) Times->*Field += Since(At, Now);
+            At = Now;
+        };
+        auto Zone = Game.Open(Path, Options, Why);
+        Lap(&ZoneTimes::Open);
         if (!Zone) return E;
+        if (Times) Zone->OpenTimes(Times->Steps);
+        if (Harvest) Harvest->Add(Name, Zone->Decoded());
+        if (Ride) Ride->Opened(*Zone);
+        Lap(&ZoneTimes::Harvest);
         std::vector<std::pair<AssetId, Weight>> Weighed;
-        WeighAll(*Zone, Weighed, !Game.IndexInParallel());
+        // (WeighAll, timed)
+        Zone->Weighs(Weighed);
+        Lap(&ZoneTimes::Weigh);
+        if (Game.IndexWeighsSounds() &&
+            std::none_of(Weighed.begin(), Weighed.end(), [](const auto& A) { return A.first.K == Kind::Sound && A.second.A != 0; }))
+            WeighSounds(*Zone, Weighed, Times);
+        Lap(&ZoneTimes::Sounds);
         for (auto& [A, W] : Weighed)
             if (!wolff::InstallIndex::TextName(A.Name))
             {
@@ -140,10 +244,133 @@ namespace
             }
         E.Size = Zone->Footprint();
         Zone->Parts(E.Parts);
+        // (marked in what the partial file keeps: a resumed build reads it again too)
+        if (Zone->IndexAgain()) E.Parts.emplace_back(AgainPart, 0);
         std::sort(E.Parts.begin(), E.Parts.end());
         E.Parts.erase(std::unique(E.Parts.begin(), E.Parts.end()), E.Parts.end());
+        Lap(&ZoneTimes::Parts);
+        Zone.reset();
+        Lap(&ZoneTimes::Close);
+        if (Times)
+        {
+            if (Times->SoundsRan) Times->Sounds -= Times->SoundWait;
+            Times->Footprint = E.Size;
+            Times->Assets = E.Defined.size();
+        }
         return E;
     }
+
+    // The build's report: each stage summed over the zones (and the reader's own open steps), the
+    // workers' use of the build's wall time (busy, waiting for the package lock, for admission, for
+    // the session lock), the slowest zones with their stages
+    std::string TimesReport(const std::vector<std::string>& Names, const std::vector<ZoneTimes>& Times, unsigned Threads, double Wall,
+                            const std::vector<std::pair<std::string, double>>& Around, const std::function<void(const std::string&)>& Log)
+    {
+        std::string Out;
+        const auto Fixed = [](double V, int Digits = 1) {
+            char B[64];
+            snprintf(B, sizeof(B), "%.*f", Digits, V);
+            return std::string(B);
+        };
+        const auto Line = [&](const std::string& Text) {
+            Out += "log " + Text + "\n";
+            if (Log) Log(Text);
+        };
+        std::vector<std::pair<std::string, double>> Stages = { { "resolve_wait", 0 }, { "resolve", 0 }, { "admit_wait", 0 }, { "open", 0 },
+                                                               { "harvest", 0 }, { "weigh", 0 }, { "sound_wait", 0 }, { "sounds", 0 },
+                                                               { "parts", 0 }, { "close", 0 } };
+        std::vector<std::pair<std::string, double>> Steps;   // the readers' open steps, in their first order
+        size_t Count = 0, SoundsRan = 0, SoundsStopped = 0;
+        uint64_t Files = 0;
+        double SessionWait = 0, DiskWait = 0;
+        std::vector<double> Busy(Threads ? Threads : 1);
+        for (const ZoneTimes& T : Times)
+        {
+            if (!T.Read) continue;
+            Count++;
+            Files += T.File;
+            SoundsRan += T.SoundsRan;
+            SoundsStopped += T.SoundsStopped;
+            const double V[] = { T.ResolveWait, T.Resolve, T.Admit, T.Open, T.Harvest, T.Weigh, T.SoundWait, T.Sounds, T.Parts, T.Close };
+            for (size_t I = 0; I < Stages.size(); I++) Stages[I].second += V[I];
+            for (const auto& [S, D] : T.Steps)
+            {
+                const auto It = std::find_if(Steps.begin(), Steps.end(), [&](const auto& P) { return P.first == S; });
+                if (It == Steps.end()) Steps.emplace_back(S, D);
+                else It->second += D;
+                if (S == "session_wait") SessionWait += D;
+                if (S == "disk_wait") DiskWait += D;
+            }
+            if (T.Worker < Busy.size()) Busy[T.Worker] += Since(T.Start, T.End);
+        }
+        Out += "index_threads=" + std::to_string(Threads) + "\nindex_zones_read=" + std::to_string(Count) + "\nindex_file_mb=" + std::to_string(Files >> 20) +
+               "\nindex_seconds_zones=" + Fixed(Wall, 3) + "\n";
+        for (const auto& [S, D] : Around) Out += "index_seconds_" + S + "=" + Fixed(D, 3) + "\n";
+        for (const auto& [S, D] : Stages) Out += "index_stage_" + S + "_s=" + Fixed(D, 3) + "\n";
+        for (const auto& [S, D] : Steps) Out += "index_open_" + S + "_s=" + Fixed(D, 3) + "\n";
+        Out += "index_sounds_dry_runs=" + std::to_string(SoundsRan) + "\nindex_sounds_dry_stopped=" + std::to_string(SoundsStopped) + "\n";
+        // the workers: time inside a zone (resolve to close) against the zones' wall time
+        double InZone = 0;
+        for (double B : Busy) InZone += B;
+        const double Capacity = Wall * (double)Busy.size();
+        const double Waits = Stages[0].second + Stages[2].second + Stages[6].second + SessionWait + DiskWait;
+        const auto Pct = [&](double V) { return Capacity > 0 ? Fixed(100.0 * V / Capacity) + " %" : std::string("-"); };
+        Out += "index_workers_in_zone_pct=" + (Capacity > 0 ? Fixed(100.0 * InZone / Capacity) : std::string("0")) + "\n";
+        Out += "index_workers_working_pct=" + (Capacity > 0 ? Fixed(100.0 * (InZone - Waits) / Capacity) : std::string("0")) + "\n";
+        std::string Around2;
+        for (const auto& [S, D] : Around) Around2 += ", " + S + " " + Fixed(D) + " s";
+        Line("install index build: " + std::to_string(Count) + " zones (" + std::to_string(Files >> 20) + " MB of files) in " + Fixed(Wall) +
+             " s on " + std::to_string(Busy.size()) + " workers" + Around2);
+        std::string S1 = "install index stages (summed over the zones):";
+        for (const auto& [S, D] : Stages) S1 += " " + S + " " + Fixed(D) + " s,";
+        S1.pop_back();
+        Line(S1);
+        std::string S2 = "install index open steps (summed):";
+        for (const auto& [S, D] : Steps) S2 += " " + S + " " + Fixed(D) + " s,";
+        if (!Steps.empty()) S2.pop_back();
+        Line(S2);
+        Line("install index workers: in a zone " + Pct(InZone) + " of " + Fixed(Capacity) + " worker-seconds, working " + Pct(InZone - Waits) +
+             " (waiting: package lock " + Pct(Stages[0].second + Stages[6].second) + ", admission " + Pct(Stages[2].second) + ", session lock " +
+             Pct(SessionWait) + ", hard disk " + Pct(DiskWait) + "); sound dry runs " + std::to_string(SoundsRan) + " (" + std::to_string(SoundsStopped) + " stopped at their cap of " + std::to_string(DrySoundCap() >> 20) + " MB)");
+        // the slowest
+        std::vector<size_t> Order;
+        for (size_t Z = 0; Z < Times.size(); Z++)
+            if (Times[Z].Read) Order.push_back(Z);
+        const auto Total = [&](size_t Z) { return Since(Times[Z].Start, Times[Z].End); };
+        std::sort(Order.begin(), Order.end(), [&](size_t A, size_t B) { return Total(A) > Total(B); });
+        if (Order.size() > 20) Order.resize(20);
+        for (size_t Z : Order)
+        {
+            const ZoneTimes& T = Times[Z];
+            std::string L = "install index slow zone " + Names[Z] + ": " + Fixed(Total(Z), 2) + " s, file " + Fixed((double)T.File / 1048576.0) +
+                            " MB, footprint " + Fixed((double)T.Footprint / 1048576.0) + " MB, " + std::to_string(T.Assets) + " assets;";
+            const double V[] = { T.ResolveWait, T.Resolve, T.Admit, T.Open, T.Harvest, T.Weigh, T.SoundWait, T.Sounds, T.Parts, T.Close };
+            for (size_t I = 0; I < Stages.size(); I++)
+                if (V[I] >= 0.0005) L += " " + Stages[I].first + " " + Fixed(V[I], 3);
+            L += " | open:";
+            for (const auto& [S, D] : T.Steps)
+                if (D >= 0.0005) L += " " + S + " " + Fixed(D, 3);
+            Line(L);
+        }
+        return Out;
+    }
+}
+
+std::mutex& IndexPackageLock()
+{
+    static std::mutex Lock;
+    return Lock;
+}
+
+namespace
+{
+    std::mutex DiskLock;
+    std::atomic<int> HardDiskBuilds{ 0 };   // the builds reading from a hard disk now
+}
+
+std::mutex* IndexDiskLock()
+{
+    return HardDiskBuilds.load() > 0 ? &DiskLock : nullptr;
 }
 
 void WeighAll(const IDiskZone& Zone, std::vector<std::pair<AssetId, Weight>>& Out, bool Sounds)
@@ -254,8 +481,10 @@ std::unique_ptr<ZoneIndex> ZoneIndex::Build(const IDiskGame& Game, const ExportO
                                             const std::function<void(size_t, size_t)>& Step, const std::atomic<bool>* Cancel,
                                             std::string& Error)
 {
+    const auto Start = Clock::now();
     std::vector<std::string> Names;
     if (!Game.IndexedZones(Install, Options, Names, Error)) return nullptr;
+    const double Listed = Since(Start);
     Siren::AddSearchDir(fs::path(Install).wstring());   // the game's own Oodle, when none is beside the exe
     // the reader's key, as Export takes it: from the first zone that opens
     std::string ReaderKey;
@@ -281,7 +510,11 @@ std::unique_ptr<ZoneIndex> ZoneIndex::Build(const IDiskGame& Game, const ExportO
         Error = "no zone opened (" + FirstWhy + ")";
         return nullptr;
     }
-    return For(Game, Options, Install, ReaderKey, Step, Cancel, Error, false);
+    const double Keyed = Since(Start) - Listed;
+    auto Out = For(Game, Options, Install, ReaderKey, Step, Cancel, Error, false);
+    if (Out && Out->Built)
+        Out->BuildTimes = "index_seconds_list=" + std::to_string(Listed) + "\nindex_seconds_key=" + std::to_string(Keyed) + "\n" + Out->BuildTimes;
+    return Out;
 }
 
 namespace
@@ -334,6 +567,11 @@ namespace
         Kept[Of] = { Now, Stamp };
         return Stamp;
     }
+}
+
+std::string ZoneFilesStamp(const std::string& Install, const std::vector<std::string>& Names)
+{
+    return FilesStamp(Install, Names);
 }
 
 ZoneIndex::ReporterScope::ReporterScope(Reporter R)
@@ -423,35 +661,158 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     B.Format = Format;
     B.PartialFile = File + ".partial";
     // (ResolveZones by one worker at a time: it may extract the zone from a package)
+    // each zone's stages (TimesReport), the workers numbered as they first take one
+    std::vector<ZoneTimes> Times(Names.size());
+    std::atomic<unsigned> Workers{ 0 };
+    const auto WorkerId = [&] {
+        thread_local const void* Of = nullptr;
+        thread_local unsigned Id = 0;
+        if (Of != &Workers)
+        {
+            Of = &Workers;
+            Id = Workers++;
+        }
+        return Id;
+    };
     B.Resolve = [&](size_t Z, std::string& Path) {
+        ZoneTimes& T = Times[Z];
+        T.Read = true;
+        T.Worker = WorkerId();
+        T.Start = Clock::now();
         std::vector<std::string> Paths;
         std::string Why;
         const std::lock_guard<std::mutex> G(PackageLock());
-        if (!Game.ResolveZones(Install, { Names[Z] }, Options, Paths, Why) || Paths.empty()) return false;
+        const auto Locked = Clock::now();
+        T.ResolveWait = Since(T.Start, Locked);
+        const bool Ok = Game.ResolveZones(Install, { Names[Z] }, Options, Paths, Why) && !Paths.empty();
+        T.End = Clock::now();
+        T.Resolve = Since(Locked, T.End);
+        if (!Ok) return false;
         Path = Paths.front();
+        std::error_code Ec;
+        T.File = fs::file_size(Path, Ec);
         return true;
     };
-    B.Read = [&](size_t, const std::string& Path) { return ReadZone(Game, Indexing, Path); };
+    // the string cipher's rebuild (DiskGame.Cipher.cpp) riding this build when the install has no
+    // table kept: each zone's strings taken while the index has it open, the rest read after
+    std::map<std::string, size_t> CipherCounters;
+    auto Harvest = CipherHarvest::Begin(Game, Options, Install, &CipherCounters);
+    // what the game gathers from the zones besides (IndexRides)
+    auto Ride = Game.IndexRides(Install, Indexing);
+    B.Read = [&](size_t Z, const std::string& Path) {
+        ZoneTimes& T = Times[Z];
+        T.Admit = Since(T.End);
+        auto E = ReadZone(Game, Indexing, Path, Harvest.get(), Names[Z], &T, Ride.get());
+        T.End = Clock::now();
+        return E;
+    };
     B.Step = Stepping;
     B.Cancel = Stopping;
     // 8 workers by default and at most, 1 for a game whose IndexInParallel is false; a budget of
-    // GRAYWOLF_INDEX_BUDGET_MB (4096 by default)
+    // GRAYWOLF_INDEX_BUDGET_MB (4096 by default). Zones read from a hard disk (OnSpinningDisk) are
+    // loaded one at a time (IndexDiskLock), the rest of their reading side by side.
     B.Threads = Game.IndexInParallel() ? (Options.Threads ? Options.Threads : 8) : 1;
+    struct HardDisk
+    {
+        bool On = false;
+        ~HardDisk()
+        {
+            if (On) HardDiskBuilds--;
+        }
+    } Spinning;
+    if (B.Threads > 1 && !Names.empty())
+    {
+        std::vector<std::string> First;
+        std::string Why;
+        const std::lock_guard<std::mutex> G(PackageLock());
+        if (Game.ResolveZones(Install, { Names.front() }, Options, First, Why) && !First.empty() && OnSpinningDisk(First.front()))
+        {
+            Spinning.On = true;
+            HardDiskBuilds++;
+        }
+    }
     if (char Mb[32] = {}; GetEnvironmentVariableA("GRAYWOLF_INDEX_BUDGET_MB", Mb, sizeof(Mb)) && std::strtoull(Mb, nullptr, 10) > 0)
         B.BudgetBytes = std::strtoull(Mb, nullptr, 10) << 20;
     std::vector<wolff::IndexedZone> Read;
+    const auto Zones = Clock::now();
+    const double Before = Since(Start, Zones);
     if (!wolff::BuildZones(B, Read))
     {
         Error = "cancelled";
         return nullptr;
     }
+    // what the ride gathered complete: the zones that waited on it read again, one at a time
+    if (Ride) Ride->Finished();
+    size_t ReadAgain = 0;
+    for (size_t Z = 0; Z < Read.size(); Z++)
+    {
+        if (!WaitsAgain(Read[Z])) continue;
+        if (Stopping != nullptr && Stopping->load())
+        {
+            Error = "cancelled";
+            return nullptr;
+        }
+        std::string Path;
+        if (B.Resolve(Z, Path))
+        {
+            const double Admitted = Times[Z].Admit;
+            Read[Z] = B.Read(Z, Path);
+            Times[Z].Admit = Admitted;
+        }
+        Read[Z].Done = true;
+        std::erase_if(Read[Z].Parts, [](const auto& P) { return P.first == AgainPart; });
+        ReadAgain++;
+    }
+    const auto Built = Clock::now();
+    // (GRAYWOLF_INDEX_DUMP=<file>: what each zone gave, as text, to compare two builds)
+    if (char Dump[MAX_PATH] = {}; GetEnvironmentVariableA("GRAYWOLF_INDEX_DUMP", Dump, sizeof(Dump)))
+    {
+        std::ofstream D(Dump, std::ios::binary | std::ios::trunc);
+        for (size_t Z = 0; Z < Read.size(); Z++)
+        {
+            const auto& E = Read[Z];
+            D << "zone\t" << Names[Z] << "\t" << E.Size << (Times[Z].SoundsStopped ? "\tsounds_stopped" : "") << "\n";
+            // (the dry run's work, apart: the measure a cap is chosen by)
+            if (Times[Z].SoundsRan)
+                D << "\tsounds_dry\t" << Times[Z].SoundsHanded << "\t" << Times[Z].SoundBytes << "\t" << Times[Z].Sounds << "\n";
+            for (size_t I = 0; I < E.Defined.size(); I++)
+            {
+                const wolff::AssetWeight W = I < E.Weights.size() ? E.Weights[I] : wolff::AssetWeight();
+                D << "\t" << E.Defined[I].Type << "\t" << wolff::InstallIndex::Escaped(E.Defined[I].Name) << "\t" << W.Bytes << "\t" << W.A << "\t"
+                  << W.B << "\t" << W.C << "\n";
+            }
+            for (const auto& [T, H] : E.Parts) D << "\tpart\t" << T << "\t" << H << "\n";
+        }
+    }
     Ix.SetZones(Names);
     wolff::AddZones(Ix, Read, &Out->Renamed);
     Read.clear();
+    const auto Added = Clock::now();
     // read back in place: what every later run reads, the build's memory let go
     if (Ix.SaveMapped(File, Key)) Ix.LoadMapped(File, Key);
     std::error_code Ec;
     fs::remove(File + ".partial", Ec);
+    Out->BuildTimes = TimesReport(Names, Times, B.Threads, Since(Zones, Built),
+                                  { { "before", Before }, { "add", Since(Built, Added) }, { "write", Since(Added) } },
+                                  Report && Report->Log ? Report->Log : std::function<void(const std::string&)>());
+    Out->BuildTimes += "index_zones_read_again=" + std::to_string(ReadAgain) + "\nindex_hard_disk=" + std::to_string(Spinning.On ? 1 : 0) + "\n";
+    const auto Fitting = Clock::now();
+    if (Harvest)
+    {
+        // (its phase on the run's progress: the zones the index does not open, then the fit)
+        CipherProgress CP;
+        CP.Log = [&](const std::string& Line) {
+            Out->CipherLog += Line + "\n";
+            if (Report && Report->Log) Report->Log(Line);
+        };
+        CP.Step = Stepping;
+        CP.Cancel = Stopping;
+        std::string Why;
+        if (!Harvest->Finish(Game, Options, CP, CipherCounters, Why))
+            CP.Log("string cipher not rebuilt: " + Why + "; encrypted strings are left out");
+        Out->CipherCounters = std::move(CipherCounters);
+    }
+    Out->BuildTimes += "index_seconds_cipher=" + std::to_string(Since(Fitting)) + "\n";
     return Done();
 }
 }

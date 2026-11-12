@@ -333,6 +333,12 @@ namespace
             IwZoneAnimOwners::Fill(*this, AnimOwnerLayout(), Options, Zones, Out);
         }
 
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the .pak files beside the
+        // zone, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<GhostsZone>(Path);

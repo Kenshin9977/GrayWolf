@@ -2,6 +2,8 @@
 
 #include "SABSupport.h"
 
+#include "ExportWriters.h"
+
 #include "BinaryReader.h"
 #include "Strings.h"
 #include "Sound.h"
@@ -309,8 +311,14 @@ std::unique_ptr<XSound> SABSupport::DecodeOpusInterleaved(const uint8_t* OpusBuf
         uint16_t BlockSize = 0;
         std::memcpy(&BlockSize, OpusBuffer + OpusDataOffset + At, 2);
         At += 2;
-        const int Decoded = opus_decode(Decoder.get(), OpusBuffer + OpusDataOffset + At, BlockSize, Block.data(), BlockSize == 0 ? EmptyFrames : MaxFrames, 0);
-        // Any negative is a failure in Opus
+        int Decoded = opus_decode(Decoder.get(), OpusBuffer + OpusDataOffset + At, BlockSize, Block.data(), BlockSize == 0 ? EmptyFrames : MaxFrames, 0);
+        // a packet libopus refuses (Modern Warfare 4: a first packet of 1 299 bytes, over the 1 275
+        // a frame holds) is concealed as 20 ms, as a lost one; any other failure ends the sound
+        if (Decoded == OPUS_INVALID_PACKET)
+        {
+            Decoded = opus_decode(Decoder.get(), nullptr, 0, Block.data(), EmptyFrames, 0);
+            ExportWriters::CountSound("sounds_opus_packets_concealed");
+        }
         if (Decoded < 0)
             return nullptr;
         Pcm.insert(Pcm.end(), Block.begin(), Block.begin() + (size_t)Decoded * Channels);

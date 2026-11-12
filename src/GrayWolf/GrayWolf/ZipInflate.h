@@ -25,4 +25,10 @@ namespace ZipInflate
     // The same, Out resized to the entry's size (empty: a directory or an empty file), Lock held
     // only while the archive is read: the inflating runs beside the other threads' reads
     bool Extract(mz_zip_archive* Zip, mz_uint Index, std::vector<uint8_t>& Out, std::mutex& Lock);
+
+    // The first bytes of entry Index, at most Max (all of it when it is smaller), inflated only as
+    // far as they need (miniz's iterator: no CRC-32 checked), and its whole size: what a sound's
+    // header is read from without the rest. False when the entry does not read. The caller holds
+    // whatever guards the archive's reads.
+    bool Head(mz_zip_archive* Zip, mz_uint Index, size_t Max, std::vector<uint8_t>& Out, uint64_t& Size);
 }

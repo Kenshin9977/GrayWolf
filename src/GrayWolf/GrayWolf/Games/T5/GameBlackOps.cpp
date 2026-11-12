@@ -30,6 +30,14 @@ const XMaterial_t GameBlackOps::ReadXMaterial(uint64_t MaterialPointer)
 
     XMaterial_t Result(MaterialData.ImageCount);
     Result.MaterialName = FileSystems::GetFileNameWithoutExtension(CoDAssets::GameInstance->ReadNullTerminatedString(MaterialData.NamePtr));
+    // MaterialInfo::sortKey (name 4 bytes, gameFlags 4, pad 1: T5_Assets.h)
+    Result.SortKey = CoDAssets::GameInstance->Read<uint8_t>(MaterialPointer + 9);
+    // MaterialTechniqueSet: its name first (a zone's name-only header starts with ',')
+    if (MaterialData.TechniqueSetPtr)
+    {
+        Result.TechsetName = CoDAssets::GameInstance->ReadNullTerminatedString(CoDAssets::GameInstance->Read<uint32_t>(MaterialData.TechniqueSetPtr));
+        if (!Result.TechsetName.empty() && Result.TechsetName[0] == ',') Result.TechsetName.erase(0, 1);
+    }
 
     const auto UsageOf = [](uint32_t Semantic)
     {

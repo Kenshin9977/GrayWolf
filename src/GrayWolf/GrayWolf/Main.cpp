@@ -344,6 +344,11 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 {
     SetUnhandledExceptionFilter(MyUnhandledExceptionFilter);
 
+    // The C runtime's open streams (every std::fstream holds one) are 512 at most by default: the
+    // install index's workers reading zones side by side (Infinite Warfare's shared stream reads
+    // each zone's records from its .pak files on the thread pool) ran out of them, and a stream
+    // that does not open reads nothing (a zone's records left out, a sound bank's reader thrown)
+    _setmaxstdio(8192);
 
     AppLog::Init();
 

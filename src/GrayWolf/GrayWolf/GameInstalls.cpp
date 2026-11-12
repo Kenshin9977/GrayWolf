@@ -41,6 +41,7 @@ namespace
             { "cod24", "Black Ops 6",                   2024, "bo6" },
             { "sp24",  "Black Ops 6 (campaign)",        2024, "bo6sp" },
             { "cod25", "Black Ops 7",                   2025, "bo7" },
+            { "cod26", "Modern Warfare 4",              2026, "mw4" },
         };
         return All;
     }
@@ -69,7 +70,7 @@ namespace
             { "Black Ops 4",                    2018, {},                         { "BlackOps4.exe" },                   "bo4" },
             { "Modern Warfare (2019)",          2019, {},                         { "ModernWarfare.exe" },               "mw2019" },
             { "Black Ops Cold War",             2020, {},                         { "BlackOpsColdWar.exe" },             "coldwar" },
-            { "Call of Duty HQ",                2022, { 1938090 },                { "cod.exe", "cod23-cod.exe", "cod24-cod.exe", "cod25-cod.exe" }, "" },
+            { "Call of Duty HQ",                2022, { 1938090 },                { "cod.exe", "cod23-cod.exe", "cod24-cod.exe", "cod25-cod.exe", "cod26-cod.exe" }, "" },
         };
         return All;
     }

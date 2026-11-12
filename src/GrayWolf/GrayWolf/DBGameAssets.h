@@ -188,7 +188,7 @@ struct BOXMaterial
     uint8_t StateFlags;
     uint8_t CameraRegion;
     uint8_t MaxStreamedMips;
-    uint32_t TechniqueSetPtr; // unused
+    uint32_t TechniqueSetPtr; // Material::techniqueSet, its name first
 
     uint32_t ImageTablePtr;    // Material::textureTable
     uint32_t ConstantTablePtr; // Material::constantTable, unused

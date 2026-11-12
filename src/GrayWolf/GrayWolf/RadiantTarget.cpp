@@ -68,13 +68,13 @@ namespace
         double ModelTriangleSpan() const override { return 2048.0; }
         // a placement scaled to nothing (BO1 hides some so): the linker ends on "has scale of 0.0"
         float MinModelScale() const override { return 1e-3f; }
-        // cod2map stops on MAX_MAP_PLANES_COMPILE (655360) for Ghosts' and AW's collision, a prism
-        // per few triangles: nearly flat ones (half a unit, 2 degrees) merged, which no player feels
-        Merge CollisionMerge() const override { return { 0.5, 0.99939 }; }   // cos 2 degrees
-        // MAX_MAP_PLANES is 131072 distinct planes: BO3's mp_freerun_01 (134640 brush sides) and
-        // MWR's mp_shipment (137756) built with prisms, Ghosts' mp_prisonbreak (219346) and AW's
-        // mp_blackbox (395312) did not
-        double CollisionPlaneBudget() const override { return 160000.0; }
+        // as the clip map has them (coplanar): merged half a unit and 2 degrees apart, then made
+        // prisms 2 units deep, they stood the player up to 8 units above BO1's mp_firingrange's
+        // obstacles (measured on the compiled port, against BO1's clip map)
+        Merge CollisionMerge() const override { return { 0.01, 1.0 - 1e-6 }; }
+        // every collision triangle a patch of its own, at its exact height, which takes no plane
+        // (cod2map's MAX_MAP_PLANES, 131072, ended Ghosts' and AW's prisms): no prism at all
+        double CollisionPlaneBudget() const override { return 0.0; }
         // cod2map alone on variants of IW's mp_flip (cod2map_probe): 153912 brush sides stop on
         // MAX_MAP_PLANES_COMPILE, about 86000 pass; Ghosts' mp_prisonbreak built with 72110
         double BrushSideBudget() const override { return 100000.0; }
@@ -98,6 +98,13 @@ namespace
         // cod2map's asset names (64), the brush sides of IW's mp_flip that stopped cod2map once
         // its largest brush models were left out (about 86000 built, 153912 did not)
         Limits HardLimits() const override { return { 255, 64 * 1024 - 2, 64, 153000 }; }
+        // static, lit per vertex: a static model is otherwise lit from one point, a tile's the
+        // world's origin, under BO1's mp_firingrange's ground (its floors black). Treyarch's own
+        // long models (barbed wire, sandbag rows, boards) carry "vertexbake" "1.0" so (map_source/_prefabs)
+        std::vector<std::pair<std::string, std::string>> WorldModelKeys() const override
+        {
+            return { { "static", "1" }, { "vertexbake", "1.0" } };
+        }
 
         // Left out: the source's single-player logic (LeftOut), the misc_model entities its
         // placements stand for (CoD1 and CoD2 keep their placed models so; the copy would name
@@ -109,7 +116,13 @@ namespace
         {
             const auto Class = E.find("classname");
             const std::string C = Class == E.end() ? std::string() : Class->second;
-            if (LeftOut(C) || C == "misc_model" || E.count("weaponinfo"))
+            // another game's breakable glass names a glass type BO3 does not have ("glass_dec_glass02":
+            // the linker warns "is not a valid glass"), and the level then fails to load
+            const bool OtherGlass = C == "glass" && Scene.Game != "bo3";
+            // a multiplayer mode's own (script_gameobjectname: its bomb zones, HQs, the cover BO1's
+            // mp_nuked adds across doorways), which that game's scripts delete in every other
+            // mode: kept in a zombies level, its collision stands as invisible walls
+            if (LeftOut(C) || OtherGlass || C == "misc_model" || E.count("weaponinfo") || E.count("script_gameobjectname"))
             {
                 Stats.EntitiesLeftOut++;
                 return false;
@@ -139,10 +152,13 @@ namespace
         // What a level Black Ops III builds has no use for, of an older game's entities: its AI
         // spawners and vehicles (BO3 has no such aitype or vehicle; the linker refuses them), path
         // and cover nodes (BO3's AI walk the navmesh its compiler makes), weapons lying about and
-        // turrets (the source game's weapons; any entity with a "weaponinfo", CoD2's misc_mg42 too)
+        // turrets (the source game's weapons; any entity with a "weaponinfo", CoD2's misc_mg42 too),
+        // the multiplayer helicopters' ceiling (a zombies level crashes spawning heli_height_lock:
+        // strtol on a null key, BO1's mp_firingrange)
         static bool LeftOut(const std::string& Class)
         {
-            for (const char* Start : { "actor_", "script_vehicle", "info_vehicle_node", "node_", "weapon_", "misc_turret", "misc_mg42" })
+            for (const char* Start : { "actor_", "script_vehicle", "info_vehicle_node", "node_", "weapon_", "misc_turret", "misc_mg42",
+                                       "heli_height_lock" })
                 if (Starts(Class, Start)) return true;
             return false;
         }
@@ -168,7 +184,7 @@ std::string Bo3ToolName(const std::string& Material)
 {
     static const std::set<std::string> Bo3 = {
         "caulk", "clip", "clip_full", "clip_player", "clip_ai", "clip_missile", "clip_weapon", "clip_vehicle", "clip_physics",
-        "clip_nosight", "clip_player_playervehicle", "clip_playervehicle_only", "clip_stairs", "clip_utility", "clip_carver",
+        "clip_nosight", "clip_player_vehicle", "clip_player_playervehicle", "clip_playervehicle_only", "clip_stairs", "clip_utility", "clip_carver",
         "clip_navmesh_carver", "clip_navvolume_carver", "clip_ai_wallrun", "clip_ai_wallrun_nomesh", "clip_weap_glass",
         "clip_weapon_noimpact", "clip_missile_no_player", "clip_out_of_bounds", "clip_water_shallow", "clip_slick", "sky", "hint", "portal",
         "portal_nodraw", "nodraw_notsolid", "mantle_on", "mantle_over", "nosight_noclip", "trigger" };

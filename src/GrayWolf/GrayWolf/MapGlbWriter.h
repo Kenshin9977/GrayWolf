@@ -27,6 +27,7 @@ namespace Maps
         size_t Materials = 0, Images = 0;             // glTF materials and images
         size_t MissingTextures = 0;                   // colour maps without pixels
         size_t AlphaMasked = 0, AlphaBlended = 0;     // glTF materials cut out, blended
+        size_t LayerWeightSurfaces = 0;               // surfaces whose vertex colours are layer weights: _LAYER_WEIGHTS, COLOR_0 white
         // Auto alpha whose colour map is not written yet (a dependency): written opaque, for
         // ResolveAlpha once the run has written it
         struct LaterAlpha

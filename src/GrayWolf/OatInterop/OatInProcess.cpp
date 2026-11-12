@@ -2401,6 +2401,7 @@ namespace
         Maps::Material& M = S.Materials[Name];
         if (!M.Name.empty()) return;
         M.Name = Name;
+        if (Maps::LayeredWorldMaterial(Name)) M.Colors = Maps::VertexColors::LayerWeights;   // its vertex colours its layers' weights
         if (ColorMap.empty()) return;
         M.ColorMap = ColorMap;
         M.Textures.push_back({ 0xA0AB1041u, ColorMap });

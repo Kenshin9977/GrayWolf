@@ -75,6 +75,69 @@ namespace
         Out << "end\n";
         Out.flush();
     }
+
+    // the file's key (each zone's record carries its own stamp)
+    std::string KeyOf(const std::string& ReaderKey)
+    {
+        return ExportNaming::Hex16(ExportNaming::Fnv1a("format " + std::to_string(Format) + "\n" + ReaderKey + "\n"));
+    }
+
+    // For's and Record's: one table per kept file for the process, every zone of a run asks
+    std::mutex Lock;
+    std::map<std::string, std::pair<std::string, std::shared_ptr<const Table>>> Loaded;
+    // while an index gathers: the records Record was given, by file (its key, zone stamp -> names),
+    // and the files a zone asked for meanwhile, written when the gathering ends
+    int Gatherers = 0;
+    std::map<std::string, std::pair<std::string, Parts>> Gathered;
+    std::set<std::string> Asked;
+
+    // the gathered records of the files asked added to them (the file's own of the same key kept),
+    // in stamp order; the others dropped
+    void WriteGathered()
+    {
+        for (const auto& File : Asked)
+        {
+            const auto It = Gathered.find(File);
+            if (It == Gathered.end()) continue;
+            const auto& [Key, Records] = It->second;
+            Parts All;
+            Load(File, Key, All);
+            for (const auto& [S, N] : Records) All[S] = N;
+            {
+                std::ofstream Out(File + ".tmp", std::ios::binary | std::ios::trunc);
+                Out << Magic << Format << "\nkey " << Key << "\n";
+                for (const auto& [S, N] : All) WriteZone(Out, S, N);
+            }
+            std::error_code Ec;
+            fs::rename(File + ".tmp", File, Ec);
+        }
+        Gathered.clear();
+        Asked.clear();
+    }
+}
+
+void Gathering(bool On)
+{
+    std::lock_guard<std::mutex> G(Lock);
+    Gatherers += On ? 1 : -1;
+    if (Gatherers <= 0)
+    {
+        Gatherers = 0;
+        WriteGathered();
+    }
+}
+
+void Record(const std::string& File, const std::string& ReaderKey, const std::string& Zone, const Table& Names)
+{
+    const std::string Key = KeyOf(ReaderKey);
+    const std::string S = Stamp(Zone);
+    std::lock_guard<std::mutex> G(Lock);
+    if (Gatherers <= 0) return;
+    auto& [Of, Records] = Gathered[File];
+    // (one key per file: a zone of other tables starts it again)
+    if (Of != Key) Records.clear();
+    Of = Key;
+    Records[S] = Names;
 }
 
 std::vector<std::string> Zones(const std::string& ZoneDir, bool Languages)
@@ -100,18 +163,14 @@ std::vector<std::string> Zones(const std::string& ZoneDir, bool Languages)
 
 Kept For(const std::vector<std::string>& Zones, const std::string& File, const std::string& ReaderKey,
          const std::function<bool(const std::string& Zone, Table& Out)>& Read, const std::function<void()>& Before,
-         const std::function<void()>& After, const std::function<bool(size_t, size_t, const std::string&)>& Step)
+         const std::function<void()>& After, const std::function<bool(size_t, size_t, const std::string&)>& Step, bool MayWait)
 {
-    // one table per kept file for the process: every zone of a run asks
-    static std::mutex Lock;
-    static std::map<std::string, std::pair<std::string, std::shared_ptr<const Table>>> Loaded;
-
     const auto Start = std::chrono::steady_clock::now();
     std::vector<std::string> Stamps;
     std::string Whole = ReaderKey + "\n";
     for (const auto& Z : Zones) Whole += (Stamps.emplace_back(Stamp(Z))) + "\n";
     // the file's key: the format and the reader's tables (each zone's record carries its own stamp)
-    const std::string Key = ExportNaming::Hex16(ExportNaming::Fnv1a("format " + std::to_string(Format) + "\n" + ReaderKey + "\n"));
+    const std::string Key = KeyOf(ReaderKey);
     const std::string Current = ExportNaming::Hex16(ExportNaming::Fnv1a(Whole));
     Kept K;
     K.Zones = Zones.size();
@@ -131,6 +190,14 @@ Kept For(const std::vector<std::string>& Zones, const std::string& File, const s
     std::vector<size_t> Todo;
     for (size_t Z = 0; Z < Zones.size(); Z++)
         if (!Read_.count(Stamps[Z])) Todo.push_back(Z);
+    // an index gathering them: asked again once it has every zone (the file written then)
+    if (!Todo.empty() && Gatherers > 0 && MayWait)
+    {
+        Asked.insert(File);
+        K.Names = std::make_shared<const Table>();
+        K.Waiting = true;
+        return Done();
+    }
     bool Stopped = false;
     if (!Todo.empty())
     {

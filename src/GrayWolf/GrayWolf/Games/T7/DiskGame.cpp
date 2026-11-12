@@ -106,6 +106,15 @@ namespace
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { ExportWeaponStats(C, T); });
         }
 
+        // its SndBanks' file specs (what Bo3SoundNames keeps of a zone)
+        void SoundFileSpecs(Bo3SoundNames::Table& Out) const
+        {
+            for (const auto& I : Walk().Instances)
+                if (I.Parent < 0 && OwnerIs(I, "sound")) Bo3ReadSoundFileSpecs(AliasView(), I.Pos, Out);
+        }
+        bool IndexAgain() const override { return WaitedOnNames; }
+        const std::string& ZoneFile() const { return FastFilePath(); }
+
     protected:
         const char* Profile() const override { return "t7"; }
         // its readers and Fixups work from the walk's instances: a partial walk serves them
@@ -193,6 +202,7 @@ namespace
         void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         std::shared_ptr<const Bo3SoundNames::Table> SoundNames(const DiskGame::Context& C, bool Languages);
+        bool WaitedOnNames = false;   // a sound name table an install index is gathering (IndexAgain)
         void ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportData(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportWeaponStats(const DiskGame::Context& C, DiskGame::Totals& T);
@@ -348,8 +358,7 @@ namespace
             }
             if (!Languages)
             {
-                for (const auto& I : Walk().Instances)
-                    if (I.Parent < 0 && OwnerIs(I, "sound")) Bo3ReadSoundFileSpecs(AliasView(), I.Pos, Own);
+                SoundFileSpecs(Own);
                 Languages = SoundNames(C, true);
             }
             if (const std::string* S = In(Own)) return S;
@@ -389,12 +398,14 @@ namespace
                 if (!Options.Profile.empty()) Z.SetProfile(Options.Profile);
                 std::string Error;
                 if (!Z.Open(Error)) return false;
-                for (const auto& I : Z.Walk().Instances)
-                    if (I.Parent < 0 && Z.OwnerIs(I, "sound")) Bo3ReadSoundFileSpecs(Z.AliasView(), I.Pos, Out);
+                Z.SoundFileSpecs(Out);
                 return true;
             },
             [this] { Park(); }, [this] { Resume(); },
-            [&C](size_t Done, size_t Count, const std::string& Zone) { return C.Advance(Done, Count, "sound names: " + Zone); });
+            [&C](size_t Done, size_t Count, const std::string& Zone) { return C.Advance(Done, Count, "sound names: " + Zone); },
+            Options.Indexing);
+        // (an install index gathering the table: this zone is read again once it has every zone)
+        if (Kept.Waiting) WaitedOnNames = true;
         if (Kept.Built)
         {
             // the run log's step from here on: the banks again, not the last zone read
@@ -935,6 +946,61 @@ namespace
         {
             Bo3AnimOwners::Fill(*this, Options, Zones, Out);
         }
+
+        // The sound name tables (Bo3SoundNames) recorded from the zones the install index opens, each
+        // zone's specs as it has it open: no zone opened a second time for them. A zone's sounds that
+        // asked for a table meanwhile (cp_common, mp_common) are weighed again once all are recorded.
+        class SoundNamesRide final : public IndexRide
+        {
+        public:
+            SoundNamesRide(const IDiskGame& G, DiskGame::ExportOptions O) : Game(G), Options(std::move(O)) { Bo3SoundNames::Gathering(true); }
+            ~SoundNamesRide() override { Finished(); }
+            void Opened(const DiskGame::IDiskZone& Zone) override
+            {
+                const auto* Z = dynamic_cast<const T7Zone*>(&Zone);
+                if (Z == nullptr || Z->OpenedPartially()) return;
+                const fs::path Path(Z->ZoneFile());
+                const std::string Dir = Path.parent_path().string();
+                int Of = -1;   // the table it is part of: 1 the languages', 0 the other zones', -1 none
+                {
+                    const std::lock_guard<std::mutex> G(Lock);
+                    if (Over) return;
+                    auto& Sets = Dirs[ExportNaming::Lower(Dir)];
+                    if (Sets.empty())
+                        for (const bool Languages : { false, true })
+                            for (const auto& F : Bo3SoundNames::Zones(Dir, Languages))
+                                Sets[ExportNaming::Lower(fs::path(F).filename().string())] = Languages ? 1 : 0;
+                    if (const auto It = Sets.find(ExportNaming::Lower(Path.filename().string())); It != Sets.end()) Of = It->second;
+                }
+                if (Of < 0) return;
+                Bo3SoundNames::Table Names;
+                Z->SoundFileSpecs(Names);
+                Bo3SoundNames::Record(DiskGame::KeptFile(Game, Options, Dir, Of ? ".sndnames" : ".sndnames-zones"), Z->IndexKey(), Path.string(), Names);
+            }
+            void Finished() override
+            {
+                const std::lock_guard<std::mutex> G(Lock);
+                if (Over) return;
+                Over = true;
+                Bo3SoundNames::Gathering(false);
+            }
+
+        private:
+            const IDiskGame& Game;
+            const DiskGame::ExportOptions Options;
+            std::mutex Lock;
+            bool Over = false;
+            std::map<std::string, std::map<std::string, int>> Dirs;   // folder -> its zones' file names -> table
+        };
+        std::unique_ptr<IndexRide> IndexRides(const std::string&, const DiskGame::ExportOptions& Options) const override
+        {
+            return std::make_unique<SoundNamesRide>(*this, Options);
+        }
+        // its zones open on the index's workers: before its session a zone only decompresses its fast
+        // file and is walked (ZonekitZone); its weights (the packages beside it) and its sounds' dry
+        // run (the banks beside it, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override

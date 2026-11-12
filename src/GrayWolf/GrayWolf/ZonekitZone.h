@@ -81,6 +81,8 @@ public:
     // the whole zone, which writes the index for the next time.
     bool Open(std::string& Error);
     bool OpenedPartially() const override { return Partial; }
+    // (the session serves a copy-on-write copy: Bytes stay as LoadBytes decoded them)
+    std::span<const uint8_t> Decoded() const override { return Partial ? std::span<const uint8_t>() : std::span<const uint8_t>(Bytes.data(), Bytes.size()); }
 
     // How far a partial open goes: at most Assets asked, at most Walks assets walked for them (what
     // they reach included, the asked first); past either, the zone is read whole. What a walk of
@@ -288,6 +290,15 @@ protected:
                         ExportWriters::SoundSink* Sink = nullptr);
     // Sink's sound files written, what they counted added to the zone's counters
     void FinishSoundFiles(ExportWriters::SoundSink& Sink);
+    // A dry run's (Context::OnSoundHeader) sound, what WriteSound would be handed at Path, told from
+    // its first Have bytes (S.Data, S.Size the whole sound's): true when its header is in them (the
+    // same header the whole sound gives), false when it is not (the caller reads it whole)
+    bool TellSoundHead(const DiskGame::Context& C, DiskGame::Totals& T, const ExportWriters::SoundSource& S, const std::filesystem::path& Path, size_t Have);
+    // ... a loaded sound of the zone (SoundDataTypes::WAV_NeedsHeader) as SoundSink::Export reads it
+    // (the live ReadXSound: a 16-bit PCM WAV header for its AssetSize bytes, then them) written at
+    // Path: told from its header and first samples alone; false when its samples are not all in
+    // the zone (the reader then reads it, as before)
+    bool TellWavNeedsHeader(const DiskGame::Context& C, DiskGame::Totals& T, const CoDSound_t& Sound, const std::filesystem::path& Path);
     // The relocated zone as a sound alias reader reads it (SoundAliasCsv::ZoneView)
     SoundAliasCsv::ZoneView AliasView() const
     {
@@ -639,6 +650,8 @@ protected:
 
 private:
     static ZonekitZone* Serving;
+
+    bool OpenSteps(std::string& Error);   // Open's steps, each lapped
 
     // the session just began (opened or resumed, its lock held): the zone becomes Serving, its
     // held packages CoDAssets' package cache until it is parked or destroyed

@@ -6,6 +6,7 @@
 #include "MapSceneExport.h"
 
 #include "CoDAssets.h"
+#include "Sound.h"
 #include "ExportNaming.h"
 #include "FastFile.h"
 #include "MapSceneWriter.h"
@@ -17,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -99,6 +101,21 @@ std::string ZonekitZone::SlotString(uint64_t Index)
     return VirtualGameSession::SlotString(Serving ? &Serving->Slots : nullptr, Index);
 }
 
+namespace
+{
+    // An image sink's files not written, one failure each by its file's name; those it cannot
+    // name (a link to an identical image's file not made, the image not read again) together
+    void FailUnwritten(DiskGame::Totals& T, const std::string& Zone, const ExportWriters::ImageSinkStats& W, size_t Missing)
+    {
+        std::vector<std::string> Files = W.FailedFiles;
+        std::sort(Files.begin(), Files.end());
+        for (const std::string& F : Files)
+            T.Fail(Zone, DiskGame::Kind::Image, fs::path(F).stem().string(), "not written: the image writer failed on it (" + fs::path(F).filename().string() + ")");
+        if (const size_t Unnamed = W.Failed - (std::min)(W.Failed, Files.size()) + Missing)
+            T.Fail(Zone, DiskGame::Kind::Image, "", std::to_string(Unnamed) + " not written: a link to an identical image's file not made, the image not read again");
+    }
+}
+
 void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
                                     bool ReferencesByName)
 {
@@ -155,7 +172,7 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
     const auto W = Sink.Finish([&](size_t Tag) { return Decode(Order[Tag].first, Order[Tag].second); }, Missing);
     Kt.Written += W.Written;
     Kt.Linked += W.Linked;
-    if (W.Failed + Missing) T.Fail(Name(), Kind::Image, "", std::to_string(W.Failed + Missing) + " not written");
+    FailUnwritten(T, Name(), W, Missing);
 }
 
 void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& T, const ImageList& L)
@@ -207,7 +224,7 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
                                [&](size_t Pos) { return L.KeyOf((int64_t)Pos, Sink.Extension()); });
     Kt.Written += W.Written;
     Kt.Linked += W.Linked;
-    if (W.Failed + Missing) T.Fail(Name(), Kind::Image, "", std::to_string(W.Failed + Missing) + " not written");
+    FailUnwritten(T, Name(), W, Missing);
     // a reference to an image this zone also holds is no dependency
     for (const auto& N : ReferencedHere)
         if (!N.empty() && !DefinedHere.count(N)) C.Needs(Kind::Image, N);
@@ -287,6 +304,18 @@ ExportWriters::ModelTextures ZonekitZone::Textures(const DiskGame::Context& C) c
 
 bool ZonekitZone::Open(std::string& Error)
 {
+    // (the steps' times, and what no step took: the locals let go on the way out)
+    const auto Entered = std::chrono::steady_clock::now();
+    const bool Opened = OpenSteps(Error);
+    double Lapped = 0;
+    for (const auto& S : Steps) Lapped += S.second;
+    const double Rest = std::chrono::duration<double>(std::chrono::steady_clock::now() - Entered).count() - Lapped;
+    if (Rest > 0) Steps.emplace_back("unlapped", Rest);
+    return Opened;
+}
+
+bool ZonekitZone::OpenSteps(std::string& Error)
+{
     auto Start = std::chrono::steady_clock::now();
     const auto Lap = [&](const char* Step) {
         const auto Now = std::chrono::steady_clock::now();
@@ -303,7 +332,16 @@ bool ZonekitZone::Open(std::string& Error)
             if ((Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error)) != nullptr &&
                 OpenFromHeads(*Want, ResumeIndex::FileFor(Path, ProfileKey(*Loaded), Sources), Lap))
                 return true;
-    if (!LoadBytes(Bytes, Error)) return false;
+    {
+        // (an install index reading a hard disk: one zone loaded at a time, DiskGame::IndexDiskLock)
+        std::unique_lock<std::mutex> Disk;
+        if (std::mutex* L = DiskGame::IndexDiskLock())
+        {
+            Disk = std::unique_lock<std::mutex>(*L);
+            Lap("disk_wait");
+        }
+        if (!LoadBytes(Bytes, Error)) return false;
+    }
     Lap("load");
     Loaded = ExportWriters::ZoneProfile(ProfileName.empty() ? Profile() : ProfileName, Error);
     if (Loaded == nullptr) return false;
@@ -337,10 +375,17 @@ bool ZonekitZone::Open(std::string& Error)
     // the links resolved before the session (the walk's alone); from here on, the process-wide
     // session lock is held (the game's handlers and fixups reach process-wide state)
     ResolvedLinks L = ResolveLinks(R, Rules(), DerefAssetPointers(), Bytes);
-    auto Taken = VirtualGameSession::Acquire();
     Lap("links");
+    // whether its resume index is to be written again (an older format, without the heads its
+    // game keeps now): files read before the session, its lock held by one zone at a time
+    const bool Resumes = !ResumeFile.empty() && !R.Resume.empty();
+    const bool ResumeStale = Resumes && (!ResumeIndex::IsCurrent(ResumeFile) || !HeadsKept(ResumeFile));
+    if (Resumes) Lap("resume_check");
+    auto Taken = VirtualGameSession::Acquire();
+    Lap("session_wait");
     const VirtualGameSession::Handlers H = Handlers();
     Session = std::make_unique<VirtualGameSession>(std::move(Taken), LiveGame(), ZoneMemory::Copy(Bytes), H, Rules().PointerSize);
+    Lap("session");
     BeginServing();
     Relocate(L);
     Lap("relocate");
@@ -348,7 +393,7 @@ bool ZonekitZone::Open(std::string& Error)
     Lap("fixups");
     // the resume index a later partial open reads (one of an older format written again, one
     // without the heads its game keeps now, or one that did not list an asset the zone defines)
-    if (!ResumeFile.empty() && !R.Resume.empty() && (!ResumeIndex::IsCurrent(ResumeFile) || !HeadsKept(ResumeFile) || DefinesAny(Unlisted)))
+    if (Resumes && (ResumeStale || DefinesAny(Unlisted)))
     {
         WriteResume(ResumeFile);
         Lap("resume_index");
@@ -588,6 +633,40 @@ void ZonekitZone::FinishSoundFiles(ExportWriters::SoundSink& Sink)
     Sink.Finish();
     for (const auto& [Key, N] : SoundFileCounts) Counter(Key) += N;
     SoundFileCounts.clear();
+}
+
+bool ZonekitZone::TellSoundHead(const DiskGame::Context& C, DiskGame::Totals& T, const ExportWriters::SoundSource& S, const fs::path& Path, size_t Have)
+{
+    // (its name as the dry run's sink names what it is handed: the file under the sound folder, no extension)
+    const fs::path Dir = fs::path(C.OutRoot) / DiskGame::KindFolder(DiskGame::Kind::Sound);
+    DiskGame::SoundHeader H;
+    if (!C.OnSoundHeader || !DiskGame::Sizes::HeaderOfHead(S, Path.lexically_relative(Dir).replace_extension().string(), Have, H))
+    {
+        if (C.OnSoundHeader) Counter("sounds_header_read_whole")++;
+        return false;
+    }
+    T.Counters["sound_headers"] = 1;
+    Counter("sounds_header_told")++;
+    C.OnSoundHeader(H);
+    return true;
+}
+
+bool ZonekitZone::TellWavNeedsHeader(const DiskGame::Context& C, DiskGame::Totals& T, const CoDSound_t& Sound, const fs::path& Path)
+{
+    const uint64_t Data = Sound.AssetPointer, Size = Sound.AssetSize;
+    const int64_t At = Off(Data);
+    const size_t Header = ::Sound::GetMaximumWAVHeaderSize(), Samples = (size_t)std::min<uint64_t>(Size, 32);
+    if (!C.OnSoundHeader || Sound.DataType != SoundDataTypes::WAV_NeedsHeader || Sound.IsFileEntry || Size == 0 ||
+        !Live().Contains(Data + Size - 1) || At < 0 || (uint64_t)At + Samples > Image().size())
+        return false;
+    std::vector<uint8_t> Head(Header + Samples);
+    ::Sound::WriteWAVHeaderToStream(reinterpret_cast<int8_t*>(Head.data()), (uint32_t)Sound.FrameRate, (uint32_t)Sound.ChannelsCount, (uint32_t)Size);
+    std::memcpy(Head.data() + Header, Image().data() + At, Samples);
+    ExportWriters::SoundSource S;
+    S.Data = Head.data();
+    S.Size = S.Available = (uint32_t)(Header + Size);   // (XSound::DataSize)
+    S.Extension = ".wav";
+    return TellSoundHead(C, T, S, Path, Head.size());
 }
 
 DiskGame::Weight ZonekitZone::ModernIwImageWeight(int64_t Pos, uint32_t (*Dxgi)(uint8_t Format)) const

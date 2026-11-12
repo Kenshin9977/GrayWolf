@@ -201,6 +201,12 @@ namespace
             WawAnimOwners::Fill(*this, Options, Zones, Out);
         }
 
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the loaded sounds in the
+        // zone, the streamed ones in the .iwd archives, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<WawZone>(Path, Iw3Family::InstallOf(Path, Options.Install));

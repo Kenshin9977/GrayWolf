@@ -99,6 +99,15 @@ namespace Materials
         ColorTint Color;                // empty: none (applied before Tint)
         std::vector<Layer> Layers;      // when set, the colour (and roughness) is theirs; Normal is the base
         Map Albedo;                     // sRGB colour, alpha in a
+        // the colour map's encoding when it is not sRGB: 2.0 for Black Ops and BO2's (Treyarch's
+        // BO3 ports of the same textures are srgb((c/255)^2), measured on their Zombies Chronicles)
+        float AlbedoGamma = 0.0f;
+        // drawn over the surface it lies on, by its game's sort key (Black Ops: 9..29, its stains,
+        // puddles and nets): coplanar with that surface, drawn as an opaque one they flicker
+        bool Decal = false;
+        // the colour multiplies what lies under it (a grime decal, a multiply layer: white leaves
+        // it as it is), alpha unused
+        bool Multiply = false;
         Map Normal;
         NormalEncoding NormalEnc = NormalEncoding::XY;
         bool NormalFlipY = false;
@@ -162,6 +171,9 @@ namespace Materials
     // The pre-PBR games' (colorMap, normalMap, specularMap with gloss in its alpha): a game registers
     // it as its own adapter.
     const IAdapter& LegacySpecularAdapter();
+    // The same, for a game whose specular map's alpha is a roughness (Black Ops: the BO3 gloss of
+    // the same textures is 255 - alpha) and, ColourGamma2, whose colour maps are gamma 2.0
+    const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2);
 
     // The role a file name's suffix gives (_c colour, _n normal, _g gloss, _s specular, _o
     // occlusion, _e emissive and their long forms), a "-<hash>" tail ignored.

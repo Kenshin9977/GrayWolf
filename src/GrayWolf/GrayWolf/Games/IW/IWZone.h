@@ -39,6 +39,14 @@ class IWZone : public ZonekitZone
 public:
     using ZonekitZone::ZonekitZone;
 
+    // The zone's script strings (Modern Warfare 2019, MWIII): count u32 at 0, 8-byte slots from 0x20
+    // when the list's pointer at 8 is inline; a -2 or -1 slot's text follows the slots, in slot
+    // order (iw8 0x2ddc1b0, MWIII 0x3b035b0), any other holds none here
+    static std::vector<std::string> InlineScriptStrings(ByteView Z);
+    // The localize entries' encrypted texts a zone holds inline (MWIII): {u64 key hash, u64 -2,
+    // text}, found by their marker and the cipher's header (CipherFit::Encrypted)
+    static void InlineLocalizeTexts(ByteView Z, std::vector<std::string>& Out);
+
     // An XModel's LOD records: a LOD holds its xmodelsurfs asset at +LodModelSurfs, and at +LodSurfs
     // the surface array the game copies from it at load time (lod.surfs = modelSurfs->surfs), which
     // the live reader follows and the zone leaves empty; XModelSurfs keeps that array at
@@ -233,10 +241,6 @@ protected:
                           const std::vector<std::string>& Patches = {});
     // The file ExportSoundBanks writes a bank's sound Name (cp\dlc4\x.pn.75.36000.french) to,
     // under the sound kind's folder: cp/dlc4/x<Extension>, each part made safe
-    // The zone's script strings (Modern Warfare 2019, MWIII): count u32 at 0, 8-byte slots from 0x20
-    // when the list's pointer at 8 is inline; a -2 or -1 slot's text follows the slots, in slot
-    // order (iw8 0x2ddc1b0, MWIII 0x3b035b0), any other holds none here
-    static std::vector<std::string> InlineScriptStrings(ByteView Z);
     static std::string SoundBankFile(const std::string& Name, const std::string& Extension);
     // Defines' images: Streams' and Also's, those named in place (at their position + NameAt)
     void DefineStreamed(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out, int64_t NameAt, const std::vector<int64_t>& Also = {}) const;

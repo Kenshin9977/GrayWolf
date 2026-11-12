@@ -12,6 +12,7 @@
 #include "PickList.h"
 #include "AppLog.h"
 #include "DiskGame.h"
+#include "ExportFormats.h"
 #include "ExportNaming.h"
 #include "ModToolsTree.h"
 #include "SettingsManager.h"
@@ -101,6 +102,76 @@ namespace
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(2);
+    }
+
+    // A format row: its label, then a combo at the settings' column
+    bool BeginFormatCombo(const char* Label, const char* Tip, const char* Id, const std::string& Preview)
+    {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Label);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Tip);
+        ImGui::SameLine(ImGui::GetFontSize() * 12.0f);
+        ImGui::SetNextItemWidth(200);
+        return ImGui::BeginCombo(Id, Preview.c_str());
+    }
+
+    // Models or anims: each format its own on/off setting, several at once (what --model-format a,b sets)
+    template <size_t N>
+    void FormatsRow(const char* Label, const char* Tip, const char* Id, const ExportFormats::Format (&Formats)[N])
+    {
+        std::string Preview;
+        for (const auto& F : Formats)
+            if (SettingsManager::GetSetting(F.Setting) == "true") Preview += (Preview.empty() ? "" : " + ") + std::string(F.Label);
+        if (Preview.empty()) Preview = "None (not written)";
+        if (!BeginFormatCombo(Label, Tip, Id, Preview)) return;
+        for (const auto& F : Formats)
+        {
+            bool On = SettingsManager::GetSetting(F.Setting) == "true";
+            if (ImGui::Checkbox(F.Label, &On)) SettingsManager::SetSetting(F.Setting, On ? "true" : "false");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
+        }
+        ImGui::EndCombo();
+    }
+
+    // Images or sounds: one setting naming the format
+    template <size_t N>
+    void FormatRow(const char* Label, const char* Tip, const char* Id, const char* Setting, const char* Default,
+                   const ExportFormats::Format (&Formats)[N])
+    {
+        const std::string Current = Strings::ToUpper(SettingsManager::GetSetting(Setting, Default));
+        std::string Preview = Current;
+        for (const auto& F : Formats)
+            if (Current == F.Setting) Preview = F.Label;
+        if (!BeginFormatCombo(Label, Tip, Id, Preview)) return;
+        for (const auto& F : Formats)
+        {
+            if (ImGui::Selectable(F.Label, Current == F.Setting)) SettingsManager::SetSetting(Setting, F.Setting);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
+        }
+        ImGui::EndCombo();
+    }
+
+    // The formats the ticked (or picked) kinds are written in: the settings every export reads,
+    // the GUI's as the CLI's (--model-format, --anim-format, --image-format, --audio-format)
+    template <class Pred>
+    void DrawFormats(const Pred& Concerned)
+    {
+        using DiskGame::Kind;
+        const bool Models = Concerned(Kind::Model), Anims = Concerned(Kind::Anim);
+        const bool Images = Models || Concerned(Kind::Image), Sounds = Concerned(Kind::Sound);
+        if (!Models && !Anims && !Images && !Sounds) return;
+        ImGui::Separator();
+        ImGui::TextUnformatted("Formats");
+        if (Models)
+            FormatsRow("Model format", "The files each model is written as; several may be ticked.\nThe Library shows Cast, SEModel and XMODEL_EXPORT models","##fmtmodel", ExportFormats::Models);
+        if (Anims)
+            FormatsRow("Anim format", "The files each animation is written as; several may be ticked.\nThe Library shows Cast and SEAnim anims","##fmtanim", ExportFormats::Anims);
+        if (Images)
+            FormatRow("Image format", "Images, and the textures written beside the models", "##fmtimage", ExportFormats::ImageSetting,
+                      ExportFormats::ImageDefault, ExportFormats::Images);
+        if (Sounds)
+            FormatRow("Sound format", "Also in Settings > Sounds", "##fmtsound", ExportFormats::SoundSetting, ExportFormats::SoundDefault,
+                      ExportFormats::Sounds);
     }
 }
 
@@ -730,15 +801,20 @@ void LoadGamePanel::DrawOptions()
 
     DrawLanguages();
 
-    // the game's settings, each while one of the kinds it concerns is ticked or picked
+    // a kind ticked (by zone) or picked (by asset)
     std::set<DiskGame::Kind> Picked;
     for (const auto& [K, N] : AssetPicks.Kinds) Picked.insert(K);
+    const auto Concerned = [&](DiskGame::Kind K) { return ExportByAsset ? Picked.count(K) != 0 : DiskKindFlags[(size_t)K] != 0; };
+
+    DrawFormats([&](DiskGame::Kind K) { return Exported.count(K) != 0 && Concerned(K); });
+
+    // the game's settings, each while one of the kinds it concerns is ticked or picked
     bool AnySetting = false;
     for (const DiskGame::Setting* Each : Disk->AllSettings())
     {
         const DiskGame::Setting& S = *Each;
         bool Shown = false;
-        for (DiskGame::Kind K : S.Concerns) Shown = Shown || (ExportByAsset ? Picked.count(K) != 0 : DiskKindFlags[(size_t)K] != 0);
+        for (DiskGame::Kind K : S.Concerns) Shown = Shown || Concerned(K);
         if (!Shown) continue;
         if (!AnySetting)
         {

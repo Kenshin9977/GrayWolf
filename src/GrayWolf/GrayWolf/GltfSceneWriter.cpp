@@ -137,6 +137,12 @@ int GltfSceneWriter::AddMesh(const std::string& name, const std::vector<Part>& p
                     m_accessors.push_back({view, GL_FLOAT, (int)p.verts->size(), "VEC2", false, {}, {}, false});
                     m.prims.back().moreUvAcc.push_back((int)m_accessors.size() - 1);
                 }
+            if (p.layerWeights && p.layerWeights->size() == p.verts->size() * 4)
+            {
+                const int view = PushView(p.layerWeights->data(), p.layerWeights->size(), TARGET_ARRAY);
+                m_accessors.push_back({view, GL_UNSIGNED_BYTE, (int)p.verts->size(), "VEC4", true, {}, {}, false});
+                m.prims.back().weightsAcc = (int)m_accessors.size() - 1;
+            }
         }
     if (m.prims.empty())
         return -1;
@@ -311,6 +317,8 @@ bool GltfSceneWriter::WriteGlb(const std::string& Path)
             json attrs = {{"POSITION", p.posAcc}, {"NORMAL", p.normAcc}, {"TEXCOORD_0", p.uvAcc}, {"COLOR_0", p.colAcc}};
             for (size_t k = 0; k < p.moreUvAcc.size(); k++)
                 attrs["TEXCOORD_" + std::to_string(k + 1)] = p.moreUvAcc[k];
+            if (p.weightsAcc >= 0)
+                attrs["_LAYER_WEIGHTS"] = p.weightsAcc;
             json prim = {{"attributes", attrs}, {"indices", p.idxAcc}, {"mode", 4}};
             if (p.material >= 0)
                 prim["material"] = p.material;

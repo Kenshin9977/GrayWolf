@@ -64,7 +64,7 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
         C.After([Unsigned, &T]() {
             size_t Failed = 0;
             if (const size_t N = ExportWriters::UnsignedDdsCopies(Unsigned, Failed)) T.Counters["map_textures_unsigned"] += N;
-        });
+        }, "the map's unsigned DDS copies");
     // map_textures: the textures above the size, copied smaller with mips (after the unsigned
     // copies, which they start from)
     const std::string Cap = DiskGame::MapTextures.Of(C.Settings);
@@ -77,13 +77,13 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
             T.Counters["map_textures_resize_ms"] += (size_t)(Seconds * 1000);
             if (Gpu) T.Counters["map_textures_resize_gpu"] = 1;
             if (Failed) T.Counters["map_textures_resize_failed"] += Failed;
-        });
+        }, "the map's textures made smaller");
     if (!Copies.empty())
         C.After([Copies, &T]() {
             size_t Failed = 0;
             T.Counters["map_textures_png"] += ExportWriters::PngCopies(Copies, Failed);
             if (Failed) T.Counters["map_textures_missing"] += Failed;
-        });
+        }, "the map's textures as PNG for glTF");
 
     // The scene in each enabled format beside one another: the .glb always (the map's own file:
     // without it the map failed), the Cast scene with map_cast
@@ -103,17 +103,25 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
     {
         Maps::SceneWriteResult Result;
         std::string Error;
-        if (!W->Write(Scene, Stem + W->Extension(), Adapter, Result, Error))
+        // each writer's stages on the run's progress ("writing the .map: texturing brushes 12/7523")
+        const std::string Writing = std::string("writing the ") + W->Extension();
+        const Maps::WriteProgress Progress = [&](const std::string& Stage, size_t Done, size_t Count) {
+            return C.Working(Stage.empty() ? Writing : Writing + ": " + Stage, Done, Count);
+        };
+        const bool Ok = Progress(std::string(), 0, 0) && W->Write(Scene, Stem + W->Extension(), Adapter, Result, Error, Progress);
+        C.Working(std::string());
+        if (!Ok)
         {
-            T.Fail(Zone, Kind::Map, Scene.Name, Error);
+            // stopped by the run's cancel: not a failure of the map's
+            if (!C.Cancelled()) T.Fail(Zone, Kind::Map, Scene.Name, Error);
             if (W == Writers.front()) return false;
             continue;
         }
         if (W == Writers.front()) Written = true;
         for (const auto& [Key, V] : Result.Counters) Counters[Key] += V;
-        if (Result.Later)
-            C.After([Later = Result.Later, Key = Result.LaterCounter, &T]() { T.Counters[Key] += Later(); });
-        if (Result.LaterCounters) C.After([Later = Result.LaterCounters, &T]() { Later(T.Counters); });
+        const std::string LaterWhat = Writing + ": " + (Result.LaterWhat.empty() ? std::string("once the dependencies are written") : Result.LaterWhat);
+        if (Result.Later) C.After([Later = Result.Later, Key = Result.LaterCounter, &T]() { T.Counters[Key] += Later(); }, LaterWhat);
+        if (Result.LaterCounters) C.After([Later = Result.LaterCounters, &T]() { Later(T.Counters); }, LaterWhat);
     }
     return Written;
 }

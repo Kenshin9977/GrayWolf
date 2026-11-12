@@ -5,6 +5,7 @@
 
 #include <libdeflate.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 
@@ -104,5 +105,53 @@ namespace ZipInflate
         if (Finish(S, Out.data())) return true;
         std::lock_guard<std::mutex> Guard(Lock);
         return mz_zip_reader_extract_to_mem(Zip, Index, Out.data(), Out.size(), 0) != 0;
+    }
+
+    bool Head(mz_zip_archive* Zip, mz_uint Index, size_t Max, std::vector<uint8_t>& Out, uint64_t& Size)
+    {
+        mz_zip_archive_file_stat S;
+        Out.clear();
+        if (Zip == nullptr || Zip->m_pState == nullptr || !mz_zip_reader_file_stat(Zip, Index, &S)) return false;
+        Size = S.m_uncomp_size;
+        if (S.m_is_directory || Size == 0) return true;
+        // (a whole entry: as Extract reads it, its CRC-32 checked)
+        if (Size <= Max)
+        {
+            Out.resize((size_t)Size);
+            return Extract(Zip, Index, Out.data(), Out.size());
+        }
+        // a stored or deflated entry: its first bytes read straight from the archive (no 64 KB
+        // buffer filled, as miniz's iterator does, for the dozen bytes of a header)
+        uint64_t At = 0;
+        if (Handled(Zip, S, (size_t)Size) && DataStart(Zip, S, At))
+        {
+            Out.resize(Max);
+            if (S.m_method == 0) return Zip->m_pRead(Zip->m_pIO_opaque, At, Out.data(), Max) == Max;
+            // (Max bytes out need at most about as many in: a stored block's 5-byte head a 64 KB)
+            const size_t In = (size_t)std::min<uint64_t>(S.m_comp_size, (uint64_t)Max + Max / 8 + 64);
+            Packed.resize(In);
+            if (Zip->m_pRead(Zip->m_pIO_opaque, At, Packed.data(), In) == In)
+            {
+                tinfl_decompressor D;
+                tinfl_init(&D);
+                size_t Read = In, Wrote = Max;
+                const tinfl_status St = tinfl_decompress(&D, Packed.data(), &Read, Out.data(), Out.data(), &Wrote,
+                                                         TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | (In < S.m_comp_size ? TINFL_FLAG_HAS_MORE_INPUT : 0));
+                if (St >= TINFL_STATUS_DONE && Wrote == Max) return true;
+            }
+        }
+        mz_zip_reader_extract_iter_state* It = mz_zip_reader_extract_iter_new(Zip, Index, 0);
+        if (It == nullptr) return false;
+        Out.resize(Max);
+        size_t Got = 0;
+        while (Got < Max)
+        {
+            const size_t N = mz_zip_reader_extract_iter_read(It, Out.data() + Got, Max - Got);
+            if (N == 0) break;
+            Got += N;
+        }
+        mz_zip_reader_extract_iter_free(It);   // (false: its CRC-32, not checked for a part)
+        Out.resize(Got);
+        return Got == Max;
     }
 }

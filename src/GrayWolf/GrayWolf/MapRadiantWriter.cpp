@@ -7,6 +7,7 @@
 #include "GdtWriter.h"
 #include "MapLive.h"
 #include "MapMaterials.h"
+#include "MapRadiantBound.h"
 #include "MapRadiantGeometry.h"
 #include "MapRadiantTextures.h"
 #include "MaterialGdt.h"
@@ -66,16 +67,7 @@ namespace
 
     // ---- the text
 
-    std::string Num(double V)
-    {
-        if (std::fabs(V - std::round(V)) < 1e-9) return std::to_string((long long)std::llround(V));
-        char Buf[64];
-        std::snprintf(Buf, sizeof(Buf), "%.4f", V);
-        std::string S = Buf;
-        while (!S.empty() && S.back() == '0') S.pop_back();
-        if (!S.empty() && S.back() == '.') S.pop_back();
-        return S == "-0" ? "0" : S;
-    }
+    using ExportNaming::Num;
 
     // Three points of a face (Quake's order: (p0 - p1) x (p2 - p1) points out), as written (Num:
     // four decimals): three of its corners, snapped to whole units when that keeps the plane, else
@@ -210,8 +202,10 @@ namespace
     // The tool material a brush is written with: a side's own when the clip map names one per side
     // and it is a tool material (IW), else the one Black Ops III's mod tools give the brush's
     // content flags (Quake's lineage, the same bits from CoD4 to Black Ops). A drawn surface's
-    // brush (Black Ops: bullets and missiles, 0x2080; CoD4: solid with a drawn material) stood for
-    // geometry now drawn by a misc_model: clip_full, which blocks everything and seals nothing.
+    // solid brush (CoD4: solid with a drawn material) stood for geometry now drawn by a misc_model:
+    // clip_full, which blocks everything and seals nothing. Black Ops' drawn surfaces' brushes
+    // stop bullets and missiles only (0x2080), the player walking through: clip_weapon (as
+    // clip_full, BO1's mp_firingrange was full of invisible walls).
     class ToolNames
     {
     public:
@@ -229,20 +223,31 @@ namespace
             if (C & Trigger) return "trigger";
             if (C & SkyFlag) return "sky";
             if (C & Solid) return M.empty() || RadiantTool(M) ? "caulk" : "clip_full";
+            // what each BO3 tool blocks, as its GDT entry flags it (the mod tools' texture_assets):
+            // clip 0x430200, clip_full 0x4336c0, clip_nosight 0x431640, clip_player_vehicle
+            // 0x10200, clip_weapon 0x2040, clip_missile_no_player 0xc0; BO1's tools the same bits
+            // (0x400000, utility, BO3's own)
             const bool Player = C & PlayerClip, Monster = C & MonsterClip;
-            if (Player && Monster) return C & NoSight ? "clip_nosight" : "clip";
-            if (Player) return "clip_player";
+            if (Player && Monster) return C & ClipShot ? "clip_full" : C & NoSight ? "clip_nosight" : "clip";
+            if (Player) return C & VehicleClip ? "clip_player_vehicle" : "clip_player";
             if (Monster) return "clip_ai";
-            if ((C & ClipShot) && (C & MissileClip)) return "clip_full";
-            if (C & Mantle) return "mantle_on";
+            // a window (glass, bullets): the player kept out as BO1 did
+            if ((C & Glass) && (C & ClipShot)) return "clip_full";
+            if ((C & ClipShot) && (C & MissileClip)) return "clip_weapon";
+            // BO1 tells mantle_over from mantle_on by the side's surface flags (0x8000000)
+            if (C & Mantle) return S.Surface & 0x8000000 ? "mantle_over" : "mantle_on";
             if (C & Glass) return "clip";
             if (C & VehicleClip) return "clip_vehicle";
             if (C & ItemClip) return "clip_physics";
             if (C & NoSight) return "nosight_noclip";
             if (C & ClipShot) return "clip_weapon";
+            if ((C & MissileClip) && (C & CanShootClip)) return "clip_missile_no_player";
             if (C & MissileClip) return "clip_missile";
             if (C & CanShootClip) return "clip_weapon";
             if (C & Structural) return "hint";
+            // no content but detail: blocks nothing (BO1's mp_nuked fills its doorways and its
+            // yards so, door-sized slabs: as clip they stood as invisible walls)
+            if (C == 0) return "nodraw_notsolid";
             return "clip";
         }
     };
@@ -267,21 +272,30 @@ namespace
         const DrawnWorld::HiddenTest* Hidden = nullptr;   // inside another brush (the world's)
     };
 
-    // Fn(I, State&) for I below Count on the machine's threads, Batch at a time, each thread its own State
+    // Fn(I, State&) for I below Count on the machine's threads, Batch at a time, each thread its own
+    // State. Tick (when given) is told how many are done by the calling thread after each of its
+    // batches; false from it stops the work (the batches running end): ParallelFor returns false.
     template <class State, class F>
-    void ParallelFor(size_t Count, size_t Batch, const F& Fn)
+    bool ParallelFor(size_t Count, size_t Batch, const F& Fn, const std::function<bool(size_t Done)>& Tick = {})
     {
         const size_t Threads = (std::max)(1u, (std::min)(std::thread::hardware_concurrency(), 16u));
-        std::atomic<size_t> Next{ 0 };
-        const auto Work = [&] {
+        std::atomic<size_t> Next{ 0 }, Done{ 0 };
+        std::atomic<bool> Stop{ false };
+        const auto Work = [&](bool Calling) {
             State S{};
-            for (size_t I; (I = Next.fetch_add(Batch)) < Count;)
-                for (size_t J = I; J < (std::min)(I + Batch, Count); J++) Fn(J, S);
+            for (size_t I; !Stop.load(std::memory_order_relaxed) && (I = Next.fetch_add(Batch)) < Count;)
+            {
+                const size_t End = (std::min)(I + Batch, Count);
+                for (size_t J = I; J < End; J++) Fn(J, S);
+                const size_t Now = Done.fetch_add(End - I) + (End - I);
+                if (Calling && Tick && !Tick(Now)) Stop = true;
+            }
         };
         std::vector<std::thread> Pool;
-        for (size_t T = 1; T < (std::min)(Threads, (Count + Batch - 1) / Batch); T++) Pool.emplace_back(Work);
-        Work();
+        for (size_t T = 1; T < (std::min)(Threads, (Count + Batch - 1) / Batch); T++) Pool.emplace_back(Work, false);
+        Work(true);
         for (auto& T : Pool) T.join();
+        return !Stop;
     }
 
     // The world's solid brushes, to tell a point inside one (what hides a side's face): each
@@ -313,11 +327,22 @@ namespace
                 for (const BrushFace& F : Faces)
                     for (const V3& V : F.Points)
                         for (int A = 0; A < 3; A++) Lo[A] = (std::min)(Lo[A], V[A]), Hi[A] = (std::max)(Hi[A], V[A]);
+                // the cells of its bounds but those wholly outside one of its planes (past Inside's
+                // 0.01, with room for the rounding): no point there is inside it (a sloping brush's
+                // bounds are mostly outside it)
+                const auto Outside = [&P](int64_t X, int64_t Y, int64_t Z) {
+                    constexpr double Half = Cell / 2;
+                    const V3 C = { ((double)X + 0.5) * Cell, ((double)Y + 0.5) * Cell, ((double)Z + 0.5) * Cell };
+                    for (const Plane& S : P)
+                        if (Dot(S.N, C) - S.D - Half * (std::fabs(S.N[0]) + std::fabs(S.N[1]) + std::fabs(S.N[2])) > 0.011) return true;
+                    return false;
+                };
                 const uint32_t Number = (uint32_t)Planes.size();
-                Planes.push_back(std::move(P));
                 for (int64_t X = CellOf(Lo[0]); X <= CellOf(Hi[0]); X++)
                     for (int64_t Y = CellOf(Lo[1]); Y <= CellOf(Hi[1]); Y++)
-                        for (int64_t Z = CellOf(Lo[2]); Z <= CellOf(Hi[2]); Z++) Grid[Key(X, Y, Z)].push_back(Number);
+                        for (int64_t Z = CellOf(Lo[2]); Z <= CellOf(Hi[2]); Z++)
+                            if (!Outside(X, Y, Z)) Grid[Key(X, Y, Z)].push_back(Number);
+                Planes.push_back(std::move(P));
             }
         }
         bool Inside(const V3& P) const
@@ -482,14 +507,15 @@ namespace
         return CommitBrush(Out, PrepareBrush(B, Origin, Axis, Tools, Only, Tex), Number, Stats, Tex);
     }
 
-    // Brushes prepared on the machine's threads (each its own scratch), in their order
-    std::vector<PreparedBrush> PrepareBrushes(const std::vector<Brush>& Brushes, const ToolNames& Tools, const Texturing& Tex)
+    // Brushes prepared on the machine's threads (each its own scratch), in their order; Tick as
+    // ParallelFor's (false: stopped, Out incomplete)
+    bool PrepareBrushes(const std::vector<Brush>& Brushes, const ToolNames& Tools, const Texturing& Tex, std::vector<PreparedBrush>& Out,
+                        const std::function<bool(size_t Done)>& Tick)
     {
-        std::vector<PreparedBrush> Out(Brushes.size());
-        ParallelFor<DrawnWorld::Scratch>(Brushes.size(), 64, [&](size_t I, DrawnWorld::Scratch& Scratch) {
+        Out.assign(Brushes.size(), PreparedBrush());
+        return ParallelFor<DrawnWorld::Scratch>(Brushes.size(), 64, [&](size_t I, DrawnWorld::Scratch& Scratch) {
             Out[I] = PrepareBrush(Brushes[I], nullptr, nullptr, Tools, "", Tex, &Scratch);
-        });
-        return Out;
+        }, Tick);
     }
 
     // What becomes of drawn triangle K (indices 3K..3K+2) of a surface no brush side draws: a
@@ -516,12 +542,18 @@ namespace
     // a 2x2 mesh whose fourth vertex repeats the second, one triangle whichever way Radiant splits
     // the cell, facing as the game's (a compiled mesh's triangles face against (row 1 - row 0) x
     // (column 1 - column 0)); nonColliding (the clip map's brushes collide); each vertex its
-    // position, colour ("c", left out when white), UV ("t": UV x 1024) and lightmap coordinates
+    // position, colour ("c", left out when white; white for layer weights: Weights), UV ("t": UV x 1024) and lightmap coordinates
     // (the plane's texture axes, a texel per 16 units, as "2 2 16 8" says)
-    // Drawn triangle K of S (a Fate::Patch one) as patch Number, its material Name
-    void WriteTrianglePatch(std::string& Out, const Surface& S, size_t K, const std::string& Name, RadiantStats& Stats, size_t& Number)
+    // Drawn triangle K of S (a Fate::Patch one) as patch Number, its material Name. With Over, the
+    // blend layer Over drawn over it (MapRadiantLayers.h): its corners white, the layer's weight as
+    // alpha, the layer's UVs, a decal in the layer's decal layer as the mod tools' blend patches are
+    // ("c 255 255 255 <a>", decalLayerSort), on the triangle itself (BO3 sorts a decal over the
+    // coplanar surface under it: Materials.pdf, "authored on coplanar geometry")
+    void WriteTrianglePatch(std::string& Out, const Surface& S, size_t K, const std::string& Name, bool Weights, RadiantStats& Stats,
+                            size_t& Number, const BlendLayer* Over = nullptr)
     {
-        const Vertex* V[3] = { &S.Vertices[S.Indices[K]], &S.Vertices[S.Indices[K + 1]], &S.Vertices[S.Indices[K + 2]] };
+        const uint32_t Ix[3] = { S.Indices[K], S.Indices[K + 1], S.Indices[K + 2] };
+        const Vertex* V[3] = { &S.Vertices[Ix[0]], &S.Vertices[Ix[1]], &S.Vertices[Ix[2]] };
         V3 P[3];
         for (int J = 0; J < 3; J++) P[J] = { V[J]->Pos[0], V[J]->Pos[1], V[J]->Pos[2] };
         const V3 N = Cross(Sub(P[1], P[0]), Sub(P[2], P[0]));
@@ -530,23 +562,153 @@ namespace
         bool Coloured = false;
         const auto Text = [&](int J) {
             std::string T = "\tv " + Num(P[J][0]) + " " + Num(P[J][1]) + " " + Num(P[J][2]);
-            const uint8_t* C = V[J]->Color;
+            uint8_t Own[4] = { 255, 255, 255, Over ? LayerWeight(*V[J], Over->Layer) : (uint8_t)255 };
+            const uint8_t* C = Over ? Own : Tint(*V[J], Weights);
             if (C[0] != 255 || C[1] != 255 || C[2] != 255 || C[3] != 255)
             {
                 T += " c " + std::to_string(C[0]) + " " + std::to_string(C[1]) + " " + std::to_string(C[2]) + " " + std::to_string(C[3]);
                 Coloured = true;
             }
-            return T + " t " + Num(V[J]->Uv[0] * 1024.0) + " " + Num(V[J]->Uv[1] * 1024.0) + " " + Num(Dot(P[J], Ls) / 16.0) + " " +
+            float Uv[2] = { V[J]->Uv[0], V[J]->Uv[1] };
+            if (Over) LayerUv(S, Ix[J], Over->Layer, Uv);
+            return T + " t " + Num(Uv[0] * 1024.0) + " " + Num(Uv[1] * 1024.0) + " " + Num(Dot(P[J], Ls) / 16.0) + " " +
                    Num(Dot(P[J], Lt) / 16.0) + "\n";
         };
         Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n  contents nonColliding;\n   " + Name +
-               "\n   lightmap_gray\n   2 2 16 8\n   (\n" + Text(0) + Text(1) + "   )\n   (\n" + Text(2) + Text(1) + "   )\n  }\n }\n";
+               "\n   lightmap_gray\n   2 2 16 8\n   (\n" + Text(0) + Text(1) + "   )\n   (\n" + Text(2) + Text(1) + "   )\n";
+        if (Over)
+        {
+            Out += std::string("   decalLayerSort \"") + LayerSort(Over->Layer) + "\"\n   decalEditorSort -1\n";
+            Stats.OverlayPatches[Over->Layer - 2]++;
+        }
+        Out += "  }\n }\n";
+        if (Over) return;
         Stats.Patches++;
         if (Coloured) Stats.PatchesColoured++;
     }
 
+    // The blend layers drawn over the layered materials (MapRadiantLayers.h), null Layers without
+    // the material GDT (it defines their materials); the (material, layer) pairs drawn somewhere
+    struct Overlaying
+    {
+        const BlendLayers* Layers = nullptr;
+        std::set<std::pair<std::string, int>> Carried;
+    };
+    const std::vector<const BlendLayer*> NoLayers;
+
+    // The drawn triangles another of the same sort key covers exactly (the same three corners to
+    // 1/16 unit, facing the same way, one owner's: DrawnWorld::Owner). The game draws both at one
+    // depth and the later one wins (its world surfaces in draw order); Black Ops III's depth test
+    // lets them fight (BO1 mp_firingrange's red hut wall on wood panels). The earlier is left out,
+    // with its overlays; a material of no known sort key (-1) is left alone (a decal of such a
+    // game lies on the surface under it).
+    class CoveredTriangles
+    {
+    public:
+        explicit CoveredTriangles(const MapScene& Scene)
+        {
+            using Key = std::array<int64_t, 13>;   // owner, sort key, the corners sorted, the facing
+            std::map<Key, std::array<size_t, 3>> Latest;
+            Of.resize(Scene.Objects.size());
+            for (size_t O = 0; O < Scene.Objects.size(); O++)
+            {
+                const Mesh& M = Scene.Objects[O];
+                Of[O].resize(M.Surfaces.size());
+                for (size_t Si = 0; Si < M.Surfaces.size(); Si++)
+                {
+                    const Surface& S = M.Surfaces[Si];
+                    const auto Mat = Scene.Materials.find(S.Material);
+                    if (Mat == Scene.Materials.end() || Mat->second.SortKey < 0 || NoSurface(Scene, S.Material) ||
+                        RadiantTool(ExportNaming::Lower(S.Material)))
+                        continue;
+                    Of[O][Si].assign(S.Indices.size() / 3, 0);
+                    for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
+                    {
+                        if (S.Indices[K] >= S.Vertices.size() || S.Indices[K + 1] >= S.Vertices.size() || S.Indices[K + 2] >= S.Vertices.size()) continue;
+                        std::array<std::array<int64_t, 3>, 3> C;
+                        V3 P[3];
+                        for (int J = 0; J < 3; J++)
+                        {
+                            const Vertex& V = S.Vertices[S.Indices[K + J]];
+                            P[J] = { V.Pos[0], V.Pos[1], V.Pos[2] };
+                            for (int A = 0; A < 3; A++) C[J][A] = std::llround(V.Pos[A] * 16.0);
+                        }
+                        const V3 N = Cross(Sub(P[1], P[0]), Sub(P[2], P[0]));
+                        int Axis = 0;
+                        for (int A = 1; A < 3; A++)
+                            if (std::fabs(N[A]) > std::fabs(N[Axis])) Axis = A;
+                        if (N[Axis] == 0) continue;
+                        std::sort(C.begin(), C.end());
+                        Key Kk{ (int64_t)DrawnWorld::Owner(M.Name), Mat->second.SortKey };
+                        for (int J = 0; J < 3; J++)
+                            for (int A = 0; A < 3; A++) Kk[2 + J * 3 + A] = C[J][A];
+                        Kk[11] = Axis, Kk[12] = N[Axis] > 0;
+                        const auto [It, New] = Latest.emplace(Kk, std::array<size_t, 3>{ O, Si, K / 3 });
+                        if (New) continue;
+                        Of[It->second[0]][It->second[1]][It->second[2]] = 1;
+                        It->second = { O, Si, K / 3 };
+                        Count++;
+                    }
+                }
+            }
+        }
+        // whether triangle K of Scene.Objects[Object].Surfaces[Surf] is covered
+        bool Covered(size_t Object, size_t Surf, size_t K) const
+        {
+            return Object < Of.size() && Surf < Of[Object].size() && K < Of[Object][Surf].size() && Of[Object][Surf][K];
+        }
+        size_t Count = 0;
+
+    private:
+        std::vector<std::vector<std::vector<char>>> Of;   // per object, surface, triangle
+    };
+
+    // L as a material the files name: its GDT entry's source (RadiantGdt::Overlays)
+    void Overlaid(const BlendLayer& L, RadiantGdt* Gdt)
+    {
+        if (Gdt) Gdt->Overlays.emplace(L.Name, L);
+    }
+
+    // whether Layer's weight is 0 at the three corners of triangle K (indices K..K + 2) of S
+    bool Unweighted(const Surface& S, size_t K, int Layer)
+    {
+        for (int J = 0; J < 3; J++)
+            if (LayerWeight(S.Vertices[S.Indices[K + J]], Layer)) return false;
+        return true;
+    }
+
+    // vertex I of S as an overlay's of Layer: white, the layer's weight as alpha, the layer's UVs
+    Vertex OverlayCorner(const Surface& S, uint32_t I, int Layer)
+    {
+        Vertex V = S.Vertices[I];
+        V.Color[0] = V.Color[1] = V.Color[2] = 255;
+        V.Color[3] = LayerWeight(S.Vertices[I], Layer);
+        LayerUv(S, I, Layer, V.Uv);
+        return V;
+    }
+
+    // the blend layers over drawn triangle K of S (a Fate::Patch one), a patch each where its weight is not 0
+    void WriteOverlayPatches(std::string& Out, const Surface& S, size_t K, Overlaying& Ov, RadiantGdt* Gdt, RadiantStats& Stats, size_t& Number)
+    {
+        if (!Ov.Layers) return;
+        for (const BlendLayer* L : Ov.Layers->Of(S.Material))
+        {
+            if (!L) continue;
+            if (Unweighted(S, K, L->Layer))
+            {
+                Stats.OverlayUnweighted++;
+                continue;
+            }
+            Overlaid(*L, Gdt);
+            WriteTrianglePatch(Out, S, K, MaterialName(L->Name, Gdt), false, Stats, Number, L);
+            Ov.Carried.insert({ S.Material, L->Layer });
+        }
+    }
+
+    // Owner's drawn triangles no brush side draws as patches, then the blend layers over all its
+    // drawn triangles (those a brush side draws too)
     void WritePatches(std::string& Out, const MapScene& Scene, const DrawnWorld& Drawn, uint32_t Owner, RadiantGdt* Gdt, RadiantStats& Stats,
-                      size_t& Number)
+                      size_t& Number, Overlaying& Ov, const CoveredTriangles& Cover)
     {
         for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
         {
@@ -555,16 +717,20 @@ namespace
             for (size_t Si = 0; Si < M.Surfaces.size(); Si++)
             {
                 const Surface& S = M.Surfaces[Si];
+                if (NoSurface(Scene, S.Material)) continue;
                 std::string Name;
                 for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
                 {
-                    if (Drawn.Removed(Oi, Si, K / 3)) continue;
+                    if (Drawn.Removed(Oi, Si, K / 3) || Cover.Covered(Oi, Si, K / 3)) continue;
                     const Fate F = FateOf(S, K / 3);
                     if (F == Fate::None) Stats.TrianglesDegenerate++;
                     if (F != Fate::Patch) continue;
                     if (Name.empty()) Name = MaterialName(S.Material, Gdt);
-                    WriteTrianglePatch(Out, S, K, Name, Stats, Number);
+                    WriteTrianglePatch(Out, S, K, Name, Scene.LayerWeights(S.Material), Stats, Number);
                 }
+                if (Ov.Layers && !Ov.Layers->Of(S.Material).empty())
+                    for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
+                        if (FateOf(S, K / 3) == Fate::Patch && !Cover.Covered(Oi, Si, K / 3)) WriteOverlayPatches(Out, S, K, Ov, Gdt, Stats, Number);
             }
         }
     }
@@ -649,6 +815,7 @@ namespace
             }
             // pieces of at most Limit vertices, each vertex copied once per piece
             constexpr size_t Limit = 65000;
+            const bool Weights = Scene.LayerWeights(S->Material);   // its vertices' colours are no colour: white
             WraithSubmesh* Mesh = nullptr;
             std::map<uint32_t, uint32_t> Remap;
             for (size_t K = 0; K + 2 < S->Indices.size(); K += 3)
@@ -713,7 +880,7 @@ namespace
                         W.Normal = Vector3((float)Face[0], (float)Face[1], (float)Face[2]);
                         W.AddUVLayer(V.Uv[0] + (float)(Dot(P[J], Ls) * 1e-5), V.Uv[1] + (float)(Dot(P[J], Lt) * 1e-5));
                         W.AddVertexWeight(0, 1.0f);
-                        for (int Ch = 0; Ch < 4; Ch++) W.Color[Ch] = V.Color[Ch];
+                        for (int Ch = 0; Ch < 4; Ch++) W.Color[Ch] = Tint(V, Weights)[Ch];
                         continue;
                     }
                     auto [R, Added] = Remap.emplace(I, (uint32_t)Mesh->Verticies.size());
@@ -724,7 +891,7 @@ namespace
                         W.Normal = Bin ? UnitNormal(V) : Vector3(V.Normal[0], V.Normal[1], V.Normal[2]);
                         W.AddUVLayer(V.Uv[0], V.Uv[1]);
                         W.AddVertexWeight(0, 1.0f);
-                        for (int Ch = 0; Ch < 4; Ch++) W.Color[Ch] = V.Color[Ch];
+                        for (int Ch = 0; Ch < 4; Ch++) W.Color[Ch] = Tint(V, Weights)[Ch];
                     }
                     Tri[J] = R->second;
                 }
@@ -752,22 +919,23 @@ namespace
         fs::path Path;
     };
 
-    // The jobs' files written on the machine's threads; whether each was written, ForGdt's
-    // materials added in the jobs' order
-    std::vector<char> WriteXmodels(const std::vector<XmodelJob>& Jobs, const MapScene& Scene, RadiantGdt* ForGdt)
+    // The jobs' files written on the machine's threads; Written whether each was, ForGdt's
+    // materials added in the jobs' order; Tick as ParallelFor's (false: stopped)
+    bool WriteXmodels(const std::vector<XmodelJob>& Jobs, const MapScene& Scene, RadiantGdt* ForGdt, std::vector<char>& Written,
+                      const std::function<bool(size_t Done)>& Tick)
     {
-        std::vector<char> Written(Jobs.size(), 0);
+        Written.assign(Jobs.size(), 0);
         std::vector<std::set<std::string>> Materials(Jobs.size());
         struct None {};
-        ParallelFor<None>(Jobs.size(), 1, [&](size_t I, None&) {
+        const bool Whole = ParallelFor<None>(Jobs.size(), 1, [&](size_t I, None&) {
             RadiantGdt Own;
             if (ForGdt) Own.Prefix = ForGdt->Prefix;
             Written[I] = WriteXmodel(Jobs[I].Surfaces, Scene, Jobs[I].Name, Jobs[I].Path, ForGdt ? &Own : nullptr);
             Materials[I] = std::move(Own.Materials);
-        });
+        }, Tick);
         if (ForGdt)
             for (const auto& M : Materials) ForGdt->Materials.insert(M.begin(), M.end());
-        return Written;
+        return Whole;
     }
 
     // Surfaces as the models a target takes (RadiantTarget.h): parts of at most MostSurfaces
@@ -843,16 +1011,25 @@ namespace
             : WithMaterials(Materials), Tree(std::move(Into)), Patches(AsPatches), Game(std::move(Of)) {}
         const char* Extension() const override { return ".map"; }
         bool Write(const MapScene& Scene, const std::string& Path, const Materials::IAdapter& Adapter, SceneWriteResult& Result,
-                   std::string& Error) const override
+                   std::string& Error, const WriteProgress& Progress) const override
         {
             RadiantStats Stats;
             RadiantGdt G;
-            if (!WriteRadiant(Scene, Path, Stats, Error, WithMaterials ? &G : nullptr, Tree, Patches, Game))
+            if (!WriteRadiant(Scene, Path, Stats, Error, WithMaterials ? &G : nullptr, Tree, Patches, Game, Progress))
             {
                 Error = "radiant map: " + Error;
                 return false;
             }
-            if (WithMaterials) Result.LaterCounters = MaterialsLater(Scene, Adapter, std::move(G));
+            if (WithMaterials)
+            {
+                if (!Tell(Progress, "describing the materials"))
+                {
+                    Error = "cancelled";
+                    return false;
+                }
+                Result.LaterCounters = MaterialsLater(Scene, Adapter, std::move(G));
+                Result.LaterWhat = "the material GDT (the colour maps read for their alpha, the images linked beside it)";
+            }
             Result.Counters = { { "map_radiant_maps", 1 },
                                 { "map_radiant_clip_brushes", Scene.Collision.ClipBrushes },
                                 { "map_radiant_brushes", Stats.Brushes },
@@ -865,6 +1042,13 @@ namespace
                                 { "map_radiant_origins_as_structs", Stats.OriginsAsStructs },
                                 { "map_radiant_models_left_out", Stats.ModelsLeftOut },
                                 { "map_radiant_beyond_world", Stats.BeyondWorld },
+                                { "map_radiant_triangles_covered", Stats.TrianglesCovered },
+                                { "map_radiant_beyond_sky_box", Stats.BeyondSkyBox },
+                                { "map_radiant_clipped_to_sky_box", Stats.ClippedToSkyBox },
+                                { "map_radiant_beyond_sky_box_placements", Stats.BeyondSkyBoxPlacements },
+                                { "map_radiant_beyond_sky_box_entities", Stats.BeyondSkyBoxEntities },
+                                { "map_radiant_sky_box_reach", Stats.SkyBoxReach },
+                                { "map_radiant_sky_box_size", Stats.SkyBoxSize },
                                 { "map_radiant_oversize_patches", Stats.OversizePatches },
                                 { "map_radiant_scaled_to_nothing", Stats.ScaledToNothing },
                                 { "map_radiant_collision_patches", Stats.CollisionPatches },
@@ -886,6 +1070,20 @@ namespace
                                 { "map_radiant_models_elsewhere", Stats.ModelsElsewhere } };
             Result.Counters.insert(Result.Counters.end(), { { "map_radiant_patches", Stats.Patches },
                                                             { "map_radiant_patches_coloured", Stats.PatchesColoured },
+                                                            { "map_radiant_vertex_weights_white", Stats.VertexWeightsWhite },
+                                                            { "map_radiant_layers", Stats.Layers },
+                                                            { "map_radiant_layers_carried", Stats.LayersCarried },
+                                                            { "map_radiant_layers_no_colour", Stats.LayersNoColour },
+                                                            { "map_radiant_layers_undrawn", Stats.LayersUndrawn },
+                                                            { "map_radiant_layers_no_gdt", Stats.LayersNoGdt },
+                                                            { "map_radiant_overlay_materials", Stats.OverlayMaterials },
+                                                            { "map_radiant_overlay_patches_layer2", Stats.OverlayPatches[0] },
+                                                            { "map_radiant_overlay_patches_layer3", Stats.OverlayPatches[1] },
+                                                            { "map_radiant_overlay_patches_layer4", Stats.OverlayPatches[2] },
+                                                            { "map_radiant_overlay_triangles_in_models_layer2", Stats.OverlayInModels[0] },
+                                                            { "map_radiant_overlay_triangles_in_models_layer3", Stats.OverlayInModels[1] },
+                                                            { "map_radiant_overlay_triangles_in_models_layer4", Stats.OverlayInModels[2] },
+                                                            { "map_radiant_overlay_triangles_unweighted", Stats.OverlayUnweighted },
                                                             { "map_radiant_triangles_degenerate", Stats.TrianglesDegenerate },
                                                             { "map_radiant_triangles_in_models", Stats.TrianglesInModels } });
             for (const auto& [Prefix, T] : { std::make_pair("map_radiant_texture_", &Stats.Textures), std::make_pair("map_radiant_prism_texture_", &Stats.PrismTextures),
@@ -919,8 +1117,30 @@ namespace
                                                                                  RadiantGdt G)
         {
             std::vector<Materials::Description> Described;
-            for (const std::string& Name : G.Materials) Described.push_back(DescribeMaterial(Scene, Name, Adapter, G.Root).second);
-            return [G = std::move(G), Described = std::move(Described)](std::map<std::string, size_t>& Counters) {
+            std::vector<char> Layered;   // a compiled layered material (MapScene's LayerWeights): never a decal
+            std::vector<const char*> Sorts;   // a blend layer's overlay (MapRadiantLayers.h): its decal layer
+            for (const std::string& Name : G.Materials)
+            {
+                const auto Over = G.Overlays.find(Name);
+                if (Over == G.Overlays.end())
+                {
+                    Described.push_back(DescribeMaterial(Scene, Name, Adapter, G.Root).second);
+                    Layered.push_back(Scene.LayerWeights(Name));
+                    Sorts.push_back(nullptr);
+                    continue;
+                }
+                // its images under the base semantics, as the game's adapter describes the base; its
+                // reveal map in place of its colour's alpha
+                Materials::Description D = DescribeMaterial(Scene, Over->second.Mat, Adapter, G.Root).second;
+                if (const auto R = Scene.Images.find(Over->second.Reveal); !Over->second.Reveal.empty() && R != Scene.Images.end() && !R->second.File.empty())
+                    D.AlphaMap.Image = { RelativeTo(R->second.File, G.Root) };
+                D.Multiply = Over->second.Op == 'm';
+                Described.push_back(std::move(D));
+                Layered.push_back(0);
+                Sorts.push_back(LayerSort(Over->second.Layer));
+            }
+            return [G = std::move(G), Described = std::move(Described), Layered = std::move(Layered),
+                    Sorts = std::move(Sorts)](std::map<std::string, size_t>& Counters) {
                 const fs::path Images = G.Root / "model_export" / G.Map / "images";
                 // an image's file name there, the first source to take a name keeping it
                 std::map<fs::path, std::string> Named;
@@ -939,7 +1159,7 @@ namespace
                     }
                     return "model_export/" + G.Map + "/images/" + It->second;
                 }, "material_gdt_", G.Prefix);
-                for (const auto& D : Described) B.Add(D, G.Root);
+                for (size_t I = 0; I < Described.size(); I++) B.Add(Described[I], G.Root, Layered[I] != 0, Sorts[I]);
                 std::vector<std::string> Entries = G.ModelEntries;
                 const std::vector<std::string> Mine = B.Entries("\n");
                 Entries.insert(Entries.end(), Mine.begin(), Mine.end());
@@ -1058,6 +1278,15 @@ std::vector<BrushFace> BrushFaces(const Brush& B, double Within)
 
 namespace
 {
+    // B's side on the plane Normal . p = Dist
+    void AddSide(Brush& B, const V3& Normal, double Dist)
+    {
+        BrushSide S;
+        for (int J = 0; J < 3; J++) S.Normal[J] = (float)Normal[J];
+        S.Dist = (float)Dist;
+        B.Sides.push_back(S);
+    }
+
     // A collision triangle as a brush: its face, the face Thick units behind, a side per edge;
     // false for one thinner than 1/20 unit (no face to stand on, its planes would not survive
     // three points)
@@ -1069,20 +1298,14 @@ namespace
         for (int J = 0; J < 3; J++) Longest = (std::max)(Longest, Length(Sub(P[(J + 1) % 3], P[J])));
         if (Twice < 0.01 || Twice / Longest < 0.05) return false;
         N = Mul(N, 1.0 / Twice);
-        const auto Side = [&B](const V3& Normal, double Dist) {
-            BrushSide S;
-            for (int J = 0; J < 3; J++) S.Normal[J] = (float)Normal[J];
-            S.Dist = (float)Dist;
-            B.Sides.push_back(S);
-        };
-        Side(N, Dot(N, P[0]));
-        Side(Mul(N, -1), -(Dot(N, P[0]) - Thick));
+        AddSide(B, N, Dot(N, P[0]));
+        AddSide(B, Mul(N, -1), -(Dot(N, P[0]) - Thick));
         for (int J = 0; J < 3; J++)
         {
             V3 E = Cross(Sub(P[(J + 1) % 3], P[J]), N);
             E = Mul(E, 1.0 / Length(E));
             if (Dot(E, Sub(P[(J + 2) % 3], P[J])) > 0) E = Mul(E, -1);
-            Side(E, Dot(E, P[J]));
+            AddSide(B, E, Dot(E, P[J]));
         }
         return true;
     }
@@ -1091,14 +1314,8 @@ namespace
     // Thick units behind, a side per edge
     void PolygonPrism(const std::vector<V3>& Loop, const V3& N, double D, double Thick, Brush& B)
     {
-        const auto Side = [&B](const V3& Normal, double Dist) {
-            BrushSide S;
-            for (int J = 0; J < 3; J++) S.Normal[J] = (float)Normal[J];
-            S.Dist = (float)Dist;
-            B.Sides.push_back(S);
-        };
-        Side(N, D);
-        Side(Mul(N, -1), -(D - Thick));
+        AddSide(B, N, D);
+        AddSide(B, Mul(N, -1), -(D - Thick));
         V3 Centre = { 0, 0, 0 };
         for (const V3& P : Loop) Centre = Add(Centre, Mul(P, 1.0 / (double)Loop.size()));
         for (size_t J = 0; J < Loop.size(); J++)
@@ -1107,7 +1324,7 @@ namespace
             V3 E = Cross(Sub(Loop[(J + 1) % Loop.size()], A), N);
             E = Mul(E, 1.0 / Length(E));
             if (Dot(E, Sub(Centre, A)) > 0) E = Mul(E, -1);
-            Side(E, Dot(E, A));
+            AddSide(B, E, Dot(E, A));
         }
     }
 
@@ -1486,8 +1703,14 @@ namespace
 bool TrianglePrism(const std::array<double, 3> P[3], double Thick, Brush& B) { return Prism(P, Thick, B); }
 
 bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStats& Stats, std::string& Error, RadiantGdt* ForGdt,
-                  const std::string& Tree, bool Patches, const std::string& Game)
+                  const std::string& Tree, bool Patches, const std::string& Game, const WriteProgress& Progress)
 {
+    // the stages as they go (their times in the run's log); false once the run is cancelled
+    const auto Stage = [&](const char* Name, size_t Done = 0, size_t Count = 0) {
+        if (Tell(Progress, Name, Done, Count)) return true;
+        Error = "cancelled";
+        return false;
+    };
     const bool InTree = !Tree.empty();
     // what the .map is for (RadiantTarget.h): in a tree a level the mod tools build
     const std::string Stem = ExportNaming::SafeFileName(fs::path(MapPath).stem().string());
@@ -1553,6 +1776,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         PlayArea.Found = true;
         for (int A = 0; A < 3; A++) PlayArea.Lo[A] = (std::min)(PlayArea.Lo[A], (double)O[A]), PlayArea.Hi[A] = (std::max)(PlayArea.Hi[A], (double)O[A]);
     }
+    double StartLo[3], StartHi[3];   // the starts themselves, no margin
+    for (int A = 0; A < 3; A++) StartLo[A] = PlayArea.Lo[A], StartHi[A] = PlayArea.Hi[A];
     for (int A = 0; A < 3; A++)
     {
         const double Margin = A < 2 ? Target->PlayMargin().Across : Target->PlayMargin().Up;
@@ -1565,6 +1790,49 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         return !(std::fabs((double)P[0]) > Limit) && !(std::fabs((double)P[1]) > Limit) && !(std::fabs((double)P[2]) > Limit);
     };
 
+    // where the level ends (MapRadiantBound.h): its world cut to that box while the map is written,
+    // the entities standing outside it left out. The cut world is swapped into the scene and given
+    // back on the way out: the scene is the export's own, written by one writer at a time, its
+    // models and images too large to copy for a few triangles.
+    const SkyBound Bound = UsefulBound(Scene, Ents, PlayArea.Found, StartLo, StartHi, Limit);
+    BoundedWorld Bounded;
+    struct Swapped
+    {
+        MapScene& S;
+        BoundedWorld& W;
+        bool On = false;
+        void Flip()
+        {
+            std::swap(S.Objects, W.Objects);
+            std::swap(S.Collision.Vertices, W.CollisionVertices);
+            std::swap(S.Collision.Triangles, W.CollisionTriangles);
+            std::swap(S.StaticInstances, W.StaticInstances);
+            std::swap(S.DynamicInstances, W.DynamicInstances);
+            std::swap(S.SplinedInstances, W.SplinedInstances);
+            On = !On;
+        }
+        ~Swapped()
+        {
+            if (On) Flip();
+        }
+    } Swap{ const_cast<MapScene&>(Scene), Bounded };
+    if (Bound.Cuts)
+    {
+        if (!Stage("cutting the world to its sky box")) return false;
+        CutToBound(Scene, Bound, Bounded);
+        Stats.BeyondSkyBox = Bounded.TrianglesCut + Bounded.CollisionCut;
+        Stats.ClippedToSkyBox = Bounded.TrianglesClipped + Bounded.CollisionClipped;
+        Stats.BeyondSkyBoxPlacements = Bounded.PlacementsCut;
+        Stats.BeyondSkyBoxEntities = (size_t)std::erase_if(Ents, [&](const Entity& E) {
+            const auto Class = E.find("classname");
+            float O[3];
+            if ((Class != E.end() && Class->second == "worldspawn") || !EntityFloats(E, "origin", O, 3) || !Within(O)) return false;
+            return !Bound.Holds(O);
+        });
+        Swap.Flip();
+    }
+    Stats.SkyBoxReach = (size_t)std::llround(Bound.Reach);
+
     std::string Out = "iwmap 4\n\"000_Global\" flags  active\n\"The Map\" flags \n";
     size_t EntityNumber = 0;
     const auto Begin = [&](const Entity* Keys, const char* Class) {
@@ -1576,9 +1844,23 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     };
 
     // worldspawn: its keys, the world's brushes
+    if (!Stage("reading the drawn world")) return false;
     const ToolNames Tools(Scene.Collision);
-    DrawnWorld Drawn(Scene, Stats.Textures);
+    const CoveredTriangles Cover(Scene);
+    Stats.TrianglesCovered = Cover.Count;
+    DrawnWorld Drawn(Scene, Stats.Textures, [&Cover](size_t O, size_t Si, size_t K) { return Cover.Covered(O, Si, K); });
     Stats.Textures.TrianglesDrawn = Drawn.Count();
+    // the layered materials' later layers, drawn over them when the GDT defines their materials
+    const BlendLayers Layers(Scene);
+    Overlaying Ov;
+    if (ForGdt) Ov.Layers = &Layers;
+    Stats.Layers = Layers.Layers, Stats.LayersNoColour = Layers.LayersNoColour;
+    for (const Mesh& M : Scene.Objects)
+        for (const Surface& S : M.Surfaces)
+            if (Scene.LayerWeights(S.Material))
+                for (const Vertex& V : S.Vertices)
+                    Stats.VertexWeightsWhite += V.Color[0] != 255 || V.Color[1] != 255 || V.Color[2] != 255 || V.Color[3] != 255;
+    if (!Stage("the world's solid brushes")) return false;
     const Solids SolidBrushes(Scene.Collision);
     const DrawnWorld::HiddenTest Hidden = [&SolidBrushes](const V3& P) { return SolidBrushes.Inside(P); };
     const Texturing Tex{ &Drawn, ForGdt, 0, &Stats.Textures, &Hidden };
@@ -1607,10 +1889,18 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             else Stats.BrushesManySided++;
         WorldBrushes = &FewSided;
     }
-    for (const PreparedBrush& B : PrepareBrushes(*WorldBrushes, Tools, Tex))
-        if (CommitBrush(Out, B, BrushNumber, Stats, Tex)) BrushNumber++;
-    // an outer sky box around everything the level holds: Black Ops III's compiler seals the
-    // level with sky brushes alone (a source sealed by its structural brushes too leaks there)
+    {
+        constexpr const char* Texturing = "texturing the world's brushes";
+        std::vector<PreparedBrush> Prepared;
+        if (!Stage(Texturing, 0, WorldBrushes->size()) ||
+            !PrepareBrushes(*WorldBrushes, Tools, Tex, Prepared, [&](size_t Done) { return Stage(Texturing, Done, WorldBrushes->size()); }))
+            return false;
+        for (const PreparedBrush& B : Prepared)
+            if (CommitBrush(Out, B, BrushNumber, Stats, Tex)) BrushNumber++;
+    }
+    // an outer sky box around everything the level holds (cut to its bound above, the entities
+    // too): Black Ops III's compiler seals the level with sky brushes alone (a source sealed by
+    // its structural brushes too leaks there)
     {
         double Lo[3] = { 1e30, 1e30, 1e30 }, Hi[3] = { -1e30, -1e30, -1e30 };
         const auto Grow = [&](double X, double Y, double Z) {
@@ -1623,13 +1913,18 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         for (size_t I = 0; I + 2 < Cv.size(); I += 3) Grow(Cv[I], Cv[I + 1], Cv[I + 2]);
         for (const Mesh& M : Scene.Objects)
             for (const Surface& S : M.Surfaces)
-                for (const Vertex& V : S.Vertices) Grow(V.Pos[0], V.Pos[1], V.Pos[2]);
+                if (!NoSurface(Scene, S.Material))
+                    for (const Vertex& V : S.Vertices) Grow(V.Pos[0], V.Pos[1], V.Pos[2]);
         for (const auto* List : { &Scene.StaticInstances, &Scene.DynamicInstances, &Scene.SplinedInstances })
             for (const Instance& I : *List) Grow(I.Origin[0], I.Origin[1], I.Origin[2]);
+        // the entities too: each stands within the level BO3 seals
+        for (const Entity& E : Ents)
+            if (float O[3]; &E != World && EntityFloats(E, "origin", O, 3)) Grow(O[0], O[1], O[2]);
         if (Lo[0] <= Hi[0])
         {
             constexpr double Margin = 1024, Thick = 64;
             for (int A = 0; A < 3; A++) Lo[A] = std::floor(Lo[A] - Margin), Hi[A] = std::ceil(Hi[A] + Margin);
+            Stats.SkyBoxSize = (size_t)(std::max)({ Hi[0] - Lo[0], Hi[1] - Lo[1], Hi[2] - Lo[2] });
             // a slab per side of the box, each the box's full size across, Thick deep outside it
             for (int A = 0; A < 3; A++)
                 for (int Far = 0; Far < 2; Far++)
@@ -1666,6 +1961,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     // colliding on both sides), the one facing up, else the first.
     constexpr double Thick = 2.0;   // how deep a prism is
     const auto& Tv = Scene.Collision.Vertices;
+    bool Stopped = false;   // cancelled within Prisms
     const auto Prisms = [&](const std::vector<uint32_t>& Tris, size_t& Number) {
         std::map<std::array<float, 9>, size_t> Seen;   // corners, sorted -> the triangle written
         std::vector<char> Kept(Tris.size() / 3, 1);
@@ -1723,6 +2019,11 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             const double L = Length(N);
             (L > 0 && std::abs(N[2]) / L < Steep ? Rest : All).push_back(Tri);
         }
+        if (!Stage("collision: terrain patches"))
+        {
+            Stopped = true;
+            return;
+        }
         for (const TerrainGrid& G : TerrainGrids(All, Rest, Target->MinPatchTriangleArea()))
         {
             Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n   clip_full\n   lightmap_gray\n   " + std::to_string(G.Ctrl.size()) + " " +
@@ -1740,6 +2041,11 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             Out += "  }\n }\n";
             Stats.TerrainPatches++;
             Stats.Triangles += 2 * (G.Ctrl.size() - 1) * (G.Ctrl[0].size() - 1);
+        }
+        if (!Stage("collision: triangles merged plane by plane"))
+        {
+            Stopped = true;
+            return;
         }
         const IRadiantTarget::Merge M = Target->CollisionMerge();
         const std::vector<Polygon> Polygons = CoplanarPolygons(Rest, Stats.TrianglesDropped, M.Distance, M.MinDot);
@@ -1778,8 +2084,14 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             }
             return;
         }
-        for (const Polygon& G : Polygons)
+        for (size_t Gi = 0; Gi < Polygons.size(); Gi++)
         {
+            if (!Stage("texturing the collision prisms", Gi, Polygons.size()))
+            {
+                Stopped = true;
+                return;
+            }
+            const Polygon& G = Polygons[Gi];
             Brush B;
             PolygonPrism(G.Loop, G.N, G.D, Thick, B);
             // counted as triangles, not as the clip map's brushes
@@ -1801,6 +2113,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         Begin(nullptr, "func_group");
         BrushNumber = 0;
         Prisms(Scene.Collision.Triangles, BrushNumber);
+        if (Stopped) return false;
         Out += "}\n";
     }
 
@@ -1838,6 +2151,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     }
     for (const Entity& E : Ents)
     {
+        if (!Stage("the entities", (size_t)(&E - Ents.data()), Ents.size())) return false;
         if (&E == World) continue;
         // a brush model ("*N") or a trigger volume ("?N"), each in its own space: its brushes moved
         // to where the entity stands
@@ -1894,7 +2208,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                         Number++;
                         if (Kind == '?') Stats.Brushes--, Stats.TriggerBrushes++;   // not the clip map's
                     }
-            if (Kind == '*' && N > 0 && Patched.insert((uint32_t)N).second) WritePatches(Out, Scene, Drawn, (uint32_t)N, ForGdt, Stats, Number);
+            if (Kind == '*' && N > 0 && Patched.insert((uint32_t)N).second) WritePatches(Out, Scene, Drawn, (uint32_t)N, ForGdt, Stats, Number, Ov, Cover);
             if (Number == 0)
             {
                 // every brush left out (portals, unsound): an empty entity, as above
@@ -1916,11 +2230,12 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     // entity holds, as patches; else they go to the world's models below
     if (Patches)
     {
+        if (!Stage("the world's patches")) return false;
         std::string Group;
         size_t Number = 0;
-        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number);
+        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number, Ov, Cover);
         for (const uint32_t O : Owners)
-            if (!Patched.count(O)) WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number);
+            if (!Patched.count(O)) WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number, Ov, Cover);
         if (!Group.empty())
         {
             Begin(nullptr, "func_group");
@@ -1961,6 +2276,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         Stats.Placements++;
         Named.insert(I.Model);
     };
+    if (!Stage("the placements")) return false;
     for (const auto* List : { &Scene.StaticInstances, &Scene.DynamicInstances, &Scene.SplinedInstances })
         for (const Instance& I : *List)
             if (I.Model.empty()) continue;
@@ -2015,7 +2331,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         }
     }
     Check(Jobs, [](const XmodelJob& J) { return J.Entry; });
-    const std::vector<char> Placed = WriteXmodels(Jobs, Scene, ForGdt);
+    std::vector<char> Placed;
+    if (!WriteXmodels(Jobs, Scene, ForGdt, Placed, [&](size_t Done) { return Stage("writing the placed models", Done, Jobs.size()); })) return false;
     for (size_t I = 0; I < Jobs.size(); I++)
         if (Placed[I])
         {
@@ -2026,13 +2343,14 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     // the world's triangles neither a brush side nor a patch draws in tiles of Tile units (by
     // triangle centre), each its own model; a brush model's one model each. A model has one
     // surface per material, a new one past MaxVertices (a surface's 16-bit indices).
+    if (!Stage("cutting the world's models")) return false;
     constexpr double Tile = 2048.0;
     constexpr size_t MaxVertices = 65000;
     std::map<std::string, std::vector<Surface>> Pieces;
     std::map<std::pair<std::string, std::string>, size_t> Open;   // (piece, material) -> its surface being filled
     // the triangles too large for a model (the target's ModelTriangleSpan), patches of the world
     const double MaxSpan = Target->ModelTriangleSpan();
-    std::vector<std::pair<const Surface*, size_t>> Oversize;
+    std::vector<std::pair<const Surface*, size_t>> Oversize, OversizeOverlays;
     for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
     {
         const Mesh& M = Scene.Objects[Oi];
@@ -2043,17 +2361,43 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         for (size_t Si = 0; Si < M.Surfaces.size(); Si++)
         {
             const Surface& S = M.Surfaces[Si];
-            std::map<std::string, std::map<uint32_t, uint32_t>> Remaps;
+            if (NoSurface(Scene, S.Material)) continue;
+            // S's vertices in the surface each (piece, material) fills there (an overlay's material its own)
+            std::map<std::pair<std::string, std::string>, std::map<uint32_t, uint32_t>> Remaps;
+            // the blend layers drawn over S (MapRadiantLayers.h): over its triangles a brush side draws too
+            const std::vector<const BlendLayer*>& Over = Ov.Layers ? Ov.Layers->Of(S.Material) : NoLayers;
+            // Tri into piece Piece's surface of Material, each vertex as Corner gives it
+            const auto Into = [&](const std::string& Piece, const std::string& Material, const uint32_t (&Tri)[3],
+                                  const std::function<Vertex(uint32_t)>& Corner) {
+                auto& Surfaces = Pieces[Piece];
+                auto& Remap = Remaps[{ Piece, Material }];
+                auto [It, First] = Open.emplace(std::make_pair(Piece, Material), Surfaces.size());
+                if (First || Surfaces[It->second].Vertices.size() + 3 > MaxVertices)
+                {
+                    It->second = Surfaces.size();
+                    Surfaces.push_back({ Material, {}, {} });
+                    Remap.clear();
+                }
+                Surface& To = Surfaces[It->second];
+                for (const uint32_t I : Tri)
+                {
+                    auto [R, Added] = Remap.emplace(I, (uint32_t)To.Vertices.size());
+                    if (Added) To.Vertices.push_back(Corner(I));
+                    To.Indices.push_back(R->second);
+                }
+            };
             for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
             {
-                if (Drawn.Removed(Oi, Si, K / 3)) continue;
+                if (Cover.Covered(Oi, Si, K / 3)) continue;
+                const bool Gone = Drawn.Removed(Oi, Si, K / 3);   // a brush side draws it: its overlays only
+                if (Gone && Over.empty()) continue;
                 const Fate F = FateOf(S, K / 3);
                 if (F != Fate::Model && !(F == Fate::Patch && Merged)) continue;
                 const uint32_t Tri[3] = { S.Indices[K], S.Indices[K + 1], S.Indices[K + 2] };
                 if (Tri[0] >= S.Vertices.size() || Tri[1] >= S.Vertices.size() || Tri[2] >= S.Vertices.size()) continue;
                 if (!Within(S.Vertices[Tri[0]].Pos) || !Within(S.Vertices[Tri[1]].Pos) || !Within(S.Vertices[Tri[2]].Pos))
                 {
-                    Stats.BeyondWorld++;
+                    if (!Gone) Stats.BeyondWorld++;
                     continue;
                 }
                 if (F == Fate::Patch)
@@ -2066,11 +2410,11 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                     }
                     if (Span > MaxSpan)
                     {
-                        Oversize.emplace_back(&S, K);
+                        if (!Gone) Oversize.emplace_back(&S, K);
+                        if (!Over.empty()) OversizeOverlays.emplace_back(&S, K);
                         continue;
                     }
                 }
-                Stats.TrianglesInModels++;
                 std::string Piece = Map + "_" + ExportNaming::SafeFileName(M.Name);
                 if (IsWorld)
                 {
@@ -2082,21 +2426,24 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                     for (auto& Ch : Piece)
                         if (Ch == '-') Ch = 'm';
                 }
-                auto& Surfaces = Pieces[Piece];
-                auto& Remap = Remaps[Piece];   // S's vertices in the surface it fills there
-                auto [It, First] = Open.emplace(std::make_pair(Piece, S.Material), Surfaces.size());
-                if (First || Surfaces[It->second].Vertices.size() + 3 > MaxVertices)
+                if (!Gone)
                 {
-                    It->second = Surfaces.size();
-                    Surfaces.push_back({ S.Material, {}, {} });
-                    Remap.clear();
+                    Stats.TrianglesInModels++;
+                    Into(Piece, S.Material, Tri, [&](uint32_t I) { return S.Vertices[I]; });
                 }
-                Surface& Into = Surfaces[It->second];
-                for (const uint32_t I : Tri)
+                // each blend layer over it: its own surface, white corners of the layer's weight and UVs
+                for (const BlendLayer* L : Over)
                 {
-                    auto [R, Added] = Remap.emplace(I, (uint32_t)Into.Vertices.size());
-                    if (Added) Into.Vertices.push_back(S.Vertices[I]);
-                    Into.Indices.push_back(R->second);
+                    if (!L) continue;
+                    if (Unweighted(S, K, L->Layer))
+                    {
+                        Stats.OverlayUnweighted++;
+                        continue;
+                    }
+                    Overlaid(*L, ForGdt);
+                    Into(Piece, L->Name, Tri, [&](uint32_t I) { return OverlayCorner(S, I, L->Layer); });
+                    Stats.OverlayInModels[L->Layer - 2]++;
+                    Ov.Carried.insert({ S.Material, L->Layer });
                 }
             }
         }
@@ -2117,7 +2464,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         }
     }
     Check(Jobs, [](const XmodelJob& J) { return J.Entry; });
-    const std::vector<char> Tiles = WriteXmodels(Jobs, Scene, ForGdt);
+    std::vector<char> Tiles;
+    if (!WriteXmodels(Jobs, Scene, ForGdt, Tiles, [&](size_t Done) { return Stage("writing the world's models", Done, Jobs.size()); })) return false;
     for (size_t I = 0; I < Jobs.size(); I++)
     {
         if (!Tiles[I]) continue;
@@ -2126,15 +2474,28 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         Stats.WorldModels++;
         Out += "// entity " + std::to_string(EntityNumber++) + "\n{\n";
         Out += Quote("classname", "misc_model") + Quote("model", Name) + Quote("origin", "0 0 0") + Quote("angles", "0 0 0");
+        for (const auto& [K, V] : Target->WorldModelKeys()) Out += Quote(K, V);
         Out += "}\n";
     }
     if (!Oversize.empty())
     {
         Begin(nullptr, "func_group");
         size_t Number = 0;
-        for (const auto& [S, K] : Oversize) WriteTrianglePatch(Out, *S, K, MaterialName(S->Material, ForGdt), Stats, Number);
+        for (const auto& [S, K] : Oversize)
+            WriteTrianglePatch(Out, *S, K, MaterialName(S->Material, ForGdt), Scene.LayerWeights(S->Material), Stats, Number);
         Out += "}\n";
         Stats.OversizePatches += Oversize.size();
+    }
+    if (!OversizeOverlays.empty())
+    {
+        std::string Group;
+        size_t Number = 0;
+        for (const auto& [S, K] : OversizeOverlays) WriteOverlayPatches(Group, *S, K, Ov, ForGdt, Stats, Number);
+        if (!Group.empty())
+        {
+            Begin(nullptr, "func_group");
+            Out += Group + "}\n";
+        }
     }
     if (InTree)
         for (const auto& [Name, Count] : EntryNames)
@@ -2143,6 +2504,15 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         Over.push_back(std::to_string(Stats.Faces) + " brush sides (cod2map stopped on MAX_MAP_PLANES_COMPILE with " +
                        std::to_string(Hard.BrushSides) + ")");
     Stats.LimitsOver = Over.size();
+    if (Ov.Layers)
+    {
+        Stats.LayersCarried = Ov.Carried.size();
+        Stats.LayersUndrawn = Stats.Layers - Stats.LayersNoColour - Stats.LayersCarried;
+        Stats.OverlayMaterials = ForGdt->Overlays.size();
+    }
+    else
+        Stats.LayersNoGdt = Stats.Layers - Stats.LayersNoColour;
+    if (!Stage("writing the file")) return false;
     bool Ok = true;
     if (InTree)
     {

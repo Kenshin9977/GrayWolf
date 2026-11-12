@@ -152,16 +152,18 @@ std::unique_ptr<XImageDDS> CoDIWITranslator::TranslateIWI(const std::unique_ptr<
 
             auto Result = std::make_unique<XImageDDS>();
 
-            // Call of Duty Online's 24-bit bitmaps (B, G, R per pixel): widened to RGBA, which
-            // the DDS writers and converters know (a 24-bit DDS has no DXGI format)
-            if (Header.Version == 0x9 && Info.ImageFormat == 0x2 && !isCubemap)
+            // 24-bit bitmaps (B, G, R per pixel: Call of Duty Online's, Black Ops' sky cubes such
+            // as mp_firingrange's day_ft, a face after another): widened to RGBA, which the DDS
+            // writers and converters know (a 24-bit DDS has no DXGI format; written as 32-bit,
+            // its pixels fell short and the PNG was not written)
+            if (Info.ImageFormat == 0x2)
             {
-                const size_t PixelCount = (size_t)Info.ImageWidth * Info.ImageHeight;
+                const size_t PixelCount = (size_t)Info.ImageWidth * Info.ImageHeight * (isCubemap ? 6 : 1);
                 if ((size_t)SizeToDump < PixelCount * 3)
                     return nullptr;
                 auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + PixelCount * 4];
                 uint32_t Header32 = 0;
-                Image::WriteDDSHeaderToStream(Buffer, Info.ImageWidth, Info.ImageHeight, 1, ImageFormat::DDS_Standard_A8R8G8B8, Header32, false);
+                Image::WriteDDSHeaderToStream(Buffer, Info.ImageWidth, Info.ImageHeight, 1, ImageFormat::DDS_Standard_A8R8G8B8, Header32, isCubemap);
                 const auto* Src = reinterpret_cast<const uint8_t*>(IWIBuffer.get()) + OffsetToDump;
                 auto* Dst = reinterpret_cast<uint8_t*>(Buffer + Header32);
                 for (size_t P = 0; P < PixelCount; P++)

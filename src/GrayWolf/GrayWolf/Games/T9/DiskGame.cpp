@@ -19,6 +19,7 @@
 #include "Games/Treyarch/TreyarchPackages.h"
 #include "Games/Treyarch/TreyarchScriptBundles.h"
 #include "Games/Treyarch/TreyarchWeaponStats.h"
+#include "Games/Common/Adm3.h"
 #include "Games/IW/IwctxReaders.h"
 #include "ClipMap.h"
 #include "StringCipher.h"
@@ -34,6 +35,8 @@
 #include <format>
 #include <mutex>
 #include <unordered_map>
+
+uint32_t GetFrameRate(uint8_t Index);   // GameBlackOpsCW.cpp's: a sound_asset's rate index in Hz
 
 namespace
 {
@@ -352,15 +355,21 @@ namespace
             ExportImageList(C, T, L);
         }
 
+        // A sound_asset's format the export reads as a sound: 13, Opus. (11, ADM3, goes to ExportAdm3, not
+        // listed by TellSoundHeaders: a format added here is, as what it hands WriteSound, else as Opus.)
+        static bool SoundFormatRead(uint8_t Format) { return Format == 13; }
+
         // Each sound_asset (0x58: frame count u32 8, rate index u8 0xc, channels u8 0xd, format u8 0xf)
         // with data: a package key at 0x38 or a streamkey at 0x40 (none: a name-only header, another
         // zone defines it), named by its 60-bit hash. Format 13 is Opus (the live ReadXSound); 11 is
-        // an "ADM3" object (rev/ vehicle engine models, frame count 1), not audio: not written.
+        // an "ADM3" engine model (rev/ vehicles, frame count 1): its recordings and tables (Adm3.h).
         void ExportSounds(const Context& C, Totals& T)
         {
             constexpr int64_t Frames = 8, Format = 0xf, PackageKey = 0x38, StreamKey = 0x40;
-            constexpr uint8_t Opus = 13;
+            constexpr uint8_t Adm3Format = 11;
             std::vector<IwctxReaders::SoundEntry> Found;
+            std::vector<int64_t> Where;   // Found's sound_assets
+            std::set<std::string> Adm3Done;
             for (const auto& I : Walk().Instances)
             {
                 if (!OwnerIs(I, "sound_asset")) continue;
@@ -369,15 +378,97 @@ namespace
                     Counter("sounds_references")++;
                     continue;
                 }
-                if (At<uint8_t>(Image(), I.Pos + Format) != Opus)
+                if (At<uint8_t>(Image(), I.Pos + Format) == Adm3Format)
+                {
+                    ExportAdm3(C, T, I.Pos, Adm3Done);
+                    continue;
+                }
+                if (!SoundFormatRead(At<uint8_t>(Image(), I.Pos + Format)))
                 {
                     Counter(std::format("sounds_format_{}_unread", At<uint8_t>(Image(), I.Pos + Format)))++;
                     continue;
                 }
                 Found.push_back({ AssetName(Kind::Sound, I.Pos), Live().Addr((uint64_t)I.Pos), 0, At<uint32_t>(Image(), I.Pos + Frames) });
+                Where.push_back(I.Pos);
                 if (Found.back().Full.rfind("xsound_", 0) != 0) Counter("sounds_named")++;
             }
-            IwctxReaders::ExportSounds(C, T, Name(), Found);
+            if (C.OnSoundHeader) TellSoundHeaders(C, T, Found, Where);
+            else IwctxReaders::ExportSounds(C, T, Name(), Found);
+        }
+        // A format 11 sound_asset: its ADM3 engine model (Adm3.h) written by name, once
+        void ExportAdm3(const Context& C, Totals& T, int64_t Pos, std::set<std::string>& Done)
+        {
+            auto& Kt = T.Kinds[Kind::Sound];
+            const std::string Full = AssetName(Kind::Sound, Pos);
+            if (!C.Wants(Kind::Sound, Full) || !Done.insert(Full).second) return;
+            Kt.Seen++;
+            std::unique_ptr<uint8_t[]> Data;
+            size_t Offset = 0, Size = 0;
+            uint32_t Held = 0;
+            const fs::path Dir = fs::path(C.KindDir(Kind::Sound)) / fs::path(Full).parent_path();
+            if (GameBlackOpsCW::ReadSoundObject(Live().Addr((uint64_t)Pos), Data, Offset, Size, &Held) &&
+                Adm3::Write(Data.get(), Held, Dir, ExportNaming::SafeFileName(fs::path(Full).stem().string()), T.Counters))
+                Kt.Written++;
+            else
+                T.Fail(Name(), Kind::Sound, Full, "format 11 (ADM3): its object not read");
+        }
+
+        // A dry run (Context::OnSoundHeader): each sound ExportSounds would hand WriteSound, from its
+        // sound_asset and the package table alone, nothing read from the packages. Its data: the
+        // .xsub object the key at 0x38 names (its packets {u32 size, packet}, padded), else the
+        // streamkey's (0x40): in the zone when its flags have 2, else the object its key at 8 names,
+        // both behind a 0x120-byte header. A sound whose object is not in the table, or with no
+        // channel, is not told (ReadXSound would give nothing): counted sounds_header_no_data.
+        // (2026-11-11, the 540 zones: the same 141 180 sounds as the dry run that read them, the
+        // header's frame count what the WAV holds for all 2 837 of core_common and 151 of mp_apocalypse)
+        void TellSoundHeaders(const Context& C, Totals& T, const std::vector<IwctxReaders::SoundEntry>& Found, const std::vector<int64_t>& Where)
+        {
+            constexpr int64_t RateIndex = 0xc, Channels = 0xd, PackageKey = 0x38, StreamKey = 0x40;
+            constexpr int64_t KeyOfPackage = 8, KeyBytes = 0x30, KeyFlags = 0x37, KeyInZone = 2, KeyHeader = 0x120;
+            T.Counters["sound_headers"] = 1;
+            const CoDPackageCache* P = ZonePackages();
+            const auto Stored = [P](uint64_t Key, uint64_t& Bytes) {
+                PackageCacheObject O;
+                if (P == nullptr || Key == 0 || !P->Find(Key, O)) return false;
+                Bytes = O.CompressedSize;
+                return true;
+            };
+            std::set<std::string> Done;
+            for (size_t N = 0; N < Found.size(); N++)
+            {
+                const auto& E = Found[N];
+                if (!C.Advance(N, Found.size(), E.Full)) break;
+                if (!C.Wants(Kind::Sound, E.Full) || !Done.insert(E.Full).second) continue;
+                const int64_t Pos = Where[N];
+                const uint64_t Key = At<uint64_t>(Image(), Pos + PackageKey);
+                uint64_t Bytes = 0;
+                bool Has = false;
+                if (Key != 0) Has = Stored(Key, Bytes);
+                else if (const int64_t Info = Off(PointerAt(Pos + StreamKey)); Info >= 0 && Info + KeyFlags < (int64_t)Image().size())
+                {
+                    if (At<uint8_t>(Image(), Info + KeyFlags) & KeyInZone) Bytes = At<uint32_t>(Image(), Info + KeyBytes), Has = Bytes != 0;
+                    else Has = Stored(At<uint64_t>(Image(), Info + KeyOfPackage), Bytes);
+                    // (a package object stored compressed may hold fewer bytes than its header: kept as it is)
+                    if (Bytes > KeyHeader) Bytes -= KeyHeader;
+                }
+                const uint8_t Count = At<uint8_t>(Image(), Pos + Channels);
+                if (!Has || Bytes == 0 || Count == 0)
+                {
+                    Counter("sounds_header_no_data")++;
+                    continue;
+                }
+                const fs::path Full(E.Full);
+                DiskGame::SoundHeader H;
+                // (the file the export writes, under sounds/, without its extension)
+                H.Name = (Full.parent_path() / ExportNaming::SafeFileName(Full.stem().string())).make_preferred().string();
+                H.Is = DiskGame::SoundHeader::Form::Opus;
+                H.Stored = Bytes;
+                H.Rate = GetFrameRate(At<uint8_t>(Image(), Pos + RateIndex));
+                H.Channels = Count;
+                H.Frames = E.Frames;
+                T.Kinds[Kind::Sound].Seen++;
+                C.OnSoundHeader(H);
+            }
         }
 
         // with the images it holds (the install index then finds a map's textures in the zone
@@ -389,7 +480,8 @@ namespace
                 if (OwnerIs(I, "image") && At<uint8_t>(Image(), I.Pos + offsetof(BOCWGfxImage, GfxMipMaps)) != 0)
                     Out.push_back({ { Kind::Image, AssetName(Kind::Image, I.Pos) }, I.Pos });
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+anims1"; }
+        // (+sounds2: its sounds listed and weighed from their headers, TellSoundHeaders, in every zone)
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+images1+anims1+sounds2"; }
 
         // The array an instance read inline (an ARRAY row the walk does not link): its read of
         // Count records of Size bytes, -1 when none
@@ -741,6 +833,12 @@ namespace
             return !Names.empty();
         }
 
+        // its zones open on the index's workers: before its session a zone only decompresses its
+        // fast file (from the cache ResolveZones, serialized, pulled it into) and is walked; its
+        // fixups, weights and its sounds' dry run (under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
+
         // each picked fast file pulled from CASC (with its .fd patch) into the cache
         bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions& Options,
                           std::vector<std::string>& Out, std::string& Error) const override
@@ -761,6 +859,32 @@ namespace
             Zone->ServesPackages(std::move(Packages));
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the string cipher's strings (DiskGame::EnsureStringCipher): every zone's string table
+        // (ColdWarZone::ZoneStrings' layout); its b1 is no hash of the text: known names check a fit
+        const DiskGame::CipherSource* CipherStrings() const override
+        {
+            static const DiskGame::CipherSource Source = [] {
+                DiskGame::CipherSource S;
+                S.Profile = "t9";
+                S.HashChecked = false;
+                S.Strings = [](const std::string&, ByteView Z, bool, std::vector<std::string>& Script, std::vector<std::string>&) {
+                    if (Z.size() < 0x28) return;
+                    const int32_t Count = ExportNaming::At<int32_t>(Z, 0);
+                    if (ExportNaming::At<uint64_t>(Z, 8) == 0 || Count <= 0 || 0x28 + (size_t)Count * 8 > Z.size()) return;
+                    size_t Text = 0x28 + (size_t)Count * 8;
+                    for (int32_t K = 0; K < Count && Text < Z.size(); K++)
+                    {
+                        if (ExportNaming::At<uint64_t>(Z, 0x28 + (int64_t)K * 8) != ~0ull) continue;
+                        const auto End = std::find(Z.begin() + (std::ptrdiff_t)Text, Z.end(), 0);
+                        Script.emplace_back(Z.begin() + (std::ptrdiff_t)Text, End);
+                        Text = (size_t)(End - Z.begin()) + 1;
+                    }
+                };
+                return S;
+            }();
+            return &Source;
         }
 
         // the AI types, characters, anim maps and weapons of the zone, then of the zones loaded with

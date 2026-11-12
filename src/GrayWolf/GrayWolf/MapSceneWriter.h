@@ -26,7 +26,17 @@ namespace Maps
         std::string LaterCounter;
         // the same, for work that measures several things: it adds them to the counters it is given
         std::function<void(std::map<std::string, size_t>& Counters)> LaterCounters;
+        std::string LaterWhat;   // what the work later does, for the progress and the log ("" : "once the dependencies are written")
     };
+
+    // What a writer tells of its work as it goes: a stage ("texturing brushes"), Done of Count (0
+    // of 0: no count), from the writer's own thread. False once the run is cancelled: the writer
+    // stops there and fails ("cancelled"). Unset: nothing told, never cancelled.
+    using WriteProgress = std::function<bool(const std::string& Stage, size_t Done, size_t Count)>;
+    inline bool Tell(const WriteProgress& Progress, const std::string& Stage, size_t Done = 0, size_t Count = 0)
+    {
+        return !Progress || Progress(Stage, Done, Count);
+    }
 
     class ISceneWriter
     {
@@ -34,7 +44,7 @@ namespace Maps
         virtual ~ISceneWriter() = default;
         virtual const char* Extension() const = 0;   // ".glb"
         virtual bool Write(const MapScene& Scene, const std::string& Path, const Materials::IAdapter& Adapter,
-                           SceneWriteResult& Result, std::string& Error) const = 0;
+                           SceneWriteResult& Result, std::string& Error, const WriteProgress& Progress) const = 0;
     };
 
     const ISceneWriter& GlbWriter();    // MapGlbWriter.cpp: the Blender scene, with its import script

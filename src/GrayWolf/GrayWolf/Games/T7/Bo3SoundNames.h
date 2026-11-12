@@ -10,7 +10,8 @@
 // other, and kept in a file (beside the install index, KeptFile) zone by zone: its key hashes the
 // format and the reader's tables, each zone's record carries the zone's name, size and time. A
 // zone read is appended at once, so a build that stops (cancelled, killed) resumes where it was,
-// and a changed zone (or a new one) is the only one read again.
+// and a changed zone (or a new one) is the only one read again. The install index, which opens
+// every zone anyway, records each one's names as it has it open (Gathering, Record).
 
 #include <cstdint>
 #include <functional>
@@ -35,15 +36,26 @@ namespace Bo3SoundNames
         size_t Zones = 0;                     // the zones it is made of
         size_t ZonesRead = 0, ZonesFailed = 0; // read by this call, those that did not open
         size_t Resumed = 0;                   // when built: the zones the file already held
+        bool Waiting = false;                 // zones lacking while an index gathers them (Gathering): Names empty
     };
+
+    // While an install index build gathers the tables from the zones it opens (Record), For reads
+    // no zone a table lacks: it says it is Waiting, and the index reads the asking zone again once
+    // every zone is read. Counted: on, then off once each; the last off writes the records gathered
+    // into the files a zone asked for meanwhile (the others' are let go: no file for a table no zone
+    // reads).
+    void Gathering(bool On);
+    // A zone's names, while gathering, for File as For records them (its stamp, ReaderKey's key)
+    void Record(const std::string& File, const std::string& ReaderKey, const std::string& Zone, const Table& Names);
 
     // The table of these zones: in memory, else the zones' records in File, the zones it lacks read
     // now by Read (each in turn: its specs added, false when it does not open) and appended to File.
     // Before is called before the first zone is read (a zone in use parks its session there), After
     // once the reading is over; Step(Done, Count, Zone) reports it, false to stop (the zones read so
     // far are kept, the table is used as it is and asked again next time). A key in several zones
-    // keeps the name of the first in Zones' order.
+    // keeps the name of the first in Zones' order. MayWait: an install index's caller, told Waiting
+    // while the index gathers the zones (Gathering); any other caller reads what the file lacks.
     Kept For(const std::vector<std::string>& Zones, const std::string& File, const std::string& ReaderKey,
              const std::function<bool(const std::string& Zone, Table& Out)>& Read, const std::function<void()>& Before,
-             const std::function<void()>& After, const std::function<bool(size_t, size_t, const std::string&)>& Step);
+             const std::function<void()>& After, const std::function<bool(size_t, size_t, const std::string&)>& Step, bool MayWait = false);
 }

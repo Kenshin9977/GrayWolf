@@ -43,7 +43,13 @@ namespace MaterialGdt
         // A material, its image paths relative to Dir. The first description of an asset name
         // wins: the same material from another model is counted shared, another source name
         // that gives the same asset name is counted a collision (callers add in a sorted order).
-        void Add(const Materials::Description& D, const std::filesystem::path& Dir);
+        // Layered: a world material the map compiler merged from layered patches (MapScene's
+        // VertexColors::LayerWeights), drawn opaque by its first layer: never a decal, whatever its
+        // layers' names say ("*104n_14(brick_wall:decal_grunge...)" is a brick wall).
+        // BlendLayerSort: a later layer of such a material drawn over it (MapRadiantLayers.h), a
+        // decal whose opacity is its vertices' alpha (times its colour's alpha, or its reveal map,
+        // D.AlphaMap: lit_decal_reveal), in that decal layer (layerSortDecal).
+        void Add(const Materials::Description& D, const std::filesystem::path& Dir, bool Layered = false, const char* BlendLayerSort = nullptr);
 
         bool Empty() const;
         // the material entries then the image entries, each by name

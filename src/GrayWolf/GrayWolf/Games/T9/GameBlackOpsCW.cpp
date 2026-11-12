@@ -169,34 +169,10 @@ std::unique_ptr<XModel_t> GameBlackOpsCW::ReadXModel(const CoDModel_t* Model)
 std::unique_ptr<XSound> GameBlackOpsCW::ReadXSound(const CoDSound_t * Sound)
 {
     const auto SoundData = CoDAssets::GameInstance->Read<BOCWSoundAsset>(Sound->AssetPointer);
-    if (CoDAssets::GamePackageCache == nullptr || SoundData.ChannelCount == 0) return nullptr;
-
+    if (SoundData.ChannelCount == 0) return nullptr;
     std::unique_ptr<uint8_t[]> SoundBuffer;
-    uint32_t Got = 0;
     size_t Offset = 0, Size = 0;
-    if (SoundData.StreamKey != 0)
-    {
-        SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObjectRaw(SoundData.StreamKey, Got);
-        Size = Got;
-    }
-    else if (SoundData.StreamInfoPtr != 0)
-    {
-        // the streamkey (0x38): flags u8 0x37, 2 set when its data is in the zone (at 0x20, u32 size
-        // 0x30), else in the packages by the key at 8
-        if (CoDAssets::GameInstance->Read<uint8_t>(SoundData.StreamInfoPtr + 0x37) & 2)
-        {
-            Got = CoDAssets::GameInstance->Read<uint32_t>(SoundData.StreamInfoPtr + 0x30);
-            if (Got == 0 || Got > (1u << 30)) return nullptr;
-            SoundBuffer = std::make_unique<uint8_t[]>(Got);
-            if (CoDAssets::GameInstance->Read(SoundBuffer.get(), CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x20), Got) != Got)
-                return nullptr;
-        }
-        else
-            SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObject(CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x8), Got);
-        if (SoundBuffer != nullptr && Got >= 0x120)
-            Size = std::min<size_t>(*(uint32_t*)(SoundBuffer.get() + 0x118), Got - 0x120), Offset = 0x120;
-    }
-    if (SoundBuffer == nullptr || Size == 0) return nullptr;
+    if (!ReadSoundObject(Sound->AssetPointer, SoundBuffer, Offset, Size)) return nullptr;
 
     std::vector<uint8_t> Packets;
     Packets.reserve(Size);
@@ -213,6 +189,38 @@ std::unique_ptr<XSound> GameBlackOpsCW::ReadXSound(const CoDSound_t * Sound)
     }
     return SABSupport::OpusPackets(Packets.data(), Packets.size(), 0, Packets.size(), GetFrameRate(SoundData.FrameRateIndex),
                                    SoundData.ChannelCount, SoundData.FrameCount, SABSupport::OpusPreSkipPacket);
+}
+
+bool GameBlackOpsCW::ReadSoundObject(uint64_t AssetPointer, std::unique_ptr<uint8_t[]>& SoundBuffer, size_t& Offset, size_t& Size, uint32_t* Held)
+{
+    const auto SoundData = CoDAssets::GameInstance->Read<BOCWSoundAsset>(AssetPointer);
+    if (CoDAssets::GamePackageCache == nullptr) return false;
+    uint32_t Got = 0;
+    Offset = 0, Size = 0;
+    if (SoundData.StreamKey != 0)
+    {
+        SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObjectRaw(SoundData.StreamKey, Got);
+        Size = Got;
+    }
+    else if (SoundData.StreamInfoPtr != 0)
+    {
+        // the streamkey (0x38): flags u8 0x37, 2 set when its data is in the zone (at 0x20, u32 size
+        // 0x30), else in the packages by the key at 8
+        if (CoDAssets::GameInstance->Read<uint8_t>(SoundData.StreamInfoPtr + 0x37) & 2)
+        {
+            Got = CoDAssets::GameInstance->Read<uint32_t>(SoundData.StreamInfoPtr + 0x30);
+            if (Got == 0 || Got > (1u << 30)) return false;
+            SoundBuffer = std::make_unique<uint8_t[]>(Got);
+            if (CoDAssets::GameInstance->Read(SoundBuffer.get(), CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x20), Got) != Got)
+                return false;
+        }
+        else
+            SoundBuffer = CoDAssets::GamePackageCache->ExtractPackageObject(CoDAssets::GameInstance->Read<uint64_t>(SoundData.StreamInfoPtr + 0x8), Got);
+        if (SoundBuffer != nullptr && Got >= 0x120)
+            Size = std::min<size_t>(*(uint32_t*)(SoundBuffer.get() + 0x118), Got - 0x120), Offset = 0x120;
+    }
+    if (Held) *Held = Got;
+    return SoundBuffer != nullptr && Size != 0;
 }
 
 #pragma pack(push, 1)

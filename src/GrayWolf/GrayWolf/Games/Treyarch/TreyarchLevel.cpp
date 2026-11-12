@@ -2,6 +2,7 @@
 
 #include "Games/Treyarch/TreyarchLevel.h"
 
+#include "ExportNaming.h"
 #include "HuskyMath.h"
 #include "MapLive.h"
 
@@ -68,7 +69,20 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
         }
         return true;
     };
-    const auto MaterialOf = [&](uint64_t Address) { return Off(Address) < 0 ? std::string() : Maps::AddMaterial(Scene, Material(Address)); };
+    // A world surface's material may be a composite the map compiler merged from layered patches,
+    // "*<ids>(<path>:<path>...)": its name kept whole (the file part of the last path would name
+    // different composites alike), and its vertices' colours are its layers' weights, not a
+    // colour (mp_village, mp_nuked: G the second layer's, B the third's, A the fourth's)
+    const auto MaterialOf = [&](uint64_t Address) {
+        if (Off(Address) < 0) return std::string();
+        XMaterial_t X = Material(Address);
+        const std::string Raw = StringAt(PointerAt(Off(Address)));
+        const bool Layered = !Raw.empty() && Raw[0] == '*';
+        if (Layered) X.MaterialName = ExportNaming::SafeFileName(Raw);
+        const std::string Name = Maps::AddMaterial(Scene, X);
+        if (Layered) Scene.Materials[Name].Colors = Maps::VertexColors::LayerWeights;
+        return Name;
+    };
     if (const size_t Bad = Maps::AddWorld(Scene, W, Read, MaterialOf)) Counter("map_triangles_unread") += Bad;
     AddStaticModels(Scene, Models, Off(PointerAt(World + L.SModels)), At<uint32_t>(Img, World + L.SModelCount), L.SModelSize,
                     L.SModelModel, L.SModelPlacement);

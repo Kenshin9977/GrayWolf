@@ -5,6 +5,7 @@
 #include "CoDAssets.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Games/Common/CipherFit.h"
 #include "FileSystems.h"
 #include "MapLive.h"
 #include "SABSupport.h"
@@ -380,11 +381,10 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
     for (const auto* List : { &Banks, &Patches })
     {
         if (List == &Patches) FromPatches = CoDAssets::GameAssets->LoadedAssets.size();
-        for (const auto& Bank : *List)
-        {
-            CoDAssets::GamePackageCache->LoadPackageCacheAsync(Bank);
-            SABSupport::ParseSAB(Bank);
-        }
+        // (each entry keeps its bank, which LoadSound reads: the cache's own load is not asked; its
+        // asynchronous one ran on a detached thread that outlived this scope's cache, written to
+        // after it was freed, which broke the install index's parallel builds)
+        for (const auto& Bank : *List) SABSupport::ParseSAB(Bank);
     }
     const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
     const std::string Dir = C.KindDir(DiskGame::Kind::Sound);
@@ -441,6 +441,33 @@ void IWZone::ExportSoundBanks(const std::vector<std::string>& Banks, const DiskG
     Sink.Finish();
     if (Files.Renamed) Counter("sounds_renamed") += Files.Renamed;
     if (Files.Copies) Counter("sounds_same_file") += Files.Copies;
+}
+
+void IWZone::InlineLocalizeTexts(ByteView Z, std::vector<std::string>& Out)
+{
+    const uint8_t* B = Z.data();
+    const size_t N = Z.size();
+    for (size_t At = 8; At + 8 < N;)
+    {
+        const void* Hit = std::memchr(B + At, 0xFE, N - At);
+        if (Hit == nullptr) break;
+        At = (size_t)((const uint8_t*)Hit - B);
+        if (At < 8 || At + 8 >= N || !std::all_of(B + At + 1, B + At + 8, [](uint8_t V) { return V == 0xFF; }))
+        {
+            At++;
+            continue;
+        }
+        const uint8_t* Text = B + At + 8;
+        const auto* End = (const uint8_t*)std::memchr(Text, 0, N - (At + 8));
+        if (End == nullptr) break;
+        std::string T((const char*)Text, (size_t)(End - Text));
+        if (CipherFit::Encrypted(T))
+        {
+            Out.push_back(std::move(T));
+            At = (size_t)(End - B) + 1;
+        }
+        else At += 8;
+    }
 }
 
 std::vector<std::string> IWZone::InlineScriptStrings(ByteView Z)

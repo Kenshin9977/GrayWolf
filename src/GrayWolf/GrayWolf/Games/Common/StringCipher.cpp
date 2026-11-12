@@ -88,22 +88,59 @@ namespace
     }
 }
 
+namespace
+{
+    std::mutex Lock;
+    std::map<std::string, std::unique_ptr<Table>> Tables;                 // the profiles' own (from the exe)
+    std::map<std::string, std::shared_ptr<const Table>> RebuiltTables;    // from the install's zones (DiskGame.Cipher.cpp)
+
+    // the profile's own table, read once; GRAYWOLF_NO_STRING_CIPHER=1: as on a machine without
+    // them (they are not shipped), for the regress's checks of what a user gets
+    const Table& Own(const std::string& Dir)
+    {
+        auto& T = Tables[Dir];
+        if (T == nullptr)
+        {
+            T = std::make_unique<Table>();
+            if (GetEnvironmentVariableA("GRAYWOLF_NO_STRING_CIPHER", nullptr, 0) != 0) T->Error = "GRAYWOLF_NO_STRING_CIPHER";
+            else T->Loaded = Read((std::filesystem::path(Dir) / "strings.cipher.txt").string(), *T);
+        }
+        return *T;
+    }
+}
+
 const StringCipher::Table* StringCipher::Load(const std::string& Dir, std::string& Error)
 {
-    static std::mutex Lock;
-    static std::map<std::string, std::unique_ptr<Table>> Tables;
     std::lock_guard<std::mutex> Guard(Lock);
-    auto& T = Tables[Dir];
-    if (T == nullptr)
-    {
-        T = std::make_unique<Table>();
-        // GRAYWOLF_NO_STRING_CIPHER=1: as on a machine without the tables (they are not shipped),
-        // for the regress's checks of what a user gets
-        if (GetEnvironmentVariableA("GRAYWOLF_NO_STRING_CIPHER", nullptr, 0) != 0) T->Error = "GRAYWOLF_NO_STRING_CIPHER";
-        else T->Loaded = Read((std::filesystem::path(Dir) / "strings.cipher.txt").string(), *T);
-    }
+    const Table& T = Own(Dir);
+    if (T.Loaded) return &T;
+    if (const auto It = RebuiltTables.find(Dir); It != RebuiltTables.end() && It->second) return It->second.get();
+    Error = T.Error;
+    return nullptr;
+}
+
+bool StringCipher::HasOwn(const std::string& Dir)
+{
+    std::lock_guard<std::mutex> Guard(Lock);
+    return Own(Dir).Loaded;
+}
+
+std::shared_ptr<const StringCipher::Table> StringCipher::ReadFile(const std::string& Path, std::string& Error)
+{
+    auto T = std::make_shared<Table>();
+    T->Loaded = Read(Path, *T);
     Error = T->Error;
-    return T->Loaded ? T.get() : nullptr;
+    return T->Loaded ? std::shared_ptr<const Table>(std::move(T)) : nullptr;
+}
+
+void StringCipher::UseRebuilt(const std::string& Dir, std::shared_ptr<const Table> T)
+{
+    // (a table replaced is kept: a reader may hold what Load gave it)
+    static std::vector<std::shared_ptr<const Table>> Replaced;
+    std::lock_guard<std::mutex> Guard(Lock);
+    auto& Slot = RebuiltTables[Dir];
+    if (Slot) Replaced.push_back(std::move(Slot));
+    Slot = std::move(T);
 }
 
 bool StringCipher::Decrypt(const Table* Cipher, const std::string& Raw, std::string& Text)

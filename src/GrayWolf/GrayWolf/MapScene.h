@@ -70,10 +70,18 @@ namespace Maps
         std::string Image;   // a key of MapScene::Images
     };
 
+    // What the colour of a vertex drawn with a material holds: a colour (rgb multiplied into the
+    // material's, alpha an opacity: a decal faded out, a tint), or the weights of the layers of a
+    // layered world material the map compiler merged ("*<ids>...", LayeredWorldMaterial): G the
+    // second layer's, B the third's, A the fourth's, R not a colour either. Weights are no colour:
+    // a writer of colours (Radiant, XMODEL_EXPORT, glTF's COLOR_0) writes white for them (Tint).
+    enum class VertexColors { Tint, LayerWeights };
+
     struct Material
     {
         std::string Name;
         std::string Techset;
+        VertexColors Colors = VertexColors::Tint;
         std::string ColorMap;   // the image drawn as the base colour ("" when none)
         std::vector<Texture> Textures;
         std::vector<std::vector<uint8_t>> Constants;   // the game's constant blocks (the adapter's tint, layers)
@@ -153,5 +161,32 @@ namespace Maps
         std::string MapEnts;                        // the entity string, as the game keeps it
         std::map<std::string, std::string> EntityKeys;   // a key the entity string numbers (MW3, Ghosts on), by number
         Maps::Collision Collision;                  // the clip map's brushes, when the game reads them
+
+        // true when the vertices of Material hold layer weights (VertexColors), not colours
+        bool LayerWeights(const std::string& Material) const
+        {
+            const auto It = Materials.find(Material);
+            return It != Materials.end() && It->second.Colors == VertexColors::LayerWeights;
+        }
     };
+
+    // The colour of V as a colour writer writes it: its own, white when Weights (its material's
+    // vertices hold layer weights: MapScene::LayerWeights)
+    inline const uint8_t* Tint(const Vertex& V, bool Weights)
+    {
+        static constexpr uint8_t White[4] = { 255, 255, 255, 255 };
+        return Weights ? White : V.Color;
+    }
+
+    // A world material the map compiler merged from layered patches: its name "*", ",*" or ","
+    // then the layers' numbers ("*9n_10n", "*7_243n(<layer>:<layer>)", ",*55n_7", ",86n_56n"), as
+    // CoD4's lineage names them (seen in World at War, Black Ops, Black Ops II, Ghosts, Infinite
+    // Warfare, Modern Warfare Remastered). Its vertices' colours are the layers' weights.
+    inline bool LayeredWorldMaterial(const std::string& Name)
+    {
+        size_t I = 0;
+        if (I < Name.size() && Name[I] == ',') I++;
+        if (I < Name.size() && Name[I] == '*') I++;
+        return I > 0 && I < Name.size() && Name[I] >= '0' && Name[I] <= '9';
+    }
 }

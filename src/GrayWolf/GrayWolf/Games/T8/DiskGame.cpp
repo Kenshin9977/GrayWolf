@@ -757,12 +757,24 @@ namespace
             return TreyarchPackages::ExtractZones(TreyarchPackages::Open<XPAKCache>(Install).get(), Install, Names, CacheDir(Options, "greyhound_bo4ff"), Out, Error);
         }
 
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the banks in the packages;
+        // the common zones Open pulls under the package lock, under the package lock too) hold the session
+        // lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
+
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options,
                                                   std::string& Error) const override
         {
-            // the common zones' materials first, each read alone (and once: kept in the cache)
+            // the common zones' materials first, each read alone (and once: kept in the cache); while
+            // the install index reads zones in parallel, a common zone not extracted yet is pulled
+            // from the packages one worker at a time, as ResolveZones pulls the zones
+            std::unique_lock<std::mutex> Pulling;
+            if (Options.Indexing) Pulling = std::unique_lock<std::mutex>(DiskGame::IndexPackageLock());
             auto Common = Bo4DiskExport::CommonMaterials(Path, Packages(Options).get(), CacheDir(Options, "greyhound_bo4ff"),
                                                          CacheDir(Options, "greyhound_bo4mat"));
+            if (Pulling.owns_lock()) Pulling.unlock();
             auto Zone = std::make_unique<Bo4Zone>(Path, Packages(Options), std::move(Common));
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
             if (!Zone->Open(Error)) return nullptr;

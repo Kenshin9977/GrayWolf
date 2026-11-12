@@ -3,6 +3,8 @@
 // Modern Warfare III (2023) multiplayer on the disk template: a ZonekitZone (profile mwiii) served
 // to the live readers (GameModernWarfare6.cpp), streamed data from the install's .xsub packages.
 
+#include "Games/Common/Adm3.h"
+#include "Games/Common/ImpulseResponse.h"
 #include "Games/Common/MeshDecode.h"
 #include "CoDAssets.h"
 #include "DiskGame.h"
@@ -561,15 +563,41 @@ namespace
                     continue;
                 }
                 Kt.Seen++;
-                // not Opus (MW6SndAsset::Format: reverb impulse responses, procedural sound models):
-                // no decoder yet, the game's object kept as it is, <name>.sound<format>.bin
+                // not Opus (MW6SndAsset::Format): 4 a reverb impulse response (ImpulseResponse.h), 2 an
+                // ADM3 engine model (Adm3.h); another, the game's object kept as it is, <name>.sound<format>.bin
                 if (S.Format != MW6SoundOpus)
                 {
                     // sized as ReadXSound asks (the package object's own size is what comes back)
                     const uint64_t Size = (uint64_t)(S.StreamKey != 0 ? S.Size : S.LoadedSize + 32) + S.SeekTableSize;
                     uint32_t Got = 0;
                     const auto Data = CoDAssets::GamePackageCache->ExtractPackageObject(Key, (int32_t)((Size + 4095ull) & ~15ull), Got);
-                    const fs::path File = fs::path(Dir) / (ExportNaming::SafeFileName(fs::path(Full).stem().string()) + ".sound" + std::to_string(S.Format) + ".bin");
+                    const std::string Stem = ExportNaming::SafeFileName(fs::path(Full).stem().string());
+                    const fs::path File = fs::path(Dir) / (Stem + ".sound" + std::to_string(S.Format) + ".bin");
+                    // the 32-byte {0, -4, size} header the tagged objects start with
+                    const size_t Head = Data && Got >= 16 && *(const uint64_t*)((const uint8_t*)Data.get() + 8) == 0xFFFFFFFFFFFFFFFCull ? 32 : 0;
+                    const auto* Bytes = (const uint8_t*)Data.get();
+                    if (Data && Got > Head + 0x20 && ImpulseResponse::Is(Bytes + Head, Got - Head))
+                    {
+                        std::shared_ptr<const XSound> Ir = ImpulseResponse::Read(Bytes + Head, Got - Head);
+                        if (Ir)
+                        {
+                            Counter("sounds_impulse_responses")++;
+                            Sink.Write(ExportWriters::SourceOf(*Ir), fs::path(Dir) / (Stem + Extension), [this, &Kt, &T, Full](bool Ok, const std::string& Why, const std::string& Crash) {
+                                if (Ok) Kt.Written++;
+                                else T.Fail(Name(), Kind::Sound, Full, "impulse response not written: " + (Crash.empty() ? Why : Crash));
+                            }, Ir);
+                            continue;
+                        }
+                    }
+                    std::map<std::string, size_t> Adm3Counts;
+                    if (Data && Got > Head && Adm3::Find(Bytes + Head, Got - Head) == 0 && Adm3::Write(Bytes + Head, Got - Head, Dir, Stem, Adm3Counts))
+                    {
+                        Sink.Locked([&]() {
+                            Kt.Written++;
+                            for (const auto& [K, V] : Adm3Counts) Counter(K) += V;
+                        });
+                        continue;
+                    }
                     if (Data && Got && ExportWriters::WriteBytes(File, (const uint8_t*)Data.get(), Got))
                     {
                         Kt.Written++;
@@ -581,7 +609,7 @@ namespace
                 }
                 CoDSound_t Sound;
                 Sound.AssetName = ExportNaming::SafeFileName(fs::path(Full).stem().string());
-                Sound.FullPath = fs::path(Full).parent_path().string();
+                Sound.FullPath = ExportNaming::SafeSubPath(fs::path(Full).parent_path()).string();
                 Sound.AssetPointer = Live().Addr((uint64_t)Pos);
                 Sound.FrameRate = S.FrameRate;
                 Sound.FrameCount = S.FrameCount;
@@ -1113,6 +1141,24 @@ namespace
         // its zones open on the index's workers: their decompression and walk share nothing, its
         // handlers and fixups run under the session lock, ResolveZones is serialized
         bool IndexInParallel() const override { return true; }
+
+        // the string cipher's strings (DiskGame::EnsureStringCipher): every zone's script strings but
+        // the transient ones', and the localize texts of a language's zones
+        const DiskGame::CipherSource* CipherStrings() const override
+        {
+            static const auto Source = [](const char* Profile) {
+                DiskGame::CipherSource S;
+                S.Profile = Profile;
+                S.Reads = [](const std::string& Zone) { return !Strings::ToLower(Zone).ends_with("_tr.ff"); };
+                S.Strings = [](const std::string&, ByteView Z, bool Language, std::vector<std::string>& Script, std::vector<std::string>& Localized) {
+                    Script = IWZone::InlineScriptStrings(Z);
+                    if (Language) IWZone::InlineLocalizeTexts(Z, Localized);
+                };
+                return S;
+            };
+            static const DiskGame::CipherSource Multiplayer = Source("mwiii"), Solo = Source("mwiii_sp");
+            return Campaign ? &Solo : &Multiplayer;
+        }
 
         // the anims' archetypes (aianimset) and the characters playing them (multiplayer only), every
         // zone of the run's joined: an anim is named by its hash's key whatever name it got

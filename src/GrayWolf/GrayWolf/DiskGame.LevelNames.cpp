@@ -7,6 +7,7 @@
 #include "DiskGame.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
+#include "Strings.h"
 
 #include <filesystem>
 #include <fstream>
@@ -55,12 +56,6 @@ namespace
         return Lower(fs::path(Zone).stem().string());
     }
 
-    std::string Trimmed(const std::string& S)
-    {
-        const size_t First = S.find_first_not_of(" \t\r\n");
-        if (First == std::string::npos) return std::string();
-        return S.substr(First, S.find_last_not_of(" \t\r\n") - First + 1);
-    }
 
     // the names a zone's own is tried off: a language, localized_ or patch_ prefix, a _patch or
     // _load suffix, a part number (angola_2 is Angola's)
@@ -296,7 +291,7 @@ std::unique_ptr<LevelNames> LevelNames::For(const IDiskGame& Game, const ExportO
                 if (Lower(Doc) == Lower(L)) ReadLevelList(Doc, Text, Stems, Listed);
         for (auto& [K, Text] : Rows)
         {
-            std::string T = Trimmed(ExportWriters::Utf8(Text, Rules->CodePage));
+            std::string T = Strings::Trim(ExportWriters::Utf8(Text, Rules->CodePage));
             for (auto& C : T)
                 if (C == '\t' || C == '\n' || C == '\r') C = ' ';
             if (!K.empty() && !T.empty()) Strings[Upper(K)] = std::move(T);

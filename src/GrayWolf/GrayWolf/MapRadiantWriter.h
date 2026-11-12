@@ -9,11 +9,14 @@
 // nonColliding), a misc_model per placement; and <map>_radiant/ the models it names as
 // XMODEL_EXPORT with a GDT of them.
 
+#include "MapRadiantLayers.h"
 #include "MapRadiantTextures.h"
 #include "MapScene.h"
+#include "MapSceneWriter.h"
 
 #include <array>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -52,6 +55,12 @@ namespace Maps
         size_t EntitiesLeftOut = 0, OriginsAsStructs = 0, ModelsLeftOut = 0;
         // the drawn triangles and placements beyond the target's world (RadiantTarget.h), left out
         size_t BeyondWorld = 0;
+        // drawn triangles another of the same sort key covers exactly (CoveredTriangles), left out
+        size_t TrianglesCovered = 0;
+        // the level cut to its sky box (MapRadiantBound.h): the drawn and collision triangles
+        // outside it left out, those across it clipped, the placements and entities outside left
+        // out; how far beyond the players' starts the box reaches, its largest side (units)
+        size_t BeyondSkyBox = 0, ClippedToSkyBox = 0, BeyondSkyBoxPlacements = 0, BeyondSkyBoxEntities = 0, SkyBoxReach = 0, SkyBoxSize = 0;
         // the drawn triangles too large for the world's models (RadiantTarget.h), patches instead
         size_t OversizePatches = 0;
         // the placements scaled below the target's least (RadiantTarget.h), left out
@@ -72,6 +81,16 @@ namespace Maps
         // the drawn triangles no brush side draws: patches (of them vertex-coloured), left out
         // (no area), left to the world's misc_models (no material, a coordinate not finite)
         size_t Patches = 0, PatchesColoured = 0, TrianglesDegenerate = 0, TrianglesInModels = 0;
+        // the world's vertices whose colour holds layer weights (MapScene's VertexColors), not white:
+        // written white (patches, models), the weights not carried over
+        size_t VertexWeightsWhite = 0;
+        // the later layers of the layered materials (MapRadiantLayers.h): those the materials have
+        // (material, layer), carried as overlays, left out (no colour image; no triangle drawn, its
+        // weight 0 at every corner; without the material GDT, which defines their materials); the
+        // overlays' materials, the triangles drawn as overlay patches or in the world's models (by
+        // layer, index K - 2), and the overlay triangles left out for a weight of 0 at their corners
+        size_t Layers = 0, LayersCarried = 0, LayersNoColour = 0, LayersUndrawn = 0, LayersNoGdt = 0, OverlayMaterials = 0;
+        size_t OverlayPatches[3] = { 0, 0, 0 }, OverlayInModels[3] = { 0, 0, 0 }, OverlayUnweighted = 0;
     };
     // With Gdt (the material_gdt setting), the model files name their materials by their GDT asset
     // names (MaterialGdt::AssetName) and the GDT is left to the caller: its model entries and the
@@ -84,7 +103,8 @@ namespace Maps
         bool InTree = false;                   // written into a mod tools tree (ModToolsTree.h)
         std::string Prefix;                    // before every asset name: in a tree "<map>_" (maps and BO3's own share its GDT names), else ""
         std::vector<std::string> ModelEntries;  // the xmodel entries (LF)
-        std::set<std::string> Materials;       // scene material names
+        std::set<std::string> Materials;       // scene material names, and the overlays' (below)
+        std::map<std::string, BlendLayer> Overlays;   // the blend layers' overlay materials the files name
     };
     // With Tree (a Black Ops III Mod Tools root, the mod_tools setting), the files go into it rather
     // than beside MapPath: map_source/graywolf/<map>.map, model_export/graywolf/<map>/,
@@ -92,8 +112,9 @@ namespace Maps
     // Without Patches (the map_surfaces setting), the world's drawn triangles no brush side draws go
     // to its models (tiles of 2048 units, one surface per material) rather than a patch each, which
     // Radiant draws one by one; a brush entity's stay patches (they move with it).
-    // Game: the source game's id, which a tree's map name takes (RadiantTarget.h).
+    // Game: the source game's id, which a tree's map name takes (RadiantTarget.h). Progress: its
+    // stages as it goes (MapSceneWriter.h); false from it stops the writing (Error "cancelled").
     bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStats& Stats, std::string& Error,
                       RadiantGdt* ForGdt = nullptr, const std::string& Tree = std::string(), bool Patches = false,
-                      const std::string& Game = std::string());
+                      const std::string& Game = std::string(), const WriteProgress& Progress = {});
 }

@@ -42,6 +42,7 @@ namespace ExportWriters
     struct ImageSinkStats
     {
         size_t Written = 0, Failed = 0, Linked = 0;
+        std::vector<std::string> FailedFiles;   // the files of Failed, in no set order
     };
 
     // Where the image sinks' time went, for the whole process, in microseconds: the run log reads
@@ -289,6 +290,8 @@ namespace ExportWriters
     // Measures of the sounds written in this process (sounds_opus_remuxed, sounds_resampled ...),
     // for a run's counters
     std::map<std::string, size_t> SoundCounters();
+    // one more of Name in SoundCounters (a decoder's measure)
+    void CountSound(const char* Name);
 
     // An ImageSink content key, mixed from what an image's file is made of (where its pixels are,
     // its shape and format, the extension); never 0 (no dedup).

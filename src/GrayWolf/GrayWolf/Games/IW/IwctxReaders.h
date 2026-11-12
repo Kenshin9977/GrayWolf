@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -96,6 +97,8 @@ namespace IwctxReaders
     // campaign 0x20), then the text of each slot with bit 61 set, NUL-terminated, encrypted with the
     // string cipher of the profile in ProfileDir (strings.cipher.txt); "" for the others
     std::vector<std::string> ZoneStrings(ByteView Zone, const std::string& ProfileDir, size_t ListSize = 0x30);
+    // The same texts as the zone has them (encrypted), "" for a slot without one
+    std::vector<std::string> RawZoneStrings(ByteView Zone, size_t ListSize = 0x30);
     // Script strings by their 64-bit hash, XXH3-64 with the seed 0x100000001b3 (the game's
     // DB_RegisterScrString: Black Ops 7 0x3ad7010 -> 0xae3ccc0; Black Ops 6 the same "end" hash):
     // each zone's own registered as it opens, "end" built in (a script constant); unknown: its hex
@@ -135,6 +138,12 @@ namespace IwctxReaders
     // package_index's name indexes for these games (assets, strings, bones by their FNV-1a 64),
     // loaded once
     void LoadNameIndexes();
+    // a game's own name packages of package_index (bo6_names.wni, bo7_names.wni: names cod-hash-recovery
+    // found for that game's FNV-1a 64 asset hashes), each file loaded once whichever game asks for it
+    void LoadGameNames(std::initializer_list<const char*> Packages);
+    // the string cipher's strings of a profile's zones (DiskGame::EnsureStringCipher): every zone's
+    // script strings but the transient ones' (its list's size the profile's zone_load.asset_list_size)
+    DiskGame::CipherSource ScriptStringCipher(const char* Profile);
 
     // A map's entity string from a GfxEntityPairs (0x40) at Pairs, one "{ "key" "value" ... }" per
     // entity, its keys named by IwEntityKeys (Scheme): Off maps an address to a position of Img,

@@ -249,6 +249,15 @@ namespace
         for (size_t Z = 0; Z < Ix->Zones().size(); Z++) Opened += Ix->Footprint(Z) != 0;
         std::string Renamed = "index_renamed=" + std::to_string(Ix->Renamed.size()) + "\n";
         for (const auto& R : Ix->Renamed) Renamed += "index_renamed " + R + "\n";
+        // the string cipher's rebuild riding the build (counts and its log, never the table)
+        for (const auto& [K, V] : Ix->CipherCounters) Renamed += K + "=" + std::to_string(V) + "\n";
+        for (size_t At = 0, End; At < Ix->CipherLog.size(); At = End + 1)
+        {
+            End = Ix->CipherLog.find('\n', At);
+            if (End == std::string::npos) End = Ix->CipherLog.size();
+            Renamed += "log " + Ix->CipherLog.substr(At, End - At) + "\n";
+        }
+        Renamed += Ix->BuildTimes;
         CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\nzones=" + std::to_string(Ix->Zones().size()) +
                                "\nopened=" + std::to_string(Opened) + "\nassets=" + std::to_string(Ix->Entries) +
                                "\nbuilt=" + (Ix->Built ? "1" : "0") + "\nseconds=" + std::to_string(Ix->Seconds) + "\nfile=" + Ix->File + "\n" + Renamed);
@@ -263,6 +272,50 @@ namespace
         AddLevelNamesOptions,
     };
     const GameCommandRegistration DiskIndexRegistered(DiskIndexCommand);
+
+    // disk-cipher <install> --game <id>: the string cipher's table rebuilt from the install's zones
+    // (DiskGame::EnsureStringCipher), or read from where it was kept; nothing when the game's profile
+    // has its own (GRAYWOLF_NO_STRING_CIPHER=1: as a user without). GRAYWOLF_CIPHER_REBUILD=1 makes it
+    // again, GRAYWOLF_CIPHER_SCORE=1 scores it against the profile's own (counts only)
+    int RunDiskCipher(const CliOptions& Options, const std::string& Install)
+    {
+        const IDiskGame* Game = Options.DiskGameId.empty() ? Detect(Install) : Find(Options.DiskGameId);
+        if (Game == nullptr)
+        {
+            CliReport(Options, "result=error\nreason=no disk reader for " + Install + "\n");
+            return 1;
+        }
+        ExportOptions O;
+        std::string Error;
+        if (!ReadOptions(*Game, Options, O, Error))
+        {
+            CliReport(Options, "result=error\nreason=" + Error + "\n");
+            return 1;
+        }
+        if (O.Install.empty()) O.Install = Install;
+        std::string Log;
+        CipherProgress P;
+        P.Log = [&](const std::string& Line) { Log += "log " + Line + "\n"; };
+        std::map<std::string, size_t> Counters;
+        if (!EnsureStringCipher(*Game, O, Install, P, Counters, Error))
+        {
+            CliReport(Options, "result=error\nreason=" + Error + "\n" + Log);
+            return 1;
+        }
+        std::string Lines;
+        for (const auto& [K, V] : Counters) Lines += K + "=" + std::to_string(V) + "\n";
+        CliReport(Options, std::string("result=ok\ngame=") + Game->Id() + "\n" + (Game->CipherStrings() ? "" : "cipher=none\n") + Lines + Log);
+        return 0;
+    }
+
+    const GameCommand DiskCipherCommand{
+        "disk-cipher",
+        "A game's string cipher table rebuilt from the install's zones (when its profile has none)",
+        "The install folder",
+        RunDiskCipher,
+        AddLevelNamesOptions,
+    };
+    const GameCommandRegistration DiskCipherRegistered(DiskCipherCommand);
 
     // disk-estimate <install> --game <id> --picked a,b [--type kinds]: what the Load Game panel's
     // size estimate says for those zones and kinds (DiskGame::Sizes): samples measured from the

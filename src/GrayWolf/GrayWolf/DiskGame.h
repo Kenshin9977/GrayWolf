@@ -16,7 +16,9 @@
 #include <map>
 #include <optional>
 #include <memory>
+#include <mutex>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -273,6 +275,17 @@ namespace DiskGame
         }
         const std::atomic<bool>* Cancel = nullptr;
         bool Cancelled() const { return Cancel != nullptr && Cancel->load(); }
+        // Work of a kind's that is not its assets (a map's Radiant source, written once its images
+        // are): Phase ("writing the Radiant .map: texturing brushes"), Done of Count (0 of 0: no
+        // count), "" once it ends. Export logs each phase's time, shows it on the progress instead
+        // of the last asset and keeps the watchdog quiet while it moves; one thread at a time.
+        // False once the run is cancelled: the writer stops there.
+        std::function<void(const std::string& Phase, size_t Done, size_t Count)> OnPhase;
+        bool Working(const std::string& Phase, size_t Done = 0, size_t Count = 0) const
+        {
+            if (OnPhase) OnPhase(Phase, Done, Count);
+            return !Cancelled();
+        }
 
         // Only these assets when set, whatever NameFilter says: the dependencies a run pulls from
         // the zone that defines them, or the assets a user picked.
@@ -310,15 +323,16 @@ namespace DiskGame
         // elsewhere): the run exports it from the zone that defines it.
         void Needs(Kind K, const std::string& Name) const { if (OnNeeds) OnNeeds({ K, Name }); }
         // Work that needs what the run writes later (a map's textures pulled from another
-        // zone): run once the dependencies are written, in the order given.
-        void After(std::function<void()> Work) const
+        // zone): run once the dependencies are written, in the order given. What: what it does,
+        // for the progress and the log ("the map's textures as PNG").
+        void After(std::function<void()> Work, const std::string& What = std::string()) const
         {
-            if (OnAfter) OnAfter(std::move(Work));
+            if (OnAfter) OnAfter(std::move(Work), What);
             else Work();
         }
         // Export's own: what Wants accepted and what Needs asked, zone by zone; the After work.
         std::function<void(const AssetId&)> OnWanted, OnNeeds;
-        std::function<void(std::function<void()>)> OnAfter;
+        std::function<void(std::function<void()>, const std::string& What)> OnAfter;
         // The materials a zone names only (a model's name-only material headers), as the zones the
         // install index says define them read them (IDiskZone::MaterialImages), into Out by name:
         // Export's own, the asking zone parked meanwhile; unset, none is looked up.
@@ -397,6 +411,10 @@ namespace DiskGame
         // walked only the assets asked and what they reach (DiskGame::PartialScope): what it needs
         // may be its own assets, which a later open asking for them gives
         virtual bool OpenedPartially() const { return false; }
+        // its bytes as decompressed from its file, unchanged by the session (nothing when the reader
+        // keeps none, or made them from a resume index): what the install index hands the string
+        // cipher's rebuild (CipherHarvest)
+        virtual std::span<const uint8_t> Decoded() const { return {}; }
         // the reader's own measures for this zone (links resolved...), added to Totals::Counters
         virtual void Measures(Totals&) const {}
         // What the zone holds whole: every asset its exporters write under that name. The install
@@ -414,6 +432,10 @@ namespace DiskGame
         // xmodelsurfs a model of another zone points at (Black Ops 6). Kept in the install index
         // beside Defines (ZoneIndex::PartIn), for a reader to load the zone holding a part.
         virtual void Parts(std::vector<std::pair<std::string, uint64_t>>&) const {}
+        // Whether what the install index asked of it (its sounds' dry run) waited on a table the
+        // build is still gathering from the zones it opens (IDiskGame::IndexRides): the zone is read
+        // again once every zone is read
+        virtual bool IndexAgain() const { return false; }
         // The localized strings it holds, (key, text) in zone order, the text in the game's own
         // encoding; an empty key is a reference to another zone's. What the localize kind writes,
         // and what level names are read from (LevelNames).
@@ -459,6 +481,37 @@ namespace DiskGame
     // shares the game's packages with their opening, which crashed Modern Warfare 2019's builds
     void WeighAll(const IDiskZone& Zone, std::vector<std::pair<AssetId, Weight>>& Out, bool Sounds = true);
 
+    // What an install index build's workers take one at a time: ResolveZones (it may extract a zone
+    // from a package), a sound kind's dry run (its reader may extract its banks from the same
+    // storage), and what a game's Open pulls from its packages itself while the index reads zones in
+    // parallel (Black Ops 4's common zones)
+    std::mutex& IndexPackageLock();
+    // While an install index reads its zones from a hard disk: what a zone's load from its files
+    // takes (ZonekitZone), so the disk reads one zone at a time while the others are walked and
+    // weighed beside it; nullptr otherwise
+    std::mutex* IndexDiskLock();
+
+    // A Mac app's copy of an install's zones left out of Names (zones as ListZones names them): a
+    // zone under <name>.app\Contents\<folder>\ whose path below that folder is also one of Names,
+    // of the same size (Call of Duty 4's Steam install: "Call of Duty 4.app\Contents\Call of Duty 4
+    // Data\zone\french\*.ff" beside "zone\french\*.ff", the same 72 files). One only the copy has
+    // is kept.
+    void LeaveOutMacCopies(const std::string& Install, std::vector<std::string>& Names);
+
+    // Where a game's encrypted zone strings are: its string cipher's table rebuilt from the
+    // install's zones when its profile has none of its own (EnsureStringCipher)
+    struct CipherSource
+    {
+        const char* Profile = nullptr;     // the zonekit profile the table stands for
+        bool HashChecked = true;           // b1 is the text's hash (CipherFit.h); false: Cold War
+        // whether a zone (as ListZones names it) is read; every one when empty
+        std::function<bool(const std::string& Zone)> Reads;
+        // a zone's encrypted strings: its script strings, and its localized texts when it is a zone
+        // of the language read (Language)
+        std::function<void(const std::string& Zone, std::span<const uint8_t> Bytes, bool Language, std::vector<std::string>& Script,
+                           std::vector<std::string>& Localized)> Strings;
+    };
+
     class IDiskGame
     {
     public:
@@ -491,18 +544,33 @@ namespace DiskGame
                                std::vector<std::string>& Names, std::string& Error) const;
         virtual bool ResolveZones(const std::string& Install, const std::vector<std::string>& Names,
                                   const ExportOptions& Options, std::vector<std::string>& Out, std::string& Error) const;
-        // The zones the install index opens (ZoneIndex): every zone ListZones gives, unless a game
-        // names fewer (Modern Warfare 2019 leaves out its 25 000 transient zones)
+        // The zones the install index opens (ZoneIndex): every zone ListZones gives but a Mac app's
+        // copy of them (LeaveOutMacCopies), unless a game names fewer (Modern Warfare 2019 leaves out
+        // its 25 000 transient zones)
         virtual bool IndexedZones(const std::string& Install, const ExportOptions& Options,
-                                  std::vector<std::string>& Names, std::string& Error) const
-        {
-            return ListZones(Install, Options, Names, Error);
-        }
+                                  std::vector<std::string>& Names, std::string& Error) const;
         // Whether the install index may open several zones at once (ZoneIndex): what Open does
         // before a zone's session is safe on several threads (its decompression, its walk, its
         // ResolveZones once the index serializes it); a zonekit zone's session, handlers and
         // fixups hold the process-wide session lock. False until a game's hooks are checked.
         virtual bool IndexInParallel() const { return false; }
+        // Whether the install index weighs a zone's sounds by a dry run of its sound kind when its
+        // reader lists none with their shape (WeighAll): by default only when its zones are read one
+        // at a time. True for a game read in parallel whose zones touch no package before their
+        // session: the dry run holds the session lock and the package lock (ResolveZones'), so it
+        // runs alone as in a serial build
+        virtual bool IndexWeighsSounds() const { return !IndexInParallel(); }
+        // What an install index build gathers from the zones it opens besides their entries, so that
+        // no reader opens them all again for it (Black Ops III's sound name tables): told each zone
+        // the build has open (Opened, on its workers), then that every zone is read (Finished), before
+        // the zones that waited on it (IDiskZone::IndexAgain) are read again. None by default.
+        struct IndexRide
+        {
+            virtual ~IndexRide() = default;
+            virtual void Opened(const IDiskZone& Zone) = 0;
+            virtual void Finished() = 0;
+        };
+        virtual std::unique_ptr<IndexRide> IndexRides(const std::string& Install, const ExportOptions& Options) const { return nullptr; }
         // The install a zone sits in, when --install is not given: where its dependencies are
         // pulled from. By default the zone's folder; a game whose zones sit in a subfolder of the
         // install (Black Ops 6's cod24\, sp24\) names the install above it.
@@ -547,6 +615,9 @@ namespace DiskGame
         };
         // none by default: the game's zones are shown by file name only
         virtual const LevelNaming* LevelNames() const { return nullptr; }
+
+        // its zones' encrypted strings, for its string cipher (none by default: no cipher)
+        virtual const CipherSource* CipherStrings() const { return nullptr; }
 
         // Which models the anims a run exported play on, as the game's own data says (AnimOwners.h):
         // the run writes <out>/<game>/anims/anim_owners.json from it, merged with an earlier run's.
@@ -644,6 +715,52 @@ namespace DiskGame
     // <game>_<install hash><Extension>
     std::string KeptFile(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
                          const char* Extension);
+    // The install's zone files as they are now (each one's size and write time, its patches', a
+    // CASC build's file): a key that changes when the game's files do
+    std::string ZoneFilesStamp(const std::string& Install, const std::vector<std::string>& Names);
+
+    // The string cipher's table of Game's profile, when the profile has none of its own (the
+    // exe-made strings.cipher.txt, never shipped): rebuilt from the install's zones once
+    // (CipherFit.h), kept beside the install index (<game>_<install hash>.cipher, keyed by the
+    // zones' files), and given to StringCipher::Load. Once per process and install; a game without
+    // a cipher, or GRAYWOLF_NO_ZONE_CIPHER=1, does nothing. Counters: what it did (cipher_*).
+    // False only when cancelled or no table could be made (Error).
+    struct CipherProgress
+    {
+        std::function<void(const std::string&)> Log;
+        std::function<void(size_t Done, size_t Count)> Step;   // zones read, then the fit's stages
+        const std::atomic<bool>* Cancel = nullptr;
+    };
+    bool EnsureStringCipher(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
+                            const CipherProgress& Progress, std::map<std::string, size_t>& Counters, std::string& Error);
+    // Whether a run of these kinds reads the zones' encrypted strings (names of bones, notetracks,
+    // localized texts, scripts...): not one of images or sounds alone, which never waits on a rebuild
+    bool NeedsStringCipher(const std::set<Kind>& Kinds);
+
+    // The string cipher's rebuild riding the install index's build (ZoneIndex::For): every zone the
+    // index opens hands its decompressed bytes once (Add, on the index's workers), then Finish reads
+    // the cipher's zones the index does not open (MWIII's localized, server and techsets zones),
+    // fits and keeps the table. EnsureStringCipher is Begin then Finish: every zone read there.
+    class CipherHarvest
+    {
+    public:
+        // nullptr when there is nothing to rebuild (no cipher, the profile's own table, the table
+        // kept for these files: then given to StringCipher::Load, counted cipher_rebuilt_kept)
+        static std::unique_ptr<CipherHarvest> Begin(const IDiskGame& Game, const ExportOptions& Options, const std::string& Install,
+                                                    std::map<std::string, size_t>* Counters = nullptr);
+        ~CipherHarvest();
+        // a zone's strings (as ListZones names it; any other zone is passed over); thread-safe
+        void Add(const std::string& Zone, std::span<const uint8_t> Bytes);
+        // the zones not added read, the table fitted, kept and given to StringCipher::Load
+        bool Finish(const IDiskGame& Game, const ExportOptions& Options, const CipherProgress& Progress,
+                    std::map<std::string, size_t>& Counters, std::string& Error);
+
+    private:
+        CipherHarvest() = default;
+        struct State;
+        std::unique_ptr<State> S;
+    };
+
     // The installs of Game an index was kept for (each one's folder is written beside it, <...>.install)
     std::vector<std::string> KeptInstalls(const IDiskGame& Game, const ExportOptions& Options);
 
@@ -717,6 +834,12 @@ namespace DiskGame
         std::vector<size_t> PartIn(const std::string& Type, uint64_t Hash) const;
         std::string File;                  // where it is kept
         bool Built = false;                // built by this call, not read from File
+        // built now: what the string cipher's rebuild riding the build did (cipher_*, CipherHarvest)
+        std::map<std::string, size_t> CipherCounters;
+        std::string CipherLog;   // its log lines
+        // built now: where the build's time went, as report lines (index_* counters, "log" lines:
+        // each stage summed over the zones, the workers' use, the slowest zones)
+        std::string BuildTimes;
         bool Weighed = true;               // false: kept before the assets' weights (Weights empty)
         // built now: "<zone>: <kind> <its bytes> -> <name>", each name a reader gave that was not
         // text (control bytes, not UTF-8), kept under a fallback name (DiskGame.Index.cpp)

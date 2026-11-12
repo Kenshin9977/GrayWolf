@@ -76,18 +76,27 @@ namespace
     class LegacySpecularAdapterImpl final : public SemanticAdapter
     {
     public:
-        LegacySpecularAdapterImpl()
-            : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names) {}
+        LegacySpecularAdapterImpl(bool AlphaIsRoughness = false, bool ColourGamma2 = false)
+            : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names), RoughAlpha(AlphaIsRoughness), Gamma2(ColourGamma2) {}
     protected:
         // an exporter without semantics gives no colour map: the readers' hints and the names
         bool Matched(const Description& D) const override { return !D.Albedo.Empty(); }
-        void Refine(const Source&, Description& D, bool) const override
+        void Refine(const Source& M, Description& D, bool) const override
         {
+            if (Gamma2 && !D.Albedo.Empty()) D.AlbedoGamma = 2.0f;
+            // the decal sort keys of the CoD lineage (BO1's mp_firingrange: 4 opaque, 5 sky, 12
+            // decals, 14 cut-out foliage, 15..17 nets and puddles, 29 vehicle decals, 30 and 43
+            // blends and glass), the cut-out foliage among them left as it is
+            if (M.SortKey >= 9 && M.SortKey <= 29 && D.Alpha != AlphaMode::Cutout) D.Decal = true;
             if (D.Specular.Empty() || !D.Metalness.Empty()) return;
             D.LegacySpecular = true;
             D.SpecularScale = 0.2f;
-            if (D.Roughness.Empty()) D.Roughness = { D.Specular.Path, 3, true };
+            if (D.Roughness.Empty()) D.Roughness = { D.Specular.Path, 3, !RoughAlpha };
+            // the table reads the specular map's alpha as a gloss: a roughness in this game's
+            else if (RoughAlpha && D.Roughness.Path == D.Specular.Path && D.Roughness.Channel == 3) D.Roughness.Invert = false;
         }
+    private:
+        bool RoughAlpha, Gamma2;
     };
 
     const char* AlphaName(AlphaMode A)
@@ -285,6 +294,12 @@ const IAdapter& LegacySpecularAdapter()
     return Legacy;
 }
 
+const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2)
+{
+    static const LegacySpecularAdapterImpl Each[2][2] = { { { false, false }, { false, true } }, { { true, false }, { true, true } } };
+    return Each[AlphaIsRoughness][ColourGamma2];
+}
+
 const IAdapter& AdapterFor(const std::string& Engine)
 {
     const auto It = Registry().find(Engine);
@@ -425,6 +440,9 @@ std::string SidecarText(const Sidecar& S)
         nlohmann::json J{ { "name", D.Name }, { "alpha", AlphaName(D.Alpha) } };
         if (D.Alpha == AlphaMode::Cutout || D.Alpha == AlphaMode::Auto) J["alpha_cutoff"] = Rounded(D.AlphaCutoff);
         PutMap(J, "albedo", D.Albedo, false);
+        if (!D.Albedo.Empty() && D.AlbedoGamma > 0.0f) J["albedo"]["gamma"] = Rounded(D.AlbedoGamma);
+        if (D.Decal) J["decal"] = true;
+        if (D.Multiply) J["multiply"] = true;
         PutMap(J, "normal", D.Normal, false);
         if (!D.Normal.Empty())
         {
@@ -514,6 +532,9 @@ bool ReadSidecar(const std::string& Path, Sidecar& S)
             D.Alpha = AlphaFromName(J.value("alpha", std::string("opaque")));
             D.AlphaCutoff = J.value("alpha_cutoff", 0.5f);
             GetMap(J, "albedo", D.Albedo);
+            if (J.contains("albedo") && J["albedo"].is_object()) D.AlbedoGamma = J["albedo"].value("gamma", 0.0f);
+            D.Decal = J.value("decal", false);
+            D.Multiply = J.value("multiply", false);
             GetMap(J, "normal", D.Normal);
             if (J.contains("normal"))
             {

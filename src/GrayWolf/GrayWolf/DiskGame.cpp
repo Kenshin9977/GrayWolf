@@ -307,6 +307,43 @@ bool IDiskGame::ListZones(const std::string& Install, const ExportOptions&, std:
     return !Names.empty();
 }
 
+void LeaveOutMacCopies(const std::string& Install, std::vector<std::string>& Names)
+{
+    const auto Key = [](const std::string& N) {
+        std::string K = ExportNaming::Lower(N);
+        std::replace(K.begin(), K.end(), '/', '\\');
+        return K;
+    };
+    // the path below <name>.app\Contents\<folder>\, empty for a zone outside a Mac app
+    const auto Below = [](const std::string& K) {
+        for (size_t App = K.find(".app\\contents\\"); App != std::string::npos; App = K.find(".app\\contents\\", App + 1))
+        {
+            const size_t Folder = App + std::strlen(".app\\contents\\");
+            const size_t Rest = K.find('\\', Folder);
+            if ((App == 0 || K[App - 1] != '\\') && Rest != std::string::npos && Rest + 1 < K.size()) return K.substr(Rest + 1);
+        }
+        return std::string();
+    };
+    std::set<std::string> Zones;
+    for (const auto& N : Names) Zones.insert(Key(N));
+    std::error_code Ec;
+    std::erase_if(Names, [&](const std::string& N) {
+        const std::string Rest = Below(Key(N));
+        if (Rest.empty() || !Zones.count(Rest)) return false;
+        const auto Size = fs::file_size(fs::path(Install) / N, Ec);
+        const bool Read = !Ec;
+        const auto Other = fs::file_size(fs::path(Install) / Rest, Ec);
+        return Read && !Ec && Size == Other;
+    });
+}
+
+bool IDiskGame::IndexedZones(const std::string& Install, const ExportOptions& Options, std::vector<std::string>& Names, std::string& Error) const
+{
+    if (!ListZones(Install, Options, Names, Error)) return false;
+    LeaveOutMacCopies(Install, Names);
+    return true;
+}
+
 bool IDiskGame::ResolveZones(const std::string& Install, const std::vector<std::string>& Names, const ExportOptions&,
                              std::vector<std::string>& Out, std::string& Error) const
 {
@@ -759,7 +796,8 @@ namespace
 
 void Eta::Observe(const Progress& P)
 {
-    if (P.FromWatchdog) return;
+    // a phase's Done of Count (the install index, a map's Radiant source) is not the kind's
+    if (P.FromWatchdog || !P.Phase.empty()) return;
     TotalZones = P.Zones;
     if (P.Dependencies)
     {
@@ -1111,10 +1149,47 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         P.Asset = Mon.Asset();
         OnProgress(P);
     };
+    // a kind's work past its assets (Context::Working): each phase's time in the log, the phase
+    // on the progress (at most every 100 ms within it), what a stall names
+    struct
+    {
+        std::mutex Lock;
+        std::string Name;
+        std::chrono::steady_clock::time_point Since, Shown;
+    } Phasing;
+    Run.OnPhase = [&](const std::string& Phase, size_t Done, size_t Count) {
+        const std::lock_guard<std::mutex> G(Phasing.Lock);
+        const auto Now = std::chrono::steady_clock::now();
+        const bool New = Phase != Phasing.Name;
+        if (New)
+        {
+            if (!Phasing.Name.empty()) Mon.Log("  " + P.ZoneName + " " + Phasing.Name + ": " + Ms(Seconds(Phasing.Since)));
+            Phasing.Name = Phase;
+            Phasing.Since = Now;
+            const std::string Of = P.Current ? KindName(*P.Current) : std::string("reading");
+            Mon.Where(P.ZoneName, Phase.empty() ? Of : Of + ": " + Phase);
+        }
+        else
+            Mon.Touch();
+        if (!OnProgress) return;
+        if (!New && Done < Count && Now - Phasing.Shown < std::chrono::milliseconds(100)) return;
+        Phasing.Shown = Now;
+        if (Phase.empty())
+        {
+            OnProgress(P);
+            return;
+        }
+        Progress Q = P;
+        Q.Phase = Phase;
+        Q.Done = Done;
+        Q.Count = Count;
+        Q.Asset.clear();
+        OnProgress(Q);
+    };
     Ledger L;
     L.Wire(Run);
-    std::vector<std::function<void()>> Later;   // Context::After
-    Run.OnAfter = [&Later](std::function<void()> Work) { Later.push_back(std::move(Work)); };
+    std::vector<std::pair<std::function<void()>, std::string>> Later;   // Context::After: the work, what it does
+    Run.OnAfter = [&Later](std::function<void()> Work, const std::string& What) { Later.emplace_back(std::move(Work), What); };
     Wanted Pending;
     std::string ReaderKey;
     // a model's name-only material headers, from the zones that define them (DiskGame.Materials.h);
@@ -1130,6 +1205,30 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
                                                               std::to_string(std::min(Done + 1, Count)) + "/" + std::to_string(Count);
                                                     OnProgress(I);
                                                 });
+    // the string cipher's table rebuilt from the install's zones when the game's profile has none
+    // and neither the install index's build nor an earlier run kept one (about a minute, once per
+    // install), its own phase on the progress, stopped by the run's cancel; only for a run of kinds
+    // that read the zones' strings (images or sounds alone never wait on it)
+    if (!Zones.empty() && Game.CipherStrings() != nullptr && NeedsStringCipher(C.Kinds))
+    {
+        CipherProgress CP;
+        CP.Log = [&](const std::string& Line) { Mon.Log(Line); };
+        CP.Step = [&](size_t Done, size_t Count) {
+            Mon.Touch();
+            if (!OnProgress) return;
+            Progress Q = P;
+            Q.Phase = "rebuilding the string cipher from the zones (once)";
+            Q.Done = Done;
+            Q.Count = Count;
+            Q.Asset.clear();
+            OnProgress(Q);
+        };
+        CP.Cancel = Run.Cancel;
+        std::string Why;
+        if (!EnsureStringCipher(Game, Options, !Options.Install.empty() ? Options.Install : Game.InstallOfZone(Zones.front()), CP, T.Counters, Why))
+            Mon.Log("string cipher not rebuilt: " + Why + "; encrypted strings are left out");
+        if (OnProgress) OnProgress(P);
+    }
     // what the game's readers do not export is reported unsupported; with nothing left, no zone opens
     const std::set<Kind> Declared = Game.Kinds();
     bool Any = false;
@@ -1224,12 +1323,27 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         const auto Start = std::chrono::steady_clock::now();
         for (size_t K = 0; K < Later.size(); K++)
         {
-            auto Work = std::move(Later[K]);   // Work may queue more
+            auto [Work, What] = std::move(Later[K]);   // Work may queue more
+            // said on the progress and to the watchdog (the map's texture copies, its GDT), not
+            // the last asset's name; its time in the log
+            const std::string Doing = "finishing: " + (What.empty() ? std::string("the work left for after the zones") : What);
+            Mon.Where(P.ZoneName, Doing);
+            if (OnProgress)
+            {
+                Progress Q = P;
+                Q.Phase = Doing;
+                Q.Done = K;
+                Q.Count = Later.size();
+                Q.Asset.clear();
+                OnProgress(Q);
+            }
+            const auto Began = std::chrono::steady_clock::now();
             // what it writes counts for its kind (the weapon stats table, built once every zone's
             // facts are in): metered like a zone's exporter, logged when it changed a kind's count
             std::vector<std::pair<Kind, KindMeter>> Meters;
             for (const auto& [Which, V] : T.Kinds) Meters.emplace_back(Which, KindMeter(T, Which));
             Work();
+            Mon.Log("  " + Doing + ": " + Ms(Seconds(Began)));
             for (const auto& [Which, Meter] : Meters)
             {
                 const KindSample S = Meter.Stop(T);

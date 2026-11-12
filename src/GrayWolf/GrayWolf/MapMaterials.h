@@ -19,4 +19,8 @@ namespace Maps
     std::pair<Materials::Source, Materials::Description> DescribeMaterial(const MapScene& Scene, const std::string& Name,
                                                                           const Materials::IAdapter& Adapter,
                                                                           const std::filesystem::path& Dir);
+    // The same for a material not in the scene's list (a blend layer's, MapRadiantLayers.h), its images the scene's
+    std::pair<Materials::Source, Materials::Description> DescribeMaterial(const MapScene& Scene, const Material& M,
+                                                                          const Materials::IAdapter& Adapter,
+                                                                          const std::filesystem::path& Dir);
 }

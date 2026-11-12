@@ -35,6 +35,7 @@ std::string AddMaterial(MapScene& Scene, const XMaterial_t& M)
     Out.Techset = M.TechsetName;
     Out.Constants = M.Constants;
     Out.SortKey = M.SortKey;
+    if (LayeredWorldMaterial(Name)) Out.Colors = VertexColors::LayerWeights;
     for (const XImage_t& I : M.Images)
     {
         if (I.ImageName.empty()) continue;
@@ -363,7 +364,15 @@ void BuildWorld(MapScene& Scene, uint32_t BrushCount, uint32_t SurfaceCount, con
         if (End <= First || First >= SurfaceCount) continue;
         WorldBuilder Mesh(B == 0 ? "world" : "brushmodel_" + std::to_string(B), Read, MoreUvs);
         for (uint32_t S = First; S < End && S < SurfaceCount; S++) Surface(S, Mesh);
-        if (Mesh.Triangles()) Scene.Objects.push_back(Mesh.Take());
+        if (!Mesh.Triangles()) continue;
+        Scene.Objects.push_back(Mesh.Take());
+        // a surface drawing its material's other layers by UVs of their own (WWII's blended
+        // surfaces) holds those layers' weights in its vertices' colours, as a compiled layered
+        // material does (MapScene's VertexColors; mp_egypt_02_dogfight: G, B, A the second to
+        // fourth layer's, unused layers 0)
+        for (const Maps::Surface& Sf : Scene.Objects.back().Surfaces)
+            if (Sf.UvSets > 1)
+                if (const auto It = Scene.Materials.find(Sf.Material); It != Scene.Materials.end()) It->second.Colors = VertexColors::LayerWeights;
     }
 }
 

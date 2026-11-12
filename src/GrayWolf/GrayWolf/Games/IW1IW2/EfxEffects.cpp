@@ -2,6 +2,8 @@
 
 #include "EfxEffects.h"
 
+#include "Strings.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -26,11 +28,6 @@ namespace
     {
         for (char& C : S) C = (char)std::tolower((unsigned char)C);
         return S;
-    }
-    std::string Trim(const std::string& S)
-    {
-        const size_t B = S.find_first_not_of(" \t\r"), E = S.find_last_not_of(" \t\r");
-        return B == std::string::npos ? std::string() : S.substr(B, E - B + 1);
     }
     std::vector<std::string> Words(const std::string& S)
     {
@@ -104,7 +101,7 @@ namespace
             if (Depth > 1) continue;
             const auto W = Words(Line);
             const std::string Key = W.empty() ? std::string() : W[0];
-            const std::string Rest = Trim(Line.substr(Key.size()));
+            const std::string Rest = Strings::Trim(Line.substr(Key.size()));
             if (Key == "curve" && !In.Done() && In.Peek() == "[")
             {
                 In.At++;
@@ -125,7 +122,7 @@ namespace
         Lines In;
         std::istringstream S(Text);
         for (std::string Line; std::getline(S, Line);)
-            if (std::string T = Trim(Line); !T.empty())
+            if (std::string T = Strings::Trim(Line); !T.empty())
             {
                 // a brace line can carry a stray byte after it (panzerschreck_flash's "}\xf6")
                 if (T[0] == '{' || T[0] == '}' || T[0] == '[' || T[0] == ']') T.resize(1);
@@ -152,7 +149,7 @@ namespace
                 }
                 const auto W = Words(Line);
                 const std::string Key = W.empty() ? std::string() : W[0];
-                const std::string Rest = Trim(Line.substr(Key.size()));
+                const std::string Rest = Strings::Trim(Line.substr(Key.size()));
                 if (!In.Done() && In.Peek() == "{")
                 {
                     In.At++;
@@ -531,7 +528,7 @@ namespace
 
 std::string EffectName(const std::string& Ref)
 {
-    std::string N = Lower(Trim(Ref));
+    std::string N = Lower(Strings::Trim(Ref));
     for (char& C : N)
         if (C == '\\') C = '/';
     while (!N.empty() && N[0] == '/') N.erase(0, 1);

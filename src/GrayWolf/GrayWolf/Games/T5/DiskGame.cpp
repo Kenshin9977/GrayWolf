@@ -72,6 +72,8 @@ namespace
         L.Format = TreyarchLevelZone::VertexFormat::Records44;
         L.BrushCount = 0x250, L.Brushes = 0x254, L.BrushSize = 60, L.BrushSurfaceCount = 52, L.BrushFirstSurface = 56;
         L.SModelCount = Dpvs, L.Surfaces = Dpvs + 0x58, L.SModels = Dpvs + 0x60, L.SModelSize = 0x4c, L.SModelModel = 0x38;
+        // GfxStaticModelDrawInst: cullDist, then the placement (origin, axis, scale; OAT's T5 struct)
+        L.SModelPlacement = 4;
         L.SurfaceSize = 0x50, L.SurfaceFirstVertex = 0x1c, L.SurfaceTris = 0x22, L.SurfaceBaseIndex = 0x24, L.SurfaceMaterial = 0x30;
         L.LightCount = 8, L.Lights = 0xc, L.LightSize = 0xdc;
         // clipMap_t (0x14c, OAT's T5 struct, the t5 tables' col_map): dmaterial_t 0x48 (char[64],
@@ -130,6 +132,15 @@ namespace
             if (It == Files.end()) return false;
             // the archive read under the lock, inflated beside the other threads' reads
             return ZipInflate::Extract(Archives[It->second.first].get(), It->second.second, Out, Lock) && !Out.empty();
+        }
+        // Read's file, its first Max bytes at most (Head) and its size (a dry run's header): false
+        // when it is not there, or empty
+        bool Head(const std::string& Path, size_t Max, std::vector<uint8_t>& Out, uint64_t& Size)
+        {
+            const auto It = Files.find(ExportNaming::ForwardSlashes(ExportNaming::Lower(Path)));
+            if (It == Files.end()) return false;
+            std::lock_guard<std::mutex> G(Lock);
+            return ZipInflate::Head(Archives[It->second.first].get(), It->second.second, Max, Out, Size) && Size != 0;
         }
 
     private:
@@ -270,7 +281,9 @@ namespace
                               "neither in the .iwd archives nor in the zone", true);
         }
 
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1"; }
+        // (+sounds2: every sound listed from its header, no cap: a zone the dry run stopped at its cap
+        // listed them too)
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images1+sounds2"; }
         // the images this zone holds whole, for the install index (a texture another zone names)
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override
         {
@@ -497,7 +510,7 @@ namespace
                     WrapLoaded(Snd, Z.data() + Data, Size, Wrapped))
                 {
                     Kt.Seen++;
-                    WriteSoundFile(C, T, F, Wrapped.data(), Wrapped.size(), "sounds_loaded_wrapped", &Sink);
+                    if (!TellWhole(C, T, F, Wrapped.data(), Wrapped.size())) WriteSoundFile(C, T, F, Wrapped.data(), Wrapped.size(), "sounds_loaded_wrapped", &Sink);
                     continue;
                 }
                 if (Size < 12 || Data < 0 || (uint64_t)Data + Size > Z.size() || std::memcmp(Z.data() + Data, "RIFF", 4) != 0 ||
@@ -509,13 +522,14 @@ namespace
                     continue;
                 }
                 Kt.Seen++;
-                WriteSoundFile(C, T, F, Z.data() + Data, Size, "sounds_loaded", &Sink);
+                if (!TellWhole(C, T, F, Z.data() + Data, Size)) WriteSoundFile(C, T, F, Z.data() + Data, Size, "sounds_loaded", &Sink);
             }
             for (const auto& F : Streamed)
             {
                 if (!C.Advance(N++, All, F)) return Done();
                 if (Loaded.count(F) || !C.Wants(Kind::Sound, F) || Install.empty()) continue;
                 Kt.Seen++;
+                if (C.OnSoundHeader && TellIwdSound(C, T, F)) continue;
                 // the IWD's block MS-ADPCM decoded to PCM16, or an entry that is a RIFF already
                 std::vector<uint8_t> Raw, Wav;
                 const bool Found = IwdFilesOf(Install)->Read(F, Raw);
@@ -530,6 +544,41 @@ namespace
                     WriteSoundFile(C, T, F, Payload->data(), Payload->size(), "sounds_iwd", &Sink);
             }
             Done();
+        }
+
+        // A dry run's (Context::OnSoundHeader) sound file, what WriteSoundFile would be handed for
+        // File: its path as WriteSoundFile writes it
+        fs::path SoundPath(const Context& C, const std::string& File) const
+        {
+            const std::string Out = ExportWriters::SoundFileName(File, ExportWriters::SoundFormatSetting());
+            return (fs::path(C.KindDir(Kind::Sound)) / fs::path(std::u8string(Out.begin(), Out.end()))).make_preferred();
+        }
+        // ... a sound in the zone, told by its header (no copy handed over); false outside a dry run
+        bool TellWhole(const Context& C, Totals& T, const std::string& File, const uint8_t* Data, size_t Size)
+        {
+            return C.OnSoundHeader && TellSoundHead(C, T, ExportWriters::SoundSource::OfFile(Data, Size, File), SoundPath(C, File), Size);
+        }
+        // ... a streamed one, told from its file's first bytes: an IWD sound by the WAV its decoder
+        // would write (its header worked out, its first samples decoded from the head), a RIFF by its
+        // own header; false when the head does not tell it (read whole then, as before)
+        bool TellIwdSound(const Context& C, Totals& T, const std::string& File)
+        {
+            constexpr size_t HeadBytes = 8192;   // the 2096-byte IWD header and the first blocks
+            std::vector<uint8_t> Head, Wav, Decoded;
+            uint64_t Size = 0;
+            uint32_t DataBytes = 0;
+            if (!IwdFilesOf(Install)->Head(File, HeadBytes, Head, Size) || Head.size() >= Size) return false;
+            if (IWDSoundDecodedHeader(Head, (size_t)Size, Wav, DataBytes))
+            {
+                // (DecodeIWDSound's samples of the head: the first of the whole file's)
+                constexpr size_t First = 32;
+                const size_t Take = std::min<size_t>(First, DataBytes);
+                if (!DecodeIWDSound(Head, Decoded) || Decoded.size() < Wav.size() + Take) return false;
+                Wav.insert(Wav.end(), Decoded.begin() + (ptrdiff_t)Wav.size(), Decoded.begin() + (ptrdiff_t)(Wav.size() + Take));
+                return TellSoundHead(C, T, ExportWriters::SoundSource::OfFile(Wav.data(), 44 + (size_t)DataBytes, File), SoundPath(C, File), Wav.size());
+            }
+            if (Head.size() < 12 || std::memcmp(Head.data(), "RIFF", 4) != 0 || std::memcmp(Head.data() + 8, "WAVE", 4) != 0) return false;
+            return TellSoundHead(C, T, ExportWriters::SoundSource::OfFile(Head.data(), (size_t)Size, File), SoundPath(C, File), Head.size());
         }
 
         bool RawfileBytes(int64_t Pos, const std::string& Nm, std::vector<uint8_t>& Bytes)
@@ -631,6 +680,12 @@ namespace
             };
             TreyarchGscOwners::Fill(*this, Options, Zones, Out, S);
         }
+
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the loaded sounds in the
+        // zone, the streamed ones in the .iwd archives, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {

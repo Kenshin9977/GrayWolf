@@ -344,6 +344,7 @@ namespace Iw64
                 Sink.Locked([&] { T.Fail(Name(), DiskGame::Kind::Sound, Full, "not 16-bit PCM"); });
                 continue;
             }
+            if (C.OnSoundHeader && TellWavNeedsHeader(C, T, Sound, fs::path(Dir) / (Sound.AssetName + Extension))) continue;
             Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
                 if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
                 else T.Fail(Name(), DiskGame::Kind::Sound, Full, std::format("code {} {}", Code, Crash.c_str()));
@@ -496,10 +497,21 @@ namespace Iw64
                 Sink.Locked([&] { Kt.Seen++; });
                 const fs::path P = Out / fs::path(ExportWriters::SoundFileName(Rel, Format)).make_preferred();
                 std::error_code Ec;
-                if (fs::exists(P, Ec))
+                // (a dry run writes nothing: no file of its own folder to find)
+                if (!C.OnSoundHeader && fs::exists(P, Ec))
                 {
                     Sink.Locked([&] { Kt.Known++; });
                     continue;
+                }
+                // a dry run: its header from the file's first bytes
+                if (C.OnSoundHeader)
+                {
+                    constexpr size_t HeadBytes = 8192;
+                    std::vector<uint8_t> Head;
+                    uint64_t Whole = 0;
+                    if (ZipInflate::Head(&Zip, Entry, HeadBytes, Head, Whole) && Whole != 0 &&
+                        TellSoundHead(C, T, ExportWriters::SoundSource::OfFile(Head.data(), (size_t)Whole, Rel), P, Head.size()))
+                        continue;
                 }
                 mz_zip_archive_file_stat Stat;
                 const bool Known = mz_zip_reader_file_stat(&Zip, Entry, &Stat) != 0;

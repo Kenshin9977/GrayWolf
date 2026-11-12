@@ -464,11 +464,7 @@ namespace
             // the package index's names, its bo7_names.wni among them: names found for the game's
             // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
             IwctxReaders::LoadNameIndexes();
-            static std::once_flag Names;
-            std::call_once(Names, [] {
-                CoDAssets::AssetNameCache.LoadIndex(
-                    (fs::path(FileSystems::GetApplicationPath()) / "package_index" / "bo7_names.wni").string());
-            });
+            IwctxReaders::LoadGameNames({ "bo7_names.wni" });
             return { SlotString, DiskImage };
         }
 
@@ -1524,6 +1520,13 @@ namespace
         // its zones open on the index's workers: their decompression and walk share nothing, its
         // handlers and fixups run under the session lock, ResolveZones is serialized
         bool IndexInParallel() const override { return true; }
+
+        // the string cipher's strings (DiskGame::EnsureStringCipher): the zones' script strings
+        const DiskGame::CipherSource* CipherStrings() const override
+        {
+            static const DiskGame::CipherSource Multiplayer = IwctxReaders::ScriptStringCipher("bo7");
+            return &Multiplayer;
+        }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override

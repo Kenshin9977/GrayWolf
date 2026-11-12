@@ -14,12 +14,15 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <regex>
+#include <optional>
 #include <set>
 #include <tuple>
 
@@ -70,17 +73,41 @@ namespace
         return E == ".tif" || E == ".tiff" || E == ".png";
     }
 
-    // Whether a colour map's alpha masks something (AlphaTally), the file read with stb (the
-    // preview's reader goes through WIC, which wants COM on the thread)
-    bool AlphaMasks(const fs::path& File)
+    // A colour map's alpha tallied, the file read with stb (the preview's reader goes through WIC,
+    // which wants COM on the thread); nothing when it has no alpha channel or does not read
+    std::optional<AlphaTally> TallyAlpha(const fs::path& File)
     {
         int W = 0, H = 0, N = 0;
         stbi_uc* Px = stbi_load(File.string().c_str(), &W, &H, &N, 4);
-        if (Px == nullptr) return false;
+        if (Px == nullptr) return std::nullopt;
         AlphaTally T;
         for (size_t I = 0; I < (size_t)W * H; I++) T.Add(Px[I * 4 + 3]);
         stbi_image_free(Px);
-        return N == 4 && T.Masks();
+        if (N != 4) return std::nullopt;
+        return T;
+    }
+
+    // Whether a colour map's alpha masks something (AlphaTally)
+    bool AlphaMasks(const fs::path& File)
+    {
+        const auto T = TallyAlpha(File);
+        return T && T->Masks();
+    }
+
+    // Whether a blend layer's colour alpha shapes it (a stain's soft edge as much as a cutout):
+    // false for one all but opaque, or all but clear (an alpha the source's shader did not read
+    // as an opacity, which would hide the layer)
+    bool AlphaShapes(const fs::path& File)
+    {
+        const auto T = TallyAlpha(File);
+        return T && T->Seen && T->Solid * 100 < T->Seen * 99 && T->Clear * 100 < T->Seen * 99;
+    }
+
+    // Whether a colour map's alpha is all but opaque (99% of its texels): a blend through it is opaque
+    bool AlphaSolid(const fs::path& File)
+    {
+        const auto T = TallyAlpha(File);
+        return T && T->Seen && T->Solid * 100 >= T->Seen * 99;
     }
 
     // An image under 4 texels a side (MW2019's 1x1 constant colours) as a 4x4 one beside it
@@ -146,6 +173,77 @@ namespace
         }
         stbi_image_free(Px);
         return stbi_write_png(To.string().c_str(), W, H, 3, Rgb.data(), W * 3) != 0;
+    }
+
+    // From rewritten texel by texel into To (Channels of each, kept when newer): Texel gets the
+    // source's rgba and writes the new texel. False: From unreadable or To unwritten.
+    bool Rewritten(const fs::path& From, const fs::path& To, int Channels, const std::function<void(const stbi_uc*, stbi_uc*)>& Texel)
+    {
+        std::error_code Ec, Ec2;
+        if (fs::is_regular_file(To, Ec) && fs::last_write_time(To, Ec) >= fs::last_write_time(From, Ec2) && !Ec && !Ec2) return true;
+        int W = 0, H = 0, N = 0;
+        stbi_uc* Px = stbi_load(From.string().c_str(), &W, &H, &N, 4);
+        if (Px == nullptr) return false;
+        std::vector<stbi_uc> Out((size_t)W * H * Channels);
+        for (size_t I = 0; I < (size_t)W * H; I++) Texel(Px + I * 4, Out.data() + I * Channels);
+        stbi_image_free(Px);
+        return stbi_write_png(To.string().c_str(), W, H, Channels, Out.data(), W * Channels) != 0;
+    }
+
+    // A roughness map's channel as the gloss BO3's cosinePowerMap reads, 255 - value, grey beside
+    // it (<stem>_gloss<r|g|b|a>.png). Black Ops' specular alpha is such a roughness: the BO3 gloss
+    // of the same textures in Treyarch's ports is 255 - alpha (r = -0.95 on Zombies Chronicles).
+    bool GlossFromRoughness(const fs::path& From, int Channel, fs::path& To)
+    {
+        To = fs::path(From).replace_filename(From.stem().string() + "_gloss" + "rgba"[Channel & 3] + ".png");
+        return Rewritten(From, To, 3, [Channel](const stbi_uc* In, stbi_uc* Out) { Out[0] = Out[1] = Out[2] = (stbi_uc)(255 - In[Channel & 3]); });
+    }
+
+    // A gamma 2.0 colour map (Black Ops, BO2) as sRGB beside it (<stem>_srgb.png), alpha kept:
+    // srgb((c / 255)^2), as Treyarch's BO3 ports of the same textures (3.8 levels off per texel
+    // against 9.1 for the file as it is, Zombies Chronicles)
+    bool SrgbFromGamma2(const fs::path& From, fs::path& To)
+    {
+        To = fs::path(From).replace_filename(From.stem().string() + "_srgb.png");
+        static const std::array<stbi_uc, 256> Table = [] {
+            std::array<stbi_uc, 256> T{};
+            for (int V = 0; V < 256; V++)
+            {
+                const double L = (V / 255.0) * (V / 255.0);
+                const double S = L <= 0.0031308 ? L * 12.92 : 1.055 * std::pow(L, 1.0 / 2.4) - 0.055;
+                T[V] = (stbi_uc)std::clamp(std::lround(S * 255.0), 0L, 255L);
+            }
+            return T;
+        }();
+        return Rewritten(From, To, 4, [](const stbi_uc* In, stbi_uc* Out) {
+            for (int K = 0; K < 3; K++) Out[K] = Table[In[K]];
+            Out[3] = In[3];
+        });
+    }
+
+    // A multiply colour map as the decal BO3 draws in its place (<stem>_mul.png): black, its alpha
+    // 1 - the colour's linear luminance. Over a colour c, lerp(c, 0, 1 - m) = c * m, exact for a
+    // grey m (BO3's decals blend into the G-buffer and have no multiply). Gamma2: the colour is
+    // gamma 2.0 (MaterialDescription's AlbedoGamma), else sRGB.
+    bool DarkeningFromMultiply(const fs::path& From, bool Gamma2, fs::path& To)
+    {
+        To = fs::path(From).replace_filename(From.stem().string() + "_mul.png");
+        static const auto Linear = [](bool G2) {
+            std::array<double, 256> T{};
+            for (int V = 0; V < 256; V++)
+            {
+                const double S = V / 255.0;
+                T[V] = G2 ? S * S : S <= 0.04045 ? S / 12.92 : std::pow((S + 0.055) / 1.055, 2.4);
+            }
+            return T;
+        };
+        static const std::array<double, 256> Tables[2] = { Linear(false), Linear(true) };
+        const std::array<double, 256>& T = Tables[Gamma2 ? 1 : 0];
+        return Rewritten(From, To, 4, [&T](const stbi_uc* In, stbi_uc* Out) {
+            const double Y = 0.2126 * T[In[0]] + 0.7152 * T[In[1]] + 0.0722 * T[In[2]];
+            Out[0] = Out[1] = Out[2] = 0;
+            Out[3] = (stbi_uc)std::clamp(std::lround((1.0 - Y) * 255.0), 0L, 255L);
+        });
     }
 }
 
@@ -245,7 +343,7 @@ bool Builder::Slot(Material& M, const char* Key, const Materials::Map& Map, cons
     return true;
 }
 
-void Builder::Add(const Materials::Description& D, const fs::path& Dir)
+void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Layered, const char* BlendLayerSort)
 {
     const std::string Bare = AssetName(D.Name);
     if (Bare.empty())
@@ -266,6 +364,8 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
 
     // the colour and roughness of a layered material are its layers': the first one's
     Materials::Map Albedo = D.Albedo, Roughness = D.Roughness;
+    // a multiply layer or decal has a colour only (BO1's "m1c1", "unlitdecalblend_multiply")
+    if (D.Multiply) Roughness = {};
     if (!D.Layers.empty())
     {
         if (Albedo.Empty()) Albedo = D.Layers.front().Albedo;
@@ -273,7 +373,8 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
         Counter("layered_first_layer")++;
     }
     if (!D.Tint.Empty() || !D.Color.Empty()) Counter("tint_dropped")++;
-    if (!D.AlphaMap.Empty()) Counter("alpha_map_dropped")++;
+    const bool Overlay = BlendLayerSort != nullptr;   // a layer drawn over a layered material
+    if (!D.AlphaMap.Empty() && !Overlay) Counter("alpha_map_dropped")++;
     if (!D.Metalness.Empty()) Counter("metalness_dropped")++;
 
     // the technique: emission, then light through the surface, then the alpha, then a colour specular
@@ -286,8 +387,20 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
     {
         AutoCut = AlphaMasks((Dir / fs::path(Albedo.Path)).lexically_normal());
     }
-    const bool Blend = D.Alpha == Materials::AlphaMode::Blend, Cutout = D.Alpha == Materials::AlphaMode::Cutout || AutoCut;
-    const bool Spec = !D.Specular.Empty();
+    // a blend through an opaque colour is opaque (BO1's outer ground, "b0" at sort 43, its colour's
+    // alpha full), drawn transparent it would write no depth and sort with the effects
+    bool Blend = D.Alpha == Materials::AlphaMode::Blend;
+    if (Blend && !D.Decal && !Albedo.Empty() && AlphaSolid((Dir / fs::path(Albedo.Path)).lexically_normal()))
+    {
+        Blend = false;
+        Counter("blend_alpha_solid")++;
+    }
+    const bool Cutout = D.Alpha == Materials::AlphaMode::Cutout || AutoCut;
+    // a pre-PBR specular map has no BO3 slot: Treyarch ports such materials as plain lit (BO3's
+    // fixed dielectric specular), 21 of 23 of BO1's in Zombies Chronicles and 92 of 94 of their
+    // t6_legacy GDTs; in the advanced techniques the map would be a metal mask (Materials.pdf)
+    const bool Spec = !D.Specular.Empty() && !D.LegacySpecular;
+    if (!D.Specular.Empty() && D.LegacySpecular) Counter("spec_legacy_dropped")++;
     M.Category = "Geometry";
     if (Emissive) M.Type = "lit_emissive";
     else if (Backlit) M.Type = "lit_backlit";
@@ -298,7 +411,8 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
     if (M.Type.find("advanced") != std::string::npos) M.Category = "Geometry Advanced";
     // a decal (named so, as the older games name theirs) lies on the surface it marks: BO3 draws
     // one above it only as a lit_decal, else the two fight for the depth and flicker
-    const bool Decal = !Emissive && ExportNaming::Lower(D.Name).find("decal") != std::string::npos;
+    const bool Decal = !Emissive && !Layered && !Overlay && (D.Decal || D.Multiply || ExportNaming::Lower(D.Name).find("decal") != std::string::npos);
+    if (Layered) Counter("layered_world")++;
     if (Decal)
     {
         M.Type = "lit_decal";
@@ -307,13 +421,46 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
         M.Values.emplace_back("layerSortDecal", "Grunge");
         Counter("decals")++;
     }
-    if ((Emissive || Backlit) && (Blend || Cutout)) Counter("alpha_dropped")++;
-    if (D.Alpha == Materials::AlphaMode::Auto) Counter(AutoCut ? "alpha_auto_cutout" : "alpha_auto_opaque")++;
+    // a blend layer as the mod tools' own (t6_legacy core.gdt's core_grass_med_blend...): a
+    // lit_decal, usage terrain, its opacity its vertices' alpha times its colour's alpha (an
+    // opaque colour: the weight alone), or the reveal map's in place of the colour's (material.awi:
+    // "the Reveal Map will override the Color Map Alpha"), lit_decal_reveal
+    bool OverlayAlpha = false;
+    if (Overlay)
+    {
+        const bool Reveal = !D.AlphaMap.Empty();
+        M.Type = Reveal ? "lit_decal_reveal" : "lit_decal";
+        M.Category = "Decal";
+        M.Usage = "terrain";
+        M.Values.emplace_back("layerSortDecal", BlendLayerSort);
+        OverlayAlpha = !Reveal && !Albedo.Empty() && (D.Multiply || AlphaShapes((Dir / fs::path(Albedo.Path)).lexically_normal()));
+        Counter("blend_layers")++;
+        if (OverlayAlpha) Counter("blend_layers_colour_alpha")++;
+    }
+    if ((Emissive || Backlit) && (Blend || Cutout) && !Overlay) Counter("alpha_dropped")++;
+    if (D.Alpha == Materials::AlphaMode::Auto && !Overlay) Counter(AutoCut ? "alpha_auto_cutout" : "alpha_auto_opaque")++;
 
-    if (!Slot(M, "colorMap", Albedo, Dir, "diffuseMap", "sRGB3chAlpha", D.Alpha == Materials::AlphaMode::Opaque ? "compressed no alpha" : "compressed high color"))
+    const bool ColourAlpha = Overlay ? OverlayAlpha : D.Multiply || D.Alpha != Materials::AlphaMode::Opaque;
+    if (fs::path Mul; !Albedo.Empty() && D.Multiply)
+    {
+        if (DarkeningFromMultiply((Dir / fs::path(Albedo.Path)).lexically_normal(), D.AlbedoGamma == 2.0f, Mul))
+        {
+            Albedo.Path = (fs::path(Albedo.Path).parent_path() / Mul.filename()).generic_string();
+            Counter("multiply_as_darkening")++;
+        }
+        else
+            Counter("multiply_not_rewritten")++;
+    }
+    else if (fs::path Srgb; !Albedo.Empty() && D.AlbedoGamma == 2.0f && SrgbFromGamma2((Dir / fs::path(Albedo.Path)).lexically_normal(), Srgb))
+    {
+        Albedo.Path = (fs::path(Albedo.Path).parent_path() / Srgb.filename()).generic_string();
+        Counter("colour_gamma2_as_srgb")++;
+    }
+    if (!Slot(M, "colorMap", Albedo, Dir, "diffuseMap", "sRGB3chAlpha", ColourAlpha ? "compressed high color" : "compressed no alpha"))
         Counter("no_color")++;
+    if (Overlay && !D.AlphaMap.Empty()) Slot(M, "alphaRevealMap", D.AlphaMap.Image, Dir, "revealMap", "Linear1ch", "compressed");
     // a two-channel normal map as a three-channel one beside it (<stem>_xyz.png)
-    Materials::Map Normal = D.Normal;
+    Materials::Map Normal = D.Multiply ? Materials::Map() : D.Normal;
     if (!Normal.Empty() && D.NormalEnc != Materials::NormalEncoding::XYZ)
     {
         const fs::path From = (Dir / fs::path(Normal.Path)).lexically_normal();
@@ -332,10 +479,19 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
         Counter(D.NormalEnc == Materials::NormalEncoding::AG ? "normal_ag" : D.NormalEnc == Materials::NormalEncoding::XYZ ? "normal_xyz" : "normal_xy")++;
         if (D.NormalFlipY) Counter("normal_flip_y")++;
     }
-    // BO3's cosinePowerMap is a gloss map: a roughness map has no slot
-    if (!Roughness.Empty() && !Roughness.Invert) Counter("roughness_not_gloss")++;
-    else Slot(M, "cosinePowerMap", Roughness, Dir, "glossMap", "Linear1ch", "compressed");
-    if (Spec && !Decal)
+    // BO3's cosinePowerMap is a gloss map: a roughness map as its inverse beside it
+    if (fs::path Gloss; !Roughness.Empty() && !Roughness.Invert)
+    {
+        if (GlossFromRoughness((Dir / fs::path(Roughness.Path)).lexically_normal(), Roughness.Channel, Gloss))
+        {
+            Roughness = { (fs::path(Roughness.Path).parent_path() / Gloss.filename()).generic_string(), 0, true };
+            Counter("gloss_from_roughness")++;
+        }
+        else
+            Counter("roughness_not_gloss")++;
+    }
+    if (Roughness.Empty() || Roughness.Invert) Slot(M, "cosinePowerMap", Roughness, Dir, "glossMap", "Linear1ch", "compressed");
+    if (Spec && !Decal && !Overlay)
     {
         // a full colour in the fullspec and emissive techniques, else the intensity mask theirs take
         const bool Colour = M.Type == "lit_advanced_fullspec" || M.Type == "lit_emissive";
@@ -349,8 +505,16 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir)
     if (Emissive) Slot(M, "colorMap00", D.Emissive, Dir, "diffuseMap", "sRGB3chAlpha", "compressed no alpha");
     if (Backlit && Slot(M, "alphaRevealMap", D.Transmission.Image, Dir, "thicknessMap", "Linear1ch", "compressed"))
         M.Values.emplace_back("backlightScatterColor", Floats3(D.Transmission.Color));
-    // a gloss map's full range, as the source game's reads it
-    if (M.Slots.count("cosinePowerMap")) M.Values.emplace_back("glossSurfaceType", "<full>");
+    // a gloss map's range: a pre-PBR game's as Treyarch's ports (<custom> 0..13: 223 of 259 of the
+    // t6_legacy GDTs; <full> is 0..17, BO1's rough concrete then a mirror), else the full range
+    if (M.Slots.count("cosinePowerMap") && D.LegacySpecular)
+    {
+        M.Values.emplace_back("glossSurfaceType", "<custom>");
+        M.Values.emplace_back("glossRangeMin", "0");
+        M.Values.emplace_back("glossRangeMax", "13");
+    }
+    else if (M.Slots.count("cosinePowerMap"))
+        M.Values.emplace_back("glossSurfaceType", "<full>");
     Counter("type_" + M.Type)++;
     Counter("materials")++;
     Defined.emplace(Name, std::move(M));
@@ -397,9 +561,18 @@ std::vector<std::string> Builder::Entries(const char* Eol) const
     }
     std::map<std::string, const Image*> Images;
     for (const auto& [I, Name] : ImageNames) Images[Name] = &I;
+    // an image two slots name (one entry): with its alpha when one of them reads it (a blend
+    // layer's colour, the base's colour without)
+    std::map<Image, std::string> Compression;
+    for (const auto& [Name, M] : Defined)
+        for (const auto& [Key, I] : M.Slots)
+        {
+            auto [It, New] = Compression.emplace(I, I.Compression);
+            if (I.Compression == "compressed high color") It->second = I.Compression;
+        }
     for (const auto& [Name, I] : Images)
     {
-        Gdt::Fields F = { { "baseImage", Gdt::Path(BaseImageOf(I->File)) }, { "compressionMethod", I->Compression },
+        Gdt::Fields F = { { "baseImage", Gdt::Path(BaseImageOf(I->File)) }, { "compressionMethod", Compression.at(*I) },
                           { "coreSemantic", I->Core }, { "imageType", "Texture" }, { "semantic", I->Semantic },
                           { "streamable", "1" }, { "type", "image" } };
         if (I->FromAlpha) F.emplace_back("fromAlpha", "1");

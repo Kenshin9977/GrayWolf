@@ -204,7 +204,7 @@ namespace
     public:
         const char* Extension() const override { return ".cast"; }
         bool Write(const MapScene& Scene, const std::string& Path, const Materials::IAdapter& Adapter,
-                   SceneWriteResult& Result, std::string& Error) const override
+                   SceneWriteResult& Result, std::string& Error, const WriteProgress&) const override
         {
             CastStats Stats;
             if (!WriteCastScene(Scene, Path, &Adapter, Stats, Error))

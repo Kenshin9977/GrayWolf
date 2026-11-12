@@ -150,7 +150,7 @@ namespace
                 }
                 CoDSound_t Sound;
                 Sound.AssetName = ExportNaming::SafeFileName(fs::path(Full).stem().string());
-                Sound.FullPath = fs::path(Full).parent_path().string();
+                Sound.FullPath = ExportNaming::SafeSubPath(fs::path(Full).parent_path()).string();
                 Sound.AssetPointer = Data;
                 Sound.AssetSize = Size;
                 Sound.FrameRate = At<uint32_t>(Image(), Pos + SoundRate);
@@ -158,6 +158,7 @@ namespace
                 Sound.FrameCount = At<uint32_t>(Image(), Pos + SoundSamples);
                 Sound.IsFileEntry = false;
                 Sound.DataType = SoundDataTypes::WAV_NeedsHeader;
+                if (C.OnSoundHeader && TellWavNeedsHeader(C, T, Sound, fs::path(Dir) / (Sound.AssetName + Extension))) continue;
                 Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
                     if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
                     else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
@@ -185,6 +186,12 @@ namespace
                                              { { "mp_*", { "MPUI_{REST}" } }, { "*", { "MENU_SP_{NAME}" } } } };
             return &Naming;
         }
+
+        // its zones open on the index's workers: before its session a zone only decompresses its fast file
+        // and is walked (ZonekitZone); its weights, parts and its sounds' dry run (the loaded sounds in the
+        // zone, the streamed ones in the .iwd archives, under the package lock too) hold the session lock
+        bool IndexInParallel() const override { return true; }
+        bool IndexWeighsSounds() const override { return true; }
 
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {

@@ -59,6 +59,10 @@ namespace DiskGame::Sizes
     // A sound as a reader hands it to WriteSound (ExportWriters::SoundSource), its length read
     // from its WAV or FLAC header: what a dry run of a reader without a header path of its own gives
     SoundHeader HeaderOf(const ExportWriters::SoundSource& S, const std::string& Name);
+    // HeaderOf from the first Have bytes of S.Data alone (S.Size the whole sound's): false when
+    // the header reads past them (the sound is then to be read whole), else Out what HeaderOf
+    // gives for the whole sound
+    bool HeaderOfHead(const ExportWriters::SoundSource& S, const std::string& Name, size_t Have, SoundHeader& Out);
     // What WriteSound writes for it in Format (WAV, FLAC, OPUS), mirroring its rules; Exact false
     // when that is an encoder's output (a typical ratio) or a length the header does not give
     uint64_t SoundBytes(const SoundRow& R, const std::string& Format, bool& Exact);

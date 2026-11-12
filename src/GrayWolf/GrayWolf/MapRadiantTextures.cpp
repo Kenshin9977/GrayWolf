@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <tuple>
 
 namespace Maps
 {
@@ -38,6 +39,66 @@ namespace
         for (int K = 1; K < 3; K++)
             if (std::fabs(N[K]) > std::fabs(N[A])) A = K;
         return A * 2 + (N[A] < 0 ? 1 : 0);
+    }
+
+    // The cells of a triangle's bounds (Tolerance about it), Lo to Hi on each axis
+    void CellBounds(const V3 (&P)[3], int64_t (&Lo)[3], int64_t (&Hi)[3])
+    {
+        for (int A = 0; A < 3; A++)
+        {
+            Lo[A] = CellOf((std::min)({ P[0][A], P[1][A], P[2][A] }) - Tolerance);
+            Hi[A] = CellOf((std::max)({ P[0][A], P[1][A], P[2][A] }) + Tolerance);
+        }
+    }
+
+    // The columns PlaneCells goes through; past MaxColumns, a triangle stays out of the grid
+    constexpr int64_t MaxColumns = 4096;
+    int64_t Columns(const V3& N, const int64_t (&Lo)[3], const int64_t (&Hi)[3])
+    {
+        int U = 0;
+        for (int K = 1; K < 3; K++)
+            if (std::fabs(N[K]) > std::fabs(N[U])) U = K;
+        const int A = U == 0 ? 1 : 0, B = U == 2 ? 1 : 2;
+        return (Hi[A] - Lo[A] + 1) * (Hi[B] - Lo[B] + 1);
+    }
+
+    // Fn(X, Y, Z) for the cells of the bounds Lo..Hi that the plane of P (unit normal N) passes
+    // within Tolerance of, a column at a time along N's largest axis: every cell holding a point
+    // of the triangle (Tolerance about it), not the cells of the bounds the plane is far from (a
+    // large sloping triangle's bounds are mostly empty)
+    template <class F>
+    void PlaneCells(const V3 (&P)[3], const V3& N, const int64_t (&Lo)[3], const int64_t (&Hi)[3], const F& Fn)
+    {
+        int U = 0;
+        for (int K = 1; K < 3; K++)
+            if (std::fabs(N[K]) > std::fabs(N[U])) U = K;
+        const int A = U == 0 ? 1 : 0, B = U == 2 ? 1 : 2;
+        const double D = Dot(N, P[0]);
+        // u over a column (a, b): (D - N[a] a - N[b] b) / N[u], its extremes at the column's
+        // corners; a margin past Tolerance for the rounding
+        const double Margin = 2 * Tolerance;
+        const double Nu = N[U];
+        for (int64_t I = Lo[A]; I <= Hi[A]; I++)
+            for (int64_t J = Lo[B]; J <= Hi[B]; J++)
+            {
+                double Min = 1e300, Max = -1e300;
+                for (int Ca = 0; Ca < 2; Ca++)
+                    for (int Cb = 0; Cb < 2; Cb++)
+                    {
+                        const double Pa = (double)(I + Ca) * Cell + (Ca ? Margin : -Margin);
+                        const double Pb = (double)(J + Cb) * Cell + (Cb ? Margin : -Margin);
+                        const double V = (D - N[A] * Pa - N[B] * Pb) / Nu;
+                        Min = (std::min)(Min, V), Max = (std::max)(Max, V);
+                    }
+                const double Slack = Margin / std::fabs(Nu) + Margin;
+                const int64_t From = (std::max)(Lo[U], CellOf(Min - Slack)), To = (std::min)(Hi[U], CellOf(Max + Slack));
+                for (int64_t K = From; K <= To; K++)
+                {
+                    int64_t C[3];
+                    C[U] = K, C[A] = I, C[B] = J;
+                    Fn(C[0], C[1], C[2]);
+                }
+            }
     }
 
     constexpr double OnEdge = 1e-6;       // a point this close to a face's edge is on it, when a triangle is clipped to the face
@@ -91,6 +152,19 @@ bool RadiantTool(const std::string& Lower)
     return Lower.size() > 5 && Lower.compare(Lower.size() - 5, 5, "_clip") == 0;   // metal_clip
 }
 
+bool ShadowCaster(const std::string& Material)
+{
+    return ExportNaming::Lower(Material).rfind("shadowcaster", 0) == 0;
+}
+
+bool SourceSky(const MapScene& Scene, const std::string& Material)
+{
+    const auto It = Scene.Materials.find(Material);
+    if (It == Scene.Materials.end()) return false;
+    const std::string T = ExportNaming::Lower(It->second.Techset);
+    return T == "sky" || (T.size() > 4 && T.compare(T.size() - 4, 4, "_sky") == 0);
+}
+
 void RadiantBaseAxes(const V3& N, V3& S, V3& T)
 {
     int Sv = 0, Tv = 1;
@@ -104,7 +178,7 @@ uint32_t DrawnWorld::Owner(const std::string& MeshName)
     return MeshName.compare(0, 11, "brushmodel_") == 0 ? (uint32_t)std::strtoul(MeshName.c_str() + 11, nullptr, 10) : 0;
 }
 
-DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats)
+DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats, const SkipTest& Skip)
 {
     std::map<std::string, uint32_t> Index;
     Gone.resize(Scene.Objects.size());
@@ -117,11 +191,13 @@ DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats)
         {
             const Surface& S = M.Surfaces[Si];
             Gone[O][Si].assign(S.Indices.size() / 3, 0);
-            if (S.Material.empty() || RadiantTool(ExportNaming::Lower(S.Material))) continue;
+            if (S.Material.empty() || RadiantTool(ExportNaming::Lower(S.Material)) || NoSurface(Scene, S.Material)) continue;
             const auto [It, New] = Index.emplace(S.Material, (uint32_t)Names.size());
+            const bool Weights = Scene.LayerWeights(S.Material);   // its colours layer weights: drawn white
             if (New) Names.push_back(S.Material);
             for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
             {
+                if (Skip && Skip(O, Si, K / 3)) continue;
                 Tri T{};
                 V3 Normals = { 0, 0, 0 };
                 bool Valid = true, White = true;
@@ -137,7 +213,8 @@ DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats)
                     T.P[J] = { V.Pos[0], V.Pos[1], V.Pos[2] };
                     T.Uv[J][0] = V.Uv[0], T.Uv[J][1] = V.Uv[1];
                     for (int A = 0; A < 3; A++) Normals[A] += V.Normal[A];
-                    for (const uint8_t Channel : V.Color) White = White && Channel == 255;
+                    const uint8_t* C = Tint(V, Weights);
+                    White = White && C[0] == 255 && C[1] == 255 && C[2] == 255 && C[3] == 255;
                 }
                 if (!Valid) continue;
                 if (!White)
@@ -155,14 +232,12 @@ DrawnWorld::DrawnWorld(const MapScene& Scene, RadiantTextureStats& Stats)
                 const uint32_t Number = (uint32_t)Tris.size();
                 Tris.push_back(T);
                 int64_t Lo[3], Hi[3];
-                for (int A = 0; A < 3; A++)
-                {
-                    Lo[A] = CellOf((std::min)({ T.P[0][A], T.P[1][A], T.P[2][A] }) - Tolerance);
-                    Hi[A] = CellOf((std::max)({ T.P[0][A], T.P[1][A], T.P[2][A] }) + Tolerance);
-                }
-                for (int64_t X = Lo[0]; X <= Hi[0]; X++)
-                    for (int64_t Y = Lo[1]; Y <= Hi[1]; Y++)
-                        for (int64_t Z = Lo[2]; Z <= Hi[2]; Z++) Grid.emplace_back(Key(FacingOf(T.N), X, Y, Z), Number);
+                CellBounds(T.P, Lo, Hi);
+                const int Facing = FacingOf(T.N);
+                // a triangle across more columns than MaxColumns (BO1 mp_firingrange's water, two
+                // million units wide: 335 million cells for 12 triangles) is looked at by every face
+                if (Columns(T.N, Lo, Hi) > MaxColumns) Large.push_back(Number);
+                else PlaneCells(T.P, T.N, Lo, Hi, [&](int64_t X, int64_t Y, int64_t Z) { Grid.emplace_back(Key(Facing, X, Y, Z), Number); });
             }
         }
     }
@@ -266,8 +341,45 @@ bool DrawnWorld::Texture(const std::vector<V3>& Face, const V3& N, double D, con
                     if (It == Cells.end()) continue;
                     for (uint32_t G = It->second.first; G < It->second.second; G++) Look(Grid[G].second);
                 }
+        // the large triangles of that facing whose bounds meet the face's
+        for (const uint32_t I : Large)
+        {
+            const Tri& T = Tris[I];
+            if (FacingOf(T.N) != Facing) continue;
+            int64_t TLo[3], THi[3];
+            CellBounds(T.P, TLo, THi);
+            bool Meets = true;
+            for (int K = 0; K < 3; K++) Meets = Meets && TLo[K] <= Hi[K] && Lo[K] <= THi[K];
+            if (Meets) Look(I);
+        }
     }
     if (Hits.empty()) return false;
+    // in the order a look through every cell of the triangles' bounds met them (the first cell
+    // of a triangle's bounds within the face's, axis by axis, then its number): the grid holds a
+    // triangle in fewer cells, the sums below stay the same to the bit
+    {
+        struct Met
+        {
+            int Axis;
+            int64_t X, Y, Z;
+            uint32_t Tri;
+            bool operator<(const Met& O) const { return std::tie(Axis, X, Y, Z, Tri) < std::tie(O.Axis, O.X, O.Y, O.Z, O.Tri); }
+        };
+        std::vector<std::pair<Met, size_t>> Order;
+        Order.reserve(Hits.size());
+        for (size_t I = 0; I < Hits.size(); I++)
+        {
+            const Tri& T = Tris[Hits[I].Tri];
+            int64_t TLo[3], THi[3];
+            CellBounds(T.P, TLo, THi);
+            Order.push_back({ { FacingOf(T.N) / 2, (std::max)(Lo[0], TLo[0]), (std::max)(Lo[1], TLo[1]), (std::max)(Lo[2], TLo[2]), Hits[I].Tri }, I });
+        }
+        std::sort(Order.begin(), Order.end(), [](const auto& X, const auto& Y) { return X.first < Y.first; });
+        std::vector<Hit> Sorted;
+        Sorted.reserve(Hits.size());
+        for (const auto& [M, I] : Order) Sorted.push_back(Hits[I]);
+        Hits.swap(Sorted);
+    }
 
     // the material covering most of the face
     std::map<uint32_t, double> ByMaterial;

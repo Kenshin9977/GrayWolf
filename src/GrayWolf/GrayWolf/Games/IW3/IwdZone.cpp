@@ -91,6 +91,50 @@ namespace
         return Out;
     }
 
+    // The install's .iwd archives held open for a dry run of the sound kind, by archive path: a
+    // sound's head read without its archive's central directory read again (ArchiveFile's, at
+    // every file: most of an index build's time on CoD4 and World at War before, 2026-11-11)
+    struct OpenArchive
+    {
+        mz_zip_archive Zip{};
+        bool Ok = false;
+        std::mutex Lock;
+        ~OpenArchive()
+        {
+            if (Ok) mz_zip_reader_end(&Zip);
+        }
+    };
+    std::mutex OpenArchivesLock;
+    std::map<std::string, std::unique_ptr<OpenArchive>> OpenArchives;
+
+    // ArchiveFile's file, its first Max bytes at most (Head) and its size: false when ArchiveFile
+    // does not find it by its path
+    bool ArchiveFileHead(const std::string& Install, std::string Inner, size_t Max, std::vector<uint8_t>& Head, uint64_t& Size)
+    {
+        std::replace(Inner.begin(), Inner.end(), '\\', '/');
+        const auto Index = ArchiveIndexOf(Install);
+        const auto It = Index->find(ExportNaming::Lower(Inner));
+        if (It == Index->end()) return false;
+        OpenArchive* A = nullptr;
+        {
+            std::lock_guard<std::mutex> G(OpenArchivesLock);
+            auto& P = OpenArchives[It->second.string()];
+            if (!P)
+            {
+                P = std::make_unique<OpenArchive>();
+                P->Ok = mz_zip_reader_init_file(&P->Zip, It->second.string().c_str(), 0) != 0;
+            }
+            A = P.get();
+        }
+        if (!A->Ok) return false;
+        std::lock_guard<std::mutex> G(A->Lock);
+        const int At = mz_zip_reader_locate_file(&A->Zip, It->first.c_str(), nullptr, 0);   // case-insensitive, as ArchiveFile
+        return At >= 0 && ZipInflate::Head(&A->Zip, (mz_uint)At, Max, Head, Size);
+    }
+
+    // What a dry run reads of a sound file to tell its header: its RIFF chunks before its samples
+    // (a few dozen bytes; one that needs more is read whole)
+    constexpr size_t SoundHeadBytes = 8192;
 }
 
 namespace Iw3Family
@@ -339,6 +383,18 @@ namespace Iw3Family
             Kt.Seen++;
             // by its path first: a stem names several files (`null.wav` in two folders), the image/wav
             // index keeps one of them
+            const std::string& Format = Sink.Format();
+            const fs::path Out = Root / fs::path(F).parent_path() /
+                                 ExportNaming::SafeFileName(ExportWriters::SoundFileName(fs::path(F).filename().string(), Format));
+            // a dry run: its header from the file's first bytes
+            if (C.OnSoundHeader)
+            {
+                std::vector<uint8_t> Head;
+                uint64_t Whole = 0;
+                if (ArchiveFileHead(Install, "sound/" + F, SoundHeadBytes, Head, Whole) &&
+                    TellSoundHead(C, T, ExportWriters::SoundSource::OfFile(Head.data(), (size_t)Whole, F), Out, Head.size()))
+                    continue;
+            }
             uint32_t Size = 0;
             auto Data = ArchiveFile(Install, "sound/" + F, Size);
             if (!Data) Data = Iwd->ExtractPackageObject(Iwd->HashPackageID(fs::path(F).stem().string()), Size);
@@ -348,9 +404,6 @@ namespace Iw3Family
                 Sink.Locked([&] { T.Fail(Name(), Kind::Sound, F, "not in the .iwd archives"); });
                 continue;
             }
-            const std::string& Format = Sink.Format();
-            const fs::path Out = Root / fs::path(F).parent_path() /
-                                 ExportNaming::SafeFileName(ExportWriters::SoundFileName(fs::path(F).filename().string(), Format));
             const uint8_t* Bytes = Data.get();
             Sink.Write(ExportWriters::SoundSource::OfFile(Bytes, Size, F), Out.string(),
                        [this, &Kt, &T, &Written, F](bool Ok, const std::string& Why, const std::string& Crash) {
