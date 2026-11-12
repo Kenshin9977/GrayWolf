@@ -143,6 +143,13 @@ namespace Iw4Family
         };
         XMaterial_t Result(Count);
         Result.MaterialName = FileSystems::GetFileNameWithoutExtension(RawName);
+        // its technique set: the pointer before the texture table (MW2 0x58, MW3 0x60, CoD Online
+        // 0x58), its name first (",<name>" when another zone defines it)
+        if (const uint64_t Techset = Ptr(MaterialPointer + L.MaterialTextureTable - L.PointerSize, L))
+        {
+            Result.TechsetName = CoDAssets::GameInstance->ReadNullTerminatedString(Ptr(Techset, L));
+            if (!Result.TechsetName.empty() && Result.TechsetName[0] == ',') Result.TechsetName.erase(0, 1);
+        }
         for (uint8_t M = 0; Table && M < Count; M++)
         {
             const uint64_t Def = Table + M * L.TextureDefSize;

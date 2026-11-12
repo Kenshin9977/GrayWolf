@@ -406,7 +406,7 @@ struct BO2XMaterial
     uint8_t CameraRegion;
     uint8_t ProbeMipBits;
     uint8_t AlignPad[2];
-    uint32_t TechniqueSetPtr;  // unused
+    uint32_t TechniqueSetPtr;  // Material::techniqueSet, its name first
 
     uint32_t ImageTablePtr;     // Material::textureTable
     uint32_t ConstantTablePtr;  // Material::constantTable, unused

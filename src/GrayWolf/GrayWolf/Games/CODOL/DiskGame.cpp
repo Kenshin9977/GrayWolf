@@ -16,6 +16,7 @@
 #include "Games/CODOL/CodolWeapons.h"
 #include <wolff/Codol.h>
 #include "Games/IW3/LoadDefImage.h"
+#include "Games/IW3/StoredNormals.h"
 #include "Games/IW/Iw32Level.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/Treyarch/TreyarchEffects.h"
@@ -155,8 +156,8 @@ namespace
     protected:
         // a material through the live reader, with its blend factors: the first of its GfxStateBits
         // (Material +0x64, 8 bytes each, their count u8 0x53: the codol table f88250) that blends,
-        // loadBits[0]'s source (bits 0-3) and destination (4-7) GFXS_BLEND_*. Its techset is left
-        // out: the techniqueSet's name pointer does not read back to a name here.
+        // loadBits[0]'s source (bits 0-3) and destination (4-7) GFXS_BLEND_*; its techset the live
+        // reader's (the pointer before the texture table).
         decltype(Treyarch::EffectZone::Material) EffectMaterial()
         {
             return Treyarch::MaterialReader([this](uint64_t A) {
@@ -414,9 +415,9 @@ namespace
             return nullptr;
         }
 
-        // GfxImage (0x34): mapType u8 at 4 (5 a cube), cardMemory u32 at 0x10 (the bytes its mips
-        // take), width u16 at 0x20, height at 0x22
-        static constexpr int64_t ImageMapType = 0x4, ImageCardMemory = 0x10, ImageWidth = 0x20, ImageHeight = 0x22;
+        // GfxImage (0x34): mapType u8 at 4 (5 a cube), semantic u8 at 5 (StoredNormals.h),
+        // cardMemory u32 at 0x10 (the bytes its mips take), width u16 at 0x20, height at 0x22
+        static constexpr int64_t ImageMapType = 0x4, ImageSemantic = 0x5, ImageCardMemory = 0x10, ImageWidth = 0x20, ImageHeight = 0x22;
 
         // The pixels a GfxImage carries in the zone: the largest level of each face
         std::unique_ptr<XImageDDS> LoadDef(int64_t Pos)
@@ -429,13 +430,13 @@ namespace
             if (Size == 0 || W == 0 || H == 0) return nullptr;
             ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
             uint64_t Level = 0;
-            bool Swap = false;
+            LoadDefImage::Convert How = LoadDefImage::Convert::None;
             const uint32_t Format = At<uint32_t>(Z, Def + Codol::LoadDefFormat);
             if (Format == 0x32495441)   // ATI2
                 Fmt = ImageFormat::DDS_BC5_UNORM, Level = (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4) * 16;
             else if (Format == 28)      // A8
                 Fmt = ImageFormat::DDS_Standard_A8_UNORM, Level = (uint64_t)W * H;
-            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
+            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, How))
             {
                 Counter("images_in_zone_unknown_format")++;
                 return nullptr;
@@ -443,7 +444,7 @@ namespace
             const uint64_t Faces = At<uint8_t>(Z, Pos + ImageMapType) == 5 ? 6 : 1;   // a cube map
             if (Level * Faces > Size || Def + Codol::LoadDefData + (int64_t)Size > (int64_t)Z.size()) return nullptr;
             Counter("images_in_zone")++;
-            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + Codol::LoadDefData, Level, Swap, Faces, Size / Faces);
+            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + Codol::LoadDefData, Level, How, Faces, Size / Faces);
         }
 
         // an image whose pixels the zone does not hold, as FromArchives finds it in the archives
@@ -465,10 +466,13 @@ namespace
                 }
         }
 
+        // An image's pixels, a normal map's as XYZ when "patchnormals" is on (StoredNormals.h)
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos)
         {
-            if (auto Inline = LoadDef(Pos)) return Inline;
-            return FromArchives(ImageName);
+            auto Dds = LoadDef(Pos);
+            if (!Dds) Dds = FromArchives(ImageName);
+            if (Pos >= 0 && StoredNormals::Patch(Dds.get(), At<uint8_t>(Image(), Pos + ImageSemantic))) Counter("images_normal_expanded")++;
+            return Dds;
         }
 
         // Every image the zone names (its own and its materials'). A "," name is a reference.

@@ -11,6 +11,7 @@
 #include "FastFile.h"
 #include "Games/GameModule.h"
 #include "MaterialGdt.h"
+#include "MaterialSplit.h"
 #include "MemoryBudget.h"
 #include "ModToolsTree.h"
 #include "ModToolsUsermap.h"
@@ -133,9 +134,12 @@ const Setting MapContent{ "map_content", "Map content", { { "all", "Everything" 
 const Setting ScriptDecompile{ "decompile", "Compiled scripts and Lua", { { "off", "Bytecode" }, { "on", "Decompiled" } },
                                "off", { Kind::Script, Kind::Rawfile } };
 
+const Setting SplitMaps{ "split_maps", "Packed maps", { { "off", "As stored" }, { "on", "+ split (normal, roughness, AO...)" } },
+                         "off", { Kind::Model, Kind::Map } };
+
 const std::vector<Setting>& CommonSettings()
 {
-    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile };
+    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps };
     return All;
 }
 
@@ -1369,6 +1373,13 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         const auto Start = std::chrono::steady_clock::now();
         MaterialGdt::WriteForModels(Run, T);
         Mon.AddTime("material_gdt", Seconds(Start));
+    }
+    // the packed maps split into standard files, once the sidecars and textures are all written
+    if (SplitMaps.Of(Run.Settings) == "on" && (C.Kinds.count(Kind::Model) || C.Kinds.count(Kind::Map)) && !T.Cancelled)
+    {
+        const auto Start = std::chrono::steady_clock::now();
+        MaterialSplit::WriteForRun(Run, T);
+        Mon.AddTime("split_maps", Seconds(Start));
     }
     for (const auto& [Name, N] : ExportWriters::SoundCounters())
     {

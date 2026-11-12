@@ -8,6 +8,7 @@
 #include "XPAKCache.h"
 #include "CoDRawImageTranslator.h"
 #include "Image.h"
+#include "SettingsManager.h"
 
 #include <filesystem>
 #include <sstream>
@@ -25,6 +26,12 @@ namespace
     constexpr size_t PixelsPtrOffset = 216;     // the inline payload's pointer: -1 inline, 0 none
     constexpr size_t LoadedSizeOffset = 232;    // its total byte count, across every level
     constexpr size_t FormatOffset = 240;  // the engine's image-format byte
+    // The semantic byte: 4 on every image the materials use as their normal map (X in red, Y in
+    // green, blue not its Z: 0-60), 2 colour, 5 specular, 7 gloss, 8 occlusion... Measured over
+    // mp_freerun_01 (2026-11-12): its 18 are all BC7 UNORM, but the format alone does not tell,
+    // BC7 UNORM holds $camo_base_mask (semantic 1) too.
+    constexpr size_t SemanticOffset = 161;
+    constexpr uint8_t NormalMapSemantic = 4;
     constexpr size_t NamePtrOffset = 248; // where the 0xFF.. marker sits inside the struct
     constexpr size_t NameOffset = 264;    // the string itself, right after the struct
 
@@ -131,6 +138,7 @@ bool Bo3DescribeZoneImage(ByteView Zone, size_t Start, XPAKCache& Cache, Bo3Zone
     }
 
     Image.Format = Base[Start + FormatOffset];
+    Image.Semantic = Base[Start + SemanticOffset];
     Image.Name = Name;
     return true;
 }
@@ -247,7 +255,7 @@ size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images
     // one substring at a time means unpacking 271 MB again for every family you want.
     const ExportNaming::NameFilter Filter(NameFilter);
 
-    size_t Matched = 0, Written = 0, NoPayload = 0, NoDds = 0, NoWrite = 0;
+    size_t Matched = 0, Written = 0, NoPayload = 0, NoDds = 0, NoWrite = 0, NormalsExpanded = 0;
     // the chosen format (exportimg), converted on the shared sink's pool
     ExportWriters::ImageSink Sink;
 
@@ -285,6 +293,12 @@ size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images
             NoDds++;
             continue;
         }
+        // a normal map's Z rebuilt from its X and Y when "patchnormals" is on
+        if (Image.Semantic == NormalMapSemantic && SettingsManager::GetSetting("patchnormals", "true") == "true")
+        {
+            Dds->ImagePatchType = ImagePatch::Normal_Expand;
+            NormalsExpanded++;
+        }
 
         Sink.Write(std::move(Dds), (fs::path(OutDir) / (SafeFileName(Image.Name) + Sink.Extension())).string());
     }
@@ -297,6 +311,7 @@ size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images
     Os << "images_in_zone=" << Images.size() << "\n";
     Os << "matched=" << Matched << "\n";
     Os << "written=" << Written << "\n";
+    Os << "normals_expanded=" << NormalsExpanded << "\n";
     Os << "no_payload=" << NoPayload << "\nno_dds=" << NoDds << "\nno_write=" << NoWrite << "\n";
     Os << "out=" << OutDir << "\n";
     Report = Os.str();

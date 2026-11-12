@@ -185,6 +185,24 @@ std::string DialogTitle()
     return Dialog && !Dialog->Done ? Dialog->Title : std::string();
 }
 
+// Target (a path or a link) with its program, on a worker thread with COM up
+static void Launch(HWND Owner, const std::string& Target)
+{
+    const std::wstring W = Wide(Target);
+    SHELLEXECUTEINFOW Sei{};
+    Sei.cbSize = sizeof(Sei);
+    // this thread ends with the call: the launch completes before it returns
+    Sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_LOG_USAGE;
+    Sei.hwnd = Owner;
+    Sei.lpFile = W.c_str();
+    Sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&Sei))
+    {
+        const DWORD Error = GetLastError();
+        if (Error != ERROR_CANCELLED) Notify("could not open " + Target + " (error " + std::to_string(Error) + ")", true);
+    }
+}
+
 void OpenInShell(const std::string& Path, bool Reveal)
 {
     const HWND Owner = OwnerWindow.load();
@@ -206,18 +224,21 @@ void OpenInShell(const std::string& Path, bool Reveal)
             if (FAILED(Hr)) Notify("could not show " + Path + " in its folder (hr " + std::to_string((long)Hr) + ")", true);
             return;
         }
-        SHELLEXECUTEINFOW Sei{};
-        Sei.cbSize = sizeof(Sei);
-        // this thread ends with the call: the launch completes before it returns
-        Sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_LOG_USAGE;
-        Sei.hwnd = Owner;
-        Sei.lpFile = W.c_str();
-        Sei.nShow = SW_SHOWNORMAL;
-        if (!ShellExecuteExW(&Sei))
-        {
-            const DWORD Error = GetLastError();
-            if (Error != ERROR_CANCELLED) Notify("could not open " + Path + " (error " + std::to_string(Error) + ")", true);
-        }
+        Launch(Owner, Path);
+    });
+}
+
+void OpenUrl(const std::string& Url)
+{
+    if (Url.rfind("https://", 0) != 0)
+    {
+        Notify("not a web link: " + Url, true);
+        return;
+    }
+    const HWND Owner = OwnerWindow.load();
+    Run("open " + Url, [Url, Owner] {
+        ShellApartment Com;
+        Launch(Owner, Url);
     });
 }
 

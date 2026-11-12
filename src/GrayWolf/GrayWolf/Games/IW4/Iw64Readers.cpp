@@ -2,12 +2,14 @@
 
 #include "Games/IW4/Iw64Readers.h"
 #include "Games/IW4/Iw4Readers.h"
+#include "Games/IW3/LoadDefImage.h"
 
 #include "CoDAssets.h"
 #include "Image.h"
 
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 // Every offset is a field the game's loader reads: profiles/iw4 and profiles/iw5 tables
 // (xmodel, xmodelsurfs, the XSurface, xanim, material, image readers).
@@ -60,29 +62,7 @@ namespace Iw64
 
     namespace
     {
-        // D3D9 formats the rebuild's GfxImageLoadDef carries (FourCC or D3DFMT)
-        bool FormatOf(uint32_t D3d, ImageFormat& Out, uint32_t& Unit, bool& Block)
-        {
-            Block = true;
-            switch (D3d)
-            {
-            case 0x31545844: Out = ImageFormat::DDS_BC1_UNORM; Unit = 8; return true;    // DXT1
-            case 0x33545844: Out = ImageFormat::DDS_BC2_UNORM; Unit = 16; return true;   // DXT3
-            case 0x35545844: Out = ImageFormat::DDS_BC3_UNORM; Unit = 16; return true;   // DXT5
-            case 0x32495441: Out = ImageFormat::DDS_BC5_UNORM; Unit = 16; return true;   // ATI2 (3Dc)
-            case 0x31495441: Out = ImageFormat::DDS_BC4_UNORM; Unit = 8; return true;    // ATI1
-            default: break;
-            }
-            Block = false;
-            switch (D3d)
-            {
-            case 21: case 22: Out = ImageFormat::DDS_Standard_A8R8G8B8; Unit = 4; return true;   // A8R8G8B8, X8R8G8B8
-            case 28: case 50: Out = ImageFormat::DDS_Standard_A8_UNORM; Unit = 1; return true;   // A8, L8
-            default: return false;
-            }
-        }
-
-        bool Copy(int8_t* To, uint64_t From, uint64_t N)
+        bool Copy(uint8_t* To, uint64_t From, uint64_t N)
         {
             uintptr_t Read = 0;
             const auto Pixels = CoDAssets::GameInstance->Read(From, N, Read);
@@ -99,32 +79,22 @@ namespace Iw64
         if (Def == 0) return nullptr;
         const uint32_t Size = Get<uint32_t>(Def + LoadDefSize);
         if (Size == 0) return nullptr;
-        ImageFormat Format;
-        uint32_t Unit = 0;
-        bool Block = false;
-        if (!FormatOf(Get<uint32_t>(Def + LoadDefFormat), Format, Unit, Block)) return nullptr;
         const uint32_t W = Get<uint16_t>(ImagePointer + ImageWidth), H = Get<uint16_t>(ImagePointer + ImageHeight);
         if (W == 0 || H == 0) return nullptr;
-        // the largest level only: it comes first (of each face, for a cube map)
-        const uint64_t Level = Block ? (uint64_t)std::max(1u, (W + 3) / 4) * std::max(1u, (H + 3) / 4) * Unit
-                                     : (uint64_t)W * H * Unit;
+        // the D3D9 formats the rebuild's GfxImageLoadDef carries (FourCC or D3DFMT), as the 32-bit
+        // zones keep them; the largest level only: it comes first (of each face, for a cube map)
+        ImageFormat Format;
+        uint64_t Level = 0;
+        LoadDefImage::Convert How = LoadDefImage::Convert::None;
+        if (!LoadDefImage::D3dFormat(Get<uint32_t>(Def + LoadDefFormat), W, H, Format, Level, How)) return nullptr;
         const bool Cube = Get<uint8_t>(ImagePointer + ImageMapType) == 5;   // MAPTYPE_CUBE
-        const uint64_t Need = Level * (Cube ? 6 : 1);
-        if (Need > Size) return nullptr;
-        auto* Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Need];
-        uint32_t Header = 0;
-        Image::WriteDDSHeaderToStream(Buffer, W, H, 1, Format, Header, Cube);
+        const uint64_t Faces = Cube ? 6 : 1;
+        if (Level * Faces > Size) return nullptr;
         const uint64_t Chain = Cube ? Size / 6 : 0;
-        for (int F = 0; F < (Cube ? 6 : 1); F++)
-            if (!Copy(Buffer + Header + F * Level, Def + LoadDefData + F * Chain, Level))
-            {
-                delete[] Buffer;
-                return nullptr;
-            }
-        auto Result = std::make_unique<XImageDDS>();
-        Result->DataBuffer = Buffer;
-        Result->DataSize = (uint32_t)(Header + Need);
-        return Result;
+        std::vector<uint8_t> Pixels(Level * Faces);
+        for (uint64_t F = 0; F < Faces; F++)
+            if (!Copy(Pixels.data() + F * Level, Def + LoadDefData + F * Chain, Level)) return nullptr;
+        return LoadDefImage::Dds(W, H, Format, Pixels.data(), Level, How, Faces, Level);
     }
 
     bool LoadedSound(uint64_t P, CoDSound_t& Sound)

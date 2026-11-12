@@ -453,7 +453,8 @@ namespace
                 return nullptr;
             }
             if (W == 0 || H == 0 || Level > Size || Def + 0xc + (int64_t)Level > (int64_t)Z.size()) return nullptr;
-            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0xc, Level);
+            // B8G8R8A8 (87): its blue first, written as R8G8B8A8
+            return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0xc, Level, Format == 87 ? LoadDefImage::Convert::SwapRB : LoadDefImage::Convert::None);
         }
 
         // Every alias of every SndBank with an asset file: its data by asset id, in the bank files the

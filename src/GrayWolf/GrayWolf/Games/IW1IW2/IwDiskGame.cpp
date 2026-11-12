@@ -411,6 +411,9 @@ namespace
         return Materials::LooksAlphaTested(Name) ? Materials::AlphaMode::Cutout : Materials::AlphaMode::Auto;
     }
 
+    // a normal map written as X, Y and Z (ArchiveZone::NormalMapImages)
+    bool PatchNormals() { return SettingsManager::GetSetting("patchnormals", "true") == "true"; }
+
     // CoD1/CoD2 materials as the one description (MaterialDescription.h): the roles the game gives
     // its images (CoD2's samplers; CoD1's one colour map), never the file names.
     class Adapter final : public Materials::IAdapter
@@ -438,7 +441,9 @@ namespace
                     break;
                 default: break;
                 }
-            D.NormalEnc = Materials::NormalEncoding::AG;
+            // as WriteImages leaves the file (NormalMapImages): X, Y and Z when "patchnormals" is
+            // on, else as stored, X in alpha and Y in green
+            D.NormalEnc = PatchNormals() ? Materials::NormalEncoding::XY : Materials::NormalEncoding::AG;
             D.Alpha = AlphaOf(M.Techset, M.Name);
             return D;
         }
@@ -676,10 +681,19 @@ namespace
             ExportWriters::ImageSink Sink;
             std::vector<uint8_t> Bytes;
             size_t Failed = 0;
+            const std::set<std::string>* Normals = PatchNormals() ? &NormalMapImages() : nullptr;
+            const auto Patched = [&](std::unique_ptr<XImageDDS> Dds, const std::string& Path) {
+                if (Dds && Normals != nullptr && Normals->count(Path))
+                {
+                    Dds->ImagePatchType = ImagePatch::Normal_AG;
+                    Counter("images_normal_expanded")++;
+                }
+                return Dds;
+            };
             const auto Decode = [&](size_t Tag) -> std::unique_ptr<XImageDDS> {
                 std::string Error;
                 if (!Files->Read(Jobs[Tag].Path, Bytes)) return nullptr;
-                return DdsOf(Extension(Jobs[Tag].Path), Bytes, Error);
+                return Patched(DdsOf(Extension(Jobs[Tag].Path), Bytes, Error), Jobs[Tag].Path);
             };
             for (size_t N = 0; N < Jobs.size(); N++)
             {
@@ -697,7 +711,7 @@ namespace
                     Failed++;
                     continue;
                 }
-                auto Dds = DdsOf(Extension(J.Path), Bytes, Error);
+                auto Dds = Patched(DdsOf(Extension(J.Path), Bytes, Error), J.Path);
                 if (!Dds)
                 {
                     T.Fail(ZoneName, Kind::Image, J.Name, Error);
@@ -713,6 +727,27 @@ namespace
             Kt.Linked += S.Linked;
             if (S.Failed) T.Fail(ZoneName, Kind::Image, "", std::to_string(S.Failed) + " images not written");
             return Failed + S.Failed;
+        }
+
+        // The images the install's materials sample as normalMap ("images/<name>.iwi"): CoD2's
+        // converter packs them X in alpha, Y in green ("~<name>-gggr", DXT5 or DXT3), which no
+        // image header says (colour and specular maps are DXT5 too). Measured 2026-11-12 on the
+        // kar98 and German hands' 9 normal maps; CoD1 has none.
+        const std::set<std::string>& NormalMapImages()
+        {
+            if (NormalsRead) return Normals;
+            NormalsRead = true;
+            std::vector<uint8_t> Bytes;
+            for (const auto& [Path, Owner] : Files->Files())
+            {
+                if (Path.rfind("materials/", 0) != 0 || !Files->Read(Path, Bytes)) continue;
+                MaterialFile F;
+                std::string Why;
+                if (!ParseMaterial(Bytes.data(), Bytes.size(), F, Why)) continue;
+                for (const auto& [Sampler, Image] : F.Textures)
+                    if (Sampler == "normalMap") Normals.insert("images/" + ExportNaming::Lower(Image) + ".iwi");
+            }
+            return Normals;
         }
 
         void ExportImages(const Context& C, Totals& T)
@@ -1644,6 +1679,8 @@ namespace
         std::string ZoneName;
         std::map<std::string, size_t> Counters;
         std::map<std::string, std::pair<MaterialFile, std::string>> MaterialCache;
+        bool NormalsRead = false;
+        std::set<std::string> Normals;   // NormalMapImages
         std::set<std::string> UnresolvedSeen;
         std::vector<std::string> Unresolved;
     };

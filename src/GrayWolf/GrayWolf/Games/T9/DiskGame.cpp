@@ -41,6 +41,9 @@ uint32_t GetFrameRate(uint8_t Index);   // GameBlackOpsCW.cpp's: a sound_asset's
 namespace
 {
     constexpr uint64_t HashMask = 0x0FFFFFFFFFFFFFFFull;   // Cold War's asset name hashes are 60-bit
+    // GfxImage (BOCWGfxImage): its semantic u8 at 0xb4, 4 a normal map
+    constexpr int64_t ImageSemantic = 0xb4;
+    constexpr uint8_t NormalMapSemantic = 4;
 
     namespace fs = std::filesystem;
 
@@ -348,8 +351,14 @@ namespace
                 ExportWriters::ContentKey Key;
                 return Key.Mix(At<uint64_t>(Image(), Pos) & HashMask).Mix(Extension).Key();
             };
+            // a normal map (its semantic, u8 at 0xb4: 4) read as one, its Z rebuilt when
+            // "patchnormals" is on (X in red, Y in green, blue not its Z: 0-40). Measured over
+            // mp_apocalypse (2026-11-12): the 29 images its first 40 models' materials use as normal
+            // map are semantic 4 and BC7 UNORM, no other one is; the semantic, not the format, as
+            // for BO3 and BO4, whose BC7 UNORM also holds masks and proxy albedos
             L.Decode = [this](int64_t Pos, const std::string& Name) {
-                return GameBlackOpsCW::LoadXImage(XImage_t(ImageUsageType::DiffuseMap, 0, Live().Addr((uint64_t)Pos), Name));
+                const auto Usage = At<uint8_t>(Image(), Pos + ImageSemantic) == NormalMapSemantic ? ImageUsageType::NormalMap : ImageUsageType::DiffuseMap;
+                return GameBlackOpsCW::LoadXImage(XImage_t(Usage, 0, Live().Addr((uint64_t)Pos), Name));
             };
             L.OnePerName = true;
             ExportImageList(C, T, L);

@@ -44,6 +44,7 @@ namespace
         { "map_radiant", "--map-radiant", &CliOptions::MapRadiant },
         { "map_surfaces", "--map-surfaces", &CliOptions::MapSurfaces },
         { "material_gdt", "--material-gdt", &CliOptions::MaterialGdt },
+        { "split_maps", "--split-maps", &CliOptions::SplitMaps },
         { "sound_aliases", "--sound-aliases", &CliOptions::SoundAliases },
         { "mod_tools", "--mod-tools", &CliOptions::ModTools },
         { "bo3_usermap", "--bo3-usermap", &CliOptions::Bo3Usermap },

@@ -196,7 +196,7 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
         ImGui::NewFrame();
 
         bool OpenHelp = false;
-        if (DrawMainMenuBar(OpenHelp)) State.Quit = true;
+        if (DrawMainMenuBar(S.Dev.Get(), OpenHelp)) State.Quit = true;
         DrawStatusBar(S);
         BuildDockLayout(ImGui::DockSpaceOverViewport());
         DrawAssetsPanel(S, OpenHelp);

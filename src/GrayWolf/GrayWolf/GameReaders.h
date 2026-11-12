@@ -459,7 +459,9 @@ namespace GameReaders
 
     // A 32-bit IW material (CoD4, WaW): its images named by the pointer 4 bytes before their
     // end, and its technique set's name (the techset pointer at TechsetOffset, its name first; a
-    // zone's name-only header starts with ','): what draws it (wc_shadowcaster: shadow maps only)
+    // zone's name-only header starts with ','): what draws it (wc_shadowcaster: shadow maps only).
+    // Its sort key is MaterialInfo's byte 5 (name, gameFlags): 4 opaque, 5 sky, 9..14 decals, 43
+    // blends, as Black Ops'
     template <typename TMaterial, typename TImage, typename TGfxImage>
     XMaterial_t ReadMaterial32(uint64_t MaterialPointer, uint32_t TechsetOffset)
     {
@@ -467,6 +469,7 @@ namespace GameReaders
 
         XMaterial_t Result(Data.ImageCount);
         Result.MaterialName = FileSystems::GetFileNameWithoutExtension(CoDAssets::GameInstance->ReadNullTerminatedString(Data.NamePtr));
+        Result.SortKey = CoDAssets::GameInstance->Read<uint8_t>(MaterialPointer + 5);
         if (const auto Techset = CoDAssets::GameInstance->Read<uint32_t>(MaterialPointer + TechsetOffset))
         {
             Result.TechsetName = CoDAssets::GameInstance->ReadNullTerminatedString(CoDAssets::GameInstance->Read<uint32_t>(Techset));

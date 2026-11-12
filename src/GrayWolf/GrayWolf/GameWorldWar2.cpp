@@ -192,26 +192,35 @@ namespace
     // formats return 0 rather than guessing BC1: a wrong guess writes a plausible-looking garbage file.
     uint8_t WW2ImageFormat(uint8_t Format)
     {
+        // The game's own table, s2_mp64_ship's u32 array 0 28 29 65 61 49 51 71 72 74 75 77 78 80
+        // 83 84 95 96 98 99 11 35 37 56 2 10 16 34 41 54 26 24 55 ... (at 0xb4c970 of the flattened
+        // exe): each format's DXGI one, sRGB ones apart (2, 8, 10, 12, 19). Only the ones
+        // CoDRawImageTranslator writes; 0 for the others (5 R8G8, 21 R16G16, 28 R32_FLOAT...).
+        // The lookup tables: 25 is R16G16B16A16_FLOAT (hdrclut_clut_*, 32x32x32 volumes of 262144
+        // bytes), 27 R16G16_FLOAT (~envbrdflut_ggx_18*-rg, 64x64 or 32x32x8)
         switch (Format)
         {
-        case 1:
-        case 2:  return 28;   // RGBA, uncompressed
-        case 7:
-        case 8:  return 71;   // BC1
-        case 9:
-        case 10: return 74;   // BC2
-        case 11:
-        case 12: return 77;   // BC3
+        case 1: return 28;    // R8G8B8A8
+        case 2: return 29;    // R8G8B8A8 sRGB
+        case 3: return 65;    // A8
+        case 4: return 61;    // R8 ($white_1d, $mdao_occluder_lut)
+        case 7: return 71;    // BC1
+        case 8: return 72;    // BC1 sRGB
+        case 9: return 74;    // BC2
+        case 10: return 75;   // BC2 sRGB
+        case 11: return 77;   // BC3
+        case 12: return 78;   // BC3 sRGB
         case 13: return 80;   // BC4
-        case 15: return 84;   // BC5
-        case 16: return 95;   // BC6
-        case 18:
-        case 19: return 98;   // BC7
-        // the game's own table (s2_mp64_ship's u32 array from 0 28 29 65 61 49 51 71 72 ...)
-        // for the lookup tables: 25 is R16G16B16A16_FLOAT (hdrclut_clut_*, 32x32x32 volumes of
-        // 262144 bytes), 27 R16G16_FLOAT (~envbrdflut_ggx_18*-rg, 64x64 or 32x32x8)
-        case 25: return 10;
-        case 27: return 34;
+        case 14: return 83;   // BC5
+        case 15: return 84;   // BC5 SNORM
+        case 16: return 95;   // BC6H UF16
+        case 17: return 96;   // BC6H SF16
+        case 18: return 98;   // BC7
+        case 19: return 99;   // BC7 sRGB
+        case 24: return 2;    // R32G32B32A32_FLOAT
+        case 25: return 10;   // R16G16B16A16_FLOAT
+        case 27: return 34;   // R16G16_FLOAT
+        case 31: return 24;   // R10G10B10A2
         default: return 0;
         }
     }

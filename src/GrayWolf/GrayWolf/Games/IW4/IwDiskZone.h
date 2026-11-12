@@ -66,6 +66,7 @@ namespace Iw64
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image);
 
         std::unique_ptr<XImageDDS> Decode(int64_t Pos, uint64_t& Key);
+        std::unique_ptr<XImageDDS> Pixels(int64_t Pos, uint64_t& Key);
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T);
         void ExportStreamedSounds(const DiskGame::Context& C, DiskGame::Totals& T);

@@ -38,7 +38,7 @@ jobs:
       # BUILDING.md's list; casclib and wolff (its published repository, pinned) come from vcpkg-overlay-ports
       VCPKG_PACKAGES: >-
         opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz libdeflate lz4
-        xxhash lzo nlohmann-json stb tinygltf wolff
+        xxhash lzo nlohmann-json stb tinygltf wolff nanosvg
         imgui[docking-experimental,dx11-binding,win32-binding]
 
     steps:

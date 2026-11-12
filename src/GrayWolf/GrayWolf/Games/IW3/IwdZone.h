@@ -67,6 +67,7 @@ namespace Iw3Family
         std::vector<std::string> ZoneStrings(ByteView Z) const;
         void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T);
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos);
+        std::unique_ptr<XImageDDS> Pixels(const std::string& ImageName, int64_t Pos);
         // an image of the .iwd archives, as Decode reads it first: its .iwi's (Sizes::IwiWeight);
         // one in the zone weighs its GfxImageLoadDef there
         void Weigh(DiskGame::Kind K, int64_t Pos, DiskGame::Weight& W) const override;

@@ -73,6 +73,7 @@ struct CliOptions
     std::string MapPng;      // --map-png: on|off, PNG copies of map textures for glTF tools (off)
     std::string MapCast;     // --map-cast: on|off, the map also as a Cast scene (off)
     std::string MaterialGdt; // --material-gdt: on|off, BO3 Mod Tools material GDT entries for the exported materials (off)
+    std::string SplitMaps;   // --split-maps: on|off, the packed maps also split into standard files beside them (off)
     std::string MapRadiant;  // --map-radiant: on|off, the map also as a Radiant .map for the mod tools (off)
     std::string ModTools;      // --mod-tools: on|off, the mod tools files written into a BO3 Mod Tools tree (off)
     std::string ModToolsRoot;  // --mod-tools-root: that tree (default: the BO3 install found with the mod tools)

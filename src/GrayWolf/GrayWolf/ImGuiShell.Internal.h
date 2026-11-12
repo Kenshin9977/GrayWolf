@@ -319,7 +319,7 @@ namespace ShellUi
 
     // ImGuiShell.Menus.cpp
     // The main menu bar and the update banner; true when the app is to quit.
-    bool DrawMainMenuBar(bool& OpenHelp);
+    bool DrawMainMenuBar(ID3D11Device* Dev, bool& OpenHelp);
     void DrawStatusBar(const ShellState& S);
     void BuildDockLayout(unsigned int DockId);
     void DrawFilterHelp(bool OpenHelp);

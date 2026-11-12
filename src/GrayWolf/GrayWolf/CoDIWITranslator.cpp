@@ -2,9 +2,14 @@
 
 #include "CoDIWITranslator.h"
 
+#include "CoDIWIDecoder.h"
+
 #include "Image.h"
 #include "MemoryReader.h"
 #include "CoDAssetType.h"
+
+#include <algorithm>
+#include <cstring>
 
 struct IWIHeader
 {
@@ -61,6 +66,9 @@ std::unique_ptr<XImageDDS> CoDIWITranslator::TranslateIWI(const std::unique_ptr<
     if (Iw4Layout) { Reader.SetPosition(8); }
 
     auto Info = Reader.Read<IWIInfo>();
+    // the third dimension after width and height: a volume's slices (Black Ops' 32x32x32 colour
+    // LUTs), 1 for any other
+    const uint32_t Depth = std::max<uint32_t>(1, Reader.Read<uint16_t>());
 
     // Verify magic (IWi)
     if (Header.Magic[0] == 0x49 && Header.Magic[1] == 0x57 && Header.Magic[2] == 0x69)
@@ -110,110 +118,85 @@ std::unique_ptr<XImageDDS> CoDIWITranslator::TranslateIWI(const std::unique_ptr<
         {
             Reader.SetPosition(OffsetToDump);
 
-            auto ImageDataFormat = ImageFormat::DDS_BC1_SRGB;
-            switch (Info.ImageFormat)
+            // A cube map: the flags byte's 0x4, but version 8/9's flags are the u32 after the
+            // version and its cube is 1 << 16 (the byte IWIInfo calls flags is unused there)
+            bool isCubemap = (Info.ImageFlags & (uint8_t)IWIFileFlags::IMG_FLAG_CUBEMAP) != 0;
+            if (Iw4Layout)
             {
-            case 0x1:
-                ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8;
-                break;
-            case 0x2:
-                ImageDataFormat = ImageFormat::DDS_Standard_R8G8B8;
-                break;
-            case 0x3:
-                ImageDataFormat = ImageFormat::DDS_Standard_D16_UNORM;
-                break;
-            case 0x4:
-            case 0x5:
-                ImageDataFormat = ImageFormat::DDS_Standard_A8_UNORM;
-                break;
-            case 0x0E:
-                ImageDataFormat = ImageFormat::DDS_BC5_UNORM;
-                break;
-            case 0x0D:
-                ImageDataFormat = ImageFormat::DDS_BC3_UNORM;
-                break;
-            case 0x0B:
-                ImageDataFormat = ImageFormat::DDS_BC1_UNORM;
-                break;
-            case 0x0C:
-                ImageDataFormat = ImageFormat::DDS_BC2_UNORM;
-                break;
-            default:
-#ifdef _DEBUG
-                printf("CoDIWITranslator(): Unknown format: %d\n", Info.ImageFormat);
-#endif
-                break;
+                uint32_t Flags = 0;
+                std::memcpy(&Flags, IWIBuffer.get() + 4, 4);
+                isCubemap = (Flags & 0x30000) == 0x10000;
             }
+            const size_t PixelCount = (size_t)Info.ImageWidth * Info.ImageHeight * Depth * (isCubemap ? 6 : 1);
+            const auto* Src = reinterpret_cast<const uint8_t*>(IWIBuffer.get()) + OffsetToDump;
 
-            bool isCubemap = false;
-
-            if ((Info.ImageFlags & (uint8_t)IWIFileFlags::IMG_FLAG_CUBEMAP) == (uint8_t)IWIFileFlags::IMG_FLAG_CUBEMAP)
-                isCubemap = true;
-
-            auto Result = std::make_unique<XImageDDS>();
-
-            // 24-bit bitmaps (B, G, R per pixel: Call of Duty Online's, Black Ops' sky cubes such
-            // as mp_firingrange's day_ft, a face after another): widened to RGBA, which the DDS
-            // writers and converters know (a 24-bit DDS has no DXGI format; written as 32-bit,
-            // its pixels fell short and the PNG was not written)
-            if (Info.ImageFormat == 0x2)
-            {
-                const size_t PixelCount = (size_t)Info.ImageWidth * Info.ImageHeight * (isCubemap ? 6 : 1);
-                if ((size_t)SizeToDump < PixelCount * 3)
-                    return nullptr;
+            // The uncompressed formats as 8-bit RGBA: 1 RGBA, B, G, R, A per pixel (D3D9's A8R8G8B8)
+            // in every version but Black Ops II's (27: R, G, B, A); 2 RGB, B, G, R (Call of Duty
+            // Online's, Black Ops' sky cubes such as mp_firingrange's day_ft; a 24-bit DDS has no
+            // DXGI format); 3 luminance and alpha, L, A; 4 luminance. Measured on the IWDs: the red
+            // waypoint_x_red (WaW, version 6) and the Spanish flag pc_flag_spain (Black Ops, 13)
+            // have their red third. Written as one level (each face of a cube).
+            const auto Expand = [&](size_t Bpp, auto&& Pixel) -> std::unique_ptr<XImageDDS> {
+                if ((size_t)SizeToDump < PixelCount * Bpp) return nullptr;
+                auto Result = std::make_unique<XImageDDS>();
                 auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + PixelCount * 4];
                 uint32_t Header32 = 0;
-                Image::WriteDDSHeaderToStream(Buffer, Info.ImageWidth, Info.ImageHeight, 1, ImageFormat::DDS_Standard_A8R8G8B8, Header32, isCubemap);
-                const auto* Src = reinterpret_cast<const uint8_t*>(IWIBuffer.get()) + OffsetToDump;
+                Image::WriteDDSHeaderToStream(Buffer, Info.ImageWidth, Info.ImageHeight, 1, ImageFormat::DDS_Standard_A8R8G8B8, Header32, isCubemap, Depth);
                 auto* Dst = reinterpret_cast<uint8_t*>(Buffer + Header32);
-                for (size_t P = 0; P < PixelCount; P++)
-                {
-                    Dst[4 * P + 0] = Src[3 * P + 2];
-                    Dst[4 * P + 1] = Src[3 * P + 1];
-                    Dst[4 * P + 2] = Src[3 * P + 0];
-                    Dst[4 * P + 3] = 0xFF;
-                }
+                for (size_t P = 0; P < PixelCount; P++) Pixel(Src + P * Bpp, Dst + P * 4);
                 Result->DataBuffer = Buffer;
                 Result->DataSize = (uint32_t)(Header32 + PixelCount * 4);
                 return Result;
+            };
+            switch (Info.ImageFormat)
+            {
+            case 0x1:
+                if (Header.Version == 0x1B)
+                    return Expand(4, [](const uint8_t* S, uint8_t* D) { std::memcpy(D, S, 4); });
+                return Expand(4, [](const uint8_t* S, uint8_t* D) { D[0] = S[2], D[1] = S[1], D[2] = S[0], D[3] = S[3]; });
+            case 0x2: return Expand(3, [](const uint8_t* S, uint8_t* D) { D[0] = S[2], D[1] = S[1], D[2] = S[0], D[3] = 0xFF; });
+            case 0x3: return Expand(2, [](const uint8_t* S, uint8_t* D) { D[0] = D[1] = D[2] = S[0], D[3] = S[1]; });
+            case 0x4: return Expand(1, [](const uint8_t* S, uint8_t* D) { D[0] = D[1] = D[2] = S[0], D[3] = 0xFF; });
+            default: break;
             }
 
+            // Wavelet-compressed (6 RGBA, 7 RGB, 8 luminance and alpha, 9 luminance, 10 alpha):
+            // decoded by CoDIWIDecoder (versions 6, 8, 9, 13)
+            if (Info.ImageFormat >= 0x6 && Info.ImageFormat <= 0xA)
+            {
+                CoDIWIDecoder::Rgba Decoded;
+                std::string Error;
+                if (!CoDIWIDecoder::LargestRgba(reinterpret_cast<const uint8_t*>(IWIBuffer.get()), IWIBufferSize, Decoded, Error)) return nullptr;
+                auto Result = std::make_unique<XImageDDS>();
+                auto Buffer = new int8_t[Image::GetMaximumDDSHeaderSize() + Decoded.Pixels.size()];
+                uint32_t Header32 = 0;
+                Image::WriteDDSHeaderToStream(Buffer, Decoded.Width, Decoded.Height, 1, ImageFormat::DDS_Standard_A8R8G8B8, Header32, Decoded.Cube);
+                std::memcpy(Buffer + Header32, Decoded.Pixels.data(), Decoded.Pixels.size());
+                Result->DataBuffer = Buffer;
+                Result->DataSize = (uint32_t)(Header32 + Decoded.Pixels.size());
+                return Result;
+            }
+
+            ImageFormat ImageDataFormat;
+            switch (Info.ImageFormat)
+            {
+            case 0x5: ImageDataFormat = ImageFormat::DDS_Standard_A8_UNORM; break;
+            case 0x0B: ImageDataFormat = ImageFormat::DDS_BC1_UNORM; break;
+            case 0x0C: ImageDataFormat = ImageFormat::DDS_BC2_UNORM; break;
+            case 0x0D: ImageDataFormat = ImageFormat::DDS_BC3_UNORM; break;
+            case 0x0E: ImageDataFormat = ImageFormat::DDS_BC5_UNORM; break;
+            // any other (Modern Warfare 3's console-only 0x17, Black Ops' RGB565...) is not
+            // written: a guessed format makes a plausible-looking garbage file
+            default: return nullptr;
+            }
+
+            auto Result = std::make_unique<XImageDDS>();
             auto ImageBuffer = new int8_t[Image::GetMaximumDDSHeaderSize() + SizeToDump];
 
             uint32_t ResultSize = 0;
-            Image::WriteDDSHeaderToStream(ImageBuffer, Info.ImageWidth, Info.ImageHeight, 1, ImageDataFormat, ResultSize, isCubemap);
+            Image::WriteDDSHeaderToStream(ImageBuffer, Info.ImageWidth, Info.ImageHeight, 1, ImageDataFormat, ResultSize, isCubemap, Depth);
 
             Reader.Read(SizeToDump, ImageBuffer + ResultSize);
-
-            // TODO: use DXGI_FORMAT directly instead of swapping channels here - fine for now
-            // given how limited this case is.
-            if (Iw4Layout && Info.ImageFormat == 0x1)
-            {
-                // Convert from BGRA to RGBA
-                auto Pixels = ImageBuffer + ResultSize;
-                auto PixelCount = Info.ImageWidth * Info.ImageHeight;
-
-                for (size_t Pixel = 0; Pixel < PixelCount; Pixel++)
-                {
-                    // 32Bbp, verify we're not outside the bounds
-                    auto PixelOffset = Pixel * 4;
-
-                    if (PixelOffset + 4 > (size_t)SizeToDump)
-                    {
-                        break;
-                    }
-
-                    auto NewR = Pixels[PixelOffset + 2];
-                    auto NewG = Pixels[PixelOffset + 1];
-                    auto NewB = Pixels[PixelOffset + 0];
-                    auto NewA = Pixels[PixelOffset + 3];
-
-                    Pixels[PixelOffset + 0] = NewR;
-                    Pixels[PixelOffset + 1] = NewG;
-                    Pixels[PixelOffset + 2] = NewB;
-                    Pixels[PixelOffset + 3] = NewA;
-                }
-            }
 
             Result->DataBuffer = ImageBuffer;
             Result->DataSize = (uint32_t)(ResultSize + SizeToDump);

@@ -19,6 +19,7 @@
 #include "GameBlackOps.h"
 #include "Games/IW3/Iw3Install.h"
 #include "Games/IW3/LoadDefImage.h"
+#include "Games/IW3/StoredNormals.h"
 
 #include "Image.h"
 #include "IWDCache.h"
@@ -49,7 +50,8 @@ namespace
     // GfxImage (0x34, Load_GfxImage 0x281280): texture (its GfxImageLoadDef) at 0, width u16 at
     // 0x14, height at 0x16, the name at 0x2c. GfxImageLoadDef (0xc + resourceSize): levelCount u8,
     // flags u8, a D3DFORMAT at 4, resourceSize at 8, the pixels from 0xc, the largest level first.
-    constexpr int64_t ImageNameAt = 0x2c, ImageWidth = 0x14, ImageHeight = 0x16;
+    // The GfxImage's semantic u8 at 5 (Games/IW3/StoredNormals.h).
+    constexpr int64_t ImageNameAt = 0x2c, ImageWidth = 0x14, ImageHeight = 0x16, ImageSemantic = 0x5;
     // SndBank (0x28, 0x422b0): alias lists at 8, count at 4; snd_alias_list_t (0x14): aliases at 8,
     // count at 0xc; snd_alias_t (0x54): SoundFile at 0x10; SoundFile (8): the sound at 0, type u8 at
     // 4 (1 loaded); LoadedSound (0x3c): name 0, data_size 0x34, data 0x38; StreamedSound: name 0.
@@ -250,6 +252,7 @@ namespace
         std::string Mod;
         OatWeapons::Source Weapons;
         std::shared_ptr<IWDCache> Iwd;
+        std::set<std::string> NormalsByName;   // MaterialNormals, for ExportImages
 
         // the live image handler reads the .iwd through CoDAssets::GamePackageCache while the
         // zone is served; the previous cache comes back when it is not
@@ -277,8 +280,37 @@ namespace
         // waypoint_* icons common_mp names) is held whole by no zone.
         void ExportImages(const Context& C, Totals& T)
         {
+            NormalsByName = MaterialNormals();
             ExportNamedImages(C, T, [this](const std::string& N, int64_t Pos) { return Decode(N, Pos); },
                               "neither in the .iwd archives nor in the zone", true);
+        }
+
+        // The images the zone's materials sample as a normal map, by name: a reference read by
+        // name has no GfxImage here to give its semantic, the material's texture does (Material
+        // 0xb4 the textureTable, 0xaa textureCount; MaterialTextureDef 0x10: semantic u8 at 7,
+        // the image at 0xc). Measured on mp_nuked (2026-11-12): 27 references read by name,
+        // decal_flag_n, glass_shattered_nml, metal_bumps_n... among them.
+        std::set<std::string> MaterialNormals() const
+        {
+            constexpr int64_t TextureTable = 0xb4, TextureCount = 0xaa, TextureSize = 0x10, TextureSemantic = 7, TextureImage = 0xc;
+            std::set<std::string> Out;
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "material")) continue;
+                const int64_t Table = Off(PointerAt(I.Pos + TextureTable));
+                if (Table < 0) continue;
+                for (int64_t K = 0; K < At<uint8_t>(Image(), I.Pos + TextureCount); K++)
+                {
+                    const int64_t Entry = Table + K * TextureSize;
+                    if (At<uint8_t>(Image(), Entry + TextureSemantic) != StoredNormals::NormalMapSemantic) continue;
+                    const int64_t Img = Off(PointerAt(Entry + TextureImage));
+                    if (Img < 0) continue;
+                    std::string N = AssetName(Kind::Image, Img);
+                    if (IsReference(Kind::Image, N, Img)) N = Referenced(Kind::Image, N);
+                    if (!N.empty()) Out.insert(N);
+                }
+            }
+            return Out;
         }
 
         // (+sounds2: every sound listed from its header, no cap: a zone the dry run stopped at its cap
@@ -302,7 +334,18 @@ namespace
             if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
         }
 
+        // An image's pixels, a normal map's as XYZ when "patchnormals" is on (StoredNormals.h: its
+        // GfxImage's semantic, one read by name, Pos < 0, its materials')
         std::unique_ptr<XImageDDS> Decode(const std::string& ImageName, int64_t Pos)
+        {
+            auto Dds = Pixels(ImageName, Pos);
+            const uint8_t Semantic = Pos >= 0 ? At<uint8_t>(Image(), Pos + ImageSemantic)
+                                   : NormalsByName.count(ImageName) ? StoredNormals::NormalMapSemantic : 0;
+            if (StoredNormals::Patch(Dds.get(), Semantic)) Counter(Pos >= 0 ? "images_normal_expanded" : "images_normal_expanded_by_name")++;
+            return Dds;
+        }
+
+        std::unique_ptr<XImageDDS> Pixels(const std::string& ImageName, int64_t Pos)
         {
             if (!Install.empty())
             {
@@ -329,18 +372,18 @@ namespace
             const uint32_t Format = At<uint32_t>(Z, Def + 4), Size = At<uint32_t>(Z, Def + 8);
             ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
             uint64_t Level = 0;
-            bool Swap = false;
+            LoadDefImage::Convert How = LoadDefImage::Convert::None;
             const bool Packed = Format == 23 || Format == 34;   // 23 R5G6B5, 34 G16R16 (the lightmaps): widened to 8-bit RGBA
             if (Packed)
                 Fmt = ImageFormat::DDS_Standard_A8R8G8B8, Level = (uint64_t)W * H * (Format == 23 ? 2 : 4);
-            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
+            else if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, How))
             {
                 Counter("images_in_zone_unknown_format")++;
                 return nullptr;
             }
             if (W == 0 || H == 0 || Level > Size || Def + 0xc + (int64_t)Level > (int64_t)Z.size()) return nullptr;
             const uint8_t* Src = Z.data() + Def + 0xc;
-            if (!Packed) return LoadDefImage::Dds(W, H, Fmt, Src, Level, Swap);
+            if (!Packed) return LoadDefImage::Dds(W, H, Fmt, Src, Level, How);
             std::vector<uint8_t> Dst((size_t)W * H * 4);
             if (Format == 23)
                 for (uint64_t P = 0; P < (uint64_t)W * H; P++)

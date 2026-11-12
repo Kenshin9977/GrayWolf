@@ -277,7 +277,11 @@ namespace
                 const auto& Z = Zone();
                 const int64_t Pixels = ResidentPixels(Pos);
                 const uint32_t Size = At<uint32_t>(Z, Pos + ImageDataSize);
-                for (uint32_t K = 0; K + 8 <= Size; K += 8) Key.Mix(At<uint64_t>(Z, Pixels + K));
+                // every byte: a 1x1 RGBA image is 4 of them, which an 8-byte stride alone left out
+                // (the code images $white, $black, $gray, ... then shared one output file)
+                uint32_t K = 0;
+                for (; K + 8 <= Size; K += 8) Key.Mix(At<uint64_t>(Z, Pixels + K));
+                for (; K < Size; K++) Key.Mix(At<uint8_t>(Z, Pixels + K));
                 Key.Mix(Size).Mix(At<uint32_t>(Z, Pos + ImageWidth)).Mix(At<uint8_t>(Z, Pos + ImageMapTypeAt));
                 Key.Mix(At<uint8_t>(Z, Pos + ImageLevels));
             }

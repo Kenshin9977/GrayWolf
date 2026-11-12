@@ -236,6 +236,9 @@ namespace DiskGame
     // decompile: compiled scripts also decompiled (acts or gsc-tool, by the game's VM), and the
     // compiled Lua files (LuaExport.h), else written as bytecode (ScriptExport.h)
     extern const Setting ScriptDecompile;
+    // split_maps: also the packed maps the models' and maps' materials read (a "nog", a specular
+    // with its gloss in alpha) split into standard files beside them (MaterialSplit.h)
+    extern const Setting SplitMaps;
     const std::vector<Setting>& CommonSettings();
 
     // A material's images as its zone's reader reads them (XImage_t's usage as a number, the

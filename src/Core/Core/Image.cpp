@@ -53,7 +53,9 @@ bool Image::ConvertImageMemory(int8_t* ImageBuffer, uint64_t ImageSize, ImageFor
         Result = DirectX::LoadFromTGAMemory(reinterpret_cast<const uint8_t*>(ImageBuffer), (size_t)ImageSize,&ImageMetadata, *Image);
         break;
     case ImageFormat::DDS_WithHeader:
-        Result = DirectX::LoadFromDDSMemory(reinterpret_cast<const uint8_t*>(ImageBuffer), (size_t)ImageSize,DirectX::DDS_FLAGS::DDS_FLAGS_NONE, &ImageMetadata, *Image);
+        // a legacy luminance DDS (L8, A8L8: CoD2's IWIs through CoDIWIDecoder) read as R, G, B = L:
+        // without the flag DirectXTex makes it R8 or R8G8, red, or red and green with A in G
+        Result = DirectX::LoadFromDDSMemory(reinterpret_cast<const uint8_t*>(ImageBuffer), (size_t)ImageSize,DirectX::DDS_FLAGS::DDS_FLAGS_EXPAND_LUMINANCE, &ImageMetadata, *Image);
         break;
     default:
         return false;
@@ -145,6 +147,7 @@ bool Image::ConvertToFormat(std::unique_ptr<DirectX::ScratchImage>& Image, Direc
         case ImagePatch::Normal_Bumpmap: PatchNormalFromBumpmap(Image); break;
         case ImagePatch::Normal_Expand: PatchNormalFromCompressed(Image); break;
         case ImagePatch::Normal_COD_NOG: PatchNormalCODFromNOG(Image); break;
+        case ImagePatch::Normal_AG: PatchNormalFromAG(Image); break;
         case ImagePatch::Color_StripAlpha: PatchAlphaChannel(Image); break;
         }
     }
@@ -412,6 +415,16 @@ void Image::PatchNormalCODFromNOG(std::unique_ptr<DirectX::ScratchImage>& Image)
     });
 }
 
+void Image::PatchNormalFromAG(std::unique_ptr<DirectX::ScratchImage>& Image)
+{
+    // a DXT5nm normal map (A: X, G: Y; R and B unused) as a traditional one (XYZ), alpha 1.0
+    TransformPixels(Image, [](DirectX::XMVECTOR scanline)
+    {
+        const float X = DirectX::XMVectorGetW(scanline), Y = DirectX::XMVectorGetY(scanline);
+        return DirectX::XMVectorSet(X, Y, NormalZ(X, Y), 1.0f);
+    });
+}
+
 void Image::PatchAlphaChannel(std::unique_ptr<DirectX::ScratchImage>& Image)
 {
     TransformPixels(Image, [](DirectX::XMVECTOR scanline) { return DirectX::XMVectorSetW(scanline, 1.0); });
@@ -516,6 +529,7 @@ std::unique_ptr<int8_t[]> Image::BuildDDSHeader(uint32_t Width, uint32_t Height,
     case ImageFormat::DDS_Standard_R8_UNORM: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R8_UNORM; break;
     case ImageFormat::DDS_Standard_R8_UINT: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R8_UINT; break;
     case ImageFormat::DDS_Standard_R16G16_FLOAT: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R16G16_FLOAT; break;
+    case ImageFormat::DDS_Standard_R16_UNORM: Metadata.format = DXGI_FORMAT::DXGI_FORMAT_R16_UNORM; break;
 
     default:
         Metadata.format = DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM;

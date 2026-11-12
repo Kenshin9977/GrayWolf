@@ -181,58 +181,14 @@ std::unique_ptr<XImageDDS> GameModernWarfare4::LoadXImage(const XImage_t& Image)
     if (ImageData == nullptr)
         return nullptr;
 
-    switch (ImageInfo.ImageFormat)
-    {
-    case 0:  ImageInfo.ImageFormat = 71; break;
-    case 1:  ImageInfo.ImageFormat = 61; break;
-    case 2:  ImageInfo.ImageFormat = 65; break;
-    case 3:  ImageInfo.ImageFormat = 65; break;
-    case 4:  ImageInfo.ImageFormat = 49; break;
-    case 5:  ImageInfo.ImageFormat = 49; break;
-    case 6:  ImageInfo.ImageFormat = 28; break;
-    case 7:  ImageInfo.ImageFormat = 28; break;
-    case 8:  ImageInfo.ImageFormat = 71; break;
-    case 9:  ImageInfo.ImageFormat = 71; break;
-    case 10: ImageInfo.ImageFormat = 63; break;
-    case 11: ImageInfo.ImageFormat = 51; break;
-    case 12: ImageInfo.ImageFormat = 56; break;
-    case 13: ImageInfo.ImageFormat = 35; break;
-    case 14: ImageInfo.ImageFormat = 11; break;
-    case 15: ImageInfo.ImageFormat = 58; break;
-    case 16: ImageInfo.ImageFormat = 54; break;
-    case 17: ImageInfo.ImageFormat = 34; break;
-    case 18: ImageInfo.ImageFormat = 10; break;
-    case 19: ImageInfo.ImageFormat = 41; break;
-    case 20: ImageInfo.ImageFormat = 16; break;
-    case 21: ImageInfo.ImageFormat = 2;  break;
-    case 22: ImageInfo.ImageFormat = 40; break;
-    case 23: ImageInfo.ImageFormat = 20; break;
-    case 24: ImageInfo.ImageFormat = 62; break;
-    case 25: ImageInfo.ImageFormat = 57; break;
-    case 26: ImageInfo.ImageFormat = 42; break;
-    case 27: ImageInfo.ImageFormat = 17; break;
-    case 28: ImageInfo.ImageFormat = 3;  break;
-    case 29: ImageInfo.ImageFormat = 25; break;
-    case 30: ImageInfo.ImageFormat = 85; break;
-    case 31: ImageInfo.ImageFormat = 85; break;
-    case 32: ImageInfo.ImageFormat = 24; break;
-    case 33: ImageInfo.ImageFormat = 67; break;
-    case 34: ImageInfo.ImageFormat = 67; break;
-    case 35: ImageInfo.ImageFormat = 71; break;
-    case 36: ImageInfo.ImageFormat = 71; break;
-    case 37: ImageInfo.ImageFormat = 74; break;
-    case 38: ImageInfo.ImageFormat = 74; break;
-    case 39: ImageInfo.ImageFormat = 77; break;
-    case 40: ImageInfo.ImageFormat = 77; break;
-    case 41: ImageInfo.ImageFormat = 80; break;
-    case 42: ImageInfo.ImageFormat = 84; break;
-    case 43: ImageInfo.ImageFormat = 84; break;
-    case 44: ImageInfo.ImageFormat = 95; break;
-    case 45: ImageInfo.ImageFormat = 96; break;
-    case 46: ImageInfo.ImageFormat = 98; break;
-    case 47: ImageInfo.ImageFormat = 98; break;
-    default: ImageInfo.ImageFormat = 71; break;
-    }
+    // The game's own table, image format -> DXGI (iw8_flat.exe, the u32 array 0 61 65 61 49 49 28 29
+    // 63 51 ... 71 72 74 75 77 78 80 83 84 95 96 98 99 31 at 0x73f2500). The hand-made switch it
+    // replaces had the sRGB ones as UNORM and 42 (BC5 UNORM: ggx_env_brdf_lut, its R and G the
+    // means AW's and MWR's RG16F ~envbrdflut_ggx hold, 203 and 27) as SNORM; its 0, 8 and 9 and any
+    // other were BC1. A format CoDRawImageTranslator does not write is refused, not guessed.
+    static constexpr uint8_t Dxgi[] = { 0,  61, 65, 61, 49, 49, 28, 29, 63, 51, 56, 35, 11, 58, 37, 13, 54, 34, 10, 41, 16, 2,  55, 40, 20,
+                                        62, 57, 42, 17, 3,  25, 85, 24, 67, 26, 71, 72, 74, 75, 77, 78, 80, 83, 84, 95, 96, 98, 99, 31 };
+    ImageInfo.ImageFormat = ImageInfo.ImageFormat < std::size(Dxgi) ? Dxgi[ImageInfo.ImageFormat] : 0;
 
     auto Result = CoDRawImageTranslator::TranslateBC(ImageData, ResultSize, Width, Height, ImageInfo.ImageFormat);
     return Result;

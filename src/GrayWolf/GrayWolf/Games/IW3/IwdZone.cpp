@@ -6,6 +6,7 @@
 
 #include "Games/IW3/IwdZone.h"
 #include "Games/IW3/LoadDefImage.h"
+#include "Games/IW3/StoredNormals.h"
 
 #include "CoDIWITranslator.h"
 #include "Image.h"
@@ -28,8 +29,9 @@ namespace
     using DiskGame::Kind;
     using DiskGame::Totals;
 
-    // GfxImage (0x24 in CoD4 and World at War): its name at +0x20
-    constexpr int64_t ImageNameAt = 0x20;
+    // GfxImage (0x24 in CoD4 and World at War): its semantic u8 at +0xb (StoredNormals.h), its
+    // name at +0x20
+    constexpr int64_t ImageSemantic = 0xb, ImageNameAt = 0x20;
 
     // Every file path of the install's .iwd archives (lower case, '/' separated) -> the archive
     // holding it, the newest archive first, as the game's search path; built once per install
@@ -250,7 +252,15 @@ namespace Iw3Family
         if (Packages && !N.empty() && Packages->Find(Packages->HashPackageID(N), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
     }
 
+    // An image's pixels, a normal map's as XYZ when "patchnormals" is on (StoredNormals.h)
     std::unique_ptr<XImageDDS> IwdZone::Decode(const std::string& ImageName, int64_t Pos)
+    {
+        auto Dds = Pixels(ImageName, Pos);
+        if (Pos >= 0 && StoredNormals::Patch(Dds.get(), At<uint8_t>(Image(), Pos + ImageSemantic))) Counter("images_normal_expanded")++;
+        return Dds;
+    }
+
+    std::unique_ptr<XImageDDS> IwdZone::Pixels(const std::string& ImageName, int64_t Pos)
     {
         if (!Install.empty())
         {
@@ -280,14 +290,14 @@ namespace Iw3Family
         const uint32_t Format = At<uint32_t>(Z, Def + 8), Size = At<uint32_t>(Z, Def + 0xc);
         ImageFormat Fmt = ImageFormat::DDS_BC1_UNORM;
         uint64_t Level = 0;
-        bool Swap = false;
-        if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, Swap))
+        LoadDefImage::Convert How = LoadDefImage::Convert::None;
+        if (!LoadDefImage::D3dFormat(Format, W, H, Fmt, Level, How))
         {
             Counter("images_in_zone_unknown_format")++;
             return nullptr;
         }
         if (W == 0 || H == 0 || Level > Size || Def + 0x10 + (int64_t)Level > (int64_t)Z.size()) return nullptr;
-        return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0x10, Level, Swap);
+        return LoadDefImage::Dds(W, H, Fmt, Z.data() + Def + 0x10, Level, How);
     }
 
     // Loaded sounds (the title's), then the files of the .iwd archives' sound folder: streamed

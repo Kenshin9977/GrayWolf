@@ -31,6 +31,8 @@ namespace Bo4DiskExport
         uint32_t Format = 0;        // DXGI, u32@0x64
         uint16_t Width = 0, Height = 0, Depth = 0;
         uint8_t MapType = 0, Mips = 0;
+        // u8@0x78: 4 a normal map (TranslateDds), 2 colour, 5 specular, 7 gloss, 8 occlusion...
+        uint8_t Semantic = 0;
         bool Streamed = false;      // u8@0x7c != 0: the pixels are in a package, not the zone
         uint32_t PayloadSize = 0;   // u32@0x60
         int64_t PayloadPos = -1;    // zone offset of the in-zone pixels, -1 when absent

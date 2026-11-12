@@ -257,11 +257,13 @@
     <ClCompile Include="Gdt.cpp" />
     <ClCompile Include="GdtWriter.cpp" />
     <ClCompile Include="MaterialGdt.cpp" />
+    <ClCompile Include="MaterialSplit.cpp" />
     <ClCompile Include="ModToolsTree.cpp" />
     <ClCompile Include="ModToolsUsermap.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
     <ClCompile Include="Languages.cpp" />
     <ClCompile Include="XboxPackages.cpp" />
+    <ClCompile Include="ProjectLinks.cpp" />
     <ClCompile Include="LauncherIcons.cpp" />
     <ClCompile Include="NameDbUpdater.cpp" />
     <ClCompile Include="Updater.cpp" />
@@ -405,11 +407,13 @@
     <ClInclude Include="Gdt.h" />
     <ClInclude Include="GdtWriter.h" />
     <ClInclude Include="MaterialGdt.h" />
+    <ClInclude Include="MaterialSplit.h" />
     <ClInclude Include="ModToolsTree.h" />
     <ClInclude Include="ModToolsUsermap.h" />
     <ClInclude Include="GameInstalls.h" />
     <ClInclude Include="Languages.h" />
     <ClInclude Include="XboxPackages.h" />
+    <ClInclude Include="ProjectLinks.h" />
     <ClInclude Include="LauncherIcons.h" />
     <ClInclude Include="NameDbUpdater.h" />
     <ClInclude Include="Updater.h" />

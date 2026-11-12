@@ -22,6 +22,7 @@ struct Bo3ZoneImage
     uint32_t Height = 0;
     uint32_t Size = 0;      // the mip's size as the zone declares it
     uint8_t Format = 0;     // the engine's image-format byte, at +240 in the struct
+    uint8_t Semantic = 0;   // its semantic, at +161 (4: a normal map)
     uint8_t Levels = 1;     // how many mip levels the inline payload holds
     uint64_t PixelOffset = 0; // non-zero when the pixels are INLINE in the zone, at this offset
     int64_t Pos = -1;         // its instance in a walked zone (T7Zone), -1 from a scan

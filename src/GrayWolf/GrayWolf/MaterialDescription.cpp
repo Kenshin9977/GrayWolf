@@ -13,6 +13,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <regex>
 #include <sstream>
 
 namespace Materials
@@ -70,13 +71,42 @@ namespace
         }
     };
 
+    // The technique set's name says how the base layer draws, which the names only guess. The
+    // pre-PBR games' tools name it after the blend ("mc_l_sm_r0c0n0s0", "wc_l_sm_t0c0n0s0p0",
+    // "l_sm_r0c0n0s0_m1c1", BO2's "mc_lit_sm_b0c0n0s0_<hash>"): the base layer's token r replaces
+    // (opaque), t alpha tests, b blends, m multiplies; c n s x the layer's colour, normal, specular
+    // and extra maps. Read off the materials' GfxStateBits (loadBits[0]: CoD4, WaW, BO1, MW2, MW3,
+    // CoD Online): r draws ONE/ZERO without an alpha test, t tests alpha >= 128, b blends SRCALPHA/
+    // INVSRCALPHA. "<prefix>_unlitdecalblend_multiply" (BO1, BO2: decal_darkstain_05, decal_rust,
+    // white colour maps with dark stains, alpha full) and "<prefix>_unlit_multiply" (CoD4 to BO1:
+    // me_decal_darkstain_01, ship_wall_stain3), both ZERO/SRCCOLOR, multiply what lies under them.
+    // Returns false when the name says nothing ("mc_unlit", "wc_water", a seethru layer, none).
+    bool AlphaFromTechset(const std::string& Techset, Description& D)
+    {
+        static const std::regex Base("(?:^|_)([rtbm])0(?:[a-z]+0)*(?:_|$)");
+        std::smatch Op;
+        if (Techset.find("decalblend_multiply") != std::string::npos || Techset.find("_unlit_multiply") != std::string::npos)
+            D.Multiply = D.Decal = true;
+        else if (Techset.find("seethru") == std::string::npos && std::regex_search(Techset, Op, Base))
+            switch (Op[1].str()[0])
+            {
+            case 'r': D.Alpha = AlphaMode::Opaque; break;
+            case 't': D.Alpha = AlphaMode::Cutout; break;
+            case 'b': D.Alpha = AlphaMode::Blend; break;
+            default: D.Multiply = true; break;
+            }
+        else
+            return false;
+        return true;
+    }
+
     // colorMap, normalMap, specularMap (rgb the reflection colour, alpha the gloss). A white map
     // ("$white-rgb") is common: read as F0 it would be a mirror and take all the colour, so the
     // reflection is scaled to a dielectric-like strength and the colour kept.
     class LegacySpecularAdapterImpl final : public SemanticAdapter
     {
     public:
-        LegacySpecularAdapterImpl(bool AlphaIsRoughness = false, bool ColourGamma2 = false)
+        LegacySpecularAdapterImpl(bool AlphaIsRoughness, bool ColourGamma2)
             : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names), RoughAlpha(AlphaIsRoughness), Gamma2(ColourGamma2) {}
     protected:
         // an exporter without semantics gives no colour map: the readers' hints and the names
@@ -86,8 +116,11 @@ namespace
             if (Gamma2 && !D.Albedo.Empty()) D.AlbedoGamma = 2.0f;
             // the decal sort keys of the CoD lineage (BO1's mp_firingrange: 4 opaque, 5 sky, 12
             // decals, 14 cut-out foliage, 15..17 nets and puddles, 29 vehicle decals, 30 and 43
-            // blends and glass), the cut-out foliage among them left as it is
-            if (M.SortKey >= 9 && M.SortKey <= 29 && D.Alpha != AlphaMode::Cutout) D.Decal = true;
+            // blends and glass; CoD4's and WaW's the same: 4 opaque, 9..14 decals, 43 blends), the
+            // cut-out foliage among them left as it is
+            const bool DecalKey = M.SortKey >= 9 && M.SortKey <= 29;
+            if (AlphaFromTechset(M.Techset, D)) D.Decal = D.Multiply ? D.Decal || DecalKey : DecalKey && D.Alpha != AlphaMode::Cutout;
+            else if (DecalKey && D.Alpha != AlphaMode::Cutout) D.Decal = true;
             if (D.Specular.Empty() || !D.Metalness.Empty()) return;
             D.LegacySpecular = true;
             D.SpecularScale = 0.2f;
@@ -286,12 +319,6 @@ const IAdapter& DefaultAdapter()
 {
     static const DefaultAdapterImpl Default;
     return Default;
-}
-
-const IAdapter& LegacySpecularAdapter()
-{
-    static const LegacySpecularAdapterImpl Legacy;
-    return Legacy;
 }
 
 const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2)

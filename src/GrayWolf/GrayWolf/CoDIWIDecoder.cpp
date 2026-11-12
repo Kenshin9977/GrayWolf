@@ -322,138 +322,235 @@ namespace
     }
 }
 
-namespace CoDIWIDecoder
+namespace
 {
-bool ToDds(const uint8_t* Data, size_t Size, std::string& Dds, std::string& Error)
-{
-    constexpr size_t HeaderSize = 28;
-    if (Size < HeaderSize || Data[0] != 'I' || Data[1] != 'W' || Data[2] != 'i' || (Data[3] != 5 && Data[3] != 6))
+    // An IWI decoded: its mips, largest first, each holding all its faces, in the layout F
+    struct Decoded
     {
-        Error = "not an IWI of version 5 or 6";
-        return false;
-    }
-    const uint8_t Format = Data[4], Flags = Data[5];
-    uint16_t Dim[3];
-    uint32_t PicmipSize[4];
-    std::memcpy(Dim, Data + 6, 6);
-    std::memcpy(PicmipSize, Data + 12, 16);
-    const unsigned W = Dim[0], H = Dim[1], Depth = std::max<unsigned>(1, Dim[2]);
-    const bool HasMips = !(Flags & 0x2), Cube = (Flags & 0x4) != 0;
-    const unsigned Faces = Cube ? 6 : 1;
-    if (!W || !H)
-    {
-        Error = "empty image";
-        return false;
-    }
-    unsigned MipCount = 0;
-    for (unsigned M = std::max({ W, H, Depth }); M; M >>= 1) MipCount++;
-    if (!HasMips) MipCount = 1;
+        Layout L{};
+        unsigned W = 0, H = 0, Depth = 1, MipCount = 0;
+        bool HasMips = false, Cube = false;
+        std::vector<std::vector<uint8_t>> Mips;
+    };
 
-    const bool Wavelet = Format >= 6 && Format <= 10;
-    Out F;
-    switch (Format)
+    // The header of each IWI version this decoder reads (OpenAssetTools' IwiTypes.h):
+    // 5, 6 (CoD2, CoD4, WaW): u8 format 4, u8 flags 5 (no mips 0x2, cube 0x4), u16 dims 6, u32 sizes[4] 12; 28 bytes
+    // 8, 9 (MW2, MW3, CoD Online): u32 flags 4 (no mips 0x2, cube 1 << 16), u8 format 8, u16 dims 10, u32 sizes[4] 16; 32
+    // 13 (Black Ops): as 6, then f32 gamma 12, u32 sizes[8] 16; 48
+    bool Parse(const uint8_t* Data, size_t Size, Decoded& D, uint8_t& Format, size_t& HeaderSize, const uint32_t*& Sizes, unsigned& SizeCount,
+               std::string& Error)
     {
-    case 1: case 6: F = Out::BGRA; break;
-    case 2: case 7: F = Out::BGRX; break;
-    case 3: case 8: F = Out::LA; break;
-    case 4: case 9: F = Out::L; break;
-    case 5: case 10: F = Out::A; break;
-    case 11: F = Out::BC1; break;
-    case 12: F = Out::BC2; break;
-    case 13: F = Out::BC3; break;
-    case 14: F = Out::BC5; break;
-    default:
-        Error = "format " + std::to_string(Format);
-        return false;
-    }
-    const Layout L = LayoutOf(F);
-    // Sized from the header before anything is decoded: stored mips must fit in the file, and a
-    // wavelet image (1024 texels at most in CoD2, CoD4 and WaW) is refused past 4096, not given gigabytes
-    if (Wavelet && (W > 4096 || H > 4096 || Depth > 1))
-    {
-        Error = "wavelet image of " + std::to_string(W) + "x" + std::to_string(H) + "x" + std::to_string(Depth);
-        return false;
-    }
-    if (!Wavelet)
-    {
-        const Layout Stored = F == Out::BGRX ? Layout{ F, 24, false } : L;
-        uint64_t Total = 0;
-        for (unsigned M = 0; M < MipCount; M++) Total += (uint64_t)MipSize(Stored, W, H, Depth, M) * Faces;
-        if (Total > Size - HeaderSize)
+        if (Size < 4 || Data[0] != 'I' || Data[1] != 'W' || Data[2] != 'i')
         {
-            Error = "mips past the end";
+            Error = "not an IWI";
             return false;
         }
+        const uint8_t Version = Data[3];
+        size_t DimsAt = 6;
+        uint32_t Flags = 0;
+        switch (Version)
+        {
+        case 5: case 6: HeaderSize = 28, SizeCount = 4; break;
+        case 8: case 9: HeaderSize = 32, SizeCount = 4, DimsAt = 10; break;
+        case 13: HeaderSize = 48, SizeCount = 8; break;
+        default:
+            Error = "IWI version " + std::to_string(Version);
+            return false;
+        }
+        if (Size < HeaderSize)
+        {
+            Error = "IWI header past the end";
+            return false;
+        }
+        if (Version == 8 || Version == 9)
+        {
+            std::memcpy(&Flags, Data + 4, 4);
+            Format = Data[8];
+            D.HasMips = !(Flags & 0x2), D.Cube = (Flags & 0x30000) == 0x10000;
+        }
+        else
+        {
+            Format = Data[4];
+            D.HasMips = !(Data[5] & 0x2), D.Cube = (Data[5] & 0x4) != 0;
+        }
+        uint16_t Dim[3];
+        std::memcpy(Dim, Data + DimsAt, 6);
+        Sizes = reinterpret_cast<const uint32_t*>(Data + HeaderSize - 4 * SizeCount);
+        D.W = Dim[0], D.H = Dim[1], D.Depth = std::max<unsigned>(1, Dim[2]);
+        return true;
     }
-    // the decoded mips, largest first, each with all its faces
-    std::vector<std::vector<uint8_t>> Mips(MipCount);
-    for (unsigned M = 0; M < MipCount; M++) Mips[M].assign(MipSize(L, W, H, Depth, M) * Faces, 0);
 
-    if (Wavelet)
+    bool Decode(const uint8_t* Data, size_t Size, Decoded& Result, std::string& Error)
     {
-        if (!Huffman().Ok)
+        uint8_t Format = 0;
+        size_t HeaderSize = 0;
+        const uint32_t* SizesAt = nullptr;
+        unsigned SizeCount = 0;
+        if (!Parse(Data, Size, Result, Format, HeaderSize, SizesAt, SizeCount, Error)) return false;
+        std::vector<uint32_t> PicmipSize(SizeCount);
+        std::memcpy(PicmipSize.data(), SizesAt, 4 * SizeCount);
+        const unsigned W = Result.W, H = Result.H, Depth = Result.Depth;
+        const bool HasMips = Result.HasMips, Cube = Result.Cube;
+        const unsigned Faces = Cube ? 6 : 1;
+        if (!W || !H)
         {
-            Error = "wavelet tables";
+            Error = "empty image";
             return false;
         }
-        if (Depth > 1 || (W & (W - 1)) || (H & (H - 1)) || (!HasMips && W > 1 && H > 1))
+        unsigned MipCount = 0;
+        for (unsigned M = std::max({ W, H, Depth }); M; M >>= 1) MipCount++;
+        if (!HasMips) MipCount = 1;
+
+        const bool Wavelet = Format >= 6 && Format <= 10;
+        Out F;
+        switch (Format)
         {
-            Error = "wavelet image not a power of two with mips";
+        case 1: case 6: F = Out::BGRA; break;
+        case 2: case 7: F = Out::BGRX; break;
+        case 3: case 8: F = Out::LA; break;
+        case 4: case 9: F = Out::L; break;
+        case 5: case 10: F = Out::A; break;
+        case 11: F = Out::BC1; break;
+        case 12: F = Out::BC2; break;
+        case 13: F = Out::BC3; break;
+        case 14: F = Out::BC5; break;
+        default:
+            Error = "format " + std::to_string(Format);
             return false;
         }
-        const unsigned Channels = Format == 6 ? 4 : Format == 7 ? 3 : Format == 8 ? 2 : 1;
-        const unsigned Bpp = L.Bits / 8;
-        Bits B(Data + HeaderSize, Size - HeaderSize);
-        for (int M = (int)MipCount - 1; M >= 0; M--)
+        const Layout L = LayoutOf(F);
+        // Sized from the header before anything is decoded: stored mips must fit in the file, and a
+        // wavelet image (1024 texels at most in CoD2, CoD4 and WaW) is refused past 4096, not given gigabytes
+        if (Wavelet && (W > 4096 || H > 4096 || Depth > 1))
         {
-            const size_t FaceSize = MipSize(L, W, H, 1, M);
-            for (unsigned Face = 0; Face < Faces; Face++)
+            Error = "wavelet image of " + std::to_string(W) + "x" + std::to_string(H) + "x" + std::to_string(Depth);
+            return false;
+        }
+        if (!Wavelet)
+        {
+            const Layout Stored = F == Out::BGRX ? Layout{ F, 24, false } : L;
+            uint64_t Total = 0;
+            for (unsigned M = 0; M < MipCount; M++) Total += (uint64_t)MipSize(Stored, W, H, Depth, M) * Faces;
+            if (Total > Size - HeaderSize)
             {
-                const uint8_t* Src = M + 1 < (int)MipCount ? Mips[M + 1].data() + MipSize(L, W, H, 1, M + 1) * Face : nullptr;
-                if (!WaveletLevel(Src, Mips[M].data() + FaceSize * Face, std::max(1u, W >> M), std::max(1u, H >> M), Channels, Bpp, B))
+                Error = "mips past the end";
+                return false;
+            }
+        }
+        // the decoded mips, largest first, each with all its faces
+        std::vector<std::vector<uint8_t>>& Mips = Result.Mips;
+        Mips.assign(MipCount, {});
+        for (unsigned M = 0; M < MipCount; M++) Mips[M].assign(MipSize(L, W, H, Depth, M) * Faces, 0);
+        Result.L = L, Result.MipCount = MipCount;
+
+        if (Wavelet)
+        {
+            if (!Huffman().Ok)
+            {
+                Error = "wavelet tables";
+                return false;
+            }
+            if (Depth > 1 || (W & (W - 1)) || (H & (H - 1)) || (!HasMips && W > 1 && H > 1))
+            {
+                Error = "wavelet image not a power of two with mips";
+                return false;
+            }
+            const unsigned Channels = Format == 6 ? 4 : Format == 7 ? 3 : Format == 8 ? 2 : 1;
+            const unsigned Bpp = L.Bits / 8;
+            Bits B(Data + HeaderSize, Size - HeaderSize);
+            for (int M = (int)MipCount - 1; M >= 0; M--)
+            {
+                const size_t FaceSize = MipSize(L, W, H, 1, M);
+                for (unsigned Face = 0; Face < Faces; Face++)
                 {
-                    Error = "wavelet data ends in mip " + std::to_string(M);
+                    const uint8_t* Src = M + 1 < (int)MipCount ? Mips[M + 1].data() + MipSize(L, W, H, 1, M + 1) * Face : nullptr;
+                    if (!WaveletLevel(Src, Mips[M].data() + FaceSize * Face, std::max(1u, W >> M), std::max(1u, H >> M), Channels, Bpp, B))
+                    {
+                        Error = "wavelet data ends in mip " + std::to_string(M);
+                        return false;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // stored smallest first; RGB comes as 3 bytes a pixel and is widened (the fourth byte 0)
+            const Layout Stored = F == Out::BGRX ? Layout{ F, 24, false } : L;
+            size_t At = HeaderSize;
+            for (int M = (int)MipCount - 1; M >= 0; M--)
+            {
+                const size_t Bytes = MipSize(Stored, W, H, Depth, M) * Faces;
+                if (At + Bytes > Size)
+                {
+                    Error = "mip " + std::to_string(M) + " past the end";
+                    return false;
+                }
+                if (F == Out::BGRX)
+                    for (size_t P = 0; P < Bytes / 3; P++) std::memcpy(Mips[M].data() + P * 4, Data + At + P * 3, 3);
+                else
+                    std::memcpy(Mips[M].data(), Data + At, Bytes);
+                At += Bytes;
+                if (M < (int)SizeCount && At != PicmipSize[M])
+                {
+                    Error = "file size for picmip " + std::to_string(M) + ": " + std::to_string(PicmipSize[M]) + ", mips end at " + std::to_string(At);
                     return false;
                 }
             }
         }
+        return true;
     }
-    else
-    {
-        // stored smallest first; RGB comes as 3 bytes a pixel and is widened (the fourth byte 0)
-        const Layout Stored = F == Out::BGRX ? Layout{ F, 24, false } : L;
-        size_t At = HeaderSize;
-        for (int M = (int)MipCount - 1; M >= 0; M--)
-        {
-            const size_t Bytes = MipSize(Stored, W, H, Depth, M) * Faces;
-            if (At + Bytes > Size)
-            {
-                Error = "mip " + std::to_string(M) + " past the end";
-                return false;
-            }
-            if (F == Out::BGRX)
-                for (size_t P = 0; P < Bytes / 3; P++) std::memcpy(Mips[M].data() + P * 4, Data + At + P * 3, 3);
-            else
-                std::memcpy(Mips[M].data(), Data + At, Bytes);
-            At += Bytes;
-            if (M < 4 && At != PicmipSize[M])
-            {
-                Error = "file size for picmip " + std::to_string(M) + ": " + std::to_string(PicmipSize[M]) + ", mips end at " + std::to_string(At);
-                return false;
-            }
-        }
-    }
+}
 
-    Dds = Header(L, W, H, Depth, MipCount, HasMips, Cube);
-    if (!Cube)
-        for (const auto& M : Mips) Dds.append(reinterpret_cast<const char*>(M.data()), M.size());
+namespace CoDIWIDecoder
+{
+bool ToDds(const uint8_t* Data, size_t Size, std::string& Dds, std::string& Error)
+{
+    if (Size < 4 || (Data[3] != 5 && Data[3] != 6))
+    {
+        Error = "not an IWI of version 5 or 6";
+        return false;
+    }
+    Decoded D;
+    if (!Decode(Data, Size, D, Error)) return false;
+    Dds = Header(D.L, D.W, D.H, D.Depth, D.MipCount, D.HasMips, D.Cube);
+    if (!D.Cube)
+        for (const auto& M : D.Mips) Dds.append(reinterpret_cast<const char*>(M.data()), M.size());
     else
         for (unsigned Face = 0; Face < 6; Face++)   // DDS: a face with all its mips, then the next
-            for (unsigned M = 0; M < MipCount; M++)
+            for (unsigned M = 0; M < D.MipCount; M++)
             {
-                const size_t FaceSize = Mips[M].size() / 6;
-                Dds.append(reinterpret_cast<const char*>(Mips[M].data() + FaceSize * Face), FaceSize);
+                const size_t FaceSize = D.Mips[M].size() / 6;
+                Dds.append(reinterpret_cast<const char*>(D.Mips[M].data() + FaceSize * Face), FaceSize);
             }
+    return true;
+}
+
+bool LargestRgba(const uint8_t* Data, size_t Size, Rgba& Image, std::string& Error)
+{
+    Decoded D;
+    if (!Decode(Data, Size, D, Error)) return false;
+    if (D.L.Block)
+    {
+        Error = "a block-compressed format";
+        return false;
+    }
+    Image.Width = D.W, Image.Height = D.H, Image.Cube = D.Cube;
+    const std::vector<uint8_t>& Top = D.Mips[0];
+    const size_t Bpp = D.L.Bits / 8, Pixels = Top.size() / Bpp;
+    Image.Pixels.assign(Pixels * 4, 0);
+    for (size_t P = 0; P < Pixels; P++)
+    {
+        const uint8_t* S = Top.data() + P * Bpp;
+        uint8_t* T = Image.Pixels.data() + P * 4;
+        switch (D.L.Format)
+        {
+        case Out::BGRA: T[0] = S[2], T[1] = S[1], T[2] = S[0], T[3] = S[3]; break;
+        case Out::BGRX: T[0] = S[2], T[1] = S[1], T[2] = S[0], T[3] = 0xFF; break;
+        case Out::LA: T[0] = T[1] = T[2] = S[0], T[3] = S[1]; break;
+        case Out::L: T[0] = T[1] = T[2] = S[0], T[3] = 0xFF; break;
+        default: T[3] = S[0]; break;   // alpha alone: black, as an A8 image converts
+        }
+    }
     return true;
 }
 }

@@ -12,7 +12,7 @@
 Dependencies, all with the triplet `x64-windows-static-md` (static libs, dynamic CRT):
 
 ```
-vcpkg install opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz libdeflate lz4 xxhash lzo nlohmann-json stb tinygltf wolff "imgui[docking-experimental,dx11-binding,win32-binding]" --triplet x64-windows-static-md --overlay-ports=vcpkg-overlay-ports
+vcpkg install opus directxtex[dx11] directxtk spdlog casclib libflac libogg miniaudio zlib cli11 miniz libdeflate lz4 xxhash lzo nlohmann-json stb tinygltf wolff nanosvg "imgui[docking-experimental,dx11-binding,win32-binding]" --triplet x64-windows-static-md --overlay-ports=vcpkg-overlay-ports
 ```
 
 `wolff` (the fast file reader, its own repository: github.com/Kenshin9977/wolff) is fetched by the

@@ -282,6 +282,8 @@ namespace
                                                       return Done < Images.size() ? C.Advance(Done, Count, Images[Done].Name) : C.Advance(Done, Count);
                                                   });
         Kt.Written += Written;
+        if (const size_t At = Report.find("normals_expanded="); At != std::string::npos)
+            if (const size_t N = std::strtoull(Report.c_str() + At + 17, nullptr, 10)) Counter("images_normal_expanded") += N;
         if (Written < Images.size() && !C.Cancelled())
         {
             // why, in the writer's words (no_payload, no_dds, no_write)

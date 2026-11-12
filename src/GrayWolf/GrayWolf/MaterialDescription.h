@@ -168,11 +168,10 @@ namespace Materials
     };
     const IAdapter& AdapterFor(const std::string& Engine);   // the engine's, else the default
     const IAdapter& DefaultAdapter();                  // texture name suffixes
-    // The pre-PBR games' (colorMap, normalMap, specularMap with gloss in its alpha): a game registers
-    // it as its own adapter.
-    const IAdapter& LegacySpecularAdapter();
-    // The same, for a game whose specular map's alpha is a roughness (Black Ops: the BO3 gloss of
-    // the same textures is 255 - alpha) and, ColourGamma2, whose colour maps are gamma 2.0
+    // The pre-PBR games' (colorMap, normalMap, specularMap, its alpha a gloss or, AlphaIsRoughness,
+    // a roughness (Black Ops: the BO3 gloss of the same textures is 255 - alpha); ColourGamma2: the
+    // colour maps are gamma 2.0), the alpha mode from the technique set's name (r0 opaque, t0 cut
+    // out, b0 blended, *_multiply multiplied): a game registers it as its own adapter.
     const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2);
 
     // The role a file name's suffix gives (_c colour, _n normal, _g gloss, _s specular, _o

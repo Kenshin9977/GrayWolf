@@ -9,6 +9,7 @@
 #include "ExportFormats.h"     // the sound formats offered
 #include "ImGuiUpdates.h"      // Settings > Updates, the new-version banner
 #include "ImGuiBlender.h"      // Settings > Blender
+#include "ProjectLinks.h"      // GitHub, Discord, Ko-fi at the bar's right end
 
 #include "imgui.h"
 #include "imgui_internal.h"   // DockBuilder* for the initial layout
@@ -36,7 +37,7 @@ namespace ShellUi
         ImGui::EndMenu();
     }
 
-    bool DrawMainMenuBar(bool& OpenHelp)
+    bool DrawMainMenuBar(ID3D11Device* Dev, bool& OpenHelp)
     {
         bool Quit = false;
         if (ImGui::BeginMainMenuBar())
@@ -55,6 +56,7 @@ namespace ShellUi
                 if (ImGui::MenuItem("Verbose log (every step timed)", nullptr, &Verbose)) AppLog::SetVerbose(Verbose);
                 ImGui::EndMenu();
             }
+            ProjectLinks::DrawMenuBarIcons(Dev);
             ImGui::EndMainMenuBar();
         }
         // a newer GrayWolf: Download / Later, then Restart now (the helper replaces the files)

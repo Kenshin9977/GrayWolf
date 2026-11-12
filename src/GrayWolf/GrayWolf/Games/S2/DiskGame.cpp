@@ -678,14 +678,22 @@ namespace
                 const int64_t At0 = Off(Pixels);
                 const uint32_t Size = At<uint32_t>(Image(), Pos + 0x54);
                 if (At0 < 0 || At0 + (int64_t)Size > (int64_t)Image().size()) return (uint64_t)0;
-                for (uint32_t K = 0; K + 8 <= Size; K += 8) Key.Mix(At<uint64_t>(Image(), At0 + K));
+                // every byte: a 1x1 RGBA image is 4 of them, which an 8-byte stride alone left out
+                // (the code images $white, $black, $gray, ... then shared one output file)
+                uint32_t K = 0;
+                for (; K + 8 <= Size; K += 8) Key.Mix(At<uint64_t>(Image(), At0 + K));
+                for (; K < Size; K++) Key.Mix(At<uint8_t>(Image(), At0 + K));
                 Key.Mix(Size);
             }
             return Key.Mix(At<uint64_t>(Image(), Pos + ImageMips)).Mix(At<uint8_t>(Image(), Pos + ImageFormatAt)).Mix(Extension).Key();
         };
-        // a normal map by its name; the sink's rebuilds (no name) as colour
-        L.Decode = [this](int64_t Pos, const std::string& Name) {
-            return Decode(Pos, (Name.find("_nml") != std::string::npos) ? ImageUsageType::NormalMap : ImageUsageType::DiffuseMap);
+        // a normal map by its format: BC5 (15) holds normal maps only, X and Y, their Z rebuilt when
+        // "patchnormals" is on. Measured 2026-11-12 over mp_hub_vlobby_exclude and
+        // mp_egypt_02_dogfight: their 77 BC5 images are all normal maps ("_nml", "~&-n<name>"
+        // combinations), some named only by a hash ("~&-nday_bunker_concrete_dry_0~62bad68e", which
+        // the name "_nml" missed); the two BC7 "_nml" ones carry their Z.
+        L.Decode = [this](int64_t Pos, const std::string&) {
+            return Decode(Pos, At<uint8_t>(Image(), Pos + ImageFormatAt) == 15 ? ImageUsageType::NormalMap : ImageUsageType::DiffuseMap);
         };
         L.FailWhy = [this](int64_t Pos) { return std::format("format {}", (unsigned)At<uint8_t>(Image(), Pos + ImageFormatAt)); };
         L.OnePerName = true;

@@ -60,7 +60,8 @@ enum class ImageFormat
     DDS_Standard_A8_UNORM,
     DDS_Standard_R8_UNORM,
     DDS_Standard_R8_UINT,
-    DDS_Standard_R16G16_FLOAT
+    DDS_Standard_R16G16_FLOAT,
+    DDS_Standard_R16_UNORM
 };
 
 enum class ImagePatch
@@ -73,6 +74,9 @@ enum class ImagePatch
     Normal_Expand,
     // Convert a normal, gloss, and occlusion map to a regular normalmap (Call of Duty: Infinite Warfare)
     Normal_COD_NOG,
+    // Convert a normal map stored with X in alpha and Y in green (DXT5nm) to a regular one: X, Y and
+    // the rebuilt Z in RGB, alpha 1.0
+    Normal_AG,
 
     // Removes the alpha channel from the colormap
     Color_StripAlpha
@@ -91,6 +95,7 @@ public:
     static void PatchNormalFromCompressed(std::unique_ptr<DirectX::ScratchImage>& Image);
     // Convert a (COD) NOG (Normal, ambientocc, gloss) map to a normalmap)
     static void PatchNormalCODFromNOG(std::unique_ptr<DirectX::ScratchImage>& Image);
+    static void PatchNormalFromAG(std::unique_ptr<DirectX::ScratchImage>& Image);
 
     static void PatchAlphaChannel(std::unique_ptr<DirectX::ScratchImage>& Image);
 

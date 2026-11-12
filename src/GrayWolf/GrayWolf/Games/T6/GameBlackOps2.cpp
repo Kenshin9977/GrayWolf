@@ -51,6 +51,12 @@ const XMaterial_t GameBlackOps2::ReadXMaterial(uint64_t MaterialPointer)
 
     XMaterial_t Result(MaterialData.ImageCount);
     Result.MaterialName = FileSystems::GetFileNameWithoutExtension(CoDAssets::GameInstance->ReadNullTerminatedString(MaterialData.NamePtr));
+    // MaterialTechniqueSet: its name first ("mc_lit_sm_r0c0n0s0_<hash>"; ",<name>" in a header)
+    if (MaterialData.TechniqueSetPtr)
+    {
+        Result.TechsetName = CoDAssets::GameInstance->ReadNullTerminatedString(CoDAssets::GameInstance->Read<uint32_t>(MaterialData.TechniqueSetPtr));
+        if (!Result.TechsetName.empty() && Result.TechsetName[0] == ',') Result.TechsetName.erase(0, 1);
+    }
 
     const auto UsageOf = [](uint32_t Semantic)
     {

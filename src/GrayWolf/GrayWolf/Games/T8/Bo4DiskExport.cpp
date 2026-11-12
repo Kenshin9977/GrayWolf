@@ -212,6 +212,7 @@ void DescribeZone(ByteView Zone, const ZoneTables::ZoneResult& R, ZoneAssets& Ou
         Img.Width = At<uint16_t>(Zone, I.Pos + 0x68);
         Img.Height = At<uint16_t>(Zone, I.Pos + 0x6a);
         Img.Depth = At<uint16_t>(Zone, I.Pos + 0x6c);
+        Img.Semantic = At<uint8_t>(Zone, I.Pos + 0x78);
         Img.MapType = At<uint8_t>(Zone, I.Pos + 0x79);
         Img.Mips = At<uint8_t>(Zone, I.Pos + 0x7a);
         Img.Streamed = At<uint8_t>(Zone, I.Pos + 0x7c) != 0;
@@ -377,7 +378,12 @@ namespace
         return TranslateDds(Img, Data, Size, Width, Height, Levels, Cube);
     }
 
-    // An image's pixels as DDS (BuildDds' last step)
+    // An image's pixels as DDS (BuildDds' last step). A normal map (its semantic 4: X in red, Y in
+    // green, blue not its Z, 0-40) has its Z rebuilt when "patchnormals" is on. Measured over
+    // mp_firingrange2_alt (2026-11-12): the 88 images its first 39 models' materials use as normal
+    // map are semantic 4, and the 1237 semantic 4 images all BC7 UNORM; the format alone does not
+    // tell, BC7 UNORM holds proxy albedos (semantic 16) and water colours (1) too.
+    constexpr uint8_t NormalMapSemantic = 4;
     std::unique_ptr<XImageDDS> TranslateDds(const ImageInfo& Img, std::unique_ptr<uint8_t[]>& Data, uint32_t Size,
                                             uint32_t Width, uint32_t Height, uint8_t Levels, bool Cube)
     {
@@ -392,8 +398,10 @@ namespace
         case 99: Format = 98; break;
         default: break;
         }
-        return CoDRawImageTranslator::TranslateBC(Data, Size, Width, Height, static_cast<uint8_t>(Format),
-                                                  Levels, Cube);
+        auto Dds = CoDRawImageTranslator::TranslateBC(Data, Size, Width, Height, static_cast<uint8_t>(Format), Levels, Cube);
+        if (Dds && Img.Semantic == NormalMapSemantic && SettingsManager::GetSetting("patchnormals", "true") == "true")
+            Dds->ImagePatchType = ImagePatch::Normal_Expand;
+        return Dds;
     }
 }
 

@@ -707,6 +707,7 @@ namespace
         if (const auto F = OptString(Args, "image_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--image-format", Csv({ F }, &ImageFormats, "image_format") });
         if (const auto F = OptString(Args, "audio_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--audio-format", Csv({ F }, &AudioFormats, "audio_format") });
         if (OptBool(Args, "material_gdt", false)) Cmd.insert(Cmd.end(), { "--material-gdt", "on" });
+        if (OptBool(Args, "split_maps", false)) Cmd.insert(Cmd.end(), { "--split-maps", "on" });
         if (OptBool(Args, "sound_aliases", false)) Cmd.insert(Cmd.end(), { "--sound-aliases", "on" });
         if (OptBool(Args, "map_radiant", false)) Cmd.insert(Cmd.end(), { "--map-radiant", "on" });
         if (OptBool(Args, "decompile", false)) Cmd.push_back("--decompile");
@@ -888,7 +889,8 @@ namespace
                 "limit": {"type": ["integer", "null"], "default": null},
                 "model_format": )" + OptArr + R"(, "anim_format": )" + OptArr + R"(,
                 "image_format": )" + OptStr + R"(, "audio_format": )" + OptStr + R"(,
-                "material_gdt": {"type": "boolean", "default": false}, "sound_aliases": {"type": "boolean", "default": false},
+                "material_gdt": {"type": "boolean", "default": false}, "split_maps": {"type": "boolean", "default": false},
+                "sound_aliases": {"type": "boolean", "default": false},
                 "map_radiant": {"type": "boolean", "default": false}, "decompile": {"type": "boolean", "default": false},
                 "languages": )" + OptStr + R"(,
                 "pull_dependencies": {"type": "boolean", "default": true}, "wait": {"type": "boolean", "default": true}}})"),

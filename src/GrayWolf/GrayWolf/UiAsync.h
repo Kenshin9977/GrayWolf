@@ -46,6 +46,8 @@ namespace UiAsync
     // Opens Path with its program (a folder in Explorer), or, Reveal, shows it selected in its
     // folder. Returns at once.
     void OpenInShell(const std::string& Path, bool Reveal = false);
+    // Opens an https:// link in the default browser (anything else is refused). Returns at once.
+    void OpenUrl(const std::string& Url);
 
     // Runs Work on a worker thread, timed in the session log under What.
     void Run(const std::string& What, std::function<void()> Work);

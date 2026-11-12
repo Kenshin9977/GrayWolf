@@ -53,6 +53,12 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
                    "(models: source_data/graywolf_<out folder>.gdt, their XMODEL_EXPORT files naming them; maps: in the "
                    "Radiant GDT with --map-radiant on)")
         ->group("Shared options");
+    App.add_option("--split-maps", Options.SplitMaps,
+                   "on|off: also write the packed maps the exported materials read (a \"nog\": gloss, normal, occlusion; a "
+                   "specular with its gloss in alpha; a colour with its metalness in alpha) split into standard files beside "
+                   "them: <image>_normal (x, y, z), _roughness, _ao, _metalness, _specular, _albedo (off: as stored; the "
+                   ".materials.json sidecars describe the stored files either way)")
+        ->group("Shared options");
     App.add_option("--sound-aliases", Options.SoundAliases,
                    "on|off: the sound kind also writes each zone's sound aliases as a Black Ops III mod tools alias CSV "
                    "(sounds/<zone>.csv, FileSpec relative to sounds/), to port sounds with their behaviour (off: audio only)")

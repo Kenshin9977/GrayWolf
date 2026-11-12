@@ -7,6 +7,7 @@
 #include "ExportNaming.h"
 #include "CoDAssets.h"
 #include "ExportWriters.h"
+#include "Games/IW3/StoredNormals.h"
 #include "Games/IW/IWSoundAliases.h"
 #include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "Games/Treyarch/TreyarchEffects.h"
@@ -212,7 +213,20 @@ namespace Iw64
         return P.get();
     }
 
+    // An image's pixels and the key of its file (an identical image links to it), a normal map's
+    // as XYZ when "patchnormals" is on (Games/IW3/StoredNormals.h; its key then another)
     std::unique_ptr<XImageDDS> IwDiskZone::Decode(int64_t Pos, uint64_t& Key)
+    {
+        auto Dds = Pixels(Pos, Key);
+        if (StoredNormals::Patch(Dds.get(), At<uint8_t>(Image(), Pos + ImageSemantic)))
+        {
+            Key = Mix(Key, 0x4e4f524d414c4147ull);   // "NORMALAG"
+            Counter("images_normal_expanded")++;
+        }
+        return Dds;
+    }
+
+    std::unique_ptr<XImageDDS> IwDiskZone::Pixels(int64_t Pos, uint64_t& Key)
     {
         const uint64_t Address = VirtualGameSession::Address((uint64_t)Pos);
         const std::string Name = StringAt(At<uint64_t>(Image(), Pos + ImageName));
