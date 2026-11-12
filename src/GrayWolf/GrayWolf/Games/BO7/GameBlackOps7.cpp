@@ -389,6 +389,10 @@ void GameBlackOps7::LoadXModel(const std::unique_ptr<XModel_t>& Model, const XMo
     const auto Surfs = Read<BO7XModelSurfs>(ModelLOD.LODStreamInfoPtr);
     if (Surfs.StreamInfoPtr == 0) return;
     const auto Stream = Read<BO7StreamInfo>(Surfs.StreamInfoPtr);
+    // a mesh the opened packages lack (an install folder holding only part of them): a failure, not
+    // a model written without geometry
+    if (Stream.BufferPtr == 0 && (CoDAssets::GamePackageCache == nullptr || !CoDAssets::GamePackageCache->Exists(Stream.StreamKey)))
+        throw std::runtime_error(std::format("its mesh (package object {:016x}) is not in the packages opened", Stream.StreamKey));
     const auto Mesh = Stream.BufferPtr != 0 ? MeshDecode::FromZone(Stream.BufferPtr, Stream.BufferSize) : MeshDecode::FromPackage(Stream.StreamKey);
     if (FILE* Dbg = Maps::DebugFile())
         std::fprintf(Dbg, "[bo7 model] %s surfs %llx stream info %llx: buffer %llx key %016llx size %u -> %llu\n", Model->ModelName.c_str(),

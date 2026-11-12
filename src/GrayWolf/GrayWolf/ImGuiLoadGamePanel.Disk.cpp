@@ -601,7 +601,19 @@ void LoadGamePanel::DrawZoneTab()
                 (ContainsNoCase(DiskZoneNames[i], DiskZoneFilterBuf) || ContainsNoCase(DiskZoneLevels[i], DiskZoneFilterBuf)))
                 Visible.push_back(i);
     }
-    DrawZoneTable(Visible);
+    if (Visible.empty() && InGroup[0] > 0)
+    {
+        std::string Filters = DiskZoneFilterBuf[0] ? std::string("name containing \"") + DiskZoneFilterBuf + "\"" : std::string();
+        if (ZoneGroup != 0) Filters += (Filters.empty() ? "" : ", ") + std::string(GroupNames[ZoneGroup]) + " only";
+        if (NoResult(Thousands(InGroup[0]) + " zones, none with " + Filters))
+        {
+            DiskZoneFilterBuf[0] = 0;
+            ZoneGroup = 0;
+            Persist();
+        }
+    }
+    else
+        DrawZoneTable(Visible);
 
     const size_t Selected = (size_t)std::count(DiskZoneFlags.begin(), DiskZoneFlags.end(), 1);
     ImGui::TextDisabled("%s / %s zones picked", Thousands(Selected).c_str(), Thousands(DiskZoneNames.size()).c_str());

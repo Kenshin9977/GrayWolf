@@ -7,8 +7,10 @@
 
 #include <wolff/Packages.h>
 
+#include <filesystem>
 #include <memory>
 #include <mutex>
+#include <regex>
 
 namespace TreyarchPackages
 {
@@ -17,6 +19,20 @@ namespace TreyarchPackages
         CoDFileSystem* FileSystemOf(CoDPackageCache* Packages)
         {
             return Packages != nullptr ? Packages->GetFileSystem() : nullptr;
+        }
+
+        // A title's folder of a Call of Duty HQ install (cod24, cod26, sp26...) whose packages are
+        // also shared from the HQ folder above it: that folder, else Install as it is
+        std::string PackageRoot(const std::string& Install)
+        {
+            namespace fs = std::filesystem;
+            const fs::path P = fs::path(Install).lexically_normal();
+            const fs::path Dir = P.has_filename() ? P : P.parent_path();
+            if (!std::regex_match(Dir.filename().string(), std::regex("(cod|sp)\\d\\d", std::regex::icase))) return Install;
+            std::error_code Ec;
+            for (const auto& E : fs::directory_iterator(Dir.parent_path(), fs::directory_options::skip_permission_denied, Ec))
+                if (E.is_regular_file(Ec) && E.path().extension() == ".xsub") return Dir.parent_path().string();
+            return Install;
         }
     }
 
@@ -45,10 +61,11 @@ namespace TreyarchPackages
         static std::string Opened;
         static std::shared_ptr<CoDPackageCache> Kept;
         std::lock_guard<std::mutex> Guard(Lock);
-        const std::string Key = Install + '\n' + Format;
+        const std::string Root = PackageRoot(Install);
+        const std::string Key = Root + '\n' + Format;
         if (Kept && Opened == Key) return Kept;
         std::shared_ptr<CoDPackageCache> C = Make();
-        C->LoadPackageCacheAsync(Install);
+        C->LoadPackageCacheAsync(Root);
         C->WaitForPackageCacheLoad();
         if (C->GetFileSystem() == nullptr) return nullptr;
         Kept = std::move(C);

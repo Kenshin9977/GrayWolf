@@ -41,7 +41,7 @@ public:
     bool ConsumePreview(std::string& Dir, std::string& Name);
     // "Show in Assets": true once after the button, the caller brings its Assets window forward
     bool ConsumeShowAssets() { return ShowAssets.exchange(false); }
-    // ui-record's "loadgame" step (JSON): tab ("asset"/"zone"), query, focus (an asset's name), pick
+    // ui-record's "loadgame" step (JSON): tab ("asset"/"zone"), query, zonefilter, focus (an asset's name), pick
     // (names), zones (zone names ticked), preview (a name), export, index, options (the popup
     // opened), dismiss (each true), languages (the languages exported: "auto", "all", "auto,en"),
     // languages_open (true: their list dropped down, in the options popup)

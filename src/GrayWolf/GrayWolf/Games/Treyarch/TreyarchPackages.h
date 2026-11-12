@@ -32,7 +32,8 @@ namespace TreyarchPackages
 
     using Factory = std::unique_ptr<CoDPackageCache> (*)();
 
-    // nullptr if the install cannot be opened. Loaded synchronously, once per install and format:
+    // nullptr if the install cannot be opened (a title's folder of a Call of Duty HQ install, cod26,
+    // opens the HQ folder, whose packages it shares). Loaded synchronously, once per install and format:
     // the last one opened is kept here, and what a caller got stays alive while it holds it (an
     // Open of another install meanwhile replaces only the one kept here)
     std::shared_ptr<CoDPackageCache> Open(const std::string& Install, const char* Format, Factory Make);

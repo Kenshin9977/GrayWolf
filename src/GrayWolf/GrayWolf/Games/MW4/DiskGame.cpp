@@ -14,11 +14,15 @@
 #include "GameMW4.h"
 #include "Games/BO7/GameBlackOps7.h"
 #include "Games/IW/IWZone.h"
+#include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxReaders.h"
 #include "Games/IW/IwLanguageNames.h"
 #include "Games/Treyarch/TreyarchPackages.h"
 
 #include <cstring>
+#include <map>
+#include <set>
+#include <unordered_map>
 
 namespace
 {
@@ -35,6 +39,25 @@ namespace
             using namespace DiskGame;
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
             Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
+            // a model's LODs another zone holds loaded beside first
+            if (const auto* Models = ExporterOf(Kind::Model))
+                Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    LoadMeshesBeside(C);
+                    Read(C, T);
+                });
+        }
+
+        // What other zones name and this one holds: its xmodelsurfs by name hash
+        void Parts(std::vector<std::pair<std::string, uint64_t>>& Out) const override
+        {
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "xmodelsurfs")) Out.emplace_back("xmodelsurfs", At<uint64_t>(Zone(), I.Pos) & Rules().AssetHashMask);
+        }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+parts1"; }
+        // the zones loaded beside served with this one again (ZonesHolding parks the session)
+        void Served(bool On) override
+        {
+            if (On) Beside.Serve();
         }
 
     protected:
@@ -132,6 +155,67 @@ namespace
             }
             return Unlinked;
         }
+
+        // Loads beside the zones holding the xmodelsurfs the run's models name by hash only (their
+        // meshes elsewhere: the install index's parts, the zone giving the most first) and points
+        // each such LOD at it and its surfaces, as the game's fixup would. Once per zone, before the
+        // models are read.
+        void LoadMeshesBeside(const DiskGame::Context& C)
+        {
+            if (BesideTried || Owner == nullptr || Install.empty()) return;
+            BesideTried = true;
+            std::vector<std::pair<uint64_t, uint64_t>> Lods;   // a LOD's address, its xmodelsurfs' hash
+            for (const auto& I : Walk().Instances)
+            {
+                if (!OwnerIs(I, "xmodel") || !C.Wants(DiskGame::Kind::Model, AssetName(DiskGame::Kind::Model, I.Pos))) continue;
+                const uint64_t Model = Live().Addr((uint64_t)I.Pos), First = Get<uint64_t>(Model + ModelLods);
+                if (Locate(First, LodSize) == nullptr) continue;
+                const int64_t N = Get<uint8_t>(Model + ModelLodCount);
+                for (int64_t L = 0; L < N; L++)
+                    if (const uint64_t Surfs = Get<uint64_t>(First + (uint64_t)(L * LodSize)); Surfs != 0 && Locate(Surfs, 0x48) == nullptr)
+                        Lods.emplace_back(First + (uint64_t)(L * LodSize), Surfs & Rules().AssetHashMask);
+            }
+            Counter("model_lods_elsewhere") += Lods.size();
+            if (Lods.empty()) return;
+            std::set<uint64_t> Wanted;
+            for (const auto& L : Lods) Wanted.insert(L.second);
+            const std::vector<uint64_t> Hashes(Wanted.begin(), Wanted.end());
+            std::vector<std::string> Paths;
+            size_t NotIndexed = 0;
+            if (!ZonesHolding(Hashes.size(), [&](const DiskGame::ZoneIndex& Index, size_t K) { return Index.PartIn("xmodelsurfs", Hashes[K]); }, false,
+                              Paths, NotIndexed))
+            {
+                Counter("model_lods_no_index")++;
+                return;
+            }
+            Counter("model_meshes_not_indexed") += NotIndexed;
+            std::string ProfileError;
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), ProfileError);
+            if (Loaded == nullptr || Paths.empty()) return;
+            std::map<std::string, size_t> Counts;
+            Beside.Load(Paths, *Loaded, Live().Origin() + Image().size(), Counts);
+            for (const auto& [K, N] : Counts) Counter(K) += N;
+            // each xmodelsurfs with surfaces in the zones loaded beside: its served address and theirs
+            std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> Meshes;
+            for (const auto& Z : Beside.All())
+                for (const auto& I : Z->R.Instances)
+                    if (I.Owner < Z->R.OwnerNames.size() && Z->R.OwnerNames[I.Owner] == "xmodelsurfs" &&
+                        (uint64_t)I.Pos + ModelSurfsSurfs + 8 <= Z->Bytes.size())
+                        if (const uint64_t Surfs = ExportNaming::At<uint64_t>(Z->Bytes, I.Pos + ModelSurfsSurfs); Surfs != 0)
+                            Meshes.try_emplace(ExportNaming::At<uint64_t>(Z->Bytes, I.Pos) & Rules().AssetHashMask, Z->Base + (uint64_t)I.Pos, Surfs);
+            for (const auto& [Lod, Hash] : Lods)
+            {
+                const auto It = Meshes.find(Hash);
+                if (It == Meshes.end()) continue;
+                Live().Poke(Lod - Live().Origin(), It->second.first);
+                Live().Poke(Lod + LodSurfs - Live().Origin(), It->second.second);
+                Counter("model_lods_beside")++;
+            }
+            Beside.Serve();
+        }
+
+        IwBeside::Set Beside;   // the zones holding the xmodelsurfs this one names by hash (LoadMeshesBeside)
+        bool BesideTried = false;
 
         static std::unique_ptr<XImageDDS> DiskImage(const XImage_t& Image)
         {

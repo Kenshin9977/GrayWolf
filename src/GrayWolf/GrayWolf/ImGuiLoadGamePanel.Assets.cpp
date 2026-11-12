@@ -319,9 +319,21 @@ void LoadGamePanel::DrawAssetTab()
             AssetMatchesPickedAt = AssetPicks.Version;
         }
 
+        std::string Filters = AssetQueryBuf[0] ? std::string("name containing \"") + AssetQueryBuf + "\"" : std::string();
+        if (AssetPickedOnly) Filters += (Filters.empty() ? "" : ", ") + std::string("picked only");
+        if (!AssetKindsOff.empty()) Filters += (Filters.empty() ? "" : ", ") + Thousands(AssetKindsOff.size()) + " kinds hidden";
         const ImGuiTableFlags Flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
                                       ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
-        if (ImGui::BeginTable("##assets", 4, Flags, ImVec2(0, 0)))
+        if (AssetHits.empty() && !Filters.empty())
+        {
+            if (NoResult(Thousands(Rows->Rows.size()) + " assets indexed, none with " + Filters))
+            {
+                AssetQueryBuf[0] = 0;
+                AssetPickedOnly = false;
+                AssetKindsOff.clear();
+            }
+        }
+        else if (ImGui::BeginTable("##assets", 4, Flags, ImVec2(0, 0)))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 1.0f));   // rows a line tall
             ImGui::TableSetupScrollFreeze(0, 1);
@@ -453,6 +465,7 @@ void LoadGamePanel::Script(const std::string& StepJson)
     if (!St.is_object()) return;
     if (St.contains("tab")) WantTab = St["tab"].get<std::string>() == "zone" ? 1 : 0;
     if (St.contains("query")) SetBuf(AssetQueryBuf, sizeof(AssetQueryBuf), St["query"].get<std::string>());
+    if (St.contains("zonefilter")) SetBuf(DiskZoneFilterBuf, sizeof(DiskZoneFilterBuf), St["zonefilter"].get<std::string>());
     if (St.contains("dismiss"))
     {
         std::lock_guard<std::mutex> Lock(Mutex);

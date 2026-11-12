@@ -96,6 +96,16 @@ namespace LoadGameUi
         ImGui::TextUnformatted(What.c_str());
     }
 
+    // In place of a list the filters left empty: says so, and whether "Reset filters" was clicked
+    inline bool NoResult(const std::string& Filters)
+    {
+        ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeight()));
+        ImGui::TextUnformatted("No result with the current filters");
+        ImGui::TextDisabled("%s", Filters.c_str());
+        ImGui::Spacing();
+        return ImGui::Button("Reset filters");
+    }
+
     // The kind's folder name in the singular for one ("1 model"), as is for more ("3 models")
     inline std::string KindCount(DiskGame::Kind K, size_t N)
     {
