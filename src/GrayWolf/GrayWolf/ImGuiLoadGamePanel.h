@@ -175,6 +175,10 @@ private:
     std::vector<std::map<DiskGame::Kind, size_t>> DiskZoneCounts;
     bool DiskZoneCounted = false;
     std::vector<uint64_t> DiskZoneFootprints;    // parallel to DiskZoneNames, from the install index
+    // parallel to DiskZoneNames: the zone's place in the install index, NotIndexed for one the index
+    // does not open (IDiskGame::IndexedZones: MW2019's and MWIII's transient zones)
+    static constexpr size_t NotIndexed = (size_t)-1;
+    std::vector<size_t> DiskZoneInIndex;
     DiskGame::Sizes::Calibration DiskSizes;      // the size samples (kept beside the index), under Mutex
     UiAsync::Cached<uint64_t> FreeSpace;         // the output drive's free bytes, looked up on a worker
     int DiskZoneSortColumn = 0;                  // 0 zone, 1 level, 2 assets

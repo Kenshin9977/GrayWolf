@@ -385,7 +385,6 @@ namespace Iw3Family
         size_t N = 0;
         // extracted here in the files' order, decoded and written by the sink's pool
         ExportWriters::SoundSink Sink;
-        size_t Written = 0;   // the zone's counters are this thread's: added once the sink is done
         for (const auto& F : Files)
         {
             if (!C.Advance(N++, Files.size(), F)) break;
@@ -415,19 +414,9 @@ namespace Iw3Family
                 continue;
             }
             const uint8_t* Bytes = Data.get();
-            Sink.Write(ExportWriters::SoundSource::OfFile(Bytes, Size, F), Out.string(),
-                       [this, &Kt, &T, &Written, F](bool Ok, const std::string& Why, const std::string& Crash) {
-                           if (Ok)
-                           {
-                               Kt.Written++;
-                               Written++;
-                           }
-                           else
-                               T.Fail(Name(), Kind::Sound, F, Crash.empty() ? Why : Crash);
-                       },
-                       std::shared_ptr<const uint8_t[]>(std::move(Data)));
+            WriteSoundTo(T, Sink, ExportWriters::SoundSource::OfFile(Bytes, Size, F), Out.string(), F, "sound_files",
+                         std::shared_ptr<const uint8_t[]>(std::move(Data)));
         }
-        Sink.Finish();
-        if (Written) Counter("sound_files") += Written;
+        FinishSoundFiles(Sink);
     }
 }

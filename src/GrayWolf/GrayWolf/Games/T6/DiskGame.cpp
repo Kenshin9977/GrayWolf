@@ -616,12 +616,7 @@ namespace
                 }
                 else
                     File->swap(Data);
-                Sink.Write(ExportWriters::SoundSource::OfFile(File->data(), File->size(), Own, true), Out,
-                           [this, &Kt, &T, F](bool Ok, const std::string& Why, const std::string& Crash) {
-                               if (Ok) Kt.Written++;
-                               else T.Fail(Name(), Kind::Sound, F, Crash.empty() ? Why : Crash);
-                           },
-                           File);
+                WriteSoundTo(T, Sink, ExportWriters::SoundSource::OfFile(File->data(), File->size(), Own, true), Out, F, nullptr, File);
             }
             Sink.Finish();
         }

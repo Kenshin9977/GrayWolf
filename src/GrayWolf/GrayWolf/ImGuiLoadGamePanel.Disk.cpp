@@ -26,6 +26,7 @@
 #include <chrono>
 #include <filesystem>
 #include <sstream>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 using namespace LoadGameUi;
@@ -281,33 +282,65 @@ void LoadGamePanel::DoListDiskZones()
 void LoadGamePanel::ReadZoneCounts(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const std::string& Install)
 {
     auto Ix = DiskGame::ZoneIndex::Kept(Game, Options, Install);
-    std::vector<std::map<DiskGame::Kind, size_t>> Counts(Ix ? Ix->Zones().size() : 0);
-    std::vector<uint64_t> Footprints(Counts.size());
-    for (size_t Z = 0; Z < Counts.size(); Z++)
-    {
-        for (const auto& A : Ix->Defined(Z)) Counts[Z][A.K]++;
-        Footprints[Z] = Ix->Footprint(Z);
-    }
-    // the size samples measured last time for this install, if any
-    DiskGame::Sizes::Calibration Sizes;
-    if (Ix) DiskGame::Sizes::Load(DiskGame::KeptFile(Game, Options, Install, ".sizes"), Sizes);
-    bool Counted = false;
+    std::vector<std::string> Listed;
     {
         std::lock_guard<std::mutex> Lk(Mutex);
-        DiskZoneCounted = Counted = Ix && Ix->Zones() == DiskZoneNames;
+        Listed = DiskZoneNames;
+    }
+    // each listed zone's place in the index: a game's index may open fewer zones than it lists
+    // (IndexedZones: Modern Warfare 2019's and MWIII's transient, localized or server zones), the
+    // others hold nothing it knows of. An index naming a zone the list does not is another listing's.
+    std::vector<size_t> InIndex(Listed.size(), NotIndexed);
+    bool Counted = Ix != nullptr;
+    if (Ix)
+    {
+        std::unordered_map<std::string, size_t> Position;
+        Position.reserve(Listed.size());
+        for (size_t Z = 0; Z < Listed.size(); Z++) Position.emplace(Listed[Z], Z);
+        for (size_t I = 0; I < Ix->Zones().size() && Counted; I++)
+        {
+            const auto It = Position.find(Ix->Zones()[I]);
+            if (It == Position.end()) Counted = false;
+            else InIndex[It->second] = I;
+        }
+        if (!Counted)
+            AppLog::Log().warn("load game: the {} index of {} names zones the list does not ({} indexed, {} listed): left unread",
+                               Game.Id(), Install, Ix->Zones().size(), Listed.size());
+    }
+    std::vector<std::map<DiskGame::Kind, size_t>> Counts(Listed.size());
+    std::vector<uint64_t> Footprints(Listed.size());
+    if (Counted)
+        for (size_t Z = 0; Z < Listed.size(); Z++)
+        {
+            if (InIndex[Z] == NotIndexed) continue;
+            for (const auto& A : Ix->Defined(InIndex[Z])) Counts[Z][A.K]++;
+            Footprints[Z] = Ix->Footprint(InIndex[Z]);
+        }
+    // the size samples measured last time for this install, if any
+    DiskGame::Sizes::Calibration Sizes;
+    if (Counted) DiskGame::Sizes::Load(DiskGame::KeptFile(Game, Options, Install, ".sizes"), Sizes);
+    {
+        std::lock_guard<std::mutex> Lk(Mutex);
+        // the list read again meanwhile (another game, folder or setting): not this index's
+        DiskZoneCounted = Counted = Counted && DiskZoneNames == Listed;
         if (DiskZoneCounted)
         {
             DiskZoneCounts = std::move(Counts);
             DiskZoneFootprints = std::move(Footprints);
+            DiskZoneInIndex = std::move(InIndex);
             DiskSizes = std::move(Sizes);
         }
         else
         {
             DiskZoneCounts.assign(DiskZoneNames.size(), {});
             DiskZoneFootprints.assign(DiskZoneNames.size(), 0);
+            DiskZoneInIndex.assign(DiskZoneNames.size(), NotIndexed);
             DiskSizes = {};
         }
     }
+    if (Ix)
+        AppLog::Log().info("load game: {} install index {}: {} assets in {} zones ({} listed)", Game.Id(), Counted ? "read" : "not used",
+                           Ix->Entries, Ix->Zones().size(), Listed.size());
     // the asset tab searches it
     KeepIndex(Counted ? std::move(Ix) : nullptr);
 }
@@ -322,12 +355,14 @@ void LoadGamePanel::MeasureSizes(const DiskGame::IDiskGame& Game, const DiskGame
     std::set<DiskGame::Kind> Kinds;
     {
         std::lock_guard<std::mutex> Lk(Mutex);
-        for (size_t Z = 0; Z < DiskZoneNames.size() && Z < Ix.Zones().size(); Z++)
-            if (DiskZoneFlags[Z] && Ix.Zones()[Z] == DiskZoneNames[Z])
-            {
-                Picked.push_back(Z);
-                if (Game.LevelNames() != nullptr && !DiskZoneLevels[Z].empty()) Levels.insert(Z);
-            }
+        // by their place in the index (DiskZoneInIndex), a zone it does not open left out
+        for (size_t Z = 0; Z < DiskZoneNames.size() && Z < DiskZoneInIndex.size(); Z++)
+        {
+            const size_t I = DiskZoneInIndex[Z];
+            if (!DiskZoneFlags[Z] || I >= Ix.Zones().size() || Ix.Zones()[I] != DiskZoneNames[Z]) continue;
+            Picked.push_back(I);
+            if (Game.LevelNames() != nullptr && !DiskZoneLevels[Z].empty()) Levels.insert(I);
+        }
         if (Only != nullptr) Kinds = *Only;
         else
             for (size_t K = 0; K < DiskKindFlags.size(); K++)
@@ -711,7 +746,8 @@ void LoadGamePanel::DrawZoneTable(std::vector<uint32_t>& Visible)
                     }
                 }
                 ImGui::TableSetColumnIndex(3);
-                if (Counted) ImGui::TextDisabled("%s", DiskGame::Sizes::Text(DiskZoneFootprints[Idx]).c_str());
+                if (Counted && Idx < DiskZoneInIndex.size() && DiskZoneInIndex[Idx] != NotIndexed)
+                    ImGui::TextDisabled("%s", DiskGame::Sizes::Text(DiskZoneFootprints[Idx]).c_str());
                 ImGui::PopID();
             }
     });

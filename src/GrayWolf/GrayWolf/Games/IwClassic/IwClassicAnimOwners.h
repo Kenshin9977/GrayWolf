@@ -11,6 +11,7 @@
 #include "AnimOwners.h"
 #include "Games/Treyarch/GscAnimOwners.h"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -38,9 +39,11 @@ namespace IwClassicAnimOwners
     void Own(const std::vector<const Facts*>& Sources, const std::vector<std::string>& Anims, ::AnimOwners::Book& Out);
     constexpr size_t MaxOwners = 8;
 
-    // A zonekit game (CoD4, MW2, MW3): per zone, its documents and weapon files (OatWeapons.h),
-    // then those of the zones loaded with it (patch_<zone>; patch_mp, common_mp; or patch, common),
-    // each read once per process.
+    // A zonekit game (CoD4, MW2, MW3): per zone, its documents and weapon files (OatWeapons.h; a
+    // zone OwnWeaponFiles says gives them among its documents, MW2's and MW3's original builds',
+    // is not handed to OAT), then those of the zones loaded with it (patch_<zone>; patch_mp,
+    // common_mp; or patch, common), each read once per process.
     void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
-              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, ::AnimOwners::Book& Out);
+              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, ::AnimOwners::Book& Out,
+              const std::function<bool(const std::string& Zone)>& OwnWeaponFiles = {});
 }

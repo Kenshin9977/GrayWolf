@@ -19,8 +19,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <execution>
 #include <fstream>
 #include <functional>
+#include <future>
+#include <mutex>
 #include <regex>
 #include <optional>
 #include <set>
@@ -30,6 +33,47 @@ namespace fs = std::filesystem;
 
 namespace MaterialGdt
 {
+// The image work Add does (a colour map's alpha read, a map rewritten beside it), each done once
+// per file, by the first Builder or thread to ask, the others waiting for it: AddAll does it on
+// every core, then adds in order, each image's answer already there.
+struct Builder::Work
+{
+    template <class T>
+    class Once
+    {
+    public:
+        template <class Fn>
+        T Get(const std::string& Key, Fn&& Make)
+        {
+            std::promise<T> Mine;
+            std::shared_future<T> Result;
+            bool First = false;
+            {
+                const std::lock_guard<std::mutex> G(Lock);
+                auto [It, New] = Done.try_emplace(Key);
+                if (New)
+                {
+                    It->second = Mine.get_future().share();
+                    First = true;
+                }
+                Result = It->second;
+            }
+            if (First)
+            {
+                try { Mine.set_value(Make()); }
+                catch (...) { Mine.set_exception(std::current_exception()); }
+            }
+            return Result.get();
+        }
+
+    private:
+        std::mutex Lock;
+        std::map<std::string, std::shared_future<T>> Done;
+    };
+    Once<std::optional<AlphaTally>> Alphas;   // by the colour map read
+    Once<int> Files;                          // by the file written beside its source
+};
+
 namespace
 {
     std::atomic<bool> UseAssetNames{ false };
@@ -87,38 +131,43 @@ namespace
         return T;
     }
 
-    // Whether a colour map's alpha masks something (AlphaTally)
-    bool AlphaMasks(const fs::path& File)
+    // A colour map's tally, read once
+    std::optional<AlphaTally> TallyOnce(Builder::Work& W, const fs::path& File)
     {
-        const auto T = TallyAlpha(File);
+        return W.Alphas.Get(File.string(), [&] { return TallyAlpha(File); });
+    }
+
+    // Whether a colour map's alpha masks something (AlphaTally)
+    bool AlphaMasks(Builder::Work& W, const fs::path& File)
+    {
+        const auto T = TallyOnce(W, File);
         return T && T->Masks();
     }
 
     // Whether a blend layer's colour alpha shapes it (a stain's soft edge as much as a cutout):
     // false for one all but opaque, or all but clear (an alpha the source's shader did not read
     // as an opacity, which would hide the layer)
-    bool AlphaShapes(const fs::path& File)
+    bool AlphaShapes(Builder::Work& W, const fs::path& File)
     {
-        const auto T = TallyAlpha(File);
+        const auto T = TallyOnce(W, File);
         return T && T->Seen && T->Solid * 100 < T->Seen * 99 && T->Clear * 100 < T->Seen * 99;
     }
 
     // Whether a colour map's alpha is all but opaque (99% of its texels): a blend through it is opaque
-    bool AlphaSolid(const fs::path& File)
+    bool AlphaSolid(Builder::Work& W, const fs::path& File)
     {
-        const auto T = TallyAlpha(File);
+        const auto T = TallyOnce(W, File);
         return T && T->Seen && T->Solid * 100 >= T->Seen * 99;
     }
 
     // An image under 4 texels a side (MW2019's 1x1 constant colours) as a 4x4 one beside it
     // (<stem>_4x4.png, kept when newer): BO3's linker calls a smaller one missing. False: the
     // image as it is.
-    bool Grown(const fs::path& From, fs::path& To)
+    bool GrownAs(const fs::path& From, const fs::path& To)
     {
         int W = 0, H = 0, N = 0;
         if (ExportNaming::Lower(From.extension().string()) != ".png" || !stbi_info(From.string().c_str(), &W, &H, &N) || (W >= 4 && H >= 4))
             return false;
-        To = fs::path(From).replace_filename(From.stem().string() + "_4x4.png");
         std::error_code Ec, Ec2;
         if (fs::is_regular_file(To, Ec) && fs::last_write_time(To, Ec) >= fs::last_write_time(From, Ec2) && !Ec && !Ec2) return true;
         stbi_uc* Px = stbi_load(From.string().c_str(), &W, &H, &N, 4);
@@ -130,6 +179,11 @@ namespace
         stbi_image_free(Px);
         return stbi_write_png(To.string().c_str(), 4, 4, 4, Out.data(), 4 * 4) != 0;
     }
+    bool Grown(Builder::Work& Once, const fs::path& From, fs::path& To)
+    {
+        To = fs::path(From).replace_filename(From.stem().string() + "_4x4.png");
+        return Once.Files.Get(To.string(), [&] { return GrownAs(From, To) ? 1 : 0; }) != 0;
+    }
 
     // A normal map packed with two channels (AG: x in alpha, y in green, DXT5nm, CoD4's; XY: x in
     // red, y in green) as BO3's normalMap reads one, x, y, z in r, g, b: written to To, kept when
@@ -137,7 +191,7 @@ namespace
     // lights a surface in dark speckles. Y stays as the source game has it (both CoD). The file
     // has the last word over the description: grey in r, g, b with the alpha varying is AG
     // whatever Enc says (CoD4's adapter leaves its normals at the XY default).
-    bool UnpackNormal(const fs::path& From, const fs::path& To, Materials::NormalEncoding Enc, bool& AsAg)
+    bool UnpackNormalAs(const fs::path& From, const fs::path& To, Materials::NormalEncoding Enc, bool& AsAg)
     {
         std::error_code Ec, Ec2;
         int W = 0, H = 0, N = 0;
@@ -174,6 +228,17 @@ namespace
         stbi_image_free(Px);
         return stbi_write_png(To.string().c_str(), W, H, 3, Rgb.data(), W * 3) != 0;
     }
+    // once per file written (1: unpacked, 2: as AG whatever Enc said, the file grey with an alpha)
+    bool UnpackNormal(Builder::Work& Once, const fs::path& From, const fs::path& To, Materials::NormalEncoding Enc, bool& AsAg)
+    {
+        const int Done = Once.Files.Get(To.string(), [&] {
+            bool Ag = false;
+            if (!UnpackNormalAs(From, To, Enc, Ag)) return 0;
+            return Ag && Enc != Materials::NormalEncoding::AG ? 2 : 1;
+        });
+        AsAg = Done == 2 || Enc == Materials::NormalEncoding::AG;
+        return Done != 0;
+    }
 
     // From rewritten texel by texel into To (Channels of each, kept when newer): Texel gets the
     // source's rgba and writes the new texel. False: From unreadable or To unwritten.
@@ -193,16 +258,18 @@ namespace
     // A roughness map's channel as the gloss BO3's cosinePowerMap reads, 255 - value, grey beside
     // it (<stem>_gloss<r|g|b|a>.png). Black Ops' specular alpha is such a roughness: the BO3 gloss
     // of the same textures in Treyarch's ports is 255 - alpha (r = -0.95 on Zombies Chronicles).
-    bool GlossFromRoughness(const fs::path& From, int Channel, fs::path& To)
+    bool GlossFromRoughness(Builder::Work& Once, const fs::path& From, int Channel, fs::path& To)
     {
         To = fs::path(From).replace_filename(From.stem().string() + "_gloss" + "rgba"[Channel & 3] + ".png");
-        return Rewritten(From, To, 3, [Channel](const stbi_uc* In, stbi_uc* Out) { Out[0] = Out[1] = Out[2] = (stbi_uc)(255 - In[Channel & 3]); });
+        return Once.Files.Get(To.string(), [&] {
+            return Rewritten(From, To, 3, [Channel](const stbi_uc* In, stbi_uc* Out) { Out[0] = Out[1] = Out[2] = (stbi_uc)(255 - In[Channel & 3]); }) ? 1 : 0;
+        }) != 0;
     }
 
     // A gamma 2.0 colour map (Black Ops, BO2) as sRGB beside it (<stem>_srgb.png), alpha kept:
     // srgb((c / 255)^2), as Treyarch's BO3 ports of the same textures (3.8 levels off per texel
     // against 9.1 for the file as it is, Zombies Chronicles)
-    bool SrgbFromGamma2(const fs::path& From, fs::path& To)
+    bool SrgbFromGamma2(Builder::Work& Once, const fs::path& From, fs::path& To)
     {
         To = fs::path(From).replace_filename(From.stem().string() + "_srgb.png");
         static const std::array<stbi_uc, 256> Table = [] {
@@ -215,17 +282,19 @@ namespace
             }
             return T;
         }();
-        return Rewritten(From, To, 4, [](const stbi_uc* In, stbi_uc* Out) {
-            for (int K = 0; K < 3; K++) Out[K] = Table[In[K]];
-            Out[3] = In[3];
-        });
+        return Once.Files.Get(To.string(), [&] {
+            return Rewritten(From, To, 4, [](const stbi_uc* In, stbi_uc* Out) {
+                for (int K = 0; K < 3; K++) Out[K] = Table[In[K]];
+                Out[3] = In[3];
+            }) ? 1 : 0;
+        }) != 0;
     }
 
     // A multiply colour map as the decal BO3 draws in its place (<stem>_mul.png): black, its alpha
     // 1 - the colour's linear luminance. Over a colour c, lerp(c, 0, 1 - m) = c * m, exact for a
     // grey m (BO3's decals blend into the G-buffer and have no multiply). Gamma2: the colour is
     // gamma 2.0 (MaterialDescription's AlbedoGamma), else sRGB.
-    bool DarkeningFromMultiply(const fs::path& From, bool Gamma2, fs::path& To)
+    bool DarkeningFromMultiply(Builder::Work& Once, const fs::path& From, bool Gamma2, fs::path& To)
     {
         To = fs::path(From).replace_filename(From.stem().string() + "_mul.png");
         static const auto Linear = [](bool G2) {
@@ -239,11 +308,13 @@ namespace
         };
         static const std::array<double, 256> Tables[2] = { Linear(false), Linear(true) };
         const std::array<double, 256>& T = Tables[Gamma2 ? 1 : 0];
-        return Rewritten(From, To, 4, [&T](const stbi_uc* In, stbi_uc* Out) {
-            const double Y = 0.2126 * T[In[0]] + 0.7152 * T[In[1]] + 0.0722 * T[In[2]];
-            Out[0] = Out[1] = Out[2] = 0;
-            Out[3] = (stbi_uc)std::clamp(std::lround((1.0 - Y) * 255.0), 0L, 255L);
-        });
+        return Once.Files.Get(To.string(), [&] {
+            return Rewritten(From, To, 4, [&T](const stbi_uc* In, stbi_uc* Out) {
+                const double Y = 0.2126 * T[In[0]] + 0.7152 * T[In[1]] + 0.0722 * T[In[2]];
+                Out[0] = Out[1] = Out[2] = 0;
+                Out[3] = (stbi_uc)std::clamp(std::lround((1.0 - Y) * 255.0), 0L, 255L);
+            }) ? 1 : 0;
+        }) != 0;
     }
 }
 
@@ -284,8 +355,27 @@ bool Builder::Image::operator<(const Image& O) const
 }
 
 Builder::Builder(std::function<std::string(const fs::path&)> BaseImage, std::string CounterPrefix, std::string Names)
-    : BaseImageOf(std::move(BaseImage)), Prefix(std::move(CounterPrefix)), NamePrefix(std::move(Names))
+    : BaseImageOf(std::move(BaseImage)), Prefix(std::move(CounterPrefix)), NamePrefix(std::move(Names)), Done(std::make_shared<Work>())
 {
+}
+
+void Builder::AddAll(const std::vector<Item>& Items)
+{
+    // the items Add would describe (the first of each asset name, Add's own test), their image
+    // work done on every core by scratch builders sharing this one's Work: the same files, each
+    // written once, whatever the order the threads reach them in
+    std::vector<size_t> Fresh;
+    std::set<std::string> Seen;
+    for (const auto& [Name, M] : Defined) Seen.insert(Name);
+    for (size_t I = 0; I < Items.size(); I++)
+        if (!AssetName(Items[I].D->Name).empty() && Seen.insert(PrefixedName(NamePrefix, Items[I].D->Name)).second) Fresh.push_back(I);
+    std::for_each(std::execution::par, Fresh.begin(), Fresh.end(), [&](size_t I) {
+        Builder Scratch(BaseImageOf, Prefix, NamePrefix);
+        Scratch.Done = Done;
+        Scratch.Scratch = true;
+        Scratch.Add(*Items[I].D, Items[I].Dir, Items[I].Layered, Items[I].BlendLayerSort);
+    });
+    for (const Item& I : Items) Add(*I.D, I.Dir, I.Layered, I.BlendLayerSort);
 }
 
 bool Builder::Empty() const
@@ -324,13 +414,14 @@ bool Builder::Slot(Material& M, const char* Key, const Materials::Map& Map, cons
         Counter("images_missing")++;
         return false;
     }
+    if (Scratch) return true;   // AddAll's first pass: the image work only, no image named
     if (BaseImageOf(I.File).empty())
     {
         Counter("images_outside")++;
         return false;
     }
     if (!TiffOrPng(I.File)) Counter("slots_not_tiff_png")++;
-    if (fs::path Larger; Grown(I.File, Larger))
+    if (fs::path Larger; Grown(*Done, I.File, Larger))
     {
         I.File = Larger;
         Counter("images_grown_to_4x4")++;
@@ -385,12 +476,12 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
     bool AutoCut = false;
     if (D.Alpha == Materials::AlphaMode::Auto && !Albedo.Empty())
     {
-        AutoCut = AlphaMasks((Dir / fs::path(Albedo.Path)).lexically_normal());
+        AutoCut = AlphaMasks(*Done, (Dir / fs::path(Albedo.Path)).lexically_normal());
     }
     // a blend through an opaque colour is opaque (BO1's outer ground, "b0" at sort 43, its colour's
     // alpha full), drawn transparent it would write no depth and sort with the effects
     bool Blend = D.Alpha == Materials::AlphaMode::Blend;
-    if (Blend && !D.Decal && !Albedo.Empty() && AlphaSolid((Dir / fs::path(Albedo.Path)).lexically_normal()))
+    if (Blend && !D.Decal && !Albedo.Empty() && AlphaSolid(*Done, (Dir / fs::path(Albedo.Path)).lexically_normal()))
     {
         Blend = false;
         Counter("blend_alpha_solid")++;
@@ -433,7 +524,7 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
         M.Category = "Decal";
         M.Usage = "terrain";
         M.Values.emplace_back("layerSortDecal", BlendLayerSort);
-        OverlayAlpha = !Reveal && !Albedo.Empty() && (D.Multiply || AlphaShapes((Dir / fs::path(Albedo.Path)).lexically_normal()));
+        OverlayAlpha = !Reveal && !Albedo.Empty() && (D.Multiply || AlphaShapes(*Done, (Dir / fs::path(Albedo.Path)).lexically_normal()));
         Counter("blend_layers")++;
         if (OverlayAlpha) Counter("blend_layers_colour_alpha")++;
     }
@@ -443,7 +534,7 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
     const bool ColourAlpha = Overlay ? OverlayAlpha : D.Multiply || D.Alpha != Materials::AlphaMode::Opaque;
     if (fs::path Mul; !Albedo.Empty() && D.Multiply)
     {
-        if (DarkeningFromMultiply((Dir / fs::path(Albedo.Path)).lexically_normal(), D.AlbedoGamma == 2.0f, Mul))
+        if (DarkeningFromMultiply(*Done, (Dir / fs::path(Albedo.Path)).lexically_normal(), D.AlbedoGamma == 2.0f, Mul))
         {
             Albedo.Path = (fs::path(Albedo.Path).parent_path() / Mul.filename()).generic_string();
             Counter("multiply_as_darkening")++;
@@ -451,7 +542,7 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
         else
             Counter("multiply_not_rewritten")++;
     }
-    else if (fs::path Srgb; !Albedo.Empty() && D.AlbedoGamma == 2.0f && SrgbFromGamma2((Dir / fs::path(Albedo.Path)).lexically_normal(), Srgb))
+    else if (fs::path Srgb; !Albedo.Empty() && D.AlbedoGamma == 2.0f && SrgbFromGamma2(*Done, (Dir / fs::path(Albedo.Path)).lexically_normal(), Srgb))
     {
         Albedo.Path = (fs::path(Albedo.Path).parent_path() / Srgb.filename()).generic_string();
         Counter("colour_gamma2_as_srgb")++;
@@ -466,7 +557,7 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
         const fs::path From = (Dir / fs::path(Normal.Path)).lexically_normal();
         const fs::path To = fs::path(From).replace_filename(From.stem().string() + "_xyz.png");
         bool AsAg = false;
-        if (UnpackNormal(From, To, D.NormalEnc, AsAg))
+        if (UnpackNormal(*Done, From, To, D.NormalEnc, AsAg))
         {
             Normal.Path = (fs::path(Normal.Path).parent_path() / To.filename()).generic_string();
             Counter(AsAg ? "normals_unpacked_ag" : "normals_unpacked_xy")++;
@@ -482,7 +573,7 @@ void Builder::Add(const Materials::Description& D, const fs::path& Dir, bool Lay
     // BO3's cosinePowerMap is a gloss map: a roughness map as its inverse beside it
     if (fs::path Gloss; !Roughness.Empty() && !Roughness.Invert)
     {
-        if (GlossFromRoughness((Dir / fs::path(Roughness.Path)).lexically_normal(), Roughness.Channel, Gloss))
+        if (GlossFromRoughness(*Done, (Dir / fs::path(Roughness.Path)).lexically_normal(), Roughness.Channel, Gloss))
         {
             Roughness = { (fs::path(Roughness.Path).parent_path() / Gloss.filename()).generic_string(), 0, true };
             Counter("gloss_from_roughness")++;
@@ -637,6 +728,8 @@ void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T)
     // the models' XMODEL_EXPORT files by model folder, LOD by LOD
     std::map<fs::path, std::vector<fs::path>> Xmodels;
     const std::regex Lod(R"(_lod(\d+)$)", std::regex::icase);
+    // every sidecar's materials, added in the sidecars' order (AddAll: their images' work on every core)
+    std::vector<std::pair<Materials::Sidecar, fs::path>> Sides;
     for (const fs::path& S : Sidecars)
     {
         Materials::Sidecar Side;
@@ -646,11 +739,15 @@ void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T)
             continue;
         }
         T.Counters["material_gdt_sidecars"]++;
-        for (const auto& D : Side.Materials) B.Add(D, S.parent_path());
+        Sides.emplace_back(std::move(Side), S.parent_path());
         const std::string Stem = S.filename().string().substr(0, S.filename().string().size() - 15);
         const fs::path X = S.parent_path() / (Stem + ".XMODEL_EXPORT");
         if (std::regex_search(Stem, Lod) && fs::is_regular_file(X, Ec)) Xmodels[S.parent_path()].push_back(X);
     }
+    std::vector<Builder::Item> Items;
+    for (const auto& [Side, Dir] : Sides)
+        for (const auto& D : Side.Materials) Items.push_back({ &D, Dir });
+    B.AddAll(Items);
     for (const auto& [K, N] : B.Counters()) T.Counters[K] += N;
     if (B.Empty()) return;
 

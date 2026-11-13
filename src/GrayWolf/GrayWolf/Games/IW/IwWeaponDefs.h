@@ -37,6 +37,8 @@ namespace IwWeaponDefs
         // the weapon asset: its name string, display name string (a localize key), the WeaponDef
         // pointer (-1: the asset is the WeaponDef itself)
         int64_t Name = 0, Display = -1, Def = -1;
+        // the asset's pointer width: 8, or 4 (MW2's and MW3's original 32-bit builds)
+        int PointerSize = 8;
         std::vector<Field> Fields;
         // a middle damage stop whose range is 0 (damageRange<n>): false, the stop is unused (Infinite
         // Warfare's); true, its damage holds up to the next stop's range and the next damage is unused
@@ -64,6 +66,25 @@ namespace IwWeaponDefs
         // the attachment rules that address fields by offset (Call of Duty Online's codol.offsets; WWII's
         // s2.offsets are the attachment rules' own); "" none
         std::string OffsetsField;
+        // The models and anims the weapon file names, as OpenAssetTools' weapon files do (MW2's and
+        // MW3's original builds, for the anim owners: Games/IwClassic/IwClassicAnimOwners.h): the
+        // WeaponDef's gun model array (gunModel: its first) and hand model (handModel), each a model
+        // pointer, written by the model's name; the anim name lists, each a pointer to AnimNames.size()
+        // string pointers in the weapon asset or its WeaponDef, the k-th written as AnimNames[k] +
+        // its Suffix ("" not written); MW3's animOverrides (WeaponCompleteDef: the u32 count, the
+        // pointer to the entries of AnimOverrideSize bytes: two u16 attachment combinations, the anim
+        // and alt-mode anim string pointers, the u32 anim type, the two times), a line each:
+        // attachment, attachment, type, anim, alt-mode anim, times, as OAT writes them. -1: none.
+        int64_t GunModels = -1, HandModel = -1;
+        struct AnimList
+        {
+            int64_t At = -1;
+            bool InDef = false;
+            std::string Suffix;
+        };
+        std::vector<std::string> AnimNames;
+        std::vector<AnimList> AnimLists;
+        int64_t AnimOverrideCount = -1, AnimOverrides = -1, AnimOverrideSize = 0;
         WeaponFiles::Notes Notes;
         // WWII's attachments (WeaponFiles' s2 rules): each attachment asset written as an attachment file
         // (ATTACHMENTFILE\s2.format\1\displayName\..\attachmentType\<its type>\s2.alt\..\s2.overrides\<offset

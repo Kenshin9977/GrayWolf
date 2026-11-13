@@ -54,6 +54,10 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
     const auto& Img = *V.Image;
     const auto& R = *V.Walk;
     const auto Fits = [&](int64_t P, int64_t N) { return P >= 0 && P + N <= (int64_t)Img.size(); };
+    // a pointer field of the layout's width (the WeaponDef, the hit location multipliers; the
+    // animation package and attachment rules are WWII's, 8-byte)
+    const int64_t PtrSize = L.PointerSize;
+    const auto PointerAt = [&](int64_t A) { return PtrSize == 4 ? (uint64_t)At<uint32_t>(Img, A) : At<uint64_t>(Img, A); };
     std::vector<WeaponFiles::Weapon> Out;
     std::set<std::string> Done;
     // an animation package's times (its u16 timers behind AnimTimers; none without them), through Put;
@@ -72,8 +76,8 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
         int64_t Def = P;
         if (L.Def >= 0)
         {
-            if (!Fits(P + L.Def, 8)) continue;
-            const uint64_t Ptr = At<uint64_t>(Img, P + L.Def);
+            if (!Fits(P + L.Def, PtrSize)) continue;
+            const uint64_t Ptr = PointerAt(P + L.Def);
             Def = Ptr != 0 ? V.Off(Ptr) : -1;
         }
         if (Def < 0) continue;
@@ -116,7 +120,7 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             const Unit How = UnitOf(F.Name);
             int64_t A = (F.InDef ? Def : P) + F.At;
             if (const auto It = RangeFrom.find(F.Name); It != RangeFrom.end()) A = It->second;
-            if (F.At < 0 || !Fits(A, How == Unit::Hits ? 8 : 4) || Unused.count(F.Name)) continue;
+            if (F.At < 0 || !Fits(A, How == Unit::Hits ? PtrSize : 4) || Unused.count(F.Name)) continue;
             if (F.InDef && How != Unit::Hits) Offsets += std::format("{} 0x{:x};", F.Name, A - Def);
             if (F.Byte)
             {
@@ -145,7 +149,7 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             }
             case Unit::Hits:
             {
-                const uint64_t Ptr = L.HitsInline ? 0 : At<uint64_t>(Img, A);
+                const uint64_t Ptr = L.HitsInline ? 0 : PointerAt(A);
                 const int64_t H = L.HitsInline ? A : Ptr != 0 ? V.Off(Ptr) : -1;
                 if (!Fits(H, 4 * (int64_t)L.HitLocations.size())) break;
                 for (size_t K = 1; K < L.HitLocations.size(); K++)
@@ -203,6 +207,50 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             }
             Put("s2.animOverrides", Lines);
             Put("s2.offsets", Offsets);
+        }
+        // the models and anims (OAT's fields): a model by its asset's name, a name-only header's ',' left out
+        const auto Target = [&](int64_t Field) -> int64_t {
+            if (!Fits(Field, PtrSize)) return -1;
+            const uint64_t Ptr = PointerAt(Field);
+            return Ptr != 0 ? V.Off(Ptr) : -1;
+        };
+        const auto ModelAt = [&](int64_t Field) {
+            const int64_t M = Target(Field);
+            std::string N = M >= 0 ? V.Text(M) : std::string();
+            if (!N.empty() && N[0] == ',') N.erase(0, 1);
+            return N;
+        };
+        if (L.GunModels >= 0) Put("gunModel", ModelAt(Target(Def + L.GunModels)));
+        if (L.HandModel >= 0) Put("handModel", ModelAt(Def + L.HandModel));
+        for (const auto& List : L.AnimLists)
+            if (const int64_t Names = Target((List.InDef ? Def : P) + List.At); Names >= 0)
+                for (size_t K = 0; K < L.AnimNames.size(); K++)
+                    if (!L.AnimNames[K].empty() && Fits(Names + PtrSize * (int64_t)K, PtrSize))
+                        if (const std::string A = V.Text(Names + PtrSize * (int64_t)K); !A.empty()) Put(L.AnimNames[K] + List.Suffix, A);
+        if (L.AnimOverrides >= 0 && Fits(P + L.AnimOverrideCount, 4))
+        {
+            const uint32_t Count = At<uint32_t>(Img, P + L.AnimOverrideCount);
+            const int64_t Entries = Target(P + L.AnimOverrides);
+            std::string Lines;
+            for (uint32_t K = 0; Entries >= 0 && K < Count && K < 4096; K++)
+            {
+                const int64_t E = Entries + L.AnimOverrideSize * K;
+                if (!Fits(E, L.AnimOverrideSize)) break;
+                const auto Attachment = [&](int64_t A) {
+                    const uint16_t C = At<uint16_t>(Img, A);
+                    return C == 0 ? std::string("none") : std::format("0x{:x}", C);
+                };
+                const auto AnimAt = [&](int64_t A) {
+                    const std::string S = V.Text(A);
+                    return S.empty() ? std::string("none") : S;
+                };
+                const int64_t Anim = E + 4, Type = Anim + 2 * PtrSize;
+                Lines += std::format("{}{} {} {} {} {} {} {}", Lines.empty() ? "" : "\n", Attachment(E), Attachment(E + 2),
+                                     At<uint32_t>(Img, Type), AnimAt(Anim), AnimAt(Anim + PtrSize), At<int32_t>(Img, Type + 4),
+                                     At<int32_t>(Img, Type + 8));
+            }
+            // (Put's Clean would make the line breaks spaces: the lines are kept as OAT writes them)
+            if (!Lines.empty()) Text += "\\animOverrides\\" + Lines;
         }
         if (!L.OffsetsField.empty()) Put(L.OffsetsField, Offsets);
         Out.push_back({ Name, Text, {} });
@@ -347,11 +395,7 @@ void IWZone::ExportsIwWeapons(const IwWeaponDefs::Layout& L)
     using namespace DiskGame;
     ExportsStructDumps(Kind::Weapons, { { "weapon", L.Name, IwWeaponDefs::DumpFields(L), -1 }, { "attachment", 0, {}, -1 } });
     Exports(Kind::WeaponStats, [this, L](const Context& C, Totals& T) {
-        IwWeaponStats::ZoneView V;
-        V.Image = &Image();
-        V.Walk = &Walk();
-        V.Off = [this](uint64_t A) { return Off(A); };
-        V.Text = [this](int64_t Field) { return TextAt(Field); };
+        const IwWeaponStats::ZoneView V = WeaponView();
         std::vector<std::pair<std::string, std::string>> S;
         Strings(S);
         // the class builder's combination table, when the zone holds it (WWII's)
@@ -373,4 +417,23 @@ void IWZone::ExportsIwWeapons(const IwWeaponDefs::Layout& L)
             }
         IwWeaponDefs::Export(L, V, S, std::filesystem::path(FastFilePath()).stem().string(), C, T, Tables);
     });
+}
+
+IwWeaponStats::ZoneView IWZone::WeaponView() const
+{
+    IwWeaponStats::ZoneView V;
+    V.Image = &Image();
+    V.Walk = &Walk();
+    V.Off = [this](uint64_t A) { return Off(A); };
+    V.Text = [this](int64_t Field) { return TextAt(Field); };
+    return V;
+}
+
+void IWZone::IwWeaponFiles(const IwWeaponDefs::Layout& L, std::vector<std::pair<std::string, std::string>>& Out) const
+{
+    // by path, as OAT's dump (a map) lists them: the anim owners take the weapons naming an anim in that order
+    const size_t First = Out.size();
+    for (auto& W : IwWeaponDefs::Weapons(L, WeaponView()))
+        if (WeaponFiles::IsWeaponFile(W.Text)) Out.emplace_back("weapons/" + W.Name, std::move(W.Text));
+    std::sort(Out.begin() + (std::ptrdiff_t)First, Out.end(), [](const auto& A, const auto& B) { return A.first < B.first; });
 }

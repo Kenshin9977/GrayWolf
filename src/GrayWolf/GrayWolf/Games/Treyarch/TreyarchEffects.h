@@ -35,10 +35,11 @@ namespace Treyarch
     // its types renumbered to theirs, no bounds on the effect. T4: World at War's (0x100, CoD4's
     // with a wind influence). Iw4, Iw5: MW2's and MW3's 64-bit rebuild (0x120, CoD4's with 8-byte
     // pointers, the collision box as centre and half size, MW3's effect with occlusion fields).
-    // Bo4: Black Ops 4's (0x280), written as Black Ops III's; its effects and sounds are name
-    // hashes (EffectZone::Hashed). Codol: Call of Duty Online's (0x104), CoD4's with a visual state
-    // of 0x20 and a string at 0x100, its types numbered its own way.
-    enum class EffectLayout { Bo1, Bo2, Bo3, ColdWar, Iw3, T4, Iw4, Iw5, Bo4, Codol };
+    // Iw4x86, Iw5x86: the same games' original 32-bit builds (MW2 0xfc, MW3 0x100 with its random
+    // seed; effects 0x20 and 0x34). Bo4: Black Ops 4's (0x280), written as Black Ops III's; its
+    // effects and sounds are name hashes (EffectZone::Hashed). Codol: Call of Duty Online's (0x104),
+    // CoD4's with a visual state of 0x20 and a string at 0x100, its types numbered its own way.
+    enum class EffectLayout { Bo1, Bo2, Bo3, ColdWar, Iw3, T4, Iw4, Iw5, Bo4, Codol, Iw4x86, Iw5x86 };
 
     // What the reader reads a zone through.
     struct EffectZone

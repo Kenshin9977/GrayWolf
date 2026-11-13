@@ -202,9 +202,10 @@ namespace IwClassicAnimOwners
         }
 
         // Zone's facts: its documents (Known when the run kept them, else read from the zone opened
-        // here) and its weapon files
+        // here) and its weapon files (through OAT unless OwnWeaponFiles says its documents hold them)
         std::shared_ptr<const Facts> FactsOf(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options, const fs::path& Zone,
-                                             const std::vector<std::pair<std::string, std::string>>* Known)
+                                             const std::vector<std::pair<std::string, std::string>>* Known,
+                                             const std::function<bool(const std::string&)>& OwnWeaponFiles)
         {
             std::error_code Ec, Ec2;
             const uintmax_t Size = fs::file_size(Zone, Ec);
@@ -222,7 +223,7 @@ namespace IwClassicAnimOwners
                 std::string Error;
                 if (auto Z = Game.Open(Zone.string(), Options, Error)) Z->Documents(Docs);
             }
-            WeaponFilesOf(Zone.string(), Docs);
+            if (!OwnWeaponFiles || !OwnWeaponFiles(Zone.string())) WeaponFilesOf(Zone.string(), Docs);
             auto F = std::make_shared<const Facts>(Parse(Docs));
             std::lock_guard<std::mutex> G(CacheLock);
             Cache[Key] = { Size, When, F };
@@ -325,15 +326,16 @@ namespace IwClassicAnimOwners
     }
 
     void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
-              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, ::AnimOwners::Book& Out)
+              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, ::AnimOwners::Book& Out,
+              const std::function<bool(const std::string& Zone)>& OwnWeaponFiles)
     {
         // the run's zones first: their documents are known, and one may be another's shared zone
         std::vector<std::shared_ptr<const Facts>> Own;
-        for (const auto& Z : Zones) Own.push_back(FactsOf(Game, Options, fs::path(Z.Zone), &Z.Documents));
+        for (const auto& Z : Zones) Own.push_back(FactsOf(Game, Options, fs::path(Z.Zone), &Z.Documents, OwnWeaponFiles));
         for (size_t I = 0; I < Zones.size(); I++)
         {
             std::vector<std::shared_ptr<const Facts>> Held{ Own[I] };
-            for (const auto& P : SharedZones(fs::path(Zones[I].Zone))) Held.push_back(FactsOf(Game, Options, P, nullptr));
+            for (const auto& P : SharedZones(fs::path(Zones[I].Zone))) Held.push_back(FactsOf(Game, Options, P, nullptr, OwnWeaponFiles));
             std::vector<const Facts*> Sources;
             for (const auto& F : Held)
                 if (F) Sources.push_back(F.get());

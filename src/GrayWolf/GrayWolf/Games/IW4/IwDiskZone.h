@@ -47,7 +47,8 @@ namespace Iw64
     public:
         IwDiskZone(const std::string& Path, const GameInfo& G);
         // the string tables, the .arena rawfiles (the multiplayer map list), the GSC source and
-        // animtrees, MW3's compiled scripts' strings (<name>.gscsource): Games/IwClassic/IwClassicAnimOwners.h
+        // animtrees, MW3's compiled scripts' strings (<name>.gscsource), the original builds' weapon
+        // files (weapons/<name>, as OAT writes the rebuild's): Games/IwClassic/IwClassicAnimOwners.h
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override;
 
     protected:

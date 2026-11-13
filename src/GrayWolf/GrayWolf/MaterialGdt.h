@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +51,18 @@ namespace MaterialGdt
         // decal whose opacity is its vertices' alpha (times its colour's alpha, or its reveal map,
         // D.AlphaMap: lit_decal_reveal), in that decal layer (layerSortDecal).
         void Add(const Materials::Description& D, const std::filesystem::path& Dir, bool Layered = false, const char* BlendLayerSort = nullptr);
+        // Add's arguments, for AddAll
+        struct Item
+        {
+            const Materials::Description* D = nullptr;
+            std::filesystem::path Dir;
+            bool Layered = false;
+            const char* BlendLayerSort = nullptr;
+        };
+        // Add for each, in order, the same entries and counters; the images' work first, on every
+        // core (a colour map's alpha read, a map rewritten beside it: a map's hundreds of materials
+        // took a minute on one)
+        void AddAll(const std::vector<Item>& Items);
 
         bool Empty() const;
         // the material entries then the image entries, each by name
@@ -74,12 +87,16 @@ namespace MaterialGdt
             std::vector<std::pair<std::string, std::string>> Values;   // other fields set
         };
 
+        struct Work;   // the image work, once per file (MaterialGdt.cpp)
+
     private:
         std::function<std::string(const std::filesystem::path&)> BaseImageOf;
         std::string Prefix, NamePrefix;
         std::map<std::string, Material> Defined;               // by asset name
         std::map<std::string, std::set<std::string>> Collisions;
         std::map<std::string, size_t> Count;
+        std::shared_ptr<Work> Done;
+        bool Scratch = false;   // AddAll's first pass: a slot is not named nor grown
         size_t& Counter(const std::string& What) { return Count[Prefix + What]; }
         bool Slot(Material& M, const char* Key, const Materials::Map& Map, const std::filesystem::path& Dir, const char* Semantic,
                   const char* Core, const char* Compression);

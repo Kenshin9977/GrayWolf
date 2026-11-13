@@ -23,6 +23,10 @@ namespace IwWeaponDefs
 {
     struct Layout;
 }
+namespace IwWeaponStats
+{
+    struct ZoneView;
+}
 namespace IWSoundAliases
 {
     struct Layout;
@@ -255,6 +259,11 @@ protected:
     // their 0, the layout's fields named) and the weaponstats kind (IwWeaponDefs) of the games
     // keeping the classic WeaponDef, Ghosts to WWII
     void ExportsIwWeapons(const IwWeaponDefs::Layout& L);
+    // The zone's weapons as the weapon files IwWeaponDefs makes, documents "weapons/<name>" in the
+    // order of their paths (OAT's paths and order: the anim owners read them as OAT's weapon files)
+    void IwWeaponFiles(const IwWeaponDefs::Layout& L, std::vector<std::pair<std::string, std::string>>& Out) const;
+    // what IwWeaponDefs reads of the walked zone
+    IwWeaponStats::ZoneView WeaponView() const;
     // The material kind (its techset, images and blend as JSON, its images by the image kind) and
     // the fx kind (IwEffects.h, a material visual with its images when the run exports images) of
     // Ghosts, Advanced Warfare and MWR: Read the game's material reader, TechsetAt where its

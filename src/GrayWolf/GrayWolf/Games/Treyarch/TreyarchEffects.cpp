@@ -129,6 +129,33 @@ namespace
     };
     static_assert(sizeof(Iw4Elem) == 0x120, "MW2/MW3 FxElemDef is 0x120");
 
+    // Modern Warfare 2's original 32-bit build (0xfc): the rebuild's fields with 4-byte pointers,
+    // no padding before them, nothing after the fade info; MW3's (0x100) its random seed last
+    struct Iw4x86Elem
+    {
+        uint32_t Flags;
+        FxIntRange Spawn;
+        FxFloatRange SpawnRange, FadeInRange, FadeOutRange;
+        float SpawnFrustumCullRadius;
+        FxIntRange SpawnDelayMsec, LifeSpanMsec;
+        FxFloatRange SpawnOrigin[3], SpawnOffsetRadius, SpawnOffsetHeight, SpawnAngles[3], AngularVelocity[3], InitialRotation;
+        FxFloatRange Gravity, ReflectionFactor;
+        FxElemAtlas Atlas;
+        uint8_t ElemType, VisualCount, VelIntervalCount, VisStateIntervalCount;
+        uint32_t VelSamples, VisSamples, Visuals;
+        float CollMid[3], CollHalf[3];
+        uint32_t EffectOnImpact, EffectOnDeath, EffectEmitted;
+        FxFloatRange EmitDist, EmitDistVariance;
+        uint32_t Extended;
+        uint8_t SortOrder, LightingFrac, UseItemClip, FadeInfo;
+    };
+    static_assert(sizeof(Iw4x86Elem) == 0xfc, "MW2 32-bit FxElemDef is 0xfc");
+    struct Iw5x86Elem : Iw4x86Elem
+    {
+        int32_t RandomSeed;
+    };
+    static_assert(sizeof(Iw5x86Elem) == 0x100, "MW3 32-bit FxElemDef is 0x100");
+
     // Black Ops 3 (0x260)
     struct Bo3Elem
     {
@@ -255,6 +282,13 @@ namespace
                   offsetof(Iw4Elem, VelSamples) == 0xb8 && offsetof(Iw4Elem, VisSamples) == 0xc0 &&
                   offsetof(Iw4Elem, Visuals) == 0xc8 && offsetof(Iw4Elem, EffectOnImpact) == 0xe8 &&
                   offsetof(Iw4Elem, Extended) == 0x110, "MW2/MW3 element");
+    // where the iw4x86 (fe8a60) and iw5x86 (fc10f0) tables read the original builds': the samples
+    // at 0xb4/0xb8 by the counts at 0xb2/0xb3, the visuals at 0xbc (by the type at 0xb0, 11 a
+    // decal), the effect names at 0xd8, the extended def at 0xf4
+    static_assert(offsetof(Iw4x86Elem, ElemType) == 0xb0 && offsetof(Iw4x86Elem, VelIntervalCount) == 0xb2 &&
+                  offsetof(Iw4x86Elem, VelSamples) == 0xb4 && offsetof(Iw4x86Elem, VisSamples) == 0xb8 &&
+                  offsetof(Iw4x86Elem, Visuals) == 0xbc && offsetof(Iw4x86Elem, EffectOnImpact) == 0xd8 &&
+                  offsetof(Iw4x86Elem, Extended) == 0xf4, "MW2/MW3 32-bit element");
     static_assert(offsetof(Bo1Elem, ElemType) == 0xb8 && offsetof(Bo1Elem, VelSamples) == 0xbc &&
                   offsetof(Bo1Elem, Visuals) == 0xc4 && offsetof(Bo1Elem, EffectOnImpact) == 0xe0 &&
                   offsetof(Bo1Elem, EffectAttached) == 0xfc && offsetof(Bo1Elem, SpawnSound) == 0x118, "BO1/BO2 element");
@@ -316,16 +350,25 @@ namespace
     }
 
     // the Infinity Ward line: CoD4's element, World at War's, MW2's and MW3's
+    // MW2's and MW3's, either build; MW3's alone
+    bool MwLine(EffectLayout L)
+    {
+        return L == EffectLayout::Iw4 || L == EffectLayout::Iw5 || L == EffectLayout::Iw4x86 || L == EffectLayout::Iw5x86;
+    }
+    bool Mw3(EffectLayout L) { return L == EffectLayout::Iw5 || L == EffectLayout::Iw5x86; }
     bool IwLine(EffectLayout L)
     {
-        return L == EffectLayout::Iw3 || L == EffectLayout::T4 || L == EffectLayout::Iw4 || L == EffectLayout::Iw5;
+        return L == EffectLayout::Iw3 || L == EffectLayout::T4 || MwLine(L);
     }
 
     class Reader
     {
     public:
         Reader(const EffectZone& Z, EffectLayout L)
-            : Z(Z), Ptr(L == EffectLayout::Bo1 || L == EffectLayout::Bo2 || L == EffectLayout::Iw3 || L == EffectLayout::T4 || L == EffectLayout::Codol ? 4 : 8) {}
+            : Z(Z), Ptr(L == EffectLayout::Bo1 || L == EffectLayout::Bo2 || L == EffectLayout::Iw3 || L == EffectLayout::T4 ||
+                                 L == EffectLayout::Codol || L == EffectLayout::Iw4x86 || L == EffectLayout::Iw5x86
+                             ? 4
+                             : 8) {}
 
         template <class T>
         bool Struct(uint64_t Address, T& Out) const
@@ -623,11 +666,13 @@ namespace
     // An Infinity Ward line element's extended def at A by its own type (OAT's FxTrailDef,
     // FxSparkFountainDef, FxSpotLightDef), keyed as the 64-bit games' (Games/IW/IwEffects.cpp
     // Extended): CoD4's and World at War's trail (3) with an int split distance, MW2's and MW3's
-    // with the inverse ones and their spark fountain (6), MW3's spot light (9)
+    // with the inverse ones and their spark fountain (6), MW3's spot light (9); the original
+    // 32-bit builds' trail with 4-byte pointers (vertCount 0x14, verts 0x18, indCount 0x1c, inds
+    // 0x20: the iw4x86 table fe4090, iw5x86 fbbfd0)
     void IwExtended(const Reader& R, EffectLayout L, uint8_t Type, uint64_t A, Json& Out)
     {
         if (A == 0) return;
-        const bool Iw4 = L == EffectLayout::Iw4 || L == EffectLayout::Iw5;
+        const bool Iw4 = MwLine(L);
         if (Type == 3 && !Iw4)
         {
             // scrollTimeMsec, repeatDist, splitDist, vertCount, verts, indCount, inds
@@ -639,18 +684,23 @@ namespace
         }
         else if (Type == 3)
         {
-            // ... invSplitTime, vertCount 0x14, verts 0x18, indCount 0x20, inds 0x28
-            uint8_t B[0x30];
-            if (!R.Struct(A, B)) return;
+            // ... invSplitTime, vertCount 0x14, verts 0x18, indCount 0x20, inds 0x28 (32-bit:
+            // 0x1c, 0x20; 0x24 bytes)
+            const bool P4 = R.Ptr == 4;
+            uint8_t B[0x30] = {};
+            const int64_t O = R.Z.Off(A), Size = P4 ? 0x24 : 0x30;
+            if (O < 0 || O + Size > (int64_t)R.Z.Image->size()) return;
+            std::memcpy(B, R.Z.Image->data() + O, (size_t)Size);
             const auto I = [&B](size_t P) { int32_t V; std::memcpy(&V, B + P, 4); return V; };
             const auto F = [&B](size_t P) { float V; std::memcpy(&V, B + P, 4); return V; };
+            const size_t IndCount = P4 ? 0x1c : 0x20, IndsAt = P4 ? 0x20 : 0x28;
             Out["trailDef"] = Json{ { "scrollTimeMsec", I(0) }, { "repeatDist", I(4) }, { "invSplitDist", F(8) },
                                     { "invSplitArcDist", F(0xc) }, { "invSplitTime", F(0x10) }, { "vertCount", I(0x14) },
-                                    { "indCount", I(0x20) } };
-            uint64_t Verts, Inds;
-            std::memcpy(&Verts, B + 0x18, 8);
-            std::memcpy(&Inds, B + 0x28, 8);
-            TrailProfile(R, Verts, I(0x14), Inds, I(0x20), Out["trailDef"]);
+                                    { "indCount", I(IndCount) } };
+            uint64_t Verts = 0, Inds = 0;
+            std::memcpy(&Verts, B + 0x18, R.Ptr);
+            std::memcpy(&Inds, B + IndsAt, R.Ptr);
+            TrailProfile(R, Verts, I(0x14), Inds, I(IndCount), Out["trailDef"]);
         }
         else if (Type == 6 && Iw4)
         {
@@ -667,7 +717,7 @@ namespace
             }
             Out["sparkFountainDef"] = std::move(D);
         }
-        else if (Type == 9 && L == EffectLayout::Iw5)
+        else if (Type == 9 && Mw3(L))
         {
             float S[6];
             if (!R.Struct(A, S)) return;
@@ -707,10 +757,10 @@ namespace
         Out["sortOrder"] = X.SortOrder;
         if constexpr (requires { C.FadeInfo; }) Out["fadeInfo"] = C.FadeInfo;
         if constexpr (requires { C.RandomSeed; })
-            if (L == EffectLayout::Iw5) Out["randomSeed"] = C.RandomSeed;
+            if (Mw3(L)) Out["randomSeed"] = C.RandomSeed;
         Out["visuals"] = Visuals(R, L, X.ElemType, X.VisualCount, X.Visuals, nullptr);
         // MW3's spot light draws its GfxLightDef (its name first)
-        if (L == EffectLayout::Iw5 && C.ElemType == 9 && X.VisualCount == 1)
+        if (Mw3(L) && C.ElemType == 9 && X.VisualCount == 1)
             if (std::string N = R.Asset(X.Visuals); !N.empty()) Out["visuals"] = Json::array({ Json{ { "lightDef", N } } });
         if constexpr (requires { C.Extended; })
             IwExtended(R, L, C.ElemType, C.Extended, Out);
@@ -1064,6 +1114,21 @@ bool ReadEffect(const EffectZone& Z, EffectLayout L, int64_t Pos, const std::str
         }
         Elements = At<uint64_t>(Img, Pos + (L == EffectLayout::Iw5 ? 0x38 : 0x20));
     }
+    else if (L == EffectLayout::Iw4x86 || L == EffectLayout::Iw5x86)
+    {
+        // the original builds' (MW2 0x20, the iw4x86 table fe8c20; MW3 0x34, iw5x86 fc12a0): the
+        // rebuild's fields with a 4-byte name, MW3's occlusion fields from 0x1c
+        for (int I = 0; I < 3; I++) Counts[I] = At<uint32_t>(Img, Pos + 0x10 + 4 * I);
+        J["flags"] = At<uint32_t>(Img, Pos + 4);
+        J["loopingLifeMsec"] = At<uint32_t>(Img, Pos + 0xc);
+        if (L == EffectLayout::Iw5x86)
+        {
+            J["occlusionQueryDepthBias"] = At<float>(Img, Pos + 0x1c);
+            J["occlusionQueryFadeMsec"] = Json::array({ At<int32_t>(Img, Pos + 0x20), At<int32_t>(Img, Pos + 0x24) });
+            J["occlusionQueryScaleRange"] = Json::array({ At<float>(Img, Pos + 0x28), At<float>(Img, Pos + 0x2c) });
+        }
+        Elements = At<uint32_t>(Img, Pos + (L == EffectLayout::Iw5x86 ? 0x30 : 0x1c));
+    }
     else if (L == EffectLayout::Bo1)
     {
         for (int I = 0; I < 3; I++) Counts[I] = At<uint32_t>(Img, Pos + 0x10 + 4 * I);
@@ -1121,6 +1186,8 @@ bool ReadEffect(const EffectZone& Z, EffectLayout L, int64_t Pos, const std::str
                         : L == EffectLayout::Iw3 ? sizeof(Iw3Elem)
                         : L == EffectLayout::T4  ? sizeof(T4Elem)
                         : L == EffectLayout::Codol ? 0x104
+                        : L == EffectLayout::Iw4x86 ? sizeof(Iw4x86Elem)
+                        : L == EffectLayout::Iw5x86 ? sizeof(Iw5x86Elem)
                         : IwLine(L)              ? sizeof(Iw4Elem)
                                                  : sizeof(Bo1Elem);
     const uint32_t Total = Counts[0] + Counts[1] + Counts[2];
@@ -1169,6 +1236,8 @@ bool ReadEffect(const EffectZone& Z, EffectLayout L, int64_t Pos, const std::str
             {
                 const bool Read = L == EffectLayout::Iw3 ? IwElement<Iw3Elem>(R, L, A, E)
                                   : L == EffectLayout::T4 ? IwElement<T4Elem>(R, L, A, E)
+                                  : L == EffectLayout::Iw4x86 ? IwElement<Iw4x86Elem>(R, L, A, E)
+                                  : L == EffectLayout::Iw5x86 ? IwElement<Iw5x86Elem>(R, L, A, E)
                                                           : IwElement<Iw4Elem>(R, L, A, E);
                 if (!Read) return false;
             }

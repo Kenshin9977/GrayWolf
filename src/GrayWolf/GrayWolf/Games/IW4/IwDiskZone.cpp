@@ -2,6 +2,7 @@
 #include "DiskGameSizes.h"
 
 #include "Games/IW4/IwDiskZone.h"
+#include "Games/IW4/OriginalWeapons.h"
 
 #include "CoDIWITranslator.h"
 #include "ExportNaming.h"
@@ -76,12 +77,15 @@ namespace Iw64
         using namespace DiskGame;
         const Layout& L = *Game.Readers;
         // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h,
-        // whose x64 build reads the rebuild's zones only)
+        // whose x64 build reads the rebuild's zones only); the original builds' from the walk, at OAT's
+        // x86 offsets (Games/IW4/OriginalWeapons.h)
         if (L.Rebuild)
         {
             Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
             Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, Game.Title); });
         }
+        else
+            ExportsIwWeapons(&L == &Mw3x86 ? Mw3x86Weapons() : Mw2x86Weapons());
         Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
         Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
         Exports(Kind::Rawfile, [this](const Context& C, Totals& T) { ExportRawfiles(C, T); });
@@ -98,10 +102,15 @@ namespace Iw64
             });
         // Material: its techset, images and blend factors as JSON, its images by the image kind,
         // with its techset's name (the pointer before the texture table: the iw4 table's material
-        // 0x58, iw5's 0x60), what tells the preview how it blends; the model kind's reader leaves it
-        // FxEffectDef (MW2 0x28, MW3 0x40; elements 0x120) as JSON, CoD4's with 8-byte pointers
-        if (L.Rebuild)
-            ExportsEffects(
+        // 0x58, iw5's 0x60; the originals' 0x50, 0x54), what tells the preview how it blends; the
+        // model kind's reader leaves it
+        // FxEffectDef (MW2 0x28, MW3 0x40; elements 0x120) as JSON, CoD4's with 8-byte pointers; the
+        // original builds' (0x20, 0x34; elements 0xfc, 0x100) with 4-byte ones
+        const auto Effects = &L == &Mw3      ? Treyarch::EffectLayout::Iw5
+                             : &L == &Mw3x86 ? Treyarch::EffectLayout::Iw5x86
+                             : &L == &Mw2x86 ? Treyarch::EffectLayout::Iw4x86
+                                             : Treyarch::EffectLayout::Iw4;
+        ExportsEffects(
                 [this](uint64_t A) {
                     // a header as it is: the fx and material kinds name it and need it from where it
                     // is defined, whichever kinds ran before (MaterialDefinedAt, MaterialImagesElsewhere)
@@ -114,7 +123,7 @@ namespace Iw64
                     if (Techset >= 0) M.TechsetName = StringAt(PointerAt(Techset));
                     return M;
                 },
-                Game.Readers == &Mw3 ? Treyarch::EffectLayout::Iw5 : Treyarch::EffectLayout::Iw4);
+                Effects);
         // the .gsc rawfiles (source), and MW3's scriptfiles (bytecode)
         Exports(Kind::Script, [this](const Context& C, Totals& T) {
             ExportScripts(C, T, Game.ScriptVm,
@@ -281,57 +290,12 @@ namespace Iw64
 
     void IwDiskZone::ExportImages(const DiskGame::Context& C, DiskGame::Totals& T)
     {
-        auto& Kt = T.Kinds[DiskGame::Kind::Image];
-        std::vector<std::pair<int64_t, std::string>> Order;
-        std::set<std::string> Seen, ReferencedHere, DefinedHere;
-        for (const auto& I : Walk().Instances)
-        {
-            if (!OwnerIs(I, "image")) continue;
-            std::string Name = StringAt(PointerAt(I.Pos + Game.Readers->Image.Name));
-            const bool Reference = IsReference(DiskGame::Kind::Image, Name, I.Pos);
-            if (Reference) Name = Referenced(DiskGame::Kind::Image, Name);
-            if (Name.empty() || !C.Wants(DiskGame::Kind::Image, Name)) continue;
-            if (Reference)
-            {
-                Kt.References++;
-                ReferencedHere.insert(Name);
-                continue;
-            }
-            DefinedHere.insert(Name);
-            if (Seen.insert(ExportNaming::Lower(Name)).second) Order.emplace_back(I.Pos, Name);
-        }
-        ExportWriters::ImageSink Sink;
-        const fs::path Dir = C.KindDir(DiskGame::Kind::Image);
-        std::map<size_t, uint64_t> Keys;
-        for (size_t N = 0; N < Order.size(); N++)
-        {
-            const auto& [Pos, ImageNameText] = Order[N];
-            if (!C.Advance(N, Order.size(), ImageNameText)) break;
-            Kt.Seen++;
-            const std::string Path = (Dir / (ExportNaming::SafeFileName(ImageNameText) + Sink.Extension())).string();
-            uint64_t Key = 0;
-            auto Dds = Decode(Pos, Key);
-            if (!Dds)
-            {
-                T.Fail(Name(), DiskGame::Kind::Image, ImageNameText, "no pixels in the zone or the .iwd files");
-                continue;
-            }
-            Keys[(size_t)Pos] = Key;
-            if (Sink.LinkIfKnown(Key, Path, (size_t)Pos))
-            {
-                Kt.Known++;
-                continue;
-            }
-            Sink.Write(std::move(Dds), Path);
-        }
-        size_t Missing = 0;
-        const auto W = Sink.Finish([&](size_t Pos) { uint64_t K = 0; return Decode((int64_t)Pos, K); }, Missing,
-                                   [&](size_t Pos) { return Keys[Pos]; });
-        Kt.Written += W.Written;
-        Kt.Linked += W.Linked;
-        if (W.Failed + Missing) T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(W.Failed + Missing) + " not written");
-        for (const auto& N : ReferencedHere)
-            if (!DefinedHere.count(N)) C.Needs(DiskGame::Kind::Image, N);
+        NamedImages O;
+        O.KeyedDecode = [this](const std::string&, int64_t Pos, uint64_t& Key) { return Decode(Pos, Key); };
+        O.Unread = "no pixels in the zone or the .iwd files";
+        O.NameAt = Game.Readers->Image.Name;
+        O.ZoneOrder = true;
+        ExportNamedImages(C, T, O);
     }
 
     void IwDiskZone::ExportSounds(const DiskGame::Context& C, DiskGame::Totals& T)
@@ -369,10 +333,7 @@ namespace Iw64
                 continue;
             }
             if (C.OnSoundHeader && TellWavNeedsHeader(C, T, Sound, fs::path(Dir) / (Sound.AssetName + Extension))) continue;
-            Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
-                if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-                else T.Fail(Name(), DiskGame::Kind::Sound, Full, std::format("code {} {}", Code, Crash.c_str()));
-            });
+            Sink.Export(CoDAssets::Game, Sound, Dir, Extension, SoundExported(T, Full));
         }
         Sink.Finish();
         ExportStreamedSounds(C, T);
@@ -502,7 +463,6 @@ namespace Iw64
         // extracted here, archive by archive; decoded and written by the sink's pool
         ExportWriters::SoundSink Sink;
         const std::string Format = Sink.Format();
-        size_t Streamed = 0;   // the zone's counters are this thread's: added once the sink is done
         for (auto& [Archive, Files] : ByArchive)
         {
             mz_zip_archive Zip;
@@ -541,17 +501,11 @@ namespace Iw64
                     continue;
                 }
                 // the extracted bytes kept until written, then freed
-                Sink.Write(ExportWriters::SoundSource::OfFile(Data.get(), Size, Rel), P,
-                           [this, &Kt, &T, &Streamed, Rel](bool Ok, const std::string& Why, const std::string& Crash) {
-                               if (Ok) { Kt.Written++; Streamed++; }
-                               else T.Fail(Name(), DiskGame::Kind::Sound, Rel, Crash.empty() ? Why : Crash);
-                           },
-                           std::shared_ptr<const void>(Data));
+                WriteSoundTo(T, Sink, ExportWriters::SoundSource::OfFile(Data.get(), Size, Rel), P, Rel, "sounds_streamed", Data);
             }
             mz_zip_reader_end(&Zip);
         }
-        Sink.Finish();
-        if (Streamed) Counter("sounds_streamed") += Streamed;
+        FinishSoundFiles(Sink);
     }
 
     bool IwDiskZone::Payload(uint64_t Pointer, uint32_t N, bool Packed, uint32_t Size, std::vector<uint8_t>& Out) const
@@ -623,6 +577,9 @@ namespace Iw64
             if (Wanted && !IsReference(DiskGame::Kind::Rawfile, Nm, I.Pos) && RawfileBytes(I.Pos, Bytes))
                 Out.emplace_back(Nm, std::string(Bytes.begin(), Bytes.end()));
         }
+        // the original builds' weapon files (weapons/<name>), read from the walk as OAT writes the
+        // rebuild's: their models and anims (Games/IW4/OriginalWeapons.h)
+        if (!Game.Readers->Rebuild) IwWeaponFiles(Game.Readers == &Mw3x86 ? Mw3x86Weapons() : Mw2x86Weapons(), Out);
     }
 
     // rawfile: name, compressedLen, len (u32 after the name), buffer (zlib when compressedLen != 0):
@@ -767,11 +724,17 @@ namespace Iw64
 
     std::vector<std::string> IwDiskGame::AnimOwnerDocuments() const
     {
-        return IwClassicAnimOwners::Documents();
+        // (and the original builds' weapon files, IwDiskZone::Documents)
+        auto D = IwClassicAnimOwners::Documents();
+        if (Game.Original) D.push_back("weapons/*");
+        return D;
     }
 
     void IwDiskGame::AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const
     {
-        IwClassicAnimOwners::Fill(*this, Options, Zones, Out);
+        // an original zone's weapon files are among its documents, OAT reads the rebuild's
+        IwClassicAnimOwners::Fill(*this, Options, Zones, Out, [this](const std::string& Zone) {
+            return Game.Original && IsOriginal(Zone, Game.Readers->XFileSize);
+        });
     }
 }

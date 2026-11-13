@@ -137,7 +137,6 @@ namespace
             // decoded and written by the sink's pool, from the zone's bytes (there until it finishes)
             ExportWriters::SoundSink Sink;
             const std::shared_ptr<const void> InZone(Z.data(), [](const void*) {});
-            size_t Loaded = 0;   // the zone's counters are this thread's: added once the sink is done
             for (size_t N = 0; N < Found.size(); N++)
             {
                 const int64_t Pos = Found[N];
@@ -155,20 +154,9 @@ namespace
                     continue;
                 }
                 const fs::path Out = Root / fs::path(LoadedSoundFile(Full)).make_preferred();
-                Sink.Write(ExportWriters::SoundSource::OfFile(Z.data() + Data, Size, Full), Out.string(),
-                           [this, &Kt, &T, &Loaded, Full](bool Ok, const std::string& Why, const std::string& Crash) {
-                               if (Ok)
-                               {
-                                   Kt.Written++;
-                                   Loaded++;
-                               }
-                               else
-                                   T.Fail(Name(), Kind::Sound, Full, Crash.empty() ? Why : Crash);
-                           },
-                           InZone);
+                WriteSoundTo(T, Sink, ExportWriters::SoundSource::OfFile(Z.data() + Data, Size, Full), Out.string(), Full, "sounds_loaded", InZone);
             }
-            Sink.Finish();
-            if (Loaded) Counter("sounds_loaded") += Loaded;
+            FinishSoundFiles(Sink);
         }
 
     private:

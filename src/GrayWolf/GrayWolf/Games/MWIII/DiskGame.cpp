@@ -615,10 +615,7 @@ namespace
                 Sound.FrameCount = S.FrameCount;
                 Sound.ChannelsCount = S.ChannelCount;
                 Sound.IsFileEntry = false;
-                Sink.Export(CoDAssets::Game, Sound, Dir, Extension, [this, &Kt, &T, Full](int Code, const std::string& Crash) {
-                    if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
-                    else T.Fail(Name(), Kind::Sound, Full, "code " + std::to_string(Code) + " " + Crash);
-                });
+                Sink.Export(CoDAssets::Game, Sound, Dir, Extension, SoundExported(T, Full));
             }
             Sink.Finish();
         }

@@ -290,6 +290,12 @@ protected:
                         ExportWriters::SoundSink* Sink = nullptr);
     // Sink's sound files written, what they counted added to the zone's counters
     void FinishSoundFiles(ExportWriters::SoundSink& Sink);
+    // A sound handed to Sink's pool for Path (Keep: what holds S's bytes, else they are copied):
+    // counted written, and under Written (none: not) once FinishSoundFiles; else Asset failed with why
+    void WriteSoundTo(DiskGame::Totals& T, ExportWriters::SoundSink& Sink, const ExportWriters::SoundSource& S, const std::filesystem::path& Path,
+                      const std::string& Asset, const char* Written, std::shared_ptr<const void> Keep = nullptr);
+    // What SoundSink::Export calls back for Asset: counted written, else failed with its code
+    ExportWriters::SoundSink::ExportDone SoundExported(DiskGame::Totals& T, const std::string& Asset);
     // A dry run's (Context::OnSoundHeader) sound, what WriteSound would be handed at Path, told from
     // its first Have bytes (S.Data, S.Size the whole sound's): true when its header is in them (the
     // same header the whole sound gives), false when it is not (the caller reads it whole)
@@ -323,6 +329,21 @@ protected:
     using NamedImageDecoder = std::function<std::unique_ptr<XImageDDS>(const std::string& Name, int64_t Pos)>;
     void ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
                            bool ReferencesByName = false);
+    // ... with these options (each image named at its position + NameAt)
+    struct NamedImages
+    {
+        NamedImageDecoder Decode;
+        // in place of Decode: the image and its ImageSink content key (0: none); an image whose
+        // key the run already wrote is a link to that file (counted known)
+        std::function<std::unique_ptr<XImageDDS>(const std::string& Name, int64_t Pos, uint64_t& Key)> KeyedDecode;
+        const char* Unread = "";
+        int64_t NameAt = 0;
+        bool ReferencesByName = false;
+        // the images in the zone's order, once per name ignoring case, each "," instance counted a
+        // reference (else in name order, a name needed counted once); not with ReferencesByName
+        bool ZoneOrder = false;
+    };
+    void ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImages& O);
     // Defines' images for such a zone: every named image it holds whole
     void DefineImages(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const;
 

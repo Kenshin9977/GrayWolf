@@ -119,39 +119,61 @@ namespace
 void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImageDecoder& Decode, const char* Unread,
                                     bool ReferencesByName)
 {
+    NamedImages O;
+    O.Decode = Decode;
+    O.Unread = Unread;
+    O.ReferencesByName = ReferencesByName;
+    ExportNamedImages(C, T, O);
+}
+
+void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals& T, const NamedImages& O)
+{
     using DiskGame::Kind;
     auto& Kt = T.Kinds[Kind::Image];
-    std::map<std::string, int64_t> Names;   // name -> the image's position
-    std::set<std::string> ReferencedHere;
+    std::vector<std::pair<std::string, int64_t>> Order;   // name, the image's position
+    std::map<std::string, int64_t> ByName;
+    std::set<std::string> ReferencedHere, DefinedHere, Lowered;
     for (const auto& I : R.Instances)
     {
         if (!OwnerIs(I, "image")) continue;
-        std::string N = AssetName(Kind::Image, I.Pos);
+        std::string N = AssetName(Kind::Image, I.Pos + O.NameAt);
         const bool Reference = IsReference(Kind::Image, N, I.Pos);
         if (Reference) N = Referenced(Kind::Image, N);
         if (N.empty() || !C.Wants(Kind::Image, N)) continue;
-        if (Reference) ReferencedHere.insert(N);
-        else Names.emplace(N, I.Pos);
+        if (Reference)
+        {
+            if (O.ZoneOrder) Kt.References++;
+            ReferencedHere.insert(N);
+            continue;
+        }
+        DefinedHere.insert(N);
+        if (!O.ZoneOrder) ByName.emplace(N, I.Pos);
+        else if (Lowered.insert(ExportNaming::Lower(N)).second) Order.emplace_back(N, I.Pos);
     }
     for (const auto& N : ReferencedHere)
-        if (!Names.count(N))
+        if (!DefinedHere.count(N))
         {
-            if (ReferencesByName)
+            if (O.ReferencesByName)
             {
-                Names.emplace(N, -1);   // read by name below, else needed
+                ByName.emplace(N, -1);   // read by name below, else needed
                 continue;
             }
-            Kt.References++;
+            if (!O.ZoneOrder) Kt.References++;
             C.Needs(Kind::Image, N);
         }
+    if (!O.ZoneOrder) Order.assign(ByName.begin(), ByName.end());
+    const auto Decode = [&](size_t N, uint64_t& Key) {
+        Key = 0;
+        return O.KeyedDecode ? O.KeyedDecode(Order[N].first, Order[N].second, Key) : O.Decode(Order[N].first, Order[N].second);
+    };
     ExportWriters::ImageSink Sink;
     const fs::path Dir = C.KindDir(Kind::Image);
-    const std::vector<std::pair<std::string, int64_t>> Order(Names.begin(), Names.end());
+    std::vector<uint64_t> Keys(Order.size());
     for (size_t N = 0; N < Order.size(); N++)
     {
         const auto& [ImageName, Pos] = Order[N];
         if (!C.Advance(N, Order.size(), ImageName)) break;
-        auto Dds = Decode(ImageName, Pos);
+        auto Dds = Decode(N, Keys[N]);
         if (!Dds && Pos < 0)
         {
             Kt.References++;
@@ -163,13 +185,19 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
         if (!Dds)
         {
             Counter("images_unread")++;
-            T.Fail(Name(), Kind::Image, ImageName, Unread);
+            T.Fail(Name(), Kind::Image, ImageName, O.Unread);
             continue;
         }
-        Sink.Write(std::move(Dds), (Dir / (ExportNaming::SafeFileName(ImageName) + Sink.Extension())).string());
+        const std::string Path = (Dir / (ExportNaming::SafeFileName(ImageName) + Sink.Extension())).string();
+        if (Sink.LinkIfKnown(Keys[N], Path, N))
+        {
+            Kt.Known++;
+            continue;
+        }
+        Sink.Write(std::move(Dds), Path);
     }
     size_t Missing = 0;
-    const auto W = Sink.Finish([&](size_t Tag) { return Decode(Order[Tag].first, Order[Tag].second); }, Missing);
+    const auto W = Sink.Finish([&](size_t Tag) { uint64_t Key = 0; return Decode(Tag, Key); }, Missing, [&](size_t Tag) { return Keys[Tag]; });
     Kt.Written += W.Written;
     Kt.Linked += W.Linked;
     FailUnwritten(T, Name(), W, Missing);
@@ -606,16 +634,7 @@ void ZonekitZone::WriteSoundFile(const DiskGame::Context& C, DiskGame::Totals& T
     const fs::path Path = (C.KindDir(DiskGame::Kind::Sound) / fs::path(std::u8string(Out.begin(), Out.end()))).make_preferred();
     if (Sink != nullptr)
     {
-        Sink->Write(ExportWriters::SoundSource::OfFile(Data, Size, File), Path,
-                    [this, &T, File, Counted = std::string(Written)](bool Ok, const std::string& Why, const std::string& Crash) {
-                        if (Ok)
-                        {
-                            T.Kinds[DiskGame::Kind::Sound].Written++;
-                            SoundFileCounts[Counted]++;
-                        }
-                        else
-                            T.Fail(Name(), DiskGame::Kind::Sound, File, Crash.empty() ? Why : Crash);
-                    });
+        WriteSoundTo(T, *Sink, ExportWriters::SoundSource::OfFile(Data, Size, File), Path, File, Written);
         return;
     }
     std::string Why;
@@ -633,6 +652,31 @@ void ZonekitZone::FinishSoundFiles(ExportWriters::SoundSink& Sink)
     Sink.Finish();
     for (const auto& [Key, N] : SoundFileCounts) Counter(Key) += N;
     SoundFileCounts.clear();
+}
+
+void ZonekitZone::WriteSoundTo(DiskGame::Totals& T, ExportWriters::SoundSink& Sink, const ExportWriters::SoundSource& S, const fs::path& Path,
+                               const std::string& Asset, const char* Written, std::shared_ptr<const void> Keep)
+{
+    Sink.Write(S, Path,
+               [this, &T, &Kt = T.Kinds[DiskGame::Kind::Sound], Asset, Counted = std::string(Written ? Written : "")](
+                   bool Ok, const std::string& Why, const std::string& Crash) {
+                   if (Ok)
+                   {
+                       Kt.Written++;
+                       if (!Counted.empty()) SoundFileCounts[Counted]++;
+                   }
+                   else
+                       T.Fail(Name(), DiskGame::Kind::Sound, Asset, Crash.empty() ? Why : Crash);
+               },
+               std::move(Keep));
+}
+
+ExportWriters::SoundSink::ExportDone ZonekitZone::SoundExported(DiskGame::Totals& T, const std::string& Asset)
+{
+    return [this, &T, &Kt = T.Kinds[DiskGame::Kind::Sound], Asset](int Code, const std::string& Crash) {
+        if (Code == static_cast<int>(ExportGameResult::Success)) Kt.Written++;
+        else T.Fail(Name(), DiskGame::Kind::Sound, Asset, "code " + std::to_string(Code) + " " + Crash);
+    };
 }
 
 bool ZonekitZone::TellSoundHead(const DiskGame::Context& C, DiskGame::Totals& T, const ExportWriters::SoundSource& S, const fs::path& Path, size_t Have)

@@ -1159,7 +1159,10 @@ namespace
                     }
                     return "model_export/" + G.Map + "/images/" + It->second;
                 }, "material_gdt_", G.Prefix);
-                for (size_t I = 0; I < Described.size(); I++) B.Add(Described[I], G.Root, Layered[I] != 0, Sorts[I]);
+                std::vector<MaterialGdt::Builder::Item> Items;
+                Items.reserve(Described.size());
+                for (size_t I = 0; I < Described.size(); I++) Items.push_back({ &Described[I], G.Root, Layered[I] != 0, Sorts[I] });
+                B.AddAll(Items);
                 std::vector<std::string> Entries = G.ModelEntries;
                 const std::vector<std::string> Mine = B.Entries("\n");
                 Entries.insert(Entries.end(), Mine.begin(), Mine.end());
