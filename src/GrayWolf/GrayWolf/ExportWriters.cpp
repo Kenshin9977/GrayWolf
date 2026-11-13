@@ -264,19 +264,27 @@ struct WorkerPool::State
     std::vector<std::thread> Threads;
 };
 
+unsigned PhysicalCores()
+{
+    static const unsigned Cores = [] {
+        unsigned N = 0;
+        DWORD Bytes = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &Bytes);
+        std::vector<uint8_t> Info(Bytes);
+        if (Bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data()), &Bytes))
+            for (DWORD At = 0; At < Bytes; At += reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data() + At)->Size)
+                N++;
+        return N != 0 ? N : std::max(1u, std::thread::hardware_concurrency() / 2);
+    }();
+    return Cores;
+}
+
 unsigned WorkerPool::DefaultWorkers()
 {
     char Env[16] = {};
     if (EnvValue("GH_CONVERT_THREADS", "GH_BO4_CONVERT_THREADS", Env, sizeof(Env))) return (unsigned)atoi(Env);
-    // physical cores (SMT siblings count once); half of them, 70% past 12, so the machine stays usable
-    unsigned Cores = 0;
-    DWORD Bytes = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &Bytes);
-    std::vector<uint8_t> Info(Bytes);
-    if (Bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data()), &Bytes))
-        for (DWORD At = 0; At < Bytes; At += reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(Info.data() + At)->Size)
-            Cores++;
-    if (Cores == 0) Cores = std::max(1u, std::thread::hardware_concurrency() / 2);
+    // half the physical cores, 70% past 12, so the machine stays usable
+    const unsigned Cores = PhysicalCores();
     return std::max(1u, Cores > 12 ? Cores * 7 / 10 : Cores / 2);
 }
 

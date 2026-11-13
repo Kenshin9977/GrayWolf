@@ -4,9 +4,12 @@
 #include "Strings.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <mutex>
 #include <regex>
 
 namespace fs = std::filesystem;
@@ -165,11 +168,23 @@ namespace XboxPackages
 
     std::vector<Package> Dlc(const std::string& Root)
     {
+        // asked once per zone resolved (an index build: thousands, one at a time), each answer
+        // reading the registry, every drive's .GamingRoot and the configs: kept 30 s per root
+        static std::mutex Lock;
+        static std::map<std::string, std::pair<std::chrono::steady_clock::time_point, std::vector<Package>>> Kept;
+        const auto Now = std::chrono::steady_clock::now();
+        const std::string Key = Lower(Root);
+        {
+            const std::lock_guard<std::mutex> G(Lock);
+            if (const auto It = Kept.find(Key); It != Kept.end() && Now - It->second.first < std::chrono::seconds(30)) return It->second.second;
+        }
         std::vector<Package> Out;
         Package Game;
-        if (!ReadConfig(Root, Game) || !Game.MainPackage.empty()) return Out;
-        for (auto& P : Installed())
-            if (SameName(P.MainPackage, Game.Name)) Out.push_back(std::move(P));
+        if (ReadConfig(Root, Game) && Game.MainPackage.empty())
+            for (auto& P : Installed())
+                if (SameName(P.MainPackage, Game.Name)) Out.push_back(std::move(P));
+        const std::lock_guard<std::mutex> G(Lock);
+        Kept[Key] = { Now, Out };
         return Out;
     }
 

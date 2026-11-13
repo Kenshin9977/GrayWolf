@@ -73,6 +73,9 @@ public:
     virtual void LoadStreamedXModel(const std::unique_ptr<XModel_t>& Model, const XModelLod_t& ModelLOD, const std::unique_ptr<WraithModel>& ResultModel) const {}
     // The model reader builds the skeleton itself: CoDXModelTranslator reads no bone matrices.
     virtual bool ReadsOwnBones() const { return false; }
+    // Its model translation (LoadStreamedXModel and all it reads) may run on several threads at once:
+    // a disk export then translates the LODs on the pool writing the models' files (ModelFilesOnPool)
+    virtual bool ReadsMeshesInParallel() const { return false; }
 
     // Translator-internal behavior buckets (see enums above).
     virtual ViewmodelBoneConvention GetViewmodelBoneConvention() const { return ViewmodelBoneConvention::None; }

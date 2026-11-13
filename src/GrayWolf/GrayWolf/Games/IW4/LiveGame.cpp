@@ -26,7 +26,7 @@ namespace
         // the 64-bit rebuild's zones, served from disk (Games/IW4/Iw64Readers.h)
         std::unique_ptr<XAnim_t> ReadXAnim(const CoDAnim_t* Animation) const override
         {
-            return Iw64::ReadXAnim(Animation);
+            return Iw64::ReadXAnim(Animation, Iw64::Mw2);
         }
         std::unique_ptr<XModel_t> ReadXModel(const CoDModel_t* Model) const override
         {

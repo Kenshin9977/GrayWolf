@@ -16,8 +16,10 @@
 #include "SettingsManager.h"
 #include "Strings.h"
 #include "ZipInflate.h"
+#include <wolff/FastFile.h>
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -57,7 +59,7 @@ namespace Iw64
         }
 
         // an unsigned zone (IWffu100), or a signed one (IWff0100) whose auth chunk (IWffs100, at 21)
-        // FastFile steps over; not the 32-bit originals' layout
+        // FastFile steps over: both builds (the Steam originals have the 21-byte header too)
         bool Readable(const fs::path& P)
         {
             std::ifstream F(P, std::ios::binary);
@@ -72,9 +74,14 @@ namespace Iw64
     IwDiskZone::IwDiskZone(const std::string& Path, const GameInfo& G) : IWZone(Path), Game(G), Weapons(Path)
     {
         using namespace DiskGame;
-        // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h)
-        Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
-        Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, Game.Title); });
+        const Layout& L = *Game.Readers;
+        // the weapon files and their stats table, through OpenAssetTools (Games/OAT/OatWeapons.h,
+        // whose x64 build reads the rebuild's zones only)
+        if (L.Rebuild)
+        {
+            Exports(Kind::Weapons, [this](const Context& C, Totals& T) { OatWeapons::ExportWeapons(Weapons, Name(), C, T); });
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { OatWeapons::ExportWeaponStats(Weapons, Name(), C, T, Game.Title); });
+        }
         Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
         Exports(Kind::Sound, [this](const Context& C, Totals& T) { ExportSounds(C, T); });
         Exports(Kind::Rawfile, [this](const Context& C, Totals& T) { ExportRawfiles(C, T); });
@@ -93,20 +100,21 @@ namespace Iw64
         // with its techset's name (the pointer before the texture table: the iw4 table's material
         // 0x58, iw5's 0x60), what tells the preview how it blends; the model kind's reader leaves it
         // FxEffectDef (MW2 0x28, MW3 0x40; elements 0x120) as JSON, CoD4's with 8-byte pointers
-        ExportsEffects(
-            [this](uint64_t A) {
-                // a header as it is: the fx and material kinds name it and need it from where it is
-                // defined, whichever kinds ran before (MaterialDefinedAt, MaterialImagesElsewhere)
-                XMaterial_t M = [&] {
-                    const CoDAssets::Scoped NoDefined(MaterialDefinedAt, nullptr);
-                    const CoDAssets::Scoped NoElsewhere(MaterialImagesElsewhere, nullptr);
-                    return ReadXMaterial(A, *Game.Readers);
-                }();
-                const int64_t Techset = Off(At<uint64_t>(Image(), Off(A) + Game.Readers->MaterialTextureTable - 8));
-                if (Techset >= 0) M.TechsetName = StringAt(At<uint64_t>(Image(), Techset));
-                return M;
-            },
-            Game.Readers == &Mw3 ? Treyarch::EffectLayout::Iw5 : Treyarch::EffectLayout::Iw4);
+        if (L.Rebuild)
+            ExportsEffects(
+                [this](uint64_t A) {
+                    // a header as it is: the fx and material kinds name it and need it from where it
+                    // is defined, whichever kinds ran before (MaterialDefinedAt, MaterialImagesElsewhere)
+                    XMaterial_t M = [&] {
+                        const CoDAssets::Scoped NoDefined(MaterialDefinedAt, nullptr);
+                        const CoDAssets::Scoped NoElsewhere(MaterialImagesElsewhere, nullptr);
+                        return ReadXMaterial(A, *Game.Readers);
+                    }();
+                    const int64_t Techset = Off(PointerAt(Off(A) + Game.Readers->MaterialTextureTable - Game.Readers->PointerSize));
+                    if (Techset >= 0) M.TechsetName = StringAt(PointerAt(Techset));
+                    return M;
+                },
+                Game.Readers == &Mw3 ? Treyarch::EffectLayout::Iw5 : Treyarch::EffectLayout::Iw4);
         // the .gsc rawfiles (source), and MW3's scriptfiles (bytecode)
         Exports(Kind::Script, [this](const Context& C, Totals& T) {
             ExportScripts(C, T, Game.ScriptVm,
@@ -126,7 +134,7 @@ namespace Iw64
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "material")) continue;
-            const std::string N = StringAt(At<uint64_t>(Image(), I.Pos));
+            const std::string N = StringAt(PointerAt(I.Pos));
             if (!IsReference(DiskGame::Kind::Material, N, I.Pos)) Materials.emplace(ExportNaming::Lower(N), I.Pos);
         }
     }
@@ -150,11 +158,12 @@ namespace Iw64
     {
         if (BooksTried || Owner == nullptr || Install.empty()) return;
         BooksTried = true;
-        // Material: the texture count u8 and table, slots {u32 name hash, pad, image*} of 0x10; GfxImage's name
+        // Material: the texture count u8 and table, slots {u32 name hash, ..., image* at 8} (0x10,
+        // 0xc in the original build); GfxImage's name
         IWMaterialBooks::Layout L;
         L.Profile = Game.Profile;
         L.ImageCount = Game.Readers->MaterialTextureCount, L.Images = Game.Readers->MaterialTextureTable;
-        L.SlotSize = 0x10, L.SlotImage = 8, L.ImageName = ImageName;
+        L.SlotSize = Game.Readers->Shapes.TextureDefSize, L.SlotImage = 8, L.ImageName = Game.Readers->Image.Name;
         L.WithSlotsOnly = true;
         // each header's first defining zone (the install's order), this one left out
         const auto Headers = MaterialHeaders();
@@ -166,13 +175,14 @@ namespace Iw64
     void IwDiskZone::Fixups()
     {
         Served(true);   // opened: the zone the handlers reach
-        // the script strings: count and pointer in the XAssetList just before the
-        // stream, then one u64 slot each, then the text of every inline slot
+        // the script strings: count and pointer in the XAssetList after the XFile (four pointer-wide
+        // fields), then one pointer-wide slot each, then the text of every inline slot
         const auto& Z = Zone();
-        const int64_t Start = Rules().HeaderSize, List = Start - 0x20;
+        const int64_t P = Game.Readers->PointerSize, List = Game.Readers->XFileSize, Start = List + 4 * P;
         const uint32_t Count = At<uint32_t>(Z, List);
-        if (At<uint64_t>(Z, List + 8) == 0 || (int64_t)Count * 8 > (int64_t)Z.size()) return;
-        Slots = InlineStrings(Z, Start, Count, 8, Rules().Marker);
+        const uint64_t Strings = P == 4 ? At<uint32_t>(Z, List + P) : At<uint64_t>(Z, List + P);
+        if (Strings == 0 || (int64_t)Count * P > (int64_t)Z.size()) return;
+        Slots = InlineStrings(Z, Start, Count, (int)P, Rules().Marker);
     }
 
     void IwDiskZone::DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const
@@ -182,7 +192,7 @@ namespace Iw64
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "image")) continue;
-            const std::string N = StringAt(At<uint64_t>(Image(), I.Pos + ImageName));
+            const std::string N = StringAt(PointerAt(I.Pos + Game.Readers->Image.Name));
             if (!IsReference(DiskGame::Kind::Image, N, I.Pos) && Seen.insert(ExportNaming::Lower(N)).second)
                 Out.push_back({ { DiskGame::Kind::Image, N }, I.Pos });
         }
@@ -194,7 +204,7 @@ namespace Iw64
         constexpr uint64_t RecordOnly = 0x100;
         if (K != DiskGame::Kind::Image || W.Bytes > RecordOnly) return;
         IWDCache* Iwd = Packages();
-        const std::string Name = StringAt(At<uint64_t>(Image(), Pos + ImageName));
+        const std::string Name = StringAt(PointerAt(Pos + Game.Readers->Image.Name));
         PackageCacheObject O;
         if (Iwd != nullptr && !Name.empty() && Iwd->Find(Iwd->HashPackageID(Name), O)) W = DiskGame::Sizes::IwiWeight(O.UncompressedSize);
     }
@@ -218,7 +228,7 @@ namespace Iw64
     std::unique_ptr<XImageDDS> IwDiskZone::Decode(int64_t Pos, uint64_t& Key)
     {
         auto Dds = Pixels(Pos, Key);
-        if (StoredNormals::Patch(Dds.get(), At<uint8_t>(Image(), Pos + ImageSemantic)))
+        if (StoredNormals::Patch(Dds.get(), At<uint8_t>(Image(), Pos + Game.Readers->Image.Semantic)))
         {
             Key = Mix(Key, 0x4e4f524d414c4147ull);   // "NORMALAG"
             Counter("images_normal_expanded")++;
@@ -228,10 +238,10 @@ namespace Iw64
 
     std::unique_ptr<XImageDDS> IwDiskZone::Pixels(int64_t Pos, uint64_t& Key)
     {
-        const uint64_t Address = VirtualGameSession::Address((uint64_t)Pos);
-        const std::string Name = StringAt(At<uint64_t>(Image(), Pos + ImageName));
+        const uint64_t Address = Live().Addr((uint64_t)Pos);
+        const std::string Name = StringAt(PointerAt(Pos + Game.Readers->Image.Name));
         Key = 0;
-        if (auto Dds = ZoneImage(Address))
+        if (auto Dds = ZoneImage(Address, *Game.Readers))
         {
             // the pixels' own bytes: the same image in another zone links to this file
             uint64_t H = 0x9E3779B97F4A7C15ull;
@@ -266,7 +276,7 @@ namespace Iw64
         IwDiskZone* Current = ServedZone<IwDiskZone>();
         if (Current == nullptr || !Current->Live().Contains(Image.ImagePtr)) return nullptr;
         uint64_t Key = 0;
-        return Current->Decode((int64_t)(Image.ImagePtr - VirtualGameSession::Base), Key);
+        return Current->Decode(Current->Off(Image.ImagePtr), Key);
     }
 
     void IwDiskZone::ExportImages(const DiskGame::Context& C, DiskGame::Totals& T)
@@ -277,7 +287,7 @@ namespace Iw64
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "image")) continue;
-            std::string Name = StringAt(At<uint64_t>(Image(), I.Pos + ImageName));
+            std::string Name = StringAt(PointerAt(I.Pos + Game.Readers->Image.Name));
             const bool Reference = IsReference(DiskGame::Kind::Image, Name, I.Pos);
             if (Reference) Name = Referenced(DiskGame::Kind::Image, Name);
             if (Name.empty() || !C.Wants(DiskGame::Kind::Image, Name)) continue;
@@ -352,7 +362,7 @@ namespace Iw64
             Sink.Locked([&] { Kt.Seen++; });
             CoDSound_t Sound;
             Sound.AssetName = ExportNaming::SafeFileName(fs::path(Full).replace_extension().string());
-            if (!LoadedSound(VirtualGameSession::Address((uint64_t)Pos), Sound))
+            if (!LoadedSound(Live().Addr((uint64_t)Pos), Sound, *Game.Readers))
             {
                 Counter("sounds_not_pcm16")++;
                 Sink.Locked([&] { T.Fail(Name(), DiskGame::Kind::Sound, Full, "not 16-bit PCM"); });
@@ -369,22 +379,13 @@ namespace Iw64
         if (SoundAliasCsv::Wanted(C)) ExportSoundAliases(C, T);
     }
 
-    // snd_alias_t (OAT's IW4/IW5 headers, 8-byte pointers; the iw4/iw5 tables agree on its strings,
-    // SoundFile 0x28 and curve): MW2 0x88 (volumes 0x34/0x38, pitches 0x3c/0x40, distances 0x44/0x48,
-    // flags 0x50, probability 0x58, center 0x60, start delay 0x64, envelope 0x70/0x74/0x78); MW3 0x98
-    // (volModIndex after the volumes: +4; a master priority after the flags: +0xc; the curve 0x78: +0x10). Flags:
-    // looping 0, type 7-8 (matches the SoundFile on every alias); 2D/3D is not a flag here (the 6th,
-    // spatialize, is set on 2 of 279 variants of so_ied_berlin): left empty.
+    // snd_alias_t as the build's Layout::Aliases gives it (Games/IW4/Iw64Readers.cpp); SoundFile {u8
+    // type, u8 exists, then pointer-wide: a loaded sound's LoadedSound, or a streamed one's folder and
+    // file name}
     void IwDiskZone::ExportSoundAliases(const DiskGame::Context& C, DiskGame::Totals& T)
     {
-        IWSoundAliases::Layout L;
-        const bool Mw3 = Game.Readers->AliasSize == 0x98;
-        const int64_t A = Mw3 ? 4 : 0, B = Mw3 ? 0xc : 0, E = Mw3 ? 0x10 : 0;
-        L.ListCount = 0x10, L.ListCountBytes = 4, L.Size = Game.Readers->AliasSize;
-        L.Subtitle = 8, L.Secondary = 0x10, L.SoundFile = 0x28, L.VolMin = 0x34, L.VolMax = 0x38;
-        L.PitchMin = 0x3c + A, L.PitchMax = 0x40 + A, L.DistMin = 0x44 + A, L.DistMax = 0x48 + A, L.Flags = 0x50 + A;
-        L.Probability = 0x58 + B, L.CenterPercentage = 0x60 + B, L.StartDelay = 0x64 + B;
-        L.EnvelopMin = 0x70 + E, L.EnvelopMax = 0x74 + E, L.EnvelopPercentage = 0x78 + E;
+        const IWSoundAliases::Layout& L = Game.Readers->Aliases;
+        const int64_t P = Game.Readers->PointerSize;
         // the files ExportSounds wrote: a loaded sound flat, its path without extension made one
         // name; a streamed one under its folder
         const std::string Extension = ExportWriters::SoundExtension(ExportWriters::SoundFormatSetting());
@@ -392,12 +393,12 @@ namespace Iw64
             if (Spec < 0) return std::string();
             if (At<uint8_t>(Image(), Spec) == 1)
             {
-                const int64_t Loaded = Off(At<uint64_t>(Image(), Spec + 8));
-                std::string N = Loaded < 0 ? std::string() : StringAt(At<uint64_t>(Image(), Loaded));
+                const int64_t Loaded = Off(PointerAt(Spec + P));
+                std::string N = Loaded < 0 ? std::string() : StringAt(PointerAt(Loaded));
                 if (!N.empty() && N[0] == ',') N.erase(0, 1);
                 return N.empty() ? N : ExportNaming::SafeFileName(fs::path(N).replace_extension().string()) + Extension;
             }
-            const std::string Dir = StringAt(At<uint64_t>(Image(), Spec + 8)), Leaf = StringAt(At<uint64_t>(Image(), Spec + 0x10));
+            const std::string Dir = StringAt(PointerAt(Spec + P)), Leaf = StringAt(PointerAt(Spec + 2 * P));
             return Leaf.empty() ? Leaf : ExportWriters::SoundFileName(Dir.empty() ? Leaf : Dir + "/" + Leaf, ExportWriters::SoundFormatSetting());
         };
         const SoundAliasCsv::ZoneView Z = AliasView();
@@ -456,23 +457,26 @@ namespace Iw64
         }
     }
 
-    // Streamed aliases (SoundFile type != 1: dir at +8, name at +0x10): the whole .wav or .mp3
-    // file from the .iwd archives, written as it is under sounds/<dir>/<name>
+    // Streamed aliases (SoundFile type != 1: the folder and the file name pointers after its two
+    // bytes): the whole .wav or .mp3 file from the .iwd archives, written as it is under
+    // sounds/<dir>/<name>
     void IwDiskZone::ExportStreamedSounds(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Sound];
         std::set<std::string> Wanted;
+        const int64_t P = Game.Readers->PointerSize;
         for (const auto& I : Walk().Instances)
         {
             if (!OwnerIs(I, "sound")) continue;
-            const int64_t Head = Off(At<uint64_t>(Image(), I.Pos + 8));
-            const uint32_t Count = At<uint32_t>(Image(), I.Pos + 0x10);
+            // snd_alias_list_t: name, head, count
+            const int64_t Head = Off(PointerAt(I.Pos + P));
+            const uint32_t Count = At<uint32_t>(Image(), I.Pos + 2 * P);
             for (uint32_t K = 0; Head >= 0 && K < Count && K < 4096; K++)
             {
-                const int64_t File = Off(At<uint64_t>(Image(), Head + (int64_t)K * Game.Readers->AliasSize + 0x28));
+                const int64_t File = Off(PointerAt(Head + (int64_t)K * Game.Readers->AliasSize + Game.Readers->Aliases.SoundFile));
                 if (File < 0 || At<uint8_t>(Image(), File) == 1) continue;
-                const std::string Dir = StringAt(At<uint64_t>(Image(), File + 8));
-                const std::string FileName = StringAt(At<uint64_t>(Image(), File + 0x10));
+                const std::string Dir = StringAt(PointerAt(File + P));
+                const std::string FileName = StringAt(PointerAt(File + 2 * P));
                 if (FileName.empty()) continue;
                 const std::string Rel = Dir.empty() ? FileName : Dir + "/" + FileName;
                 if (C.Wants(DiskGame::Kind::Sound, fs::path(Rel).replace_extension().generic_string())) Wanted.insert(Rel);
@@ -577,29 +581,39 @@ namespace Iw64
 
     bool IwDiskZone::RawfileBytes(int64_t Pos, std::vector<uint8_t>& Bytes) const
     {
-        const uint32_t Packed = At<uint32_t>(Image(), Pos + 8), Len = At<uint32_t>(Image(), Pos + 0xc);
+        const int64_t P = Game.Readers->PointerSize;
+        const uint32_t Packed = At<uint32_t>(Image(), Pos + P), Len = At<uint32_t>(Image(), Pos + P + 4);
         if (Packed == 0 && Len == 0) return true;   // an empty file (code_post_gfx's own)
-        if (!Payload(At<uint64_t>(Image(), Pos + 0x10), Packed ? Packed : Len, Packed != 0, Len, Bytes)) return false;
+        if (!Payload(PointerAt(Pos + P + 8), Packed ? Packed : Len, Packed != 0, Len, Bytes)) return false;
         if (Bytes.size() > Len) Bytes.resize(Len);
         return true;
+    }
+
+    namespace
+    {
+        // MW3's scriptfile: name, compressedLen, len, bytecodeLen (u32 after the name), then the
+        // buffer (zlib) at the next pointer-aligned offset and the bytecode after it: 0x18 / 0x20 in
+        // the rebuild, 0x10 / 0x14 in the original
+        int64_t ScriptBuffer(int64_t P) { return (P + 0xc + P - 1) / P * P; }
     }
 
     void IwDiskZone::Documents(std::vector<std::pair<std::string, std::string>>& Out) const
     {
         ZonekitZone::Documents(Out);
+        const int64_t P = Game.Readers->PointerSize;
         for (const auto& I : Walk().Instances)
         {
             if (I.Parent >= 0) continue;
             const bool Script = OwnerIs(I, "scriptfile");
             if (!Script && !OwnerIs(I, "rawfile")) continue;
-            const std::string Nm = StringAt(At<uint64_t>(Image(), I.Pos)), L = ExportNaming::Lower(Nm);
+            const std::string Nm = StringAt(PointerAt(I.Pos)), L = ExportNaming::Lower(Nm);
             std::vector<uint8_t> Bytes;
             if (Script)
             {
                 // MW3's compiled script: its strings (the buffer the rawfile kind writes as <name>.gscsource)
-                const uint32_t Packed = At<uint32_t>(Image(), I.Pos + 8), Len = At<uint32_t>(Image(), I.Pos + 0xc);
+                const uint32_t Packed = At<uint32_t>(Image(), I.Pos + P), Len = At<uint32_t>(Image(), I.Pos + P + 4);
                 if (Packed != 0 && !IsReference(DiskGame::Kind::Rawfile, Nm, I.Pos) &&
-                    Payload(At<uint64_t>(Image(), I.Pos + 0x18), Packed, true, Len, Bytes))
+                    Payload(PointerAt(I.Pos + ScriptBuffer(P)), Packed, true, Len, Bytes))
                     Out.emplace_back(Nm + ".gscsource", std::string(Bytes.begin(), Bytes.end()));
                 continue;
             }
@@ -611,12 +625,13 @@ namespace Iw64
         }
     }
 
-    // rawfile: name 0, compressedLen 8, len 0xc, buffer 0x10 (zlib when compressedLen != 0); MW3's
-    // scriptfile: name 0, compressedLen 8, len 0xc, bytecodeLen 0x10, buffer 0x18, bytecode 0x20
+    // rawfile: name, compressedLen, len (u32 after the name), buffer (zlib when compressedLen != 0):
+    // 8 / 0xc / 0x10 in the rebuild, 4 / 8 / 0xc in the original; MW3's scriptfile (ScriptBuffer)
     void IwDiskZone::ExportRawfiles(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Rawfile];
         const fs::path Dir = C.KindDir(DiskGame::Kind::Rawfile);
+        const int64_t P = Game.Readers->PointerSize;
         std::vector<std::pair<int64_t, bool>> Found;
         for (const auto& I : Walk().Instances)
             if (I.Parent < 0 && (OwnerIs(I, "rawfile") || OwnerIs(I, "scriptfile")))
@@ -624,12 +639,12 @@ namespace Iw64
         for (size_t N = 0; N < Found.size(); N++)
         {
             const auto [Pos, Script] = Found[N];
-            const std::string Nm = StringAt(At<uint64_t>(Image(), Pos));
+            const std::string Nm = StringAt(PointerAt(Pos));
             if (!C.Advance(N, Found.size(), Nm)) break;
             if (IsReference(DiskGame::Kind::Rawfile, Nm, Pos)) { Kt.References++; continue; }
             if (!C.Wants(DiskGame::Kind::Rawfile, Nm)) continue;
             Kt.Seen++;
-            const uint32_t Packed = At<uint32_t>(Image(), Pos + 8), Len = At<uint32_t>(Image(), Pos + 0xc);
+            const uint32_t Packed = At<uint32_t>(Image(), Pos + P), Len = At<uint32_t>(Image(), Pos + P + 4);
             std::vector<uint8_t> Bytes;
             bool Ok = false;
             if (!Script)
@@ -637,10 +652,11 @@ namespace Iw64
             else
             {
                 std::vector<uint8_t> Code;
-                const uint32_t CodeLen = At<uint32_t>(Image(), Pos + 0x10);
-                Ok = Packed == 0 || (Payload(At<uint64_t>(Image(), Pos + 0x18), Packed, true, Len, Bytes) &&
+                const uint32_t CodeLen = At<uint32_t>(Image(), Pos + P + 8);
+                const int64_t Buffer = ScriptBuffer(P);
+                Ok = Packed == 0 || (Payload(PointerAt(Pos + Buffer), Packed, true, Len, Bytes) &&
                                      WriteFile(Dir, Nm + ".gscsource", Bytes));
-                Ok = Ok && (CodeLen == 0 || (Payload(At<uint64_t>(Image(), Pos + 0x20), CodeLen, false, 0, Code) &&
+                Ok = Ok && (CodeLen == 0 || (Payload(PointerAt(Pos + Buffer + P), CodeLen, false, 0, Code) &&
                                              WriteFile(Dir, Nm + ".gscbin", Code)));
             }
             if (Ok) Kt.Written++;
@@ -648,31 +664,33 @@ namespace Iw64
         }
     }
 
-    // stringtable: name 0, columnCount 8, rowCount 0xc, values 0x10 (16 bytes: string, hash): a CSV
+    // stringtable: name, columnCount, rowCount (i32 after the name), values (cells of two pointer-wide
+    // fields: string, hash): 8 / 0xc / 0x10 in the rebuild, 4 / 8 / 0xc in the original. A CSV.
     void IwDiskZone::ExportStringTables(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Data];
         const fs::path Dir = C.KindDir(DiskGame::Kind::Data);
+        const int64_t P = Game.Readers->PointerSize;
         std::vector<int64_t> Found;
         for (const auto& I : Walk().Instances)
             if (OwnerIs(I, "stringtable")) Found.push_back(I.Pos);
         for (size_t N = 0; N < Found.size(); N++)
         {
             const int64_t Pos = Found[N];
-            const std::string Nm = StringAt(At<uint64_t>(Image(), Pos));
+            const std::string Nm = StringAt(PointerAt(Pos));
             if (!C.Advance(N, Found.size(), Nm)) break;
             if (IsReference(DiskGame::Kind::Data, Nm, Pos)) { Kt.References++; continue; }
             if (!C.Wants(DiskGame::Kind::Data, Nm)) continue;
             Kt.Seen++;
-            const int32_t Cols = At<int32_t>(Image(), Pos + 8), Rows = At<int32_t>(Image(), Pos + 0xc);
-            const int64_t Values = Off(At<uint64_t>(Image(), Pos + 0x10));
+            const int32_t Cols = At<int32_t>(Image(), Pos + P), Rows = At<int32_t>(Image(), Pos + P + 4);
+            const int64_t Values = Off(PointerAt(Pos + P + 8));
             std::string Csv;
             for (int32_t R = 0; Values >= 0 && R < Rows; R++)
             {
                 for (int32_t K = 0; K < Cols; K++)
                 {
                     if (K) Csv += ',';
-                    Csv += StringAt(At<uint64_t>(Image(), Values + ((int64_t)R * Cols + K) * 16));
+                    Csv += StringAt(PointerAt(Values + ((int64_t)R * Cols + K) * 2 * P));
                 }
                 Csv += '\n';
             }
@@ -704,10 +722,43 @@ namespace Iw64
         return !Names.empty();
     }
 
+    bool IsOriginal(const std::string& FastFile, int64_t XFileSize)
+    {
+        // the zlib stream after the header (and a signed zone's auth chunk): its first bytes
+        const wolff::FastFileInfo Info = wolff::FastFile::Identify(FastFile);
+        std::ifstream F(FastFile, std::ios::binary);
+        F.seekg((std::streamoff)(12 + Info.HeaderExtraBytes));
+        std::vector<uint8_t> In(0x1000);
+        F.read(reinterpret_cast<char*>(In.data()), (std::streamsize)In.size());
+        In.resize((size_t)F.gcount());
+        uint8_t Head[0x60] = {};
+        mz_stream S{};
+        if (In.empty() || mz_inflateInit(&S) != MZ_OK) return false;
+        S.next_in = In.data(), S.avail_in = (unsigned)In.size();
+        S.next_out = Head, S.avail_out = sizeof(Head);
+        const int Status = mz_inflate(&S, MZ_SYNC_FLUSH);
+        const size_t Got = sizeof(Head) - S.avail_out;
+        mz_inflateEnd(&S);
+        if ((Status != MZ_OK && Status != MZ_STREAM_END) || Got < (size_t)XFileSize + 0x10) return false;
+        // shorter than the rebuild's list: an original's empty zone (an XFile and its 16-byte list alone)
+        if (Got < (size_t)XFileSize + 0x20) return true;
+        // the rebuild's list: {u32 count, pad 0, u64 strings, u32 count, pad 0, u64 assets}, each
+        // pointer null or a marker; the original's {count, strings, count, assets} has the string
+        // count's pointer where the rebuild's padding is, and an asset count where its pointer is
+        const auto U32 = [&](int64_t At) { uint32_t V; std::memcpy(&V, Head + At, 4); return V; };
+        const auto U64 = [&](int64_t At) { uint64_t V; std::memcpy(&V, Head + At, 8); return V; };
+        const auto Marker = [](uint64_t V) { return V == 0 || V == ~0ull || V == ~0ull - 1; };
+        const int64_t L = XFileSize;
+        const bool Rebuild = U32(L + 4) == 0 && U32(L + 0x14) == 0 && Marker(U64(L + 8)) && Marker(U64(L + 0x18));
+        return !Rebuild;
+    }
+
     std::unique_ptr<DiskGame::IDiskZone> IwDiskGame::Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                           std::string& Error) const
     {
-        auto Zone = std::make_unique<IwDiskZone>(Path, Game);
+        // a zone of the original 32-bit build: its own profile, readers and live game
+        const GameInfo& Build = Game.Original && IsOriginal(Path, Game.Readers->XFileSize) ? *Game.Original : Game;
+        auto Zone = std::make_unique<IwDiskZone>(Path, Build);
         if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
         Zone->SetInstall(this, Options, !Options.Install.empty() ? Options.Install : InstallOfZone(Path));
         if (!Zone->Open(Error)) return nullptr;

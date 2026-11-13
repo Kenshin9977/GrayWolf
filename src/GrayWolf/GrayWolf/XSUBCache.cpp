@@ -260,17 +260,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
 {
     if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
     {
-        std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
-
         auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
-        auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
-#if _DEBUG
-        printf("XSUBCache::ExtractPackageObject(): Streaming Object: 0x%llx from CASC File: %s\n", CacheID, XPAKFileName.c_str());
-#endif // _DEBUG
-
-
-        Reader.Seek(CacheInfo.Offset, SEEK_SET);
-
         if (PackageVersions[CacheInfo.PackageFileIndex] >= FirstSizedVersion)
         {
             ResultSize = 0;
@@ -278,8 +268,14 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
             if (CacheInfo.CompressedSize > MaxObject || CacheInfo.UncompressedSize > MaxObject)
                 return nullptr;
             std::vector<uint8_t> Stored((size_t)CacheInfo.CompressedSize);
-            if (Reader.Read(Stored.data(), 0, Stored.size()) != Stored.size())
-                return nullptr;
+            {
+                // only the read holds the lock: the decode runs beside the other threads' reads
+                std::lock_guard<std::shared_mutex> Guard(ReadMutex);
+                auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+                Reader.Seek(CacheInfo.Offset, SEEK_SET);
+                if (Reader.Read(Stored.data(), 0, Stored.size()) != Stored.size())
+                    return nullptr;
+            }
             auto Result = std::make_unique<uint8_t[]>((size_t)std::max<uint64_t>(CacheInfo.UncompressedSize, 1));
             if (CacheInfo.Flags == 0)
             {
@@ -298,6 +294,14 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
             ResultSize = (uint32_t)CacheInfo.UncompressedSize;
             return Result;
         }
+
+        std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
+        auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+#if _DEBUG
+        printf("XSUBCache::ExtractPackageObject(): Streaming Object: 0x%llx from CASC File: %s\n", CacheID, XPAKFileName.c_str());
+#endif // _DEBUG
+
+        Reader.Seek(CacheInfo.Offset, SEEK_SET);
 
         // Cold War's object stored as is (no block framing): its bytes
         if (CacheInfo.Flags == 0)

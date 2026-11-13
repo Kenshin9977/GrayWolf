@@ -1,7 +1,8 @@
 #include "stdafx.h"
 
-// Modern Warfare 2 (IW4, the 64-bit rebuild) on the disk template: the iw4 zonekit tables, the
-// 64-bit readers (Games/IW4/IwDiskZone.h).
+// Modern Warfare 2 on the disk template: the 64-bit rebuild (the iw4 zonekit tables) and the
+// original 32-bit build (iw4x86), each zone read as the build its content is (Iw64::IsOriginal),
+// by the family's readers (Games/IW4/IwDiskZone.h).
 
 #include "Games/IW4/IwDiskZone.h"
 
@@ -15,8 +16,10 @@ namespace
                                                      { "mp_*", { "MPUI_{REST}" } },
                                                      { "*", { "MENU_SP_SP_{NAME}" } } },
                                                    { "mp/basemaps.arena" } };
+    const Iw64::GameInfo Original{ "mw2", "Call of Duty: Modern Warfare 2", "IW4", "iw4x86",
+                                   "IW4x86", &Iw64::Mw2x86, Scripts::Vm{}, &Levels };
     const Iw64::GameInfo Info{ "mw2", "Call of Duty: Modern Warfare 2", "IW4", "iw4",
-                               "IW4", &Iw64::Mw2, Scripts::Vm{}, &Levels };
+                               "IW4", &Iw64::Mw2, Scripts::Vm{}, &Levels, &Original };
     const Iw64::IwDiskGame Game(Info);
     const DiskGame::Registration Registered(Game);
 }

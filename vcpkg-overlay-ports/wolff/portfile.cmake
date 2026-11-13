@@ -17,8 +17,8 @@ else()
     vcpkg_from_github(
         OUT_SOURCE_PATH SOURCE_PATH
         REPO Kenshin9977/wolff
-        REF dc407ea9116cd114051b4a92833d66f2a329dc12
-        SHA512 3c228b9a8d7f9c1a085d3056887f3691f3893b7042240b7c33e27c10a8b970851aa3fdb6c9bb165df6ef28e07935e3fc9663fca21fc892412543b7abf25c406f
+        REF 30a9be435dc6eb53ad0d2658bc0776ce4b4bdda4
+        SHA512 dda64281b8011e7c194728a55ccbf6f49572e792ac58097a77203cfffcf260eab4bdd295a9b87d67b546605b067effe47ba438edf6a3c8364faf523080eedb0a
         HEAD_REF main
     )
 endif()

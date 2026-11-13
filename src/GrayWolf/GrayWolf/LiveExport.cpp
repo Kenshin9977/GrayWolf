@@ -667,6 +667,33 @@ namespace
             WriteSidecar(J->Described, J->Base);
         });
     }
+
+    // A LOD translated, named the model's name + Suffix, and written: here, or, when the game's
+    // translation may run on several threads (ICoDGame::ReadsMeshesInParallel) and a pool takes the
+    // files, translated in the job too (its failure the job's). False: translated here, nothing
+    bool WriteLod(const std::shared_ptr<std::unique_ptr<XModel_t>>& Model, uint32_t Lod, const std::string& Suffix,
+                  const std::string& ExportPath, DescribedLod Described)
+    {
+        if (ModelFiles == nullptr || CoDAssets::Game == nullptr || !CoDAssets::Game->ReadsMeshesInParallel())
+        {
+            auto Result = CoDXModelTranslator::TranslateXModel(*Model, Lod);
+            if (Result == nullptr) return false;
+            Result->AssetName += Suffix;
+            WriteLodFiles(std::move(Result), ExportPath, std::move(Described));
+            return true;
+        }
+        // each job translates its own LOD (TranslateXModel sets that LOD's submeshes' materials)
+        const std::string Base = (std::filesystem::path(ExportPath) / ((*Model)->ModelName + Suffix)).string();
+        auto D = std::make_shared<DescribedLod>(std::move(Described));
+        (*ModelFiles)(Base, [Model, Lod, Suffix, ExportPath, Base, D]() {
+            auto Result = CoDXModelTranslator::TranslateXModel(*Model, Lod);
+            if (Result == nullptr) throw std::runtime_error("the LOD was not translated");
+            Result->AssetName += Suffix;
+            WriteModelFiles(Result, ExportPath, D->CastSlots(), D->Ok ? &D->Sidecar.Materials : nullptr);
+            WriteSidecar(*D, Base);
+        });
+        return true;
+    }
 }
 
 void LiveExport::ForgetWrittenImages()
@@ -789,10 +816,29 @@ namespace
 ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::string& ExportPath, const std::string& ImagesPath, const std::string& ImageRelativePath, const std::string& ImageExtension,
                                              const ImageTaker* TakeImages, const MaterialFiller* FillMaterials)
 {
+    auto& Times = ExportWriters::Times();
+    auto Mark = std::chrono::steady_clock::now();
+    const auto Lap = [&Mark](std::atomic<uint64_t>& To) {
+        const auto Now = std::chrono::steady_clock::now();
+        To += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(Now - Mark).count();
+        Mark = Now;
+    };
     std::unique_ptr<XModel_t> GenericModel = ReadModel(Model);
+    Lap(Times.ModelReadUs);
     if (GenericModel != nullptr) PrepareTextures(*GenericModel, ExportPath, ImagesPath, ImageRelativePath, ImageExtension, TakeImages, FillMaterials);
+    Lap(Times.ModelTexturesUs);
+    // the translation and the files' hand-over (to the pool, or written here without one)
+    const struct Translated
+    {
+        decltype(Lap)& L;
+        std::atomic<uint64_t>& To;
+        ~Translated() { L(To); }
+    } TimeTheRest{ Lap, Times.ModelTranslateUs };
     if (GenericModel != nullptr)
     {
+        // shared with the LODs' jobs (WriteLod)
+        const auto Shared = std::make_shared<std::unique_ptr<XModel_t>>(std::move(GenericModel));
+        const std::unique_ptr<XModel_t>& GenericModel = *Shared;
         if (SettingsManager::GetSetting("exportalllods") == "true")
         {
             auto LodCount = (uint32_t)GenericModel->ModelLods.size();
@@ -803,17 +849,7 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
                 if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + std::format("_LOD{}", i))).string(),
                                       Described.Ok ? &Described.Sidecar : nullptr))
                 {
-                    auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, i);
-
-                    if (Result != nullptr)
-                    {
-                        Result->AssetName += std::format("_LOD{}", i);
-                        WriteLodFiles(std::move(Result), ExportPath, std::move(Described));
-                    }
-                    else
-                    {
-                        return ExportGameResult::UnknownError;
-                    }
+                    if (!WriteLod(Shared, i, std::format("_LOD{}", i), ExportPath, std::move(Described))) return ExportGameResult::UnknownError;
                 }
             }
         }
@@ -835,17 +871,7 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
                 if (ShouldExportModel((std::filesystem::path(ExportPath) / (Model->AssetName + LodIndexSuffix)).string(),
                                       Described.Ok ? &Described.Sidecar : nullptr))
                 {
-                    auto Result = CoDXModelTranslator::TranslateXModel(GenericModel, BiggestLodIndex);
-
-                    if (Result != nullptr)
-                    {
-                        Result->AssetName += LodIndexSuffix;
-                        WriteLodFiles(std::move(Result), ExportPath, std::move(Described));
-                    }
-                    else
-                    {
-                        return ExportGameResult::UnknownError;
-                    }
+                    if (!WriteLod(Shared, (uint32_t)BiggestLodIndex, LodIndexSuffix, ExportPath, std::move(Described))) return ExportGameResult::UnknownError;
                 }
             }
             else

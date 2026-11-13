@@ -12,4 +12,5 @@ namespace
 {
     const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(false, true));
     const Materials::AdapterRegistration Registered("IW5", Adapter);
+    const Materials::AdapterRegistration Original("IW5x86", Adapter);   // the original 32-bit build: the same shaders
 }

@@ -885,6 +885,16 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
     // fail is counted as ExportModel's failures are
     std::optional<ExportWriters::ModelFilesOnPool> Files;
     if (K == DiskGame::Kind::Model) Files.emplace();
+    // where the reading thread's time goes (time_model_*_ms)
+    auto& Times = ExportWriters::Times();
+    const uint64_t ReadUs = Times.ModelReadUs, TexturesUs = Times.ModelTexturesUs, TranslateUs = Times.ModelTranslateUs;
+    const auto Ms = [](auto Since) { return (size_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - Since).count(); };
+    const auto Spent = [&]() {
+        if (K != DiskGame::Kind::Model) return;
+        Counter("time_model_read_ms") += (size_t)((Times.ModelReadUs - ReadUs) / 1000);
+        Counter("time_model_material_textures_ms") += (size_t)((Times.ModelTexturesUs - TexturesUs) / 1000);
+        Counter("time_model_translate_ms") += (size_t)((Times.ModelTranslateUs - TranslateUs) / 1000);
+    };
     std::vector<bool> Counted(Assets.size(), false);   // as written
     const auto Settle = [&]() {
         if (!Files) return;
@@ -903,6 +913,7 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
         const auto& [Pos, Name] = Assets[N];
         if (!C.Advance(N, Assets.size(), Name))
         {
+            Spent();
             Settle();
             return;
         }
@@ -932,10 +943,15 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
             Counter("models_without_lods")++;   // the game's own model has no geometry: nothing to write
         else T.Fail(ZoneName, K, Name, "code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
     }
+    Spent();
+    auto Since = std::chrono::steady_clock::now();
     Settle();
+    if (K == DiskGame::Kind::Model) Counter("time_model_files_drain_ms") += Ms(Since);
     C.Advance(Assets.size(), Assets.size());
     if (NotImage) T.Fail(ZoneName, K, "", std::to_string(NotImage) + " texture slots point at no image, left out");
+    Since = std::chrono::steady_clock::now();
     if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);
+    if (K == DiskGame::Kind::Model) Counter("time_model_textures_ms") += Ms(Since);
 }
 
 void ZonekitZone::ExportTextures(const std::set<std::string>& Names, const DiskGame::Context& C, DiskGame::Totals& T)
@@ -1253,11 +1269,15 @@ void ZonekitZone::ExportScripts(const DiskGame::Context& C, DiskGame::Totals& T,
 
 bool ZonekitZone::ReadScriptFile(int64_t Pos, Scripts::Script& Out) const
 {
-    const uint32_t Packed = At<uint32_t>(Image(), Pos + 8), Len = At<uint32_t>(Image(), Pos + 0xc),
-                   CodeLen = At<uint32_t>(Image(), Pos + 0x10);
+    // {name, compressedLen, len, bytecodeLen (u32s after the name), buffer, bytecode (pointer-wide, the
+    // first at the next pointer-aligned offset)}: 8 / 0xc / 0x10 / 0x18 / 0x20, or 4 / 8 / 0xc / 0x10 /
+    // 0x14 in a 32-bit zone (the original MW3)
+    const int64_t P = Rules().PointerSize, Buffer = (P + 0xc + P - 1) / P * P;
+    const uint32_t Packed = At<uint32_t>(Image(), Pos + P), Len = At<uint32_t>(Image(), Pos + P + 4),
+                   CodeLen = At<uint32_t>(Image(), Pos + P + 8);
     std::vector<uint8_t> Stack, Code;
-    if (Packed && !BytesAt(PointerAt(Pos + 0x18), Packed, Stack)) return false;
-    if (CodeLen && !BytesAt(PointerAt(Pos + 0x20), CodeLen, Code)) return false;
+    if (Packed && !BytesAt(PointerAt(Pos + Buffer), Packed, Stack)) return false;
+    if (CodeLen && !BytesAt(PointerAt(Pos + Buffer + P), CodeLen, Code)) return false;
     Out.Bytes = Scripts::GscBin(Packed, Len, Stack, Code);
     Out.Compiled = true;
     return true;

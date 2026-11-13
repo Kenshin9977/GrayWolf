@@ -42,7 +42,9 @@ namespace
             // a model's LODs another zone holds loaded beside first
             if (const auto* Models = ExporterOf(Kind::Model))
                 Exports(Kind::Model, [this, Read = *Models](const Context& C, Totals& T) {
+                    const auto Start = std::chrono::steady_clock::now();
                     LoadMeshesBeside(C);
+                    Counter("time_model_beside_ms") += (size_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - Start).count();
                     Read(C, T);
                 });
         }

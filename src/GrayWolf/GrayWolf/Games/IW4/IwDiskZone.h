@@ -1,9 +1,10 @@
 #pragma once
 
-// Modern Warfare 2 and 3 (the 64-bit rebuild) on the disk template: a ZonekitZone with the iw4 or
-// iw5 profile, served to the 64-bit readers (Games/IW4/Iw64Readers.h). What is theirs: images
-// either in the zone (a GfxImageLoadDef) or in the .iwd archives of the install's main folder,
-// loaded sounds as PCM in the zone.
+// Modern Warfare 2 and 3 on the disk template: a ZonekitZone with the iw4 or iw5 profile (the
+// 64-bit rebuild) or iw4x86 / iw5x86 (the original 32-bit build), served to the readers of
+// Games/IW4/Iw64Readers.h with that build's Layout. What is theirs: images either in the zone (a
+// GfxImageLoadDef) or in the .iwd archives of the install's main folder, loaded sounds as PCM in
+// the zone.
 
 #include "Games/IW/IWMaterialBooks.h"
 #include "Games/IW/IWZone.h"
@@ -30,7 +31,16 @@ namespace Iw64
         const Layout* Readers;
         Scripts::Vm ScriptVm{};   // its scriptfiles' VM (MW3); MW2's scripts are source rawfiles
         const DiskGame::IDiskGame::LevelNaming* Levels = nullptr;   // its IDiskGame::LevelNames
+        // the same title's original 32-bit build (its profile, live game and readers), which the
+        // title's zones are read as when their content is 32-bit (IsOriginal); none: never
+        const GameInfo* Original = nullptr;
     };
+
+    // Whether the fast file holds a zone of the original 32-bit build: the rebuild kept the
+    // container (the same 21-byte header) and the version, only the content widened. Told from the
+    // zone's first bytes, the XAssetList after the XFile (Size: 0x28 MW2, 0x2c MW3): 16 bytes
+    // {count, strings, count, assets} in the original, 32 with 8-byte pointers in the rebuild.
+    bool IsOriginal(const std::string& FastFile, int64_t XFileSize);
 
     class IwDiskZone final : public IWZone
     {

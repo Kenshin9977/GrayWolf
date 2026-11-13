@@ -294,11 +294,11 @@ void IWZone::AddDynamicEntities(Maps::MapScene& Scene, std::map<std::string, uin
     for (int List = 0; List < 2; List++)
     {
         const uint16_t Count = At<uint16_t>(Img, ClipMap + Counts + List * 2);
-        const int64_t Dyn = Off(At<uint64_t>(Img, ClipMap + Lists + List * 8));
+        const int64_t Dyn = Off(PointerAt(ClipMap + Lists + List * (int64_t)Rules().PointerSize));
         for (uint16_t K = 0; Dyn >= 0 && K < Count; K++)
         {
             const int64_t E = Dyn + (int64_t)K * Size;
-            const uint64_t Model = At<uint64_t>(Img, E + DynModel);
+            const uint64_t Model = PointerAt(E + DynModel);
             const std::string ModelName = ModelAt(Model);
             if (ModelName.empty()) continue;
             Maps::Instance In;
@@ -308,7 +308,7 @@ void IWZone::AddDynamicEntities(Maps::MapScene& Scene, std::map<std::string, uin
             for (int J = 0; J < 4; J++) Q[J] = At<float>(Img, E + DynQuat + J * 4);
             Maps::AxisFromQuat(Q, In.Axis);
             for (int J = 0; J < 3; J++) In.Origin[J] = At<float>(Img, E + DynOrigin + J * 4);
-            if (Destroyed >= 0) In.Destroyed = ModelAt(At<uint64_t>(Img, E + Destroyed));
+            if (Destroyed >= 0) In.Destroyed = ModelAt(PointerAt(E + Destroyed));
             if (Dbg)
                 std::fprintf(Dbg, "[dyn] %s %s quat %g %g %g %g origin %g %g %g\n", In.Name.c_str(), ModelName.c_str(), Q[0], Q[1], Q[2], Q[3],
                              In.Origin[0], In.Origin[1], In.Origin[2]);
@@ -325,7 +325,7 @@ void IWZone::AddPrimaryLights(Maps::MapScene& Scene, const LightLayout& L, const
     const auto& Img = Image();
     FILE* Dbg = Maps::DebugFile();
     const uint32_t Count = At<uint32_t>(Img, Com + L.Count);
-    const int64_t Lights = Off(At<uint64_t>(Img, Com + L.Array));
+    const int64_t Lights = Off(PointerAt(Com + L.Array));
     for (uint32_t K = 0; Lights >= 0 && K < Count; K++)
     {
         const int64_t P = Lights + (int64_t)K * L.Size;
@@ -344,7 +344,7 @@ void IWZone::AddPrimaryLights(Maps::MapScene& Scene, const LightLayout& L, const
         if (Dbg)
             std::fprintf(Dbg, "[light] %u type %u color %g %g %g dir %g %g %g origin %g %g %g radius %g cos %g def '%s'\n", K, Type,
                          Out.Color[0], Out.Color[1], Out.Color[2], Out.Dir[0], Out.Dir[1], Out.Dir[2], Out.Origin[0], Out.Origin[1],
-                         Out.Origin[2], Out.Radius, Out.CosHalfFovOuter, L.Def >= 0 ? StringAt(At<uint64_t>(Img, P + L.Def)).c_str() : "");
+                         Out.Origin[2], Out.Radius, Out.CosHalfFovOuter, L.Def >= 0 ? StringAt(PointerAt(P + L.Def)).c_str() : "");
         Scene.Lights.push_back(Out);
     }
 }

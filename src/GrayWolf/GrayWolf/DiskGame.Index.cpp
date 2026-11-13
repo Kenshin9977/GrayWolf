@@ -708,10 +708,13 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     };
     B.Step = Stepping;
     B.Cancel = Stopping;
-    // 8 workers by default and at most, 1 for a game whose IndexInParallel is false; a budget of
-    // GRAYWOLF_INDEX_BUDGET_MB (4096 by default). Zones read from a hard disk (OnSpinningDisk) are
-    // loaded one at a time (IndexDiskLock), the rest of their reading side by side.
-    B.Threads = Game.IndexInParallel() ? (Options.Threads ? Options.Threads : 8) : 1;
+    // the physical cores but two by default (the machine stays usable), 2 at least, 8 at most (MW4's
+    // 6 708 zones on 12 cores: 128 s on 8 workers, 135 s on 10, 131 s on 20 and 1 GB more: the
+    // served session, one zone at a time, is the limit), 1 for a game whose IndexInParallel is false;
+    // a budget of GRAYWOLF_INDEX_BUDGET_MB (4096 by default). Zones read from a hard disk
+    // (OnSpinningDisk) are loaded one at a time (IndexDiskLock), the rest of their reading side by side.
+    const unsigned Cores = ExportWriters::PhysicalCores();
+    B.Threads = Game.IndexInParallel() ? (Options.Threads ? Options.Threads : std::clamp(Cores > 2 ? Cores - 2 : 2u, 2u, 8u)) : 1;
     struct HardDisk
     {
         bool On = false;

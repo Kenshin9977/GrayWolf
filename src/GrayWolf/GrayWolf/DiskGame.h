@@ -183,7 +183,7 @@ namespace DiskGame
         std::string GameExe;          // the game's dumped exe (encrypted script strings), acts' deps one when empty
         std::string OatModelFormat, OatImageFormat;   // OAT dumps; OAT's defaults when empty
         bool OatGdt = false;          // OAT: also write source_data/<zone>.gdt
-        unsigned Threads = 0;         // the install index's workers (0: the default, at most 8)
+        unsigned Threads = 0;         // the install index's workers (0: the default, the physical cores but two, 2 to 8; at most 8)
         // set on what the install index opens a zone with: only its Defines, Parts and Footprint are
         // asked, so a game may leave out what only an export reads (Black Ops 7: the zones beside a map)
         bool Indexing = false;

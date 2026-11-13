@@ -13,6 +13,8 @@ namespace
     public:
         const char* Engine() const override { return "BO7"; }
         bool ReadsOwnBones() const override { return true; }
+        // GameBlackOps7::LoadXModel reads the served zone and the packages only (both shared reads)
+        bool ReadsMeshesInParallel() const override { return true; }
         const char* GetExportFolderName() const override { return "black_ops_7"; }
         std::unique_ptr<XModel_t> ReadXModel(const CoDModel_t* Model) const override { return GameBlackOps7::ReadXModel(Model); }
         std::unique_ptr<XImageDDS> ReadXImage(const CoDImage_t* Image) const override { return GameBlackOps7::ReadXImage(Image); }

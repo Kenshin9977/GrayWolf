@@ -15,6 +15,7 @@ namespace
     public:
         const char* Engine() const override { return "MW4"; }
         bool ReadsOwnBones() const override { return true; }
+        bool ReadsMeshesInParallel() const override { return true; }
         // (the engine's own numbering, as MWIII's modern_warfare_6: Modern Warfare 2019's is _4)
         const char* GetExportFolderName() const override { return "modern_warfare_7"; }
         std::unique_ptr<XModel_t> ReadXModel(const CoDModel_t* Model) const override { return GameBlackOps7::ReadXModel(Model); }

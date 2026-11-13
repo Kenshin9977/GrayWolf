@@ -55,8 +55,13 @@ namespace ExportWriters
         std::atomic<uint64_t> DrainUs{ 0 };       // Finish waiting for the pool
         std::atomic<uint64_t> LinkUs{ 0 };        // Finish making the links
         std::atomic<uint64_t> Workers{ 0 };       // the last sink's pool size
+        // LiveExport::ExportModel on the reading thread: the read, the textures, the translation
+        std::atomic<uint64_t> ModelReadUs{ 0 }, ModelTexturesUs{ 0 }, ModelTranslateUs{ 0 };
     };
     WriterTimes& Times();
+
+    // The machine's physical cores (SMT siblings count once)
+    unsigned PhysicalCores();
 
     // Every thread's stack and the loaded modules, not the memory (a zone run holds gigabytes).
     bool WriteMinidump(const std::string& Path);
