@@ -50,6 +50,10 @@ namespace Iw64
         // animtrees, MW3's compiled scripts' strings (<name>.gscsource), the original builds' weapon
         // files (weapons/<name>, as OAT writes the rebuild's): Games/IwClassic/IwClassicAnimOwners.h
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override;
+        // the character scripts' bodies and heads (MW2's GSC source, MW3's compiled characters' strings),
+        // this zone's then its shared zones' (a multiplayer map's characters are common_mp's):
+        // IwClassicAnimOwners::BodyHeads
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override;
 
     protected:
         const char* Profile() const override { return Game.Profile; }
@@ -132,6 +136,8 @@ namespace Iw64
         // the anims' weapons, player types and characters (Games/IwClassic/IwClassicAnimOwners.h)
         std::vector<std::string> AnimOwnerDocuments() const override;
         void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override;
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override;
 
     private:
         const GameInfo& Game;

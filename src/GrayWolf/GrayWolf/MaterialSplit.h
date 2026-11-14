@@ -33,6 +33,9 @@ namespace MaterialSplit
     // the packed ones only. Materials of one sidecar: an image packed in one is split for all.
     std::vector<std::pair<std::string, std::vector<Output>>> Plan(const std::vector<Materials::Description>& Materials);
 
+    // The split files' extension: .tga when the images are TGA, else .png
+    std::string Extension();
+
     // Every sidecar under the run's output folder, its packed images split (kept when newer than
     // their source). Counters: split_maps_images, split_maps_files, split_maps_unread.
     void WriteForRun(const DiskGame::Context& C, DiskGame::Totals& T);

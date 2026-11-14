@@ -215,6 +215,7 @@
     <ClCompile Include="GltfSceneWriter.cpp" />
     <ClCompile Include="MapGlbWriter.cpp" />
     <ClCompile Include="MapImportScript.cpp" />
+    <ClCompile Include="ModelImportScript.cpp" />
     <ClCompile Include="MapLive.cpp" />
     <ClCompile Include="AssetIndex.cpp" />
     <ClCompile Include="AssetFilter.cpp" />
@@ -258,6 +259,8 @@
     <ClCompile Include="GdtWriter.cpp" />
     <ClCompile Include="MaterialGdt.cpp" />
     <ClCompile Include="MaterialSplit.cpp" />
+    <ClCompile Include="ModelImages.cpp" />
+    <ClCompile Include="CharacterHeads.cpp" />
     <ClCompile Include="ModToolsTree.cpp" />
     <ClCompile Include="ModToolsUsermap.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
@@ -408,6 +411,8 @@
     <ClInclude Include="GdtWriter.h" />
     <ClInclude Include="MaterialGdt.h" />
     <ClInclude Include="MaterialSplit.h" />
+    <ClInclude Include="ModelImages.h" />
+    <ClInclude Include="CharacterHeads.h" />
     <ClInclude Include="ModToolsTree.h" />
     <ClInclude Include="ModToolsUsermap.h" />
     <ClInclude Include="GameInstalls.h" />

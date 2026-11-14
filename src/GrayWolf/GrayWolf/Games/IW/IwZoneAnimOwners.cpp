@@ -6,6 +6,7 @@
 
 #include "AnimOwners.h"
 #include "ExportNaming.h"
+#include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "Games/Treyarch/GscAnimOwners.h"
 
 #include <miniz/miniz.h>
@@ -709,5 +710,23 @@ namespace IwZoneAnimOwners
                 }
             }
         }
+    }
+
+    CharacterHeads::Pairs BodyHeads(const ZoneView& V)
+    {
+        if (V.Walk == nullptr || V.Image == nullptr || !V.Bytes) return {};
+        // each scriptfile's strings as MW3's documents give them (<name>.gscsource, the strings apart)
+        std::vector<std::pair<std::string, std::string>> Docs;
+        const auto& R = *V.Walk;
+        for (const auto& I : R.Instances)
+        {
+            if (I.Parent >= 0 || I.Owner >= R.OwnerNames.size() || R.OwnerNames[I.Owner] != "scriptfile") continue;
+            const auto S = ScriptStrings(V, I.Pos);
+            if (S.empty() || S.size() > 64) continue;
+            std::string Text;
+            for (const auto& Str : S) Text += Str + '\0';
+            Docs.emplace_back(Clean(V.Text(I.Pos)) + ".gscsource", std::move(Text));
+        }
+        return IwClassicAnimOwners::BodyHeads(Docs);
     }
 }

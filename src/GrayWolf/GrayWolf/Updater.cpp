@@ -1056,6 +1056,24 @@ bool ApplyAndRestart(std::string& Message)
     return Ok;
 }
 
+bool EndOthers(size_t& Ended, std::string& Message)
+{
+    Ended = 0;
+    const fs::path Dir = P(FromSettings().AppDir);
+    std::vector<DWORD> Failed;
+    for (DWORD Pid : RunningFrom(Dir))
+    {
+        HANDLE Proc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, Pid);
+        const bool Ok = Proc && TerminateProcess(Proc, 1) && WaitForSingleObject(Proc, 5000) == WAIT_OBJECT_0;
+        if (Proc) CloseHandle(Proc);
+        if (Ok) Ended++;
+        else Failed.push_back(Pid);
+    }
+    Message = Failed.empty() ? std::format("{} other GrayWolf ended", Ended) : StillRunning(Dir, Failed);
+    AppLog::Log().info("updates: {}", Message);
+    return Failed.empty();
+}
+
 View Get()
 {
     std::lock_guard<std::mutex> G(Lock);

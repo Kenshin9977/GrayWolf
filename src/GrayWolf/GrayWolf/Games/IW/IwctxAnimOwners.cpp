@@ -639,4 +639,12 @@ namespace IwctxAnimOwners
             }
         }
     }
+
+    CharacterHeads::Pairs BodyHeads(const Json& Facts)
+    {
+        CharacterHeads::Pairs Out;
+        for (const auto& C : Facts.value("characters", Json::array()))
+            if (C.is_object()) CharacterHeads::Add(Out, C.value("body", std::string()), { C.value("head", std::string()) });
+        return Out;
+    }
 }

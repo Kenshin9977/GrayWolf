@@ -435,6 +435,32 @@ namespace Bo3AnimOwners
         return { Folder + Z.Name() + ".json", F.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) };
     }
 
+    CharacterHeads::Pairs BodyHeads(const ZonekitZone& Z)
+    {
+        Json F = Json::object();
+        std::string Error;   // a type the profile lacks: that part is empty
+        ReadCharacters(Z, F, Error);
+        ReadAliases(Z, F, Error);
+        ReadPlayers(Z, F, Error);
+        const auto Models = [&](const Json& C, const char* Model, const char* Alias) -> std::vector<std::string> {
+            if (const std::string M = C.value(Model, std::string()); !M.empty()) return { M };
+            std::vector<std::string> Out;
+            if (const auto A = F["aliases"].find(C.value(Alias, std::string())); A != F["aliases"].end() && A->is_array())
+                for (const auto& M : *A)
+                    if (M.is_string()) Out.push_back(M.get<std::string>());
+            return Out;
+        };
+        CharacterHeads::Pairs Out;
+        for (const auto& [Name, C] : F["characters"].items())
+        {
+            const auto Heads = Models(C, "head", "headAlias");
+            for (const auto& B : Models(C, "body", "bodyAlias")) CharacterHeads::Add(Out, B, Heads);
+        }
+        for (const auto& P : F["players"])
+            CharacterHeads::Add(Out, P.value("body", std::string()), { P.value("head", std::string()) });
+        return Out;
+    }
+
     void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
               const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, AnimOwners::Book& Out)
     {

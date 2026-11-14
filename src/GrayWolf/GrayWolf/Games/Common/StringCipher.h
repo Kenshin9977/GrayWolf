@@ -24,4 +24,8 @@ namespace StringCipher
     // A string's text: decrypted when it starts with a cipher the table knows, as it is when it is
     // not encrypted; false when it is encrypted with no cipher known (Text left as it was)
     bool Decrypt(const Table* Cipher, const std::string& Raw, std::string& Text);
+    // Whether an encrypted string's b1 is its decrypted text's hash (bits 32-39 of FNV-1a 64 of the
+    // lower-case text, CipherFit.h; not Cold War's): a text a table rebuilt from the zones got wrong
+    // fails it but one time in 256. True for a string that is not encrypted.
+    bool HashChecks(const std::string& Raw, const std::string& Text);
 }

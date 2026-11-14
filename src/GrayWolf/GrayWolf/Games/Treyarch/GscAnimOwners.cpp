@@ -3,6 +3,7 @@
 #include "GscAnimOwners.h"
 
 #include "AnimOwners.h"
+#include "CharacterHeads.h"
 #include "ExportNaming.h"
 
 #include <algorithm>
@@ -644,5 +645,44 @@ namespace GscAnimOwners
                 for (const auto& [Prefix, Id] : ByPrefix)
                     if (L.rfind(Prefix, 0) == 0) Out.Own(Anim, Id);
         }
+    }
+
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(const std::vector<const Facts*>& Sources)
+    {
+        const auto AliasOf = [&](const std::string& Alias) -> std::vector<std::string> {
+            for (const Facts* F : Sources)
+                if (const auto It = F->Aliases.find(Alias); It != F->Aliases.end() && !It->second.empty()) return It->second;
+            return {};
+        };
+        std::set<std::string> Seen;   // the characters, the first source's
+        CharacterHeads::Pairs Out;
+        for (const Facts* F : Sources)
+            for (const auto& [Name, Ch] : F->Characters)
+            {
+                if (!Seen.insert(Name).second) continue;
+                const std::vector<std::string> Heads = !Ch.Head.empty() ? std::vector<std::string>{ Ch.Head } : AliasOf(Ch.HeadAlias);
+                for (const auto& B : !Ch.Body.empty() ? std::vector<std::string>{ Ch.Body } : AliasOf(Ch.BodyAlias)) CharacterHeads::Add(Out, B, Heads);
+            }
+        // Black Ops' create-a-class players: each body asset's model per faction wears its default
+        // head asset's model of that faction first, then the faction's other heads
+        for (const Facts* F : Sources)
+            for (const auto& [Asset, ByFaction] : F->CacBodies)
+            {
+                std::string HeadAsset = "head_standard_mp";
+                for (const Facts* G : Sources)
+                    if (const auto It = G->DefaultHead.find(Asset); It != G->DefaultHead.end()) { HeadAsset = It->second; break; }
+                for (const auto& [Faction, Body] : ByFaction)
+                {
+                    std::vector<std::string> Heads;
+                    for (const Facts* G : Sources)
+                        if (const auto H = G->CacHeads.find(HeadAsset); H != G->CacHeads.end())
+                            if (const auto M = H->second.find(Faction); M != H->second.end()) Heads.push_back(M->second);
+                    for (const Facts* G : Sources)
+                        for (const auto& [Other, Of] : G->CacHeads)
+                            if (const auto M = Of.find(Faction); M != Of.end()) Heads.push_back(M->second);
+                    CharacterHeads::Add(Out, Body, Heads);
+                }
+            }
+        return Out;
     }
 }

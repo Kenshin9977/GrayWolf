@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CharacterHeads.h"
 #include "ByteView.h"
 
 // The anim owners (AnimOwners.h) of the Infinity Ward zones Ghosts to Infinite Warfare, from the
@@ -72,6 +73,11 @@ namespace IwZoneAnimOwners
 
     // The zone's facts as documents ("animowners/<type>/<name>" lines, the animtrees' text)
     void Documents(const Layout& L, const ZoneView& V, std::vector<std::pair<std::string, std::string>>& Out);
+    // The heads each body wears as the zone's compiled scripts say: each scriptfile's strings (a
+    // character script's body and head, the lists of heads or bodies its tools wrote before it), read
+    // as Modern Warfare 3's (IwClassicAnimOwners::BodyHeads)
+    CharacterHeads::Pairs BodyHeads(const ZoneView& V);
+
     // The documents' name patterns (IDiskGame::AnimOwnerDocuments)
     std::vector<std::string> Patterns();
     // The run's anims' owners (IDiskGame::AnimOwners)

@@ -254,11 +254,22 @@ namespace
 
     // A drawn material's name in the .map: as the model files name it (its GDT asset name with a
     // GDT, which then lists it)
+    // A material's GDT asset name, recorded in Gdt: a stock one (RadiantGdt::Stock) as it is, the
+    // others the GDT defines
+    std::string GdtMaterialName(RadiantGdt& Gdt, const std::string& Material)
+    {
+        if (Gdt.Stock && MaterialGdt::AssetName(Material) == Material && Gdt.Stock->count(Material))
+        {
+            Gdt.StockNamed.insert(Material);
+            return Material;
+        }
+        Gdt.Materials.insert(Material);
+        return MaterialGdt::PrefixedName(Gdt.Prefix, Material);
+    }
     std::string MaterialName(const std::string& Material, RadiantGdt* Gdt)
     {
         if (!Gdt) return Material.empty() ? "default" : ExportNaming::SafeFileName(Material);
-        Gdt->Materials.insert(Material);
-        return MaterialGdt::PrefixedName(Gdt->Prefix, Material);
+        return GdtMaterialName(*Gdt, Material);
     }
 
     // The drawn triangles a brush's solid sides take their materials from (none: tool materials
@@ -804,11 +815,7 @@ namespace
             {
                 WraithMaterial M;
                 M.MaterialName = S->Material.empty() ? "default" : ExportNaming::SafeFileName(S->Material);
-                if (ForGdt && !S->Material.empty())
-                {
-                    M.MaterialName = MaterialGdt::PrefixedName(ForGdt->Prefix, S->Material);
-                    ForGdt->Materials.insert(S->Material);
-                }
+                if (ForGdt && !S->Material.empty()) M.MaterialName = GdtMaterialName(*ForGdt, S->Material);
                 if (const auto Mat = Scene.Materials.find(S->Material); Mat != Scene.Materials.end() && !Mat->second.ColorMap.empty())
                     M.DiffuseMapName = Mat->second.ColorMap;   // the image's name, as model exports give it
                 Model.AddMaterial(M);
@@ -925,16 +932,21 @@ namespace
                       const std::function<bool(size_t Done)>& Tick)
     {
         Written.assign(Jobs.size(), 0);
-        std::vector<std::set<std::string>> Materials(Jobs.size());
+        std::vector<std::set<std::string>> Materials(Jobs.size()), Stock(Jobs.size());
         struct None {};
         const bool Whole = ParallelFor<None>(Jobs.size(), 1, [&](size_t I, None&) {
             RadiantGdt Own;
-            if (ForGdt) Own.Prefix = ForGdt->Prefix;
+            if (ForGdt) Own.Prefix = ForGdt->Prefix, Own.Stock = ForGdt->Stock;
             Written[I] = WriteXmodel(Jobs[I].Surfaces, Scene, Jobs[I].Name, Jobs[I].Path, ForGdt ? &Own : nullptr);
             Materials[I] = std::move(Own.Materials);
+            Stock[I] = std::move(Own.StockNamed);
         }, Tick);
         if (ForGdt)
-            for (const auto& M : Materials) ForGdt->Materials.insert(M.begin(), M.end());
+            for (size_t I = 0; I < Jobs.size(); I++)
+            {
+                ForGdt->Materials.insert(Materials[I].begin(), Materials[I].end());
+                ForGdt->StockNamed.insert(Stock[I].begin(), Stock[I].end());
+            }
         return Whole;
     }
 
@@ -1086,6 +1098,12 @@ namespace
                                                             { "map_radiant_overlay_triangles_unweighted", Stats.OverlayUnweighted },
                                                             { "map_radiant_triangles_degenerate", Stats.TrianglesDegenerate },
                                                             { "map_radiant_triangles_in_models", Stats.TrianglesInModels } });
+            if (Stats.StockModels || Stats.StockMaterials)
+                Result.Counters.insert(Result.Counters.end(), { { "map_radiant_stock_models", Stats.StockModels },
+                                                                { "map_radiant_stock_materials", Stats.StockMaterials } });
+            if (Stats.EffectsMissing || Stats.GradesMissing)
+                Result.Counters.insert(Result.Counters.end(), { { "map_radiant_effects_missing", Stats.EffectsMissing },
+                                                                { "map_radiant_grades_missing", Stats.GradesMissing } });
             for (const auto& [Prefix, T] : { std::make_pair("map_radiant_texture_", &Stats.Textures), std::make_pair("map_radiant_prism_texture_", &Stats.PrismTextures),
                                              std::make_pair("map_radiant_entity_texture_", &Stats.EntityTextures) })
             for (const auto& [Key, N] : std::initializer_list<std::pair<const char*, size_t>>{
@@ -1183,6 +1201,7 @@ namespace
                 }
                 for (const auto& [K, N] : B.Counters()) Counters[K] += N;
                 fs::create_directories(G.GdtFile.parent_path(), Ec);
+                if (G.InTree) Counters["material_gdt_already_in_tree"] += ModToolsTree::LeaveOutDefined(G.GdtFile, Entries);
                 if (G.InTree) ModToolsTree::WriteKept(G.GdtFile, Gdt::Document(Entries, "\n"));
                 else std::ofstream(G.GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
                 std::ofstream(fs::path(G.GdtFile).replace_extension(".names.json"), std::ios::binary) << B.NamesJson();
@@ -1717,7 +1736,13 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     const bool InTree = !Tree.empty();
     // what the .map is for (RadiantTarget.h): in a tree a level the mod tools build
     const std::string Stem = ExportNaming::SafeFileName(fs::path(MapPath).stem().string());
-    const std::unique_ptr<IRadiantTarget> Target = InTree ? Bo3ModToolsTarget(ExportNaming::SafeFileName(Game), Stem) : PlainTarget(Stem);
+    // a map of the game the tree's tools are for: their own assets, named as they are (RadiantTarget.h)
+    std::unordered_map<std::string, std::string> Stock = Bo3StockAssets(Scene, Tree);
+    auto StockMaterials = std::make_shared<std::unordered_set<std::string>>();
+    for (const auto& [Name, Gdf] : Stock)
+        if (Gdf == "material.gdf") StockMaterials->insert(Name);
+    const std::unique_ptr<IRadiantTarget> Target =
+        InTree ? Bo3ModToolsTarget(ExportNaming::SafeFileName(Game), Stem, std::move(Stock), Tree) : PlainTarget(Stem);
     const std::string& Map = Target->MapName();
     const fs::path Root = InTree ? fs::path(Tree) : fs::path(MapPath).parent_path() / (Map + "_radiant");
     // the models' folder below model_export, as the GDT names their files
@@ -1748,10 +1773,15 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             }
 
     // the entities the target takes, as it rewrites them; the names it gives the map's assets
-    if (ForGdt) ForGdt->Prefix = Target->NamePrefix();
+    if (ForGdt)
+    {
+        ForGdt->Prefix = Target->NamePrefix();
+        if (!StockMaterials->empty()) ForGdt->Stock = StockMaterials;
+    }
     // a model the map's export writes, by the name its GDT entry has
     // a model's (its part's, ModelParts) GDT entry: the target's name for one the export writes
     const auto ModelName = [&](const std::string& Model, size_t Part = 0) {
+        if (Target->Stock(Model, "xmodel.gdf")) return Model;
         return Scene.Models.count(Model) ? Target->ModelName(PartName(Model, Part)) : PartName(Model, Part);
     };
     std::erase_if(Ents, [&](Entity& E) { return !Target->Admit(E, Scene, Stats); });
@@ -2184,6 +2214,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         }
         Entity Keys = E;
         if (BrushEntity) Keys.erase("model");
+        else if (Model != E.end() && Target->Stock(Model->second, "xmodel.gdf"))
+            Stats.StockModels++;   // the tools' own model, as it is: no file
         else if (Model != E.end() && Scene.Models.count(Model->second))
         {
             // a model of the map's (a script_model): written with the placed ones, by its GDT name
@@ -2263,6 +2295,17 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         return It->second;
     };
     const auto Place = [&](const Instance& I) {
+        // the tools' own model, whole and as it is: no file of it (nor of its parts) written
+        if (Target->Stock(I.Model, "xmodel.gdf"))
+        {
+            Out += "// entity " + std::to_string(EntityNumber++) + "\n{\n";
+            Out += Quote("classname", "misc_model") + Quote("model", I.Model) + Quote("origin", Vec(I.Origin)) + Quote("angles", Angles(I.Axis));
+            if (std::fabs(I.Scale - 1.0f) > 1e-4f) Out += Quote("modelscale", Num(I.Scale));
+            Out += "}\n";
+            Stats.Placements++;
+            Stats.StockModels++;
+            return;
+        }
         if (Scene.Models.count(I.Model) && Parts(I.Model).empty() && !Target->PlacesUnwrittenModels())
         {
             Stats.ModelsLeftOut++;
@@ -2284,7 +2327,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         for (const Instance& I : *List)
             if (I.Model.empty()) continue;
             else if (!Within(I.Origin)) Stats.BeyondWorld++;
-            else if (!Scene.Models.count(I.Model) && !Target->PlacesUnwrittenModels()) Stats.ModelsLeftOut++;
+            else if (!Scene.Models.count(I.Model) && !Target->PlacesUnwrittenModels() && !Target->Stock(I.Model, "xmodel.gdf")) Stats.ModelsLeftOut++;
             else if (I.Scale < Target->MinModelScale()) Stats.ScaledToNothing++;
             else Place(I);
 
@@ -2550,9 +2593,11 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         ForGdt->GdtFile = GdtFile;
         ForGdt->InTree = InTree;
         ForGdt->ModelEntries = std::move(Entries);
+        Stats.StockMaterials = ForGdt->StockNamed.size();
         return Ok;
     }
     fs::create_directories(GdtFile.parent_path(), Ec);
+    if (InTree) ModToolsTree::LeaveOutDefined(GdtFile, Entries);
     if (InTree) Ok = ModToolsTree::WriteKept(GdtFile, Gdt::Document(Entries, "\n")) && Ok;
     else std::ofstream(GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
     return Ok;

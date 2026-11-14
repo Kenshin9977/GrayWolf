@@ -403,6 +403,7 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             { "export_castmdl", "true" },
             { "export_gltf", "false" },
             { "export_glb", "false" },
+            { "export_blender_script", "true" },   // <model>_import.py beside a Cast or glTF model
             { "export_directxanim", "false" },
             { "directxanim_ver", "17" },
             { "global_images", "false" },

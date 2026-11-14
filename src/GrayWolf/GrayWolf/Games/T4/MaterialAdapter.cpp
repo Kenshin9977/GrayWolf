@@ -10,6 +10,6 @@
 // (Games/IW3/StoredNormals.h).
 namespace
 {
-    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(false, false));
+    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(false, false, Materials::LegacyGloss::Iw));
     const Materials::AdapterRegistration Registered("T4", Adapter);
 }

@@ -8,6 +8,7 @@
 // Written beside a model as <model>.materials.json.
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -113,11 +114,27 @@ namespace Materials
         bool NormalFlipY = false;
         Map Roughness;
         Map Metalness;                  // metal workflow
+        // How the metalness map reads. Linear: metal = value, a non-metal's F0 0.04. Reflectance
+        // (WWII's specular map r, read off its pixel shaders): v = value^2, metal = saturate((v -
+        // 0.1) / 0.9), F0 = metal * albedo + min(v, 0.1), the diffuse albedo * (1 - metal).
+        enum class MetalEncoding { Linear, Reflectance };
+        MetalEncoding MetalEnc = MetalEncoding::Linear;
         Map Specular;                   // sRGB F0 colour, used when Metalness is empty
         // A pre-PBR specular map (reflection colour, not F0): F0 = map * SpecularScale, the colour
         // kept whole instead of what the reflection takes from it.
         bool LegacySpecular = false;
         float SpecularScale = 1.0f;
+        // The specular map is an intensity (a mask) the material's tint colours: F0 = SpecularTint *
+        // map[channel] (Black Ops III's advanced techniques: lit_advanced, the micro tile blends'),
+        // SpecularTint linear. False: the map is the F0 colour itself.
+        bool SpecularMask = false;
+        float SpecularTint[3] = { 1, 1, 1 };
+        // The gloss (a roughness map read inverted) the map's 0..1 spans, on Black Ops III's 0..17
+        // scale (its glossRange: min, max; log2 of the specular power, as its gbuffer shader reads
+        // it): the material's constants (BO3, BO4), else the power the game's lit shaders take of
+        // the gloss (pre-PBR exp2(9.3775 g) IW, exp2(13 g) Black Ops; AW, MWR exp2(16 g); WWII 17 for
+        // its exp2(18 g)); GlossRange[0] < 0: not known (the full range)
+        float GlossRange[2] = { -1.0f, -1.0f };
         Map Occlusion;
         Map Emissive;                   // sRGB colour
         float EmissiveColor[3] = { 1, 1, 1 };   // the emission times this (linear)
@@ -171,8 +188,11 @@ namespace Materials
     // The pre-PBR games' (colorMap, normalMap, specularMap, its alpha a gloss or, AlphaIsRoughness,
     // a roughness (Black Ops: the BO3 gloss of the same textures is 255 - alpha); ColourGamma2: the
     // colour maps are gamma 2.0), the alpha mode from the technique set's name (r0 opaque, t0 cut
-    // out, b0 blended, *_multiply multiplied): a game registers it as its own adapter.
-    const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2);
+    // out, b0 blended, *_multiply multiplied): a game registers it as its own adapter. Gloss: the
+    // specular power its lit pixel shaders take of the gloss, the description's GlossRange (0..max):
+    // Iw exp2(9.3775 g) (CoD4, WaW, MW2, MW3, CoD Online), Treyarch exp2(13 g) (Black Ops, BO2).
+    enum class LegacyGloss { Iw, Treyarch };
+    const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2, LegacyGloss Gloss);
 
     // The role a file name's suffix gives (_c colour, _n normal, _g gloss, _s specular, _o
     // occlusion, _e emissive and their long forms), a "-<hash>" tail ignored.
@@ -235,4 +255,6 @@ namespace Materials
     bool WriteSidecar(const std::string& Path, const Sidecar& S);   // a file already holding it is left alone
     bool SidecarHolds(const std::string& Path, const Sidecar& S);   // the file holds exactly what WriteSidecar writes
     bool ReadSidecar(const std::string& Path, Sidecar& S);
+    // Every file path a sidecar holds (its descriptions' maps, its sources' images), to read or change
+    void ForEachPath(Sidecar& S, const std::function<void(std::string& Path)>& F);
 }

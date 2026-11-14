@@ -26,6 +26,10 @@ namespace ExportFormats
         { "export_smd", "SMD", "Valve SMD (.smd)" },
         { "export_xmexport", "XMODEL_EXPORT", "Call of Duty mod tools' text format (.xmodel_export)" },
         { "export_xmbin", "XMODEL_BIN", "Call of Duty mod tools' binary format (.xmodel_bin)" },
+        // not a model format: a script beside the Cast or glTF model (ModelImportScript.h)
+        { "export_blender_script", "+ Blender script",
+          "<model>_import.py beside each Cast or glTF model: run in Blender (or Open in Blender), it imports the "
+          "model with all its materials' textures wired (no Cast add-on needed)" },
     };
 
     inline constexpr Format Anims[] = {

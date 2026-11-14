@@ -201,6 +201,14 @@ namespace
             }));
         }
 
+        // its characters' bodies and heads (IwAnimOwners::BodyHeads of its facts document)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return IwAnimOwners::BodyHeads(IwAnimOwners::FromDocuments(Docs));
+        }
+
         // its string tables, and its anim sets and characters for the anim owners (Games/IW/IwAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
         {
@@ -1109,6 +1117,12 @@ namespace
         }
         const char* Engine() const override { return "MWIII"; }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<MWIIIZone>(std::string(), Campaign); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
 
         bool ListZones(const std::string& Install, const DiskGame::ExportOptions& Options, std::vector<std::string>& Names,
                        std::string& Error) const override

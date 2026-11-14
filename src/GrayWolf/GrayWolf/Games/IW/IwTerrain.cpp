@@ -326,7 +326,7 @@ namespace
     void AddLayers(Maps::MapScene& Scene, const IwTerrain::Source& Src, uint64_t Geo, const IwTerrain::Layout& L, Maps::Material& Mat,
                    std::map<std::string, size_t>& Counters)
     {
-        const uint32_t Count = Get<uint32_t>(Src, Geo + 0xdc);
+        const uint32_t Count = Get<uint32_t>(Src, Geo + (uint64_t)L.LayerCount);
         const uint64_t Records = Get<uint64_t>(Src, Geo + (uint64_t)L.LayerList);
         if (Count == 0 || Count > 256 || Src.Locate(Records, (uint64_t)Count * (uint64_t)L.LayerSize) == nullptr) return;
         // the index map: tile 0 of the first set

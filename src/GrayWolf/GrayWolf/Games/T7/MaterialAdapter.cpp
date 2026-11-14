@@ -14,6 +14,8 @@
 // alpha mode of transparent technique sets from what their shader writes as alpha (a reveal map's
 // soft edge for the reveal ones, the "reveal" recipe). The colour tint (colorTint by the colour map's
 // alpha or tintMask, the "color" recipe) as the colour tint, emissiveTint1 as the emission's colour.
+// The gloss map's range and the specular mask's tint (the "surface" recipe) as GlossRange and
+// SpecularTint.
 namespace
 {
     // Texture semantics of the layered, backlit and reveal shaders, beside Treyarch's common ones
@@ -122,6 +124,28 @@ namespace
         for (int c = 0; c < 3; c++) D.EmissiveColor[c] = Materials::RecipeFloat(*R, "emissive_color", M.Constants[Technique], c, 1.0f);
     }
 
+    // The gloss map's range and the specular tint (the "surface" recipe: glossRange, specColorTint
+    // in the static pixel cbuffer). A shader reading specColorTint takes its specColorMap as a mask
+    // (lit_advanced, the micro tile blends: F0 = tint * mask; a white mask, $white_specular, is the
+    // tint alone); the fullspec ones read it as the F0 colour. Measured on the materials the mod
+    // tools' stock GDTs define too (zm_prototype, 127): their glossRangeMin/Max as these floats,
+    // their specColorTint as the sRGB of these.
+    void DescribeSurface(const Materials::Source& M, Materials::Description& D)
+    {
+        const Materials::Recipe* R = RecipeWith(M, "surface");
+        if (R == nullptr) return;
+        const size_t Technique = (size_t)std::stoul(R->at("surface_technique"));
+        if (Technique >= M.Constants.size() || M.Constants[Technique].empty()) return;
+        const std::vector<uint8_t>& Cb = M.Constants[Technique];
+        const float Lo = Materials::RecipeFloat(*R, "gloss_range", Cb, 0, -1.0f), Hi = Materials::RecipeFloat(*R, "gloss_range", Cb, 1, -1.0f);
+        if (Lo >= 0.0f && Hi >= Lo && Hi <= 17.0f) D.GlossRange[0] = Lo, D.GlossRange[1] = Hi;
+        if (!D.Specular.Empty() && R->count("spec_tint"))
+        {
+            D.SpecularMask = true;
+            for (int c = 0; c < 3; c++) D.SpecularTint[c] = std::min(std::max(Materials::RecipeFloat(*R, "spec_tint", Cb, c, 1.0f), 0.0f), 1.0f);
+        }
+    }
+
     void DescribeLayers(const Materials::Source& M, Materials::Description& D)
     {
         const Materials::Recipe* R = RecipeWith(M, "layers");
@@ -168,6 +192,7 @@ namespace
         void Refine(const Materials::Source& M, Materials::Description& D, bool) const override
         {
             DescribeAlpha(M, D);
+            DescribeSurface(M, D);
             if (M.BySemantic(ColorMapDetail2) && M.BySemantic(MixMap)) DescribeLayers(M, D);
             if (D.Layers.empty()) DescribeColor(M, D);   // the layers carry their own tints
             DescribeEmissive(M, D);

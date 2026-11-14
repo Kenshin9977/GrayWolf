@@ -5,6 +5,7 @@
 #include "DiskGame.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"   // ImageFormatSetting
+#include "ModelImages.h"
 
 #include "DirectXTex.h"
 #include <stb_image.h>
@@ -156,16 +157,16 @@ namespace
     }
 
     // the outputs' extension: the export's image format, PNG for DDS
-    std::string OutExtension()
-    {
-        return ExportNaming::Lower(ExportWriters::ImageFormatSetting()) == "tga" ? ".tga" : ".png";
-    }
-
     bool Fresh(const fs::path& To, const fs::path& From)
     {
         std::error_code Ec, Ec2;
         return fs::is_regular_file(To, Ec) && fs::last_write_time(To, Ec) >= fs::last_write_time(From, Ec2) && !Ec && !Ec2;
     }
+}
+
+std::string Extension()
+{
+    return ExportNaming::Lower(ExportWriters::ImageFormatSetting()) == "tga" ? ".tga" : ".png";
 }
 
 std::vector<std::pair<std::string, std::vector<Output>>> Plan(const std::vector<Materials::Description>& Ds)
@@ -206,6 +207,7 @@ void WriteForRun(const DiskGame::Context& C, DiskGame::Totals& T)
             T.Counters["split_maps_sidecars_unread"]++;
             continue;
         }
+        ModelImages::ToShared(Side, It->path());   // a model's images/ links: the shared files, split once
         for (auto& [Path, Outputs] : Plan(Side.Materials))
         {
             auto& Job = Jobs[(It->path().parent_path() / fs::path(Path)).lexically_normal()];
@@ -215,7 +217,7 @@ void WriteForRun(const DiskGame::Context& C, DiskGame::Totals& T)
     if (Jobs.empty()) return;
 
     const std::vector<std::pair<fs::path, std::set<Output>>> List(Jobs.begin(), Jobs.end());
-    const std::string Ext = OutExtension();
+    const std::string Ext = Extension();
     std::atomic<size_t> Next{ 0 }, Done{ 0 }, Files{ 0 }, Unread{ 0 }, Unwritten{ 0 };
     const auto Work = [&] {
         for (size_t I; (I = Next++) < List.size() && !C.Cancelled(); Done++)

@@ -13,6 +13,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +39,18 @@ namespace IwClassicAnimOwners
     // then its tree's types; owners with the same models given once, MaxOwners at most.
     void Own(const std::vector<const Facts*>& Sources, const std::vector<std::string>& Anims, ::AnimOwners::Book& Out);
     constexpr size_t MaxOwners = 8;
+
+    // The heads each body wears as Docs' character scripts say (setModel / an xmodelalias of bodies,
+    // attachHead / attachFromArray / attach("...head..."), MW3's compiled characters): body -> heads,
+    // lower case, as the model kind names them (GscAnimOwners::BodyHeads). The char_heads setting's pairs.
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(const std::vector<std::pair<std::string, std::string>>& Docs);
+    // The same of a zone: its own documents (Own) first, then those of the zones loaded with it (as
+    // Fill takes them: patch_<zone>; patch_mp, common_mp; or patch, common: a multiplayer map's
+    // characters are common_mp's scripts), each read once per process by Open, Asking parked
+    // meanwhile (one session at a time)
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(
+        DiskGame::IDiskZone& Asking, const std::string& Zone, const std::vector<std::pair<std::string, std::string>>& Own,
+        const std::function<std::unique_ptr<DiskGame::IDiskZone>(const std::string& Path)>& Open);
 
     // A zonekit game (CoD4, MW2, MW3): per zone, its documents and weapon files (OatWeapons.h; a
     // zone OwnWeaponFiles says gives them among its documents, MW2's and MW3's original builds',

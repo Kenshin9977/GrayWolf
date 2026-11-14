@@ -56,6 +56,21 @@ namespace TreyarchGscOwners
         }
     }
 
+    CharacterHeads::Pairs BodyHeads(DiskGame::IDiskZone& Asking, const fs::path& Zone,
+                                    const std::vector<std::pair<std::string, std::string>>& Own, const Setup& S,
+                                    const CharacterHeads::Opener& Open)
+    {
+        std::vector<Facts> All{ GscAnimOwners::Parse(Own, S.Rules) };
+        std::vector<fs::path> Beside;
+        if (S.Shared)
+            for (const auto& P : S.Shared(Zone))
+                if (!P.empty() && ExportNaming::Lower(P.stem().string()) != ExportNaming::Lower(Zone.stem().string())) Beside.push_back(P);
+        for (const auto& Docs : CharacterHeads::DocumentsOf(Asking, Beside, Open)) All.push_back(GscAnimOwners::Parse(*Docs, S.Rules));
+        std::vector<const Facts*> Sources;
+        for (const auto& F : All) Sources.push_back(&F);
+        return GscAnimOwners::BodyHeads(Sources);
+    }
+
     fs::path FirstZone(const fs::path& Dir, const char* Pattern)
     {
         std::vector<fs::path> Found;

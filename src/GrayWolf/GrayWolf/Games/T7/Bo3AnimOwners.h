@@ -7,6 +7,7 @@
 // the zones loaded with it (<zone>_patch, <mode>_patch, <mode>_common, core_patch, core_common),
 // their facts kept beside the install index.
 
+#include "CharacterHeads.h"
 #include "DiskGame.h"
 
 #include <string>
@@ -21,6 +22,9 @@ namespace Bo3AnimOwners
     std::vector<std::string> Documents();
     // Z's facts as a document (IDiskZone::Documents): ("animowners/<zone>.json", JSON), text "" when none
     std::pair<std::string, std::string> ZoneFacts(const ZonekitZone& Z);
+    // The heads each body of Z wears (CharacterHeads.h): its characters' bodies (or their aliases'
+    // models) with their heads (or their aliases'), then its player body types' body and helmet
+    CharacterHeads::Pairs BodyHeads(const ZonekitZone& Z);
     void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
               const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, AnimOwners::Book& Out);
 }

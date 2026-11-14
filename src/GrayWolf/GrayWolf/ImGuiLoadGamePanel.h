@@ -48,6 +48,8 @@ public:
     void Script(const std::string& StepJson);
     // A worker runs or is about to (the zone list not read yet, the tab shown): ui-record holds its frames meanwhile
     bool Working();
+    // its worker still on a job (reading an install, indexing, exporting)
+    bool JobRunning() const { return Busy.load(); }
     // A spinner or a progress bar was drawn this frame: ui-record times the waits without one
     bool ShowedProgress() const { return DrewIndicator; }
 

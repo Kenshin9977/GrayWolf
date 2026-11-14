@@ -342,9 +342,10 @@ namespace ExportWriters
     // Crash naming the exception (C++ type, or SEH code and module offset). GH_EXPORT_CRASHDUMP
     // (legacy GH_BO4_CRASHDUMP) = <file> writes a full minidump of the first crash.
     int ExportModel(const CoDModel_t& Model, const std::string& Dir, const ModelTextures& Textures, std::string& Crash);
-    // A composite model's parts as one model, Name (LiveExport::ExportCompositeModel)
+    // A composite model's parts as one model, Name (LiveExport::ExportCompositeModel; Rebind: the
+    // last part bound in its own space, a character's head)
     int ExportComposite(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& Dir, const ModelTextures& Textures,
-                        size_t& PartsRead, std::string& Crash);
+                        size_t& PartsRead, std::string& Crash, bool Rebind = false);
     int ExportAnim(const CoDAnim_t& Anim, const std::string& Dir, std::string& Crash);
     int ExportSound(const CoDSound_t& Sound, const std::string& Dir, const std::string& Extension, std::string& Crash);
 

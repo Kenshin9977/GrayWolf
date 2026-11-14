@@ -13,12 +13,28 @@
 namespace
 {
     using Materials::Role;
-    const Materials::SemanticAdapter Adapter("ww2", {
-        { 0xA0AB1041, Role::Albedo },
-        { 0x59D30D0F, Role::Normal },
-        { 0x34ECCCB3, Role::Metalness, 0 },
-        { 0x34ECCCB3, Role::Gloss, 2 },
-        { 0x6001F931, Role::Occlusion, 0 },
-    });
+    // The lit pixel shaders (aachen, 968 of 1331 with >= 3 samples, 2026-11-14) read the specular map
+    // as .xzy: v = r^2, metal = saturate((v - 0.1) / 0.9), diffuse = colour * (1 - metal), F0 = metal *
+    // colour + min(v, 0.1) (the description's Reflectance encoding); the gloss b as the specular power
+    // exp2(18 g) (GGX alpha^2 = 2 / (power + 1)): Black Ops III's gloss scale stops at 17.
+    class WW2Materials final : public Materials::SemanticAdapter
+    {
+    public:
+        WW2Materials()
+            : SemanticAdapter("ww2", {
+                  { 0xA0AB1041, Role::Albedo },
+                  { 0x59D30D0F, Role::Normal },
+                  { 0x34ECCCB3, Role::Metalness, 0 },
+                  { 0x34ECCCB3, Role::Gloss, 2 },
+                  { 0x6001F931, Role::Occlusion, 0 },
+              }) {}
+    protected:
+        void Refine(const Materials::Source&, Materials::Description& D, bool) const override
+        {
+            if (!D.Metalness.Empty()) D.MetalEnc = Materials::Description::MetalEncoding::Reflectance;
+            if (!D.Roughness.Empty() && D.Roughness.Invert) D.GlossRange[0] = 0.0f, D.GlossRange[1] = 17.0f;
+        }
+    };
+    const WW2Materials Adapter;
     const Materials::AdapterRegistration Registered("S2", Adapter);
 }

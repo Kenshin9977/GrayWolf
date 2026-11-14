@@ -45,6 +45,15 @@ namespace
             ExportsEffects(GameWorldAtWar::ReadXMaterial, Treyarch::EffectLayout::T4);
         }
 
+        // the character scripts' bodies and heads, this zone's then the zones loaded with it
+        // (TreyarchGscOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return TreyarchGscOwners::BodyHeads(*this, FastFilePath(), Docs, WawAnimOwners::Setup(), [this](const std::string& P) { return OtherZone(P); });
+        }
+
         // its string tables, then its rawfiles as text (the scripts, AI types, characters and
         // animtrees the anim owners are read from: WawAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -182,6 +191,13 @@ namespace
             return &Naming;
         }
 
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
+
         // the anims' AI types and characters, from the zones' scripts and animtrees (WawAnimOwners.h)
         std::vector<std::string> AnimOwnerDocuments() const override { return WawAnimOwners::Documents(); }
         void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
@@ -198,6 +214,7 @@ namespace
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<WawZone>(Path, Iw3Family::InstallOf(Path, Options.Install));
+            Zone->OpenedBy(this, Options);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

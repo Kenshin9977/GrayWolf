@@ -6,6 +6,7 @@
 // owned by archetype:<set> (the models of the first character playing it); an anim's owners in the
 // order Own gives. Keys: a name in lower case, or "#<hash>" where the game keeps hashes.
 
+#include "CharacterHeads.h"
 #include "DiskGame.h"
 
 #include <functional>
@@ -48,6 +49,9 @@ namespace IwAnimOwners
     Facts Read(const std::string& Text);
     // the facts of the documents named DocumentName among Docs
     Facts FromDocuments(const std::vector<std::pair<std::string, std::string>>& Docs);
+
+    // The heads each body wears as Facts' characters say (their models: the body, then its heads)
+    CharacterHeads::Pairs BodyHeads(const Facts& F);
 
     // Anims' owners into Out, the facts of every source joined. Key: an exported anim's name -> the
     // key the facts name it by.

@@ -73,7 +73,20 @@ bool DrawUpdateBanner()
             else
                 ImGui::Text("GrayWolf %s is available (you have %s).", V.AppVersion.c_str(), Updater::AppVersion().c_str());
 
-            if (V.AppStaged && ApplyError.empty())
+            // refused while another GrayWolf runs from the app folder (it may have no window: one
+            // closed while it was still indexing or exporting)
+            if (V.AppStaged && !ApplyError.empty())
+            {
+                if (ImGui::SmallButton("Close the other GrayWolf and restart"))
+                {
+                    size_t Ended = 0;
+                    std::string Msg;
+                    if (!Updater::Background::EndOthers(Ended, Msg)) ApplyError = Msg;
+                    else if (Updater::Background::ApplyAndRestart(Msg)) Restart = true;
+                    else ApplyError = Msg;
+                }
+            }
+            else if (V.AppStaged && ApplyError.empty())
             {
                 if (ImGui::SmallButton("Restart now"))
                 {

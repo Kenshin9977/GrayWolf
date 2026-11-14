@@ -262,5 +262,16 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     DestroyWindow(Hwnd);
+    // The window is gone: a Load Game job still running (an install read, an index, an export) is
+    // not waited for. The process would stay on without a window for its whole length, holding the
+    // app folder (an update refused, "GrayWolf is still running"). Settings are saved as they
+    // change and index files are written whole (a temporary file renamed).
+    if (LoadGame.JobRunning() && !ShotMode && !Record)
+    {
+        S.Rigs.reset();   // its reference export process stopped first
+        spdlog::info("closed during a Load Game job: not waited for");
+        spdlog::shutdown();
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
     return ShotSaved;
 }

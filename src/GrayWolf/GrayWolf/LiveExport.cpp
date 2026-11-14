@@ -30,6 +30,7 @@
 #include "MaterialDescription.h"
 #include "MaterialGdt.h"
 #include "CastMaterials.h"
+#include "ModelImportScript.h"
 
 #include <filesystem>
 #include <format>
@@ -567,6 +568,12 @@ namespace
         {
             Cast::ExportCastModel(*Model.get(), (std::filesystem::path(ExportPath) / (Model->AssetName + ".cast")).string(), false, Materials);
         }
+        // a described model's Blender import script: the Cast or glTF model with its full materials
+        if (Materials != nullptr)
+            Models::WriteImportScript((std::filesystem::path(ExportPath) / Model->AssetName).string(),
+                                      SettingsManager::GetSetting("export_castmdl") == "true",
+                                      SettingsManager::GetSetting("export_glb") == "true",
+                                      SettingsManager::GetSetting("export_gltf") == "true");
     }
 
     std::unique_ptr<XAnim_t> ReadAnim(const CoDAnim_t* Animation)
@@ -907,7 +914,7 @@ ExportGameResult LiveExport::ExportModel(const CoDModel_t* Model, const std::str
 ExportGameResult LiveExport::ExportCompositeModel(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& ExportPath,
                                                   const std::string& ImagesPath, const std::string& ImageRelativePath,
                                                   const std::string& ImageExtension, const ImageTaker* TakeImages, size_t* PartsRead,
-                                                  const MaterialFiller* FillMaterials)
+                                                  const MaterialFiller* FillMaterials, bool Rebind)
 {
     // each part's largest LOD, its bones joined by name (a bone of two parts is one bone: the part's
     // own skeleton is the composite's, its rig on the same tags), its materials by name
@@ -916,10 +923,10 @@ ExportGameResult LiveExport::ExportCompositeModel(const std::string& Name, const
     Materials::Sidecar Sidecar;
     std::vector<CastMaterialSlots> Slots;
     bool Described = true;
-    std::unordered_map<std::string, uint32_t> BoneOf, MaterialOf;
     size_t Read = 0;
     for (const CoDModel_t& Part : Parts)
     {
+        const bool Last = &Part == &Parts.back();
         std::unique_ptr<XModel_t> Generic = ReadModel(&Part);
         if (Generic == nullptr) continue;
         PrepareTextures(*Generic, ExportPath, ImagesPath, ImageRelativePath, ImageExtension, TakeImages, FillMaterials);
@@ -930,28 +937,11 @@ ExportGameResult LiveExport::ExportCompositeModel(const std::string& Name, const
         Read++;
         const DescribedLod D = DescribeLod(Generic->ModelLods[(size_t)Lod]);
         Described = Described && D.Ok && D.Slots.size() == Mesh->Materials.size() && D.Sidecar.Materials.size() == Mesh->Materials.size();
-        std::vector<uint32_t> Bones(Mesh->Bones.size());
-        for (size_t B = 0; B < Mesh->Bones.size(); B++)
+        std::vector<bool> New;
+        Merged->Join(*Mesh, nullptr, &New, Rebind && Last);
+        for (size_t M = 0; M < New.size(); M++)
         {
-            const WraithBone& Bone = Mesh->Bones[B];
-            if (const auto It = BoneOf.find(Bone.TagName); It != BoneOf.end())
-            {
-                Bones[B] = It->second;
-                continue;
-            }
-            Bones[B] = (uint32_t)Merged->Bones.size();
-            BoneOf.emplace(Bone.TagName, Bones[B]);
-            WraithBone Copy = Bone;
-            Copy.BoneParent = Bone.BoneParent >= 0 && (size_t)Bone.BoneParent < B ? (int32_t)Bones[(size_t)Bone.BoneParent] : -1;
-            Merged->Bones.push_back(Copy);
-        }
-        std::vector<int32_t> Materials(Mesh->Materials.size());
-        for (size_t M = 0; M < Mesh->Materials.size(); M++)
-        {
-            const auto [It, New] = MaterialOf.try_emplace(Mesh->Materials[M].MaterialName, (uint32_t)Merged->Materials.size());
-            Materials[M] = (int32_t)It->second;
-            if (!New) continue;
-            Merged->Materials.push_back(Mesh->Materials[M]);
+            if (!New[M]) continue;
             if (Described && M < D.Slots.size() && M < D.Sidecar.Materials.size())
             {
                 Slots.push_back(D.Slots[M]);
@@ -959,15 +949,6 @@ ExportGameResult LiveExport::ExportCompositeModel(const std::string& Name, const
                 if (M < D.Sidecar.Sources.size()) Sidecar.Sources.push_back(D.Sidecar.Sources[M]);
             }
             if (Sidecar.Game.empty()) Sidecar.Game = D.Sidecar.Game, Sidecar.Adapter = D.Sidecar.Adapter;
-        }
-        for (WraithSubmesh& Sub : Mesh->Submeshes)
-        {
-            for (WraithVertex& V : Sub.Verticies)
-                for (WraithVertexWeight& W : V.Weights)
-                    if (W.BoneIndex < Bones.size()) W.BoneIndex = Bones[W.BoneIndex];
-            for (int32_t& M : Sub.MaterialIndicies)
-                if (M >= 0 && (size_t)M < Materials.size()) M = Materials[(size_t)M];
-            Merged->Submeshes.push_back(std::move(Sub));
         }
     }
     if (PartsRead != nullptr) *PartsRead = Read;

@@ -68,6 +68,14 @@ public:
 
     // Another zonekit profile than Profile() (--profile), set before Open.
     void SetProfile(const std::string& Name) { ProfileName = Name; }
+    // The game and options it was opened with, for a hook reading another of its zones (CharacterHeads):
+    // OtherZone opens one as the game's Open does (nullptr when none was set, or it does not open)
+    void OpenedBy(const DiskGame::IDiskGame* G, const DiskGame::ExportOptions& O)
+    {
+        OpenerGame = G;
+        OpenerOptions = std::make_shared<const DiskGame::ExportOptions>(O);
+    }
+    std::unique_ptr<DiskGame::IDiskZone> OtherZone(const std::string& Path) const;
     // The profile Open walks with
     std::string ProfileUsed() const { return ProfileName.empty() ? Profile() : ProfileName; }
     // Packages the zone holds and serves as CoDAssets' package cache whenever it is served (the
@@ -225,6 +233,12 @@ protected:
     // Whether the game draws a material as geometry (false: a shadow caster): ExportMap leaves the
     // placed models' surfaces of the others out
     virtual bool MaterialDrawn(const XMaterial_t& M) const { return true; }
+    // The heads each body wears, as the game's character data says (body -> its heads, the default
+    // first; lower case, as the model kind names them): with the char_heads setting on, the model kind
+    // also writes each body this zone exports joined with its head(s) this zone holds, as
+    // models/<body>+<head>/ (ExportWithHeads). Asked only then; none by default.
+    // (it may park the zone a while to read another: one session at a time)
+    virtual std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() { return {}; }
 
     // For the game's own overrides
     // views kept as members, so a reader may hold their address (a ZoneView)
@@ -679,6 +693,10 @@ private:
     void BeginServing();
     void Relocate(const ResolvedLinks& L);
     void ExportLocalize(const DiskGame::Context& C, DiskGame::Totals& T);
+    // the char_heads setting's models (CharacterHeads): Bodies the model kind exported here, by
+    // lower-case name -> position; written with the model kind's textures
+    void ExportWithHeads(const std::unordered_map<std::string, int64_t>& Bodies, const ExportWriters::ModelTextures& Tex,
+                         const DiskGame::Context& C, DiskGame::Totals& T);
     void ExportGdt(const DiskGame::Context& C, DiskGame::Totals& T);
     // the profile's gdt types (<profile>/gdt/<type>/), read once per profile; empty and Error when they do not read
     std::vector<std::shared_ptr<const Gdt::Type>> GdtTypes(std::string& Error) const;
@@ -686,6 +704,8 @@ private:
     Gdt::Memory GdtMemory() const;
 
     std::string Path, ZoneName, ProfileName;
+    const DiskGame::IDiskGame* OpenerGame = nullptr;   // OpenedBy's
+    std::shared_ptr<const DiskGame::ExportOptions> OpenerOptions;
     ZoneBytes Bytes;
     ZoneTables::ZoneResult R;
     mutable std::unique_ptr<ZoneTables::BlockMap> Memory;   // R's stream layout, built by TextAt

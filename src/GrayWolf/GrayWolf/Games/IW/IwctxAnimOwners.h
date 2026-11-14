@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ByteView.h"
+#include "CharacterHeads.h"
 
 // Anim owners (AnimOwners.h) for Black Ops 6 and 7 (iwctx zones): anim sets (their name an
 // archetype's), the characters naming that archetype (body, head as script strings), scene
@@ -66,6 +67,9 @@ namespace IwctxAnimOwners
         struct Index;
         std::unique_ptr<Index> I;
     };
+
+    // The heads each body wears as Facts' characters (Zones::Facts) say: each one's body and head
+    CharacterHeads::Pairs BodyHeads(const Json& Facts);
 
     // A scriptbundle's scene objects (as the bundles kind writes it) into Facts' "scenes";
     // Composite gives a composite model's xmodels by its name

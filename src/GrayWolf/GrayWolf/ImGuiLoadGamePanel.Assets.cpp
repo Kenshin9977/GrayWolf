@@ -522,6 +522,7 @@ void LoadGamePanel::DoPreview()
     const std::string Install = GameBuf;
     DiskGame::ExportOptions Options = DiskOptions(Game, Install);
     Options.Settings[DiskGame::ModToolsOutput.Key] = "off";   // a preview never writes into a mod tools tree
+    Options.Settings[DiskGame::CharacterHeads.Key] = "off";   // nor joins a body with its heads (the export does)
     const DiskGame::AssetId A = PreviewWanted;
     std::shared_ptr<const DiskGame::ZoneIndex> Ix;
     {

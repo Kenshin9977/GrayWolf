@@ -38,7 +38,8 @@ namespace Blender
         bool HasScript() const;
     };
 
-    // A map's .glb, its _import.py or its .blend as the map; false (Error set) for anything else.
+    // A map's .glb, its _import.py or its .blend as the map; a model's .cast or .gltf the same (its
+    // <model>_import.py and <model>.blend beside it); false (Error set) for anything else.
     bool MapOf(const std::string& File, Map& Out, std::string& Error);
     // The maps of an export folder: every *_import.py in it and in its maps\ (the export root of a
     // game, or its maps folder), by name.
@@ -49,6 +50,9 @@ namespace Blender
         bool Reimport = false;     // run the import script even when the .blend exists
         bool Background = false;   // no window: import, save, quit, and wait for it (open-map --background)
         Exe Use;                   // blender.exe already found (the GUI's, off its thread); empty: Find()
+        // a map's props on import: "fast" (map cells), "objects" (one object per prop), "" the
+        // script's own PROPS; passed to the script as "--props <value>" (no effect on a .blend opened)
+        std::string Props;
     };
 
     // Starts Blender on the map: the .blend when it exists (and no re-import), else the import

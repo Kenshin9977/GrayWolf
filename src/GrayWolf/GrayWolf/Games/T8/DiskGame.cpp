@@ -181,6 +181,14 @@ namespace
             if (!NotBooked.empty()) T.Counters["materials_in_no_common_zone"] += NotBooked.size();
         }
 
+        // its characters' bodies and heads, from its anim owners' facts (TreyarchAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return TreyarchAnimOwners::BodyHeads(Docs);
+        }
+
         // with its anim owners' facts (TreyarchAnimOwners.h): aitype (0xf00: its name a string at 0x10,
         // characters 0xa08, animmappingtables 0xa70), character (bodies and heads at 0x68-0x80),
         // xmodelalias (models from 0x10), animmappingtable {XHash, entries 0x10, count 0x18} of entries
@@ -696,7 +704,7 @@ namespace
         const char* DefaultImageFormat() const override { return "DDS"; }
         const std::vector<DiskGame::Setting>& Settings() const override
         {
-            static const std::vector<DiskGame::Setting> All = { UiRes };
+            static const std::vector<DiskGame::Setting> All = { UiRes, DiskGame::CharacterHeads };
             return All;
         }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override

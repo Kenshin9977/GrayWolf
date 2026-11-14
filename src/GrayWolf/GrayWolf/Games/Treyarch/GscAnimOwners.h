@@ -95,4 +95,11 @@ namespace GscAnimOwners
     // T's players; an anim weapons name: those weapons.
     void Own(const std::vector<const Facts*>& Sources, const std::vector<std::string>& Anims, AnimOwners::Book& Out,
              const Options& O = {});
+
+    // The heads each body wears, as the characters say (lower case): every body of a character (its
+    // model, or each of its alias's) -> its heads (its head, or each of its alias's), in the order met,
+    // the characters by name; a character, an alias of the first source holding it; then Black Ops'
+    // create-a-class bodies, each faction's with its default head first, then the faction's other heads.
+    // Bodies without a head are left out. (The char_heads setting's pairs: CharacterHeads.h.)
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(const std::vector<const Facts*>& Sources);
 }

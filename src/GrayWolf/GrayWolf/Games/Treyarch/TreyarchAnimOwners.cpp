@@ -437,4 +437,16 @@ namespace TreyarchAnimOwners
             Own(Sources, Z.Anims, Out);
         }
     }
+
+    CharacterHeads::Pairs BodyHeads(const std::vector<std::pair<std::string, std::string>>& Docs)
+    {
+        CharacterHeads::Pairs Out;
+        for (const auto& [Name, Text] : Docs)
+        {
+            if (Name != DocumentName) continue;
+            for (const auto& [Hash, Models] : Parse(Text).Characters)
+                if (Models.size() > 1) CharacterHeads::Add(Out, Models.front(), std::vector<std::string>(Models.begin() + 1, Models.end()));
+        }
+        return Out;
+    }
 }

@@ -248,6 +248,42 @@ namespace
         return L;
     }
 
+    // the anim owners' rules and the zones the game loads with a zone (TreyarchGscOwners.h; Bo2Game::AnimOwners)
+    TreyarchGscOwners::Setup OwnerSetup()
+    {
+        TreyarchGscOwners::Setup S;
+        S.Options.ByModelPrefix = S.Options.ByNameTokens = true;
+        S.Shared = [](const fs::path& Zone) {
+            const std::string Stem = ExportNaming::Lower(Zone.stem().string());
+            const fs::path Dir = Zone.parent_path();
+            const auto In = [&](std::initializer_list<std::string> Names) {
+                std::vector<fs::path> Out;
+                for (const auto& N : Names) Out.push_back(Dir / (N + ".ff"));
+                return Out;
+            };
+            const auto Ends = [&](const char* Suffix) {
+                const size_t N = strlen(Suffix);
+                return Stem.size() > N && Stem.compare(Stem.size() - N, N, Suffix) == 0;
+            };
+            if (Stem.rfind("zm_", 0) == 0) return In({ Stem + "_patch", "patch_zm", "common_zm" });
+            if (Ends("_zm"))
+            {
+                auto Out = In({ "patch_zm", "common_zm" });
+                Out.push_back(TreyarchGscOwners::FirstZone(Dir, "zm_*_patch"));
+                return Out;
+            }
+            if (Stem.rfind("mp_", 0) == 0 || Stem.rfind("faction_", 0) == 0) return In({ "patch_mp", "common_patch_mp", "common_mp" });
+            if (Ends("_mp"))
+            {
+                auto Out = In({ "patch_mp", "common_patch_mp", "common_mp", "faction_seals_mp", "faction_pmc_mp" });
+                Out.push_back(TreyarchGscOwners::FirstZone(Dir, "mp_*"));
+                return Out;
+            }
+            return In({ Stem + "_patch", "patch", "common" });
+        };
+        return S;
+    }
+
     class Bo2Zone final : public TreyarchLevelZone
     {
     public:
@@ -285,6 +321,15 @@ namespace
         ~Bo2Zone() override
         {
             Serve(false);
+        }
+
+        // the character scripts' bodies and heads, this zone's then the zones loaded with it
+        // (TreyarchGscOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return TreyarchGscOwners::BodyHeads(*this, FastFilePath(), Docs, OwnerSetup(), [this](const std::string& P) { return OtherZone(P); });
         }
 
         // its string tables, its rawfiles (the animtrees inflated), its compiled scripts (AI types,
@@ -685,39 +730,15 @@ namespace
         // seals and pmc, for their bodies, and the first level, for its dog), the campaign's
         // (<zone>_patch, patch, common)
         std::vector<std::string> AnimOwnerDocuments() const override { return GscAnimOwners::Documents(); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
         void AnimOwners(const ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
         {
-            TreyarchGscOwners::Setup S;
-            S.Options.ByModelPrefix = S.Options.ByNameTokens = true;
-            S.Shared = [](const fs::path& Zone) {
-                const std::string Stem = ExportNaming::Lower(Zone.stem().string());
-                const fs::path Dir = Zone.parent_path();
-                const auto In = [&](std::initializer_list<std::string> Names) {
-                    std::vector<fs::path> Out;
-                    for (const auto& N : Names) Out.push_back(Dir / (N + ".ff"));
-                    return Out;
-                };
-                const auto Ends = [&](const char* Suffix) {
-                    const size_t N = strlen(Suffix);
-                    return Stem.size() > N && Stem.compare(Stem.size() - N, N, Suffix) == 0;
-                };
-                if (Stem.rfind("zm_", 0) == 0) return In({ Stem + "_patch", "patch_zm", "common_zm" });
-                if (Ends("_zm"))
-                {
-                    auto Out = In({ "patch_zm", "common_zm" });
-                    Out.push_back(TreyarchGscOwners::FirstZone(Dir, "zm_*_patch"));
-                    return Out;
-                }
-                if (Stem.rfind("mp_", 0) == 0 || Stem.rfind("faction_", 0) == 0) return In({ "patch_mp", "common_patch_mp", "common_mp" });
-                if (Ends("_mp"))
-                {
-                    auto Out = In({ "patch_mp", "common_patch_mp", "common_mp", "faction_seals_mp", "faction_pmc_mp" });
-                    Out.push_back(TreyarchGscOwners::FirstZone(Dir, "mp_*"));
-                    return Out;
-                }
-                return In({ Stem + "_patch", "patch", "common" });
-            };
-            TreyarchGscOwners::Fill(*this, Options, Zones, Out, S);
+            TreyarchGscOwners::Fill(*this, Options, Zones, Out, OwnerSetup());
         }
 
         // its zones open on the index's workers: before its session a zone only decompresses its fast file
@@ -729,6 +750,7 @@ namespace
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<Bo2Zone>(Path, Iw3Family::InstallOf(Path, Options.Install));
+            Zone->OpenedBy(this, Options);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
         }

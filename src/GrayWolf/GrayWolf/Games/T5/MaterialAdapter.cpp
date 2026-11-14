@@ -9,6 +9,6 @@
 // the image decoder leaves them (Games/IW3/StoredNormals.h).
 namespace
 {
-    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(true, true));
+    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(true, true, Materials::LegacyGloss::Treyarch));
     const Materials::AdapterRegistration Registered("T5", Adapter);
 }

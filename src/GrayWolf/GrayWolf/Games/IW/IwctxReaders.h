@@ -140,7 +140,7 @@ namespace IwctxReaders
     void LoadNameIndexes();
     // a game's own name packages of package_index (bo6_names.wni, bo7_names.wni: names cod-hash-recovery
     // found for that game's FNV-1a 64 asset hashes), each file loaded once whichever game asks for it
-    void LoadGameNames(std::initializer_list<const char*> Packages);
+    void LoadGameNames(const std::vector<const char*>& Packages);
     // the string cipher's strings of a profile's zones (DiskGame::EnsureStringCipher): every zone's
     // script strings but the transient ones' (its list's size the profile's zone_load.asset_list_size)
     DiskGame::CipherSource ScriptStringCipher(const char* Profile);

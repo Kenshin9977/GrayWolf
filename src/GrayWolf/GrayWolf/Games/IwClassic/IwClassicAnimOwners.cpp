@@ -2,6 +2,7 @@
 
 #include "IwClassicAnimOwners.h"
 
+#include "CharacterHeads.h"
 #include "ExportNaming.h"
 #include "Games/Common/WeaponFiles.h"
 #include "Games/OAT/OatWeapons.h"
@@ -275,6 +276,148 @@ namespace IwClassicAnimOwners
         std::stable_sort(Compiled.begin(), Compiled.end(), [&](const auto* A, const auto* B) { return Number(A->first) < Number(B->first); });
         for (const auto* D : Compiled) CompiledCharacter(D->first, D->second, F);
         return F;
+    }
+
+    namespace
+    {
+        // A compiled script's strings (printable runs of 3 or more), lower case
+        std::vector<std::string> StringsOf(const std::string& Text)
+        {
+            std::vector<std::string> Strings;
+            for (size_t I = 0; I < Text.size();)
+            {
+                size_t E = I;
+                while (E < Text.size() && Text[E] >= 0x20 && Text[E] < 0x7f) E++;
+                if (E - I >= 3) Strings.push_back(Lower(Text.substr(I, E - I)));
+                I = E + 1;
+            }
+            return Strings;
+        }
+
+        bool IsBody(const std::string& S) { return S.rfind("mp_body_", 0) == 0 || S.rfind("mp_fullbody_", 0) == 0 || S.rfind("body_", 0) == 0; }
+        bool IsHead(const std::string& S) { return S.rfind("head_", 0) == 0 || S.rfind("sp_head_", 0) == 0; }
+        // a model or alias name with a stray lead byte (Ghosts' compiled scripts) without it
+        std::string Named(const std::string& S)
+        {
+            const auto Is = [](const std::string& X) { return IsBody(X) || IsHead(X) || X.rfind("alias_", 0) == 0; };
+            return !Is(S) && S.size() > 1 && Is(S.substr(1)) ? S.substr(1) : S;
+        }
+
+        // a name's words, '_' apart, but those every alias of heads has
+        std::set<std::string> Words(const std::string& S)
+        {
+            std::set<std::string> Out;
+            std::istringstream In(S);
+            for (std::string W; std::getline(In, W, '_');)
+                if (W.size() > 1 && W != "alias" && W != "heads" && W != "head" && W != "mp") Out.insert(W);
+            return Out;
+        }
+
+        // MW3's compiled characters as the heads need them, beyond CompiledCharacter (kept for the
+        // anim owners as it is): campaign bodies (body_*) too, and the xmodelalias lists, scripts of
+        // their own known by number only: a list (every string a head_, or every one a body) the
+        // tools wrote near the characters using it. A character naming its heads' alias takes the
+        // list of heads sharing most words with that name; one naming no body takes the list of
+        // bodies among the lists right before it.
+        void CompiledHeads(const std::vector<std::pair<std::string, std::string>>& Docs, GscAnimOwners::Facts& G)
+        {
+            struct Script
+            {
+                uint64_t Number = 0;
+                std::string Stem;
+                std::vector<std::string> Strings;
+                bool Heads = false, Bodies = false;
+            };
+            std::vector<Script> All;
+            for (const auto& [Name, Text] : Docs)
+            {
+                if (!EndsWith(Lower(Name), ".gscsource") || Text.size() > 2048) continue;
+                // (a script known by number in its tools' order; a named one, MWR's character/<name>, after them)
+                const std::string Stem = FolderStem(Name).second;
+                if (Stem.empty()) continue;
+                const bool Numbered = Stem.size() <= 18 && std::all_of(Stem.begin(), Stem.end(), [](char C) { return std::isdigit((unsigned char)C) != 0; });
+                Script S{ Numbered ? std::stoull(Stem) : ~0ull, Stem, StringsOf(Text) };
+                for (auto& Str : S.Strings) Str = Named(Str);
+                S.Heads = !S.Strings.empty() && std::all_of(S.Strings.begin(), S.Strings.end(), IsHead);
+                S.Bodies = !S.Strings.empty() && std::all_of(S.Strings.begin(), S.Strings.end(), IsBody);
+                All.push_back(std::move(S));
+            }
+            std::sort(All.begin(), All.end(), [](const Script& A, const Script& B) { return A.Number != B.Number ? A.Number < B.Number : A.Stem < B.Stem; });
+            for (size_t I = 0; I < All.size(); I++)
+            {
+                const Script& S = All[I];
+                if (S.Heads || S.Bodies) continue;
+                GscAnimOwners::Character Ch;
+                for (const auto& Str : S.Strings)
+                {
+                    if (Ch.Body.empty() && IsBody(Str)) Ch.Body = Str;
+                    if (Ch.Head.empty() && IsHead(Str)) Ch.Head = Str;
+                    if (Ch.HeadAlias.empty() && Str.rfind("alias_", 0) == 0) Ch.HeadAlias = Str;
+                }
+                // (a body of no body_ name, WWII's composites: the script's first string, its head second)
+                if (Ch.Body.empty() && S.Strings.size() > 1 && IsHead(S.Strings[1]) && !IsHead(S.Strings[0]) &&
+                    S.Strings[0].find_first_of("/ ") == std::string::npos)
+                    Ch.Body = S.Strings[0];
+                if (Ch.Body.empty())
+                    for (size_t J = I; J-- > 0 && (All[J].Heads || All[J].Bodies);)
+                        if (All[J].Bodies)
+                        {
+                            Ch.BodyAlias = "#" + All[J].Stem;
+                            G.Aliases[Ch.BodyAlias] = All[J].Strings;
+                            break;
+                        }
+                if (Ch.Body.empty() && Ch.BodyAlias.empty()) continue;
+                if (!Ch.Head.empty()) Ch.HeadAlias.clear();
+                else if (!Ch.HeadAlias.empty() && !G.Aliases.count(Ch.HeadAlias))
+                {
+                    // the list sharing the most of the alias's words, the nearest before it of those, else after
+                    const std::set<std::string> Want = Words(Ch.HeadAlias);
+                    size_t Best = All.size(), BestShared = 0, BestDistance = 0;
+                    for (size_t J = 0; J < All.size(); J++)
+                    {
+                        if (!All[J].Heads) continue;
+                        std::set<std::string> Have;
+                        for (const auto& H : All[J].Strings)
+                            for (const auto& W : Words(H)) Have.insert(W);
+                        size_t Shared = 0;
+                        for (const auto& W : Want) Shared += Have.count(W);
+                        const size_t Distance = J < I ? I - J : All.size() + J - I;
+                        if (Shared > BestShared || (Shared == BestShared && Shared > 0 && Distance < BestDistance))
+                            Best = J, BestShared = Shared, BestDistance = Distance;
+                    }
+                    if (Best < All.size()) G.Aliases[Ch.HeadAlias] = All[Best].Strings;
+                }
+                if (Ch.Head.empty() && !G.Aliases.count(Ch.HeadAlias)) continue;
+                G.Characters["#" + S.Stem] = std::move(Ch);
+            }
+        }
+
+        // the facts the heads are read from: the GSC helper's and IW's characters, then MW3's compiled ones
+        GscAnimOwners::Facts HeadFacts(const std::vector<std::pair<std::string, std::string>>& Docs)
+        {
+            GscAnimOwners::Facts G = Parse(Docs).Gsc;
+            CompiledHeads(Docs, G);
+            return G;
+        }
+    }
+
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(const std::vector<std::pair<std::string, std::string>>& Docs)
+    {
+        const GscAnimOwners::Facts G = HeadFacts(Docs);
+        return GscAnimOwners::BodyHeads({ &G });
+    }
+
+    std::vector<std::pair<std::string, std::vector<std::string>>> BodyHeads(
+        DiskGame::IDiskZone& Asking, const std::string& Zone, const std::vector<std::pair<std::string, std::string>>& Own,
+        const std::function<std::unique_ptr<DiskGame::IDiskZone>(const std::string& Path)>& Open)
+    {
+        // the zones loaded with it, read once per process
+        const GscAnimOwners::Facts Mine = HeadFacts(Own);
+        std::vector<GscAnimOwners::Facts> Held;
+        for (const auto& Docs : CharacterHeads::DocumentsOf(Asking, SharedZones(fs::path(Zone)), Open)) Held.push_back(HeadFacts(*Docs));
+        std::vector<const GscAnimOwners::Facts*> Sources{ &Mine };
+        for (const auto& F : Held) Sources.push_back(&F);
+        return GscAnimOwners::BodyHeads(Sources);
     }
 
     void Own(const std::vector<const Facts*>& Sources, const std::vector<std::string>& Anims, ::AnimOwners::Book& Out)

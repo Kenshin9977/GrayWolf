@@ -261,3 +261,124 @@ void WraithModel::GenerateLocalPositions(bool Translations, bool Rotations)
         }
     }
 }
+
+namespace
+{
+    Vector3 Rotate(const Quaternion& Q, const Vector3& V) { return Matrix::TransformVector(V, Matrix::CreateFromQuaternion(Q)); }
+
+    // what moves a point bound to a part's bone onto the joined model's bind pose: its rotation, then
+    // its translation (Point' = Rotate(Rot, Point) + Move)
+    struct Rebinding
+    {
+        Quaternion Rot = Quaternion::Identity();
+        Vector3 Move{ 0, 0, 0 };
+        Vector3 Apply(const Vector3& P) const { return Rotate(Rot, P) + Move; }
+    };
+
+    // Part's mesh and bones moved onto Into's bind pose (WraithModel::Join's Rebind): a bone Into has
+    // of the same name maps Part's bind of it onto Into's; another bone moves as its nearest such
+    // ancestor (none: as it is)
+    void RebindPart(const WraithModel& Into, const std::unordered_map<std::string, uint32_t>& BoneOf, WraithModel& Part)
+    {
+        std::vector<Rebinding> By(Part.Bones.size());
+        for (size_t B = 0; B < Part.Bones.size(); B++)
+        {
+            const WraithBone& Bone = Part.Bones[B];
+            if (const auto It = BoneOf.find(Bone.TagName); It != BoneOf.end())
+            {
+                const WraithBone& To = Into.Bones[It->second];
+                By[B].Rot = To.GlobalRotation * ~Bone.GlobalRotation;
+                By[B].Move = To.GlobalPosition - Rotate(By[B].Rot, Bone.GlobalPosition);
+            }
+            else if (Bone.BoneParent >= 0 && (size_t)Bone.BoneParent < B) By[B] = By[(size_t)Bone.BoneParent];
+        }
+        for (WraithSubmesh& Sub : Part.Submeshes)
+            for (WraithVertex& V : Sub.Verticies)
+            {
+                Vector3 P{ 0, 0, 0 }, N{ 0, 0, 0 };
+                float Total = 0;
+                for (const WraithVertexWeight& W : V.Weights)
+                {
+                    if (W.BoneIndex >= By.size() || W.Weight <= 0) continue;
+                    P = P + By[W.BoneIndex].Apply(V.Position) * W.Weight;
+                    N = N + Rotate(By[W.BoneIndex].Rot, V.Normal) * W.Weight;
+                    Total += W.Weight;
+                }
+                if (Total <= 0) continue;
+                // blend shape deltas turn with the vertex's first bone
+                const Rebinding& First = By[V.Weights[0].BoneIndex < By.size() ? V.Weights[0].BoneIndex : 0];
+                for (auto& [Shape, Delta] : V.BlendShapeDeltas) Delta = Rotate(First.Rot, Delta);
+                V.Position = P * (1.0f / Total);
+                if (N.Length() > 0) V.Normal = N.GetNormalized();
+            }
+        for (size_t B = 0; B < Part.Bones.size(); B++)
+        {
+            WraithBone& Bone = Part.Bones[B];
+            Bone.GlobalPosition = By[B].Apply(Bone.GlobalPosition);
+            Bone.GlobalRotation = By[B].Rot * Bone.GlobalRotation;
+        }
+    }
+}
+
+size_t WraithModel::Join(WraithModel& Part, std::vector<int32_t>* MaterialOf, std::vector<bool>* NewMaterial, bool Rebind)
+{
+    // this model's bones and materials by name, the first of a name kept
+    std::unordered_map<std::string, uint32_t> BoneOf, MaterialAt;
+    for (size_t B = 0; B < Bones.size(); B++) BoneOf.try_emplace(Bones[B].TagName, (uint32_t)B);
+    for (size_t M = 0; M < Materials.size(); M++) MaterialAt.try_emplace(Materials[M].MaterialName, (uint32_t)M);
+    if (Rebind && !Bones.empty() && !Part.Bones.empty()) RebindPart(*this, BoneOf, Part);
+    const size_t BonesBefore = Bones.size();
+    size_t Appended = 0;
+    std::vector<uint32_t> BoneMap(Part.Bones.size());
+    for (size_t B = 0; B < Part.Bones.size(); B++)
+    {
+        const WraithBone& Bone = Part.Bones[B];
+        if (const auto It = BoneOf.find(Bone.TagName); It != BoneOf.end())
+        {
+            BoneMap[B] = It->second;
+            continue;
+        }
+        BoneMap[B] = (uint32_t)Bones.size();
+        BoneOf.emplace(Bone.TagName, BoneMap[B]);
+        WraithBone Copy = Bone;
+        Copy.BoneParent = Bone.BoneParent >= 0 && (size_t)Bone.BoneParent < B ? (int32_t)BoneMap[(size_t)Bone.BoneParent] : -1;
+        Bones.push_back(Copy);
+        Appended++;
+    }
+    std::vector<int32_t> MaterialMap(Part.Materials.size());
+    if (NewMaterial != nullptr) NewMaterial->assign(Part.Materials.size(), false);
+    for (size_t M = 0; M < Part.Materials.size(); M++)
+    {
+        const auto [It, New] = MaterialAt.try_emplace(Part.Materials[M].MaterialName, (uint32_t)Materials.size());
+        MaterialMap[M] = (int32_t)It->second;
+        if (!New) continue;
+        Materials.push_back(Part.Materials[M]);
+        if (NewMaterial != nullptr) (*NewMaterial)[M] = true;
+    }
+    for (WraithSubmesh& Sub : Part.Submeshes)
+    {
+        for (WraithVertex& V : Sub.Verticies)
+            for (WraithVertexWeight& W : V.Weights)
+                if (W.BoneIndex < BoneMap.size()) W.BoneIndex = BoneMap[W.BoneIndex];
+        for (int32_t& M : Sub.MaterialIndicies)
+            if (M >= 0 && (size_t)M < MaterialMap.size()) M = MaterialMap[(size_t)M];
+        Submeshes.push_back(std::move(Sub));
+    }
+    Part.Submeshes.clear();
+    // the appended bones' local transforms, from their (rebound) globals under their new parents
+    if (Rebind)
+        for (size_t B = BonesBefore; B < Bones.size(); B++)
+        {
+            WraithBone& Bone = Bones[B];
+            if (Bone.BoneParent < 0)
+            {
+                Bone.LocalPosition = Bone.GlobalPosition, Bone.LocalRotation = Bone.GlobalRotation;
+                continue;
+            }
+            const WraithBone& Parent = Bones[(size_t)Bone.BoneParent];
+            Bone.LocalPosition = Rotate(~Parent.GlobalRotation, Bone.GlobalPosition - Parent.GlobalPosition);
+            Bone.LocalRotation = ~Parent.GlobalRotation * Bone.GlobalRotation;
+        }
+    if (MaterialOf != nullptr) *MaterialOf = std::move(MaterialMap);
+    return Appended;
+}

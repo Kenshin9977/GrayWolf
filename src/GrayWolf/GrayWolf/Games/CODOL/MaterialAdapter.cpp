@@ -10,6 +10,6 @@
 // (Games/IW3/StoredNormals.h).
 namespace
 {
-    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(false, true));
+    const StoredNormals::Adapter Adapter(Materials::LegacySpecularAdapter(false, true, Materials::LegacyGloss::Iw));
     const Materials::AdapterRegistration Registered("CODOL", Adapter);
 }

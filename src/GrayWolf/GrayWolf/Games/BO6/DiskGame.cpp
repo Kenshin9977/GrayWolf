@@ -194,6 +194,14 @@ namespace
         // the zone's entity strings: map_game_objects' pairs, then each script brush model's
         void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
 
+        // its characters' bodies and heads, of the zone and those served beside it (IwctxAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<IwctxAnimOwners::Served> All{ { Name(), Image(), Live().Origin(), &Walk() } };
+            for (const auto& S : Beside.All()) All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
+            return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts());
+        }
+
         // its string tables, and the anim owners' facts of the zone (and of the zones loaded beside
         // it), its scene bundles, AI types and entities
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -1090,6 +1098,12 @@ namespace
         const char* Title() const override { return Campaign ? "Call of Duty: Black Ops 6 (campaign)" : "Call of Duty: Black Ops 6"; }
         const char* Engine() const override { return Campaign ? "BO6SP" : "BO6"; }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<BlackOps6Zone>(std::string(), Campaign); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
 
         bool ListZones(const std::string& Install, const ExportOptions& Options, std::vector<std::string>& Names,
                        std::string& Error) const override

@@ -8,5 +8,5 @@
 // specular samples); the technique set's name says how the base layer draws.
 namespace
 {
-    const Materials::AdapterRegistration Registered("T6", Materials::LegacySpecularAdapter(false, true));
+    const Materials::AdapterRegistration Registered("T6", Materials::LegacySpecularAdapter(false, true, Materials::LegacyGloss::Treyarch));
 }

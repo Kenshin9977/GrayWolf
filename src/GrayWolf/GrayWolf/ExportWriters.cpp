@@ -617,6 +617,7 @@ namespace
         const std::string* Dir;
         const ModelTextures* T;
         size_t* Read;
+        bool Rebind;
     };
     int CompositeSeh(const CompositeCall* C)
     {
@@ -624,7 +625,7 @@ namespace
         {
             return static_cast<int>(LiveExport::ExportCompositeModel(*C->Name, *C->Parts, *C->Dir, C->T->ImagesDir, C->T->Relative, C->T->Extension,
                                                                      C->T->Take ? &C->T->Take : nullptr, C->Read,
-                                                                     C->T->Fill ? &C->T->Fill : nullptr));
+                                                                     C->T->Fill ? &C->T->Fill : nullptr, C->Rebind));
         }
         __except (NoteCrash(GetExceptionInformation())) { return -1; }
     }
@@ -942,9 +943,9 @@ std::vector<std::pair<size_t, std::string>> ModelFilesOnPool::Finish()
 }
 
 int ExportComposite(const std::string& Name, const std::vector<CoDModel_t>& Parts, const std::string& Dir, const ModelTextures& Textures,
-                    size_t& PartsRead, std::string& Crash)
+                    size_t& PartsRead, std::string& Crash, bool Rebind)
 {
-    const CompositeCall Call{ &Name, &Parts, &Dir, &Textures, &PartsRead };
+    const CompositeCall Call{ &Name, &Parts, &Dir, &Textures, &PartsRead, Rebind };
     return Guarded([&]() { return CompositeSeh(&Call); }, Crash);
 }
 

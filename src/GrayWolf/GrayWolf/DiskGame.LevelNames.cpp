@@ -103,6 +103,30 @@ namespace
         return std::string();
     }
 
+    // Stem's level by its file name (LevelNaming::ByFileName), "" for none: the shortest zone of
+    // a level pattern its name, or its name past the first word, begins with
+    std::string ByFile(const IDiskGame::LevelNaming& Rules, const std::string& Stem, const std::set<std::string>& Stems)
+    {
+        const auto IsLevel = [&](const std::string& S) {
+            for (const auto& P : Rules.ByFileName)
+                if (Match(P.c_str(), S.c_str(), nullptr)) return true;
+            return false;
+        };
+        std::vector<std::string> Tried{ Stem };
+        if (const size_t U = Stem.find('_'); U != std::string::npos) Tried.push_back(Stem.substr(U + 1));
+        for (const auto& S : Tried)
+        {
+            if (!IsLevel(S)) continue;
+            for (size_t At = S.find('_');; At = S.find('_', At + 1))
+            {
+                const std::string Prefix = S.substr(0, At);
+                if (Stems.count(Prefix) != 0 && IsLevel(Prefix)) return Prefix;
+                if (At == std::string::npos) break;
+            }
+        }
+        return std::string();
+    }
+
     // An .arena longname in a level list, marked: the name itself when no string has it as key
     constexpr char LongName = '=';
 
@@ -244,6 +268,7 @@ std::unique_ptr<LevelNames> LevelNames::For(const IDiskGame& Game, const ExportO
     for (const auto& [P, Keys] : Rules->Keys)
         for (const auto& K : Keys) KeyText += "key " + P + " " + K + "\n";
     if (Rules->ByLevels) KeyText += "by levels\n";
+    for (const auto& P : Rules->ByFileName) KeyText += "file name " + P + "\n";
     // the game's own settings (CoD1/CoD2's language)
     for (const Setting& S : Game.Settings()) KeyText += std::string("setting ") + S.Key + "=" + S.Of(Options) + "\n";
     for (const auto& Z : Zones) KeyText += Z + "\n";
@@ -269,6 +294,10 @@ std::unique_ptr<LevelNames> LevelNames::For(const IDiskGame& Game, const ExportO
     for (const auto& Pattern : Rules->From)
         for (const auto& Z : Zones)
             if (Match(Pattern.c_str(), Stem(Z).c_str(), nullptr) && Taken.insert(Stem(Z)).second) Sources.push_back(Z);
+
+    // the game's string cipher as the install index's build kept it (DiskGame::EnsureStringCipher),
+    // never fitted here: without it the encrypted texts are not read, and the names not kept
+    const bool CipherMissing = Game.CipherStrings() != nullptr && CipherHarvest::Begin(Game, Options, Install, nullptr) != nullptr;
 
     std::map<std::string, std::string> Strings;
     std::map<std::string, std::vector<std::string>> Listed;   // a level list's map -> its keys
@@ -299,12 +328,21 @@ std::unique_ptr<LevelNames> LevelNames::For(const IDiskGame& Game, const ExportO
     }
     if (Step) Step(Sources.size(), Sources.size() + (Rules->ByLevels ? Zones.size() : 0));
 
+    // the levels the strings name, by stem: a part of one named by file name takes its name
+    std::map<std::string, std::string> Looked;
+    if (!Rules->ByLevels)
+        for (const auto& Z : Zones)
+            if (std::string Name = Lookup(*Rules, Stem(Z), Strings, Listed); !Name.empty()) Looked[Stem(Z)] = std::move(Name);
     for (size_t I = 0; I < Zones.size(); I++)
     {
         const std::string& Z = Zones[I];
         if (!Rules->ByLevels)
         {
-            if (std::string Name = Lookup(*Rules, Stem(Z), Strings, Listed); !Name.empty()) Out->Names[Z] = std::move(Name);
+            std::string Name;
+            if (const auto It = Looked.find(Stem(Z)); It != Looked.end()) Name = It->second;
+            else if (Name = ByFile(*Rules, Stem(Z), Stems); !Name.empty())
+                if (const auto Level = Looked.find(Name); Level != Looked.end()) Name = Level->second;
+            if (!Name.empty()) Out->Names[Z] = std::move(Name);
             continue;
         }
         // a container: the names of the levels it holds, those named first (the others by their
@@ -327,7 +365,7 @@ std::unique_ptr<LevelNames> LevelNames::For(const IDiskGame& Game, const ExportO
         if (!Name.empty()) Out->Names[Z] = std::move(Name);
     }
     Out->Built = true;
-    if (Strings.empty()) return Out;   // no string read: tried again next time
+    if (Strings.empty() || CipherMissing) return Out;   // no string read (or not decrypted yet): tried again next time
 
     const std::string Temp = File + ".tmp";
     {

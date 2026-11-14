@@ -118,3 +118,10 @@ bool IWZone::CipherDecrypt(const std::string& Raw, std::string& Text) const
     const auto* Cipher = Tables != nullptr ? StringCipher::Load(Tables->Profile.Dir, Error) : nullptr;
     return StringCipher::Decrypt(Cipher, Raw, Text);
 }
+
+bool IWZone::CipherRebuilt() const
+{
+    std::string Error;
+    const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
+    return Tables != nullptr && !StringCipher::HasOwn(Tables->Profile.Dir);
+}

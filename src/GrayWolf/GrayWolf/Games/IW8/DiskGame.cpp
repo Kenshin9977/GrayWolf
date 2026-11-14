@@ -325,6 +325,14 @@ namespace
             return true;
         }
 
+        // its characters' bodies and heads (IwAnimOwners::BodyHeads of its facts document)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return IwAnimOwners::BodyHeads(IwAnimOwners::FromDocuments(Docs));
+        }
+
         // its string tables, and its anim sets, character scripts and weapons for the anim owners
         // (Games/IW/IwAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
@@ -958,6 +966,12 @@ namespace
         const char* Engine() const override { return "IW8"; }
         std::vector<std::string> Aliases() const override { return { "mw2019-disk-export" }; }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<IW8Zone>(std::string(), std::string(), nullptr); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
 
         // a .ff, a folder of them, or casc:<pattern> pulled from the install (--install) with the .fp patches
         bool Zones(const std::string& Input, const DiskGame::ExportOptions& Options, std::vector<std::string>& Out,

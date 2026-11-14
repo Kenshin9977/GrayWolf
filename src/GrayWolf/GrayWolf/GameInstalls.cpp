@@ -42,6 +42,7 @@ namespace
             { "sp24",  "Black Ops 6 (campaign)",        2024, "bo6sp" },
             { "cod25", "Black Ops 7",                   2025, "bo7" },
             { "cod26", "Modern Warfare 4",              2026, "mw4" },
+            { "sp26",  "Modern Warfare 4 (campaign)",   2026, "mw4sp" },
         };
         return All;
     }

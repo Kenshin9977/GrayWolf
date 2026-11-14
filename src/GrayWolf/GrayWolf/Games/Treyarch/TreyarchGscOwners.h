@@ -6,6 +6,7 @@
 // once per process.
 
 #include "DiskGame.h"
+#include "CharacterHeads.h"
 #include "GscAnimOwners.h"
 
 #include <filesystem>
@@ -25,6 +26,12 @@ namespace TreyarchGscOwners
 
     void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
               const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, AnimOwners::Book& Out, const Setup& S);
+
+    // The heads each body wears (CharacterHeads.h) as Zone's documents (Own) say, then those of the
+    // zones S.Shared names (read once per process by Open, Asking parked meanwhile): GscAnimOwners::BodyHeads
+    CharacterHeads::Pairs BodyHeads(DiskGame::IDiskZone& Asking, const std::filesystem::path& Zone,
+                                    const std::vector<std::pair<std::string, std::string>>& Own, const Setup& S,
+                                    const CharacterHeads::Opener& Open);
 
     // the first zone (sorted by name) of Dir whose stem fits Pattern ('*', no case), "" when none
     std::filesystem::path FirstZone(const std::filesystem::path& Dir, const char* Pattern);

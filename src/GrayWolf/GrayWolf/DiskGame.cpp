@@ -12,6 +12,7 @@
 #include "Games/GameModule.h"
 #include "MaterialGdt.h"
 #include "MaterialSplit.h"
+#include "ModelImages.h"
 #include "MemoryBudget.h"
 #include "ModToolsTree.h"
 #include "ModToolsUsermap.h"
@@ -137,9 +138,15 @@ const Setting ScriptDecompile{ "decompile", "Compiled scripts and Lua", { { "off
 const Setting SplitMaps{ "split_maps", "Packed maps", { { "off", "As stored" }, { "on", "+ split (normal, roughness, AO...)" } },
                          "off", { Kind::Model, Kind::Map } };
 
+const Setting ModelImagesFolder{ "model_images", "Model textures", { { "off", "In images/ (shared)" }, { "on", "+ each model's images/ (hard links)" } },
+                                 "on", { Kind::Model } };
+const Setting CharacterHeads{ "char_heads", "Character heads",
+                              { { "off", "Body and head apart" }, { "first", "+ body with its head" }, { "all", "+ body with each head" } },
+                              "first", { Kind::Model } };
+
 const std::vector<Setting>& CommonSettings()
 {
-    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps };
+    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps, ModelImagesFolder };
     return All;
 }
 
@@ -1380,6 +1387,14 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         const auto Start = std::chrono::steady_clock::now();
         MaterialSplit::WriteForRun(Run, T);
         Mon.AddTime("split_maps", Seconds(Start));
+    }
+    // each model's textures linked into its own images/ folder, once every image (the split ones
+    // too) is written
+    if (ModelImages::On(Run) && C.Kinds.count(Kind::Model) && !T.Cancelled)
+    {
+        const auto Start = std::chrono::steady_clock::now();
+        ModelImages::LinkForRun(Run, T);
+        Mon.AddTime("model_images", Seconds(Start));
     }
     for (const auto& [Name, N] : ExportWriters::SoundCounters())
     {

@@ -42,6 +42,8 @@ namespace IwWeaponStats
         // string when DisplayIsKey: hashed by LocalizeHash); the attachments by slot (Slots + slot *
         // 0x10: the attachment ** at SlotList, the u32 count at SlotCountAt), SlotCount slots
         int64_t WeaponName = -1, WeaponDef = -1, WeaponDisplay = -1, Slots = -1, SlotList = 0, SlotCountAt = 8;
+        // the definition is the weapon asset itself (Modern Warfare 4: its Def fields at the weapon's offsets)
+        bool DefIsWeapon = false;
         int SlotCount = 0;
         bool DisplayIsKey = false;
         std::function<uint64_t(const std::string&)> LocalizeHash;

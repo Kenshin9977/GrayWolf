@@ -4,6 +4,7 @@
 
 #include "ExportNaming.h"
 #include "MaterialGdt.h"
+#include "ModToolsTree.h"
 
 #include <limits>
 #include <set>
@@ -51,11 +52,23 @@ namespace
     class Bo3ModTools final : public IRadiantTarget
     {
     public:
-        Bo3ModTools(const std::string& Game, const std::string& Stem)
-            : Map(Game.empty() ? Stem : Game + "_" + Stem), Prefix(MaterialGdt::AssetName(Map) + "_") {}
+        Bo3ModTools(const std::string& Game, const std::string& Stem, std::unordered_map<std::string, std::string> StockAssets,
+                    const std::string& Root)
+            : Map(Game.empty() ? Stem : Game + "_" + Stem), Prefix(MaterialGdt::AssetName(Map) + "_"), Own(std::move(StockAssets)), Tree(Root) {}
         const std::string& MapName() const override { return Map; }
         const std::string& NamePrefix() const override { return Prefix; }
-        std::string ModelName(const std::string& Model) const override { return MaterialGdt::PrefixedName(Prefix, Model); }
+        std::string ModelName(const std::string& Model) const override
+        {
+            return Stock(Model, "xmodel.gdf") ? Model : MaterialGdt::PrefixedName(Prefix, Model);
+        }
+        // a name the asset keeps as it is (no character an asset name loses) that the tree's own
+        // GDTs define with that GDF
+        bool Stock(const std::string& Name, const char* Gdf) const override
+        {
+            if (Own.empty() || MaterialGdt::AssetName(Name) != Name) return false;
+            const auto It = Own.find(Name);
+            return It != Own.end() && It->second == Gdf;
+        }
         const char* ModelExtension() const override { return ".XMODEL_BIN"; }
         // the engine's world ends at 131072 units (2^17) on each axis: beyond, the linker asserts
         // on a static model's box (MWR's mp_shipment keeps scenery out there); a tile inside it,
@@ -127,8 +140,8 @@ namespace
                 Stats.EntitiesLeftOut++;
                 return false;
             }
-            if (const auto M = E.find("model");
-                M != E.end() && !M->second.empty() && M->second[0] != '*' && M->second[0] != '?' && !Scene.Models.count(M->second))
+            if (const auto M = E.find("model"); M != E.end() && !M->second.empty() && M->second[0] != '*' && M->second[0] != '?' &&
+                                                !Scene.Models.count(M->second) && !Stock(M->second, "xmodel.gdf"))
             {
                 Stats.ModelsLeftOut++;
                 if (C == "script_model")
@@ -143,11 +156,44 @@ namespace
                 E["classname"] = "script_struct";
                 Stats.OriginsAsStructs++;
             }
+            // an effect the tree does not have (Zombies Chronicles' DLC effects: the linker's "Effect
+            // ... not found", one per placement): left out, it would not play. The colour grading of
+            // a post-process box (its .lvi) likewise: its use turned off ("could not open
+            // 'grades/<name>.lvi'"), the box's other settings kept. Judged only in a tree holding
+            // such files at all.
+            if (const auto Fx = E.find("fxdef"); C == "fx" && Fx != E.end() && !Fx->second.empty() && Judges("fx") && !Holds("fx", Fx->second, ".efx"))
+            {
+                Stats.EffectsMissing++;
+                Stats.EntitiesLeftOut++;
+                return false;
+            }
+            if (C == "pbg_box" && Judges("grades"))
+                for (const auto& [Lvi, Use] : { std::pair<const char*, const char*>{ "color_lvi", "USE_COLOR" }, { "bloom_lvi", "USE_BLOOM" } })
+                    if (const auto L = E.find(Lvi); L != E.end() && !L->second.empty() && E[Use] != "0" && !Holds("grades", L->second, ".lvi"))
+                    {
+                        E[Use] = "0";
+                        Stats.GradesMissing++;
+                    }
             return true;
         }
 
     private:
         std::string Map, Prefix;
+        std::unordered_map<std::string, std::string> Own;   // the tree's own assets (a map of BO3's): name -> GDF
+        std::string Tree;                                   // the mod tools tree, "" none
+
+        // Whether the tree has share/raw/<Folder>/ to judge by (a tree without it: nothing judged)
+        bool Judges(const char* Folder) const
+        {
+            std::error_code Ec;
+            return !Tree.empty() && std::filesystem::is_directory(std::filesystem::path(Tree) / "share" / "raw" / Folder, Ec);
+        }
+        // Whether the tree holds share/raw/<Folder>/<Name><Ext> (an effect, a colour grading)
+        bool Holds(const char* Folder, const std::string& Name, const char* Ext) const
+        {
+            std::error_code Ec;
+            return std::filesystem::is_regular_file(std::filesystem::path(Tree) / "share" / "raw" / Folder / (Name + Ext), Ec);
+        }
 
         // What a level Black Ops III builds has no use for, of an older game's entities: its AI
         // spawners and vehicles (BO3 has no such aitype or vehicle; the linker refuses them), path
@@ -167,7 +213,7 @@ namespace
 
 std::string IRadiantTarget::MaterialName(const std::string& Material) const
 {
-    return MaterialGdt::PrefixedName(NamePrefix(), Material);
+    return Stock(Material, "material.gdf") ? Material : MaterialGdt::PrefixedName(NamePrefix(), Material);
 }
 
 std::unique_ptr<IRadiantTarget> PlainTarget(const std::string& Stem)
@@ -175,9 +221,16 @@ std::unique_ptr<IRadiantTarget> PlainTarget(const std::string& Stem)
     return std::make_unique<Plain>(Stem);
 }
 
-std::unique_ptr<IRadiantTarget> Bo3ModToolsTarget(const std::string& Game, const std::string& Stem)
+std::unique_ptr<IRadiantTarget> Bo3ModToolsTarget(const std::string& Game, const std::string& Stem,
+                                                  std::unordered_map<std::string, std::string> Stock, const std::string& Tree)
 {
-    return std::make_unique<Bo3ModTools>(Game, Stem);
+    return std::make_unique<Bo3ModTools>(Game, Stem, std::move(Stock), Tree);
+}
+
+std::unordered_map<std::string, std::string> Bo3StockAssets(const MapScene& Scene, const std::string& Tree)
+{
+    if (Tree.empty() || Scene.Game != "bo3") return {};
+    return ModToolsTree::DefinedTypes(Tree, std::filesystem::path(), true);
 }
 
 std::string Bo3ToolName(const std::string& Material)

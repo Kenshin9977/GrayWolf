@@ -12,6 +12,7 @@
 // An aitype's character or map defined in another zone (a name-only header here) is found by
 // its name hash among the other zones' facts.
 
+#include "CharacterHeads.h"
 #include "DiskGame.h"
 
 #include <cstdint>
@@ -83,6 +84,10 @@ namespace TreyarchAnimOwners
     Facts Read(const ZoneView& Z, const Layout& L);
     std::string Text(const Facts& F);
     Facts Parse(const std::string& Text);
+
+    // The heads each body wears as a zone's facts say (its DocumentName among Docs): each
+    // character's body (its model, else its list's first) and its head(s) (CharacterHeads.h)
+    CharacterHeads::Pairs BodyHeads(const std::vector<std::pair<std::string, std::string>>& Docs);
 
     // The zones whose facts a zone's anims are owned from, beside its own: install zone names (as
     // ListZones gives them, without extension, '*' wildcards, no case; "!" leaves out) per zone name pattern

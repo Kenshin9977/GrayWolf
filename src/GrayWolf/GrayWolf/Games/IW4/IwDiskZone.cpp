@@ -718,8 +718,22 @@ namespace Iw64
         auto Zone = std::make_unique<IwDiskZone>(Path, Build);
         if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
         Zone->SetInstall(this, Options, !Options.Install.empty() ? Options.Install : InstallOfZone(Path));
+        Zone->OpenedBy(this, Options);
         if (!Zone->Open(Error)) return nullptr;
         return Zone;
+    }
+
+    std::vector<std::pair<std::string, std::vector<std::string>>> IwDiskZone::CharacterHeads()
+    {
+        std::vector<std::pair<std::string, std::string>> Docs;
+        Documents(Docs);
+        return IwClassicAnimOwners::BodyHeads(*this, FastFilePath(), Docs, [this](const std::string& Path) { return OtherZone(Path); });
+    }
+
+    const std::vector<DiskGame::Setting>& IwDiskGame::Settings() const
+    {
+        static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+        return Own;
     }
 
     std::vector<std::string> IwDiskGame::AnimOwnerDocuments() const

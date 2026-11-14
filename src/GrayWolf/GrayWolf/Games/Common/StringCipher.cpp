@@ -168,3 +168,11 @@ bool StringCipher::Decrypt(const Table* Cipher, const std::string& Raw, std::str
     Text = std::move(Out);
     return true;
 }
+
+bool StringCipher::HashChecks(const std::string& Raw, const std::string& Text)
+{
+    if (Raw.size() < 3 || ((uint8_t)Raw[0] & 0xC0) != 0x80) return true;
+    uint64_t H = 0xCBF29CE484222325ull;
+    for (const char C : Text) H = (H ^ (uint8_t)(C >= 'A' && C <= 'Z' ? C + 32 : C)) * 0x100000001B3ull;
+    return (uint8_t)(H >> 32) == (uint8_t)Raw[1];
+}

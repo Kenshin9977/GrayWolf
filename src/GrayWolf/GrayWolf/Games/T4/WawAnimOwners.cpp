@@ -34,12 +34,17 @@ namespace WawAnimOwners
         return GscAnimOwners::Documents();
     }
 
-    void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
-              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, AnimOwners::Book& Out)
+    TreyarchGscOwners::Setup Setup()
     {
         // World at War's rules and options are the helper's defaults
         TreyarchGscOwners::Setup S;
         S.Shared = SharedZones;
-        TreyarchGscOwners::Fill(Game, Options, Zones, Out, S);
+        return S;
+    }
+
+    void Fill(const DiskGame::IDiskGame& Game, const DiskGame::ExportOptions& Options,
+              const std::vector<DiskGame::IDiskGame::AnimZone>& Zones, AnimOwners::Book& Out)
+    {
+        TreyarchGscOwners::Fill(Game, Options, Zones, Out, Setup());
     }
 }

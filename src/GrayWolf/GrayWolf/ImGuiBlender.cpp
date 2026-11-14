@@ -65,6 +65,7 @@ namespace
         Blender::LaunchOptions O;
         O.Reimport = Reimport;
         O.Use = BlenderExe();
+        O.Props = SettingsManager::GetSetting("blender_map_props", "fast");   // an import's (Settings > Blender)
         {
             std::lock_guard<std::mutex> Lock(ResultsMutex);
             Results[S.Map.Blend] = "starting Blender...";
@@ -91,7 +92,7 @@ namespace
         {
             if (!Have) ImGui::SetTooltip("Blender not found: install it, or set blender.exe in Settings > Blender");
             else if (S.Blend) ImGui::SetTooltip("Opens %s", S.Map.Blend.c_str());
-            else ImGui::SetTooltip("Imports the map into Blender (its _import.py) and saves it as\n%s:\nnext time, that .blend opens directly",
+            else ImGui::SetTooltip("Imports it into Blender (its _import.py) and saves it as\n%s:\nnext time, that .blend opens directly",
                                    S.Map.Blend.c_str());
         }
         if (S.Blend)
@@ -101,8 +102,8 @@ namespace
             if (ImGui::SmallButton("Re-import")) Launch(S, true);
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip(S.Script ? "Imports the map again (after a new export) and overwrites its .blend"
-                                           : "No import script beside the map: export it again");
+                ImGui::SetTooltip(S.Script ? "Imports it again (after a new export) and overwrites its .blend"
+                                           : "No import script beside it: export it again");
         }
         ImGui::PopID();
     }
@@ -141,6 +142,20 @@ void DrawBlenderSettingsMenu()
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Clear the path above and find Blender automatically");
+        // a map's props on import (the next Open in Blender of a map not saved yet, or Re-import)
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Map props on import");
+        const bool Objects = SettingsManager::GetSetting("blender_map_props", "fast") == "objects";
+        if (ImGui::RadioButton("Fast (map cells)", !Objects)) SettingsManager::SetSetting("blender_map_props", "fast");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Props grouped by map cell (Geometry Nodes): quick to import and to draw.\n"
+                              "A box selection picks the cells under it; Object > GrayWolf: Make selection editable\n"
+                              "turns a region's props into one object each.");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Separate objects", Objects)) SettingsManager::SetSetting("blender_map_props", "objects");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("One object per placed prop (linked duplicates, a collection per map cell).\n"
+                              "Slower to import and to draw: a big map has tens of thousands of props.");
         if (Pending) ImGui::TextDisabled("Looking for Blender\xE2\x80\xA6");
         else if (B.Path.empty()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Blender not found");
         else ImGui::TextDisabled("Using %s (%s)", B.Path.c_str(), B.From.c_str());

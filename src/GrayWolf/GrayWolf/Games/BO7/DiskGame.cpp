@@ -9,6 +9,7 @@
 
 #include "CoDAssets.h"
 #include "DiskGame.h"
+#include "Games/BO7/BO7Family.h"
 #include "Games/BO7/TechsetFormat.h"
 #include "Games/BO7/VfxLayout.h"
 #include "Games/IW/IwWeaponStats.h"
@@ -19,6 +20,7 @@
 #include "HalfFloats.h"
 #include "MapLive.h"
 #include "Games/Common/MeshDecode.h"
+#include "Games/Common/StringCipher.h"
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
 #include "Games/IW/IwctxAnimOwners.h"
@@ -67,7 +69,7 @@ namespace
     class BO7Zone final : public IWZone
     {
     public:
-        explicit BO7Zone(const std::string& Path) : IWZone(Path)
+        BO7Zone(const std::string& Path, const BO7Family::Spec& S) : IWZone(Path), Family(S)
         {
             using namespace DiskGame;
             Exports(Kind::Image, [this](const Context& C, Totals& T) { ExportImages(C, T); });
@@ -86,8 +88,11 @@ namespace
             ExportsMaterialLinks({ 0x68, 0x6d, 0x28, 0x30, 0x20, 0x18, 0x6c, 0x40, 0x6e, 0x88 });
             // soundbank (0x40): aliases 0x20 (u32 count 0x34) of 0x48 {entries 0x10, hash 0x18, u16
             // count 0x34}, an entry 0x30 with its sndasset at 0x20
-            ExportsSoundLinks({ 0x20, 0x34, 0x48, 0x18, 0x10, 0x34, 0x30, 0x20 });
-            ExportsTechsets(BO7::TechsetFormat());
+            {
+                const auto& L = Family.SoundLinks;
+                ExportsSoundLinks({ L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7] });
+            }
+            if (Family.Techsets != nullptr) ExportsTechsets(Family.Techsets());
             // a model's LODs another zone holds (the hands' base) loaded beside first; its materials
             // another zone defines (a weapon part's base materials): their images as the zones the
             // install index names have them
@@ -109,7 +114,7 @@ namespace
                 });
             // material (0x78) with its atlas, and particlesystem (0x80) as the vfx core's JSON (Games/IW/Vfx.h)
             ExportsMaterials("material", Treyarch::MaterialKind(Materials(), [this](uint64_t A, nlohmann::ordered_json& J) {
-                Vfx::AddAtlas(J, BO7::VfxLayout(), Image(), Off(A), 0x78);
+                Vfx::AddAtlas(J, Family.VfxLayout(), Image(), Off(A), 0x78);
             }));
             Exports(Kind::Fx, [this](const Context& C, Totals& T) {
                 auto Z = EffectView();
@@ -118,7 +123,7 @@ namespace
                 Vfx::Counts N;
                 ExportEffects(C, T, "particlesystem", [&](int64_t Pos, const std::string& Name, std::string& J) {
                     // an asset another zone defines: its name hash (bit 63), or its hash at 0 in a zone served beside
-                    return Vfx::ReadSystem(Z, BO7::VfxLayout(), Pos, Name, J, &N, [this](uint64_t A) {
+                    return Vfx::ReadSystem(Z, Family.VfxLayout(), Pos, Name, J, &N, [this](uint64_t A) {
                         if (A >> 63) return GameBlackOps7::HashName("xasset", A);
                         return Locate(A, 8) != nullptr ? GameBlackOps7::HashName("xasset", Get<uint64_t>(A)) : std::string();
                     });
@@ -126,8 +131,15 @@ namespace
                 for (const auto& [K, V] : N.Named()) Counter(K) += V;
             });
             const auto Decrypted = [this](const std::string& Raw) { return IWZone::Decrypted(Raw); };
+            // a bundle value's type codes as the game's own value loader reads them (BundleTypes)
+            ScriptBundleLayout Bundles;
+            for (const auto& [Code, Value] : Family.BundleTypes)
+            {
+                if (Bundles.Types.size() <= Code) Bundles.Types.resize((size_t)Code + 1, BundleValue::Raw);
+                Bundles.Types[Code] = Value;
+            }
             // scriptbundle (0x30, its loader 0x3887630, a table's 0x3887a40, a value's 0x3888060)
-            ExportsScriptBundles({}, Decrypted);
+            ExportsScriptBundles(Bundles, Decrypted);
             // mapinfo (0xe8, its loader 0x386cd80): what getactivemapinfobundle() returns, a
             // scriptbundle's table at 0xc8 (the table loader 0x3887a40: destructibles, their loot...);
             // string fields 8 to 0x30, 0x40, 0x48 (8 the map, 0x10 its game types, 0x18 its scripts'
@@ -140,16 +152,16 @@ namespace
                                      { "loading_image_name", 0x30 }, { "omnvars_table", 0x40 }, { "0x48", 0x48 } },
                                    { { "loading_image", 0x38 } },
                                    [](const std::string& Name) { return GameBlackOps7::HashIWAsset(Name); } } },
-                               {}, Decrypted);
+                               Bundles, Decrypted);
             // aitype (0x178): a scriptbundle's table at 0xb0 (the table loader 0x3887a40), a string at
             // 0x78. Named by HashIWAsset("aitype:<name>")
             ExportsBundleTrees(Kind::AiTypes,
                                { { "aitype", 0xb0, -1, { { "0x78", 0x78 } }, {},
                                    [](const std::string& Name) { return GameBlackOps7::HashIWAsset("aitype:" + Name); } } },
-                               {}, Decrypted);
+                               Bundles, Decrypted);
             // scriptable (0xd8, its loader 0x3888d90) and scriptablevariant (0x58, 0x388f490): no
             // key/value table, dumped by offset
-            ExportsStructDumps(Kind::Scriptables, { { "scriptable" }, { "scriptablevariant" } }, Decrypted);
+            ExportsStructDumps(Kind::Scriptables, DumpTypes(Family.Scriptables), Decrypted);
             // the zone's entities, one TSV (IwctxReaders::ExportMapEnts): the entity strings, the spawn
             // points and the scriptable instances (MapEntities)
             Exports(Kind::MapEnts, [this](const Context& C, Totals& T) {
@@ -162,35 +174,34 @@ namespace
             ExportsColumnTables(ColumnTypes::Bo6, Decrypted);
             // the weapon assets as struct dumps, a weapon's name at 8, an attachment's at 0x248, its
             // tunables, accuracy, blueprints named after it; the fields proven so far named (WeaponFields)
-            ExportsStructDumps(Kind::Weapons,
-                               { { "weapon", 8, WeaponFields() }, { "attachment", 0x248, AttachmentFields() }, { "weapontunables", -1, TunablesFields() },
-                                 { "weaponaccuracy" }, { "weapontrigger" }, { "weaponarchetype" }, { "weaponblueprint", -1, WeaponBlueprintFields() },
-                                 { "attachmentblueprint", -1, AttachmentBlueprintFields(), 0x40 },
-                                 { "grappleweapontunables" }, { "deployableweaponconfig" }, { "animpkg", -1, AnimPkgFields() },
-                                 // the suit a player state's 0x1a48 indexes (0x4528a40: DB find, type 0x51); 0x43cde50
-                                 // returns 0xe18 as the sprint multiplier (0xdec under a perk; a dvar >= 0
-                                 // overrides both, default -1.0), 0x43a28f0 multiplies 0xe78 in when super
-                                 // sprinting. Its name hash is at 0x20 (+0 is a key table the zone's suits share)
-                                 { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } }, 0x20 } },
-                               Decrypted);
+            ExportsStructDumps(Kind::Weapons, DumpTypes(Family.Weapons), Decrypted);
             // the weapon stats table: this zone's facts, then the table rebuilt from every zone's (Games/IW/IwWeaponStats.h)
-            Exports(Kind::WeaponStats, [this, Decrypted](const Context& C, Totals& T) {
-                LearnIndexedModels();
-                IwWeaponStats::ZoneView V;
-                V.Image = &Image();
-                V.Walk = &Walk();
-                V.Off = [this](uint64_t A) { return Off(A); };
-                V.Text = [this, Decrypted](int64_t Field) {
-                    const std::string S = TextAt(Field);
-                    return S.empty() ? S : Decrypted(S);
-                };
-                V.LocalizeText = [this](int64_t Pos) {
-                    std::string Key, Text;
-                    LocalizeEntry(Pos, Key, Text);
-                    return Text;
-                };
-                IwWeaponStats::Export(StatsLayout(), V, fs::path(FastFilePath()).stem().string(), C, T);
-            });
+            if (Family.Stats != nullptr)
+                Exports(Kind::WeaponStats, [this, Decrypted](const Context& C, Totals& T) {
+                    LearnIndexedModels();
+                    IwWeaponStats::ZoneView V;
+                    V.Image = &Image();
+                    V.Walk = &Walk();
+                    V.Off = [this](uint64_t A) { return Off(A); };
+                    V.Text = [this, Decrypted](int64_t Field) {
+                        const std::string S = TextAt(Field);
+                        return S.empty() ? S : Decrypted(S);
+                    };
+                    V.LocalizeText = [this](int64_t Pos) {
+                        std::string Key, Text;
+                        LocalizeEntry(Pos, Key, Text);
+                        return Text;
+                    };
+                    IwWeaponStats::Export(*Family.Stats(), V, fs::path(FastFilePath()).stem().string(), C, T);
+                });
+        }
+
+        const BO7Family::Spec& Family;   // what the game on this engine moved
+        static std::vector<DumpType> DumpTypes(const std::vector<BO7Family::DumpType>& Types)
+        {
+            std::vector<DumpType> Out;
+            for (const auto& T : Types) Out.push_back({ T.Type, T.NameAt, T.Fields, T.IdAt });
+            return Out;
         }
 
         // ---- the default parts' model names: a part's models are named by hash, most of them in the
@@ -248,6 +259,9 @@ namespace
         // map_ents keeps as records (spawn points, scriptable instances)
         void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
         void MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const;
+
+        // its characters' bodies and heads, of the zone and those served beside it (IwctxAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override;
 
         // its string tables, and the anim owners' facts of the zone and of the zones served beside
         // it (a level's global zones: "beside" then set), its scene bundles, AI types and entities
@@ -449,7 +463,7 @@ namespace
         }
 
     protected:
-        const char* Profile() const override { return "bo7"; }
+        const char* Profile() const override { return Family.Profile; }
         // its readers and Fixups work from the walk's instances: a partial walk serves them
         bool OpensPartially() const override { return true; }
         // its images' records (IwctxReaders' layout) served from the zone's heads, the zone not read
@@ -458,13 +472,13 @@ namespace
         {
             if (K == DiskGame::Kind::Image) W = ModernIwImageWeight(Pos, GameBlackOps7::DxgiFormat);
         }
-        const ICoDGame& LiveGame() const override { return LiveGames::Get("BO7"); }
+        const ICoDGame& LiveGame() const override { return LiveGames::Get(Family.LiveGame); }
         VirtualGameSession::Handlers Handlers() override
         {
             // the package index's names, its bo7_names.wni among them: names found for the game's
             // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
             IwctxReaders::LoadNameIndexes();
-            IwctxReaders::LoadGameNames({ "bo7_names.wni" });
+            IwctxReaders::LoadGameNames(Family.NamePackages);
             return { SlotString, DiskImage };
         }
 
@@ -516,11 +530,20 @@ namespace
         }
         // localize (0x10, 0x3868f60): the key's hash at 0, the text at 8 encrypted with the string
         // cipher ([id 0x80-0xBF][b1][n], strings.cipher.txt from DecryptString 0x8c8ebd0); a text
-        // the table cannot decrypt is left empty
+        // the table cannot decrypt is left empty, and so is one a table rebuilt from the zones got
+        // wrong, as its hash check proves (Modern Warfare 4's cipher chains some bytes on the one
+        // before, which a rebuilt table cannot hold: half its texts; counted localize_hash_failed).
+        // Not with the exe-made table: the game hashes accented texts its own way
         void LocalizeEntry(int64_t Pos, std::string& Key, std::string& Text) const override
         {
             Key = GameBlackOps7::HashName("localize", At<uint64_t>(Image(), Pos));
-            if (!CipherDecrypt(StringAt(PointerAt(Pos + 8)), Text)) Text.clear();
+            const std::string Raw = StringAt(PointerAt(Pos + 8));
+            if (!CipherDecrypt(Raw, Text)) Text.clear();
+            else if (CipherRebuilt() && !StringCipher::HashChecks(Raw, Text))
+            {
+                Text.clear();
+                const_cast<BO7Zone*>(this)->Counter("localize_hash_failed")++;
+            }
         }
         // every asset of a zone's list is inline here: references are by hash, never a header
         bool IsReference(DiskGame::Kind, const std::string&, int64_t) const override { return false; }
@@ -594,7 +617,9 @@ namespace
         {
             const std::string N = ExportNaming::Lower(Name());
             std::vector<std::string> Out;
-            if (N.compare(0, 3, "zm_") == 0)
+            if (!Family.LevelZones.empty())
+                Out = Family.LevelZones;
+            else if (N.compare(0, 3, "zm_") == 0)
                 Out = { "code_pre_gfx", "code_post_gfx", "global", "global_stream_mp", "global_shared_mp", "ingame", "ingame_shared_mp", "ingame_zm" };
             else
                 Out = { "code_pre_gfx", "code_post_gfx", "global", "global_base_mp", "global_stream_mp", "global_shared_mp", "ingame",
@@ -615,7 +640,7 @@ namespace
             // a partial open reads the zones beside only where its references reach
             Beside.Lazy = OpenedPartially();
             std::string Error;
-            const auto* Loaded = ExportWriters::ZoneProfile("bo7", Error);
+            const auto* Loaded = ExportWriters::ZoneProfile(Profile(), Error);
             if (Loaded == nullptr) return;
             const fs::path Dir = fs::path(FastFilePath()).parent_path();
             const std::string Prefix = ExportNaming::Lower(Name()) + "_";
@@ -636,7 +661,7 @@ namespace
             {
                 // beside the level, else in the install (a level copied out alone)
                 if (ExportNaming::Lower(G) == ExportNaming::Lower(Name())) continue;
-                for (const fs::path& From : { Dir, fs::path(Install), Install.empty() ? fs::path() : fs::path(Install) / "cod25" })
+                for (const fs::path& From : { Dir, fs::path(Install), Install.empty() ? fs::path() : fs::path(Install) / Family.Folder })
                     if (!From.empty() && fs::exists(From / (G + ".ff"), Ec))
                     {
                         Globals.push_back((From / (G + ".ff")).string());
@@ -749,7 +774,7 @@ namespace
                     std::find(std::begin(IndexedParts), std::end(IndexedParts), R.OwnerNames[I.Owner]) != std::end(IndexedParts))
                     Out.emplace_back(R.OwnerNames[I.Owner], At<uint64_t>(Zone(), I.Pos) & Rules().AssetHashMask);
         }
-        std::string IndexKey() const override { return ZonekitZone::IndexKey() + "+parts1"; }
+        std::string IndexKey() const override { return ZonekitZone::IndexKey() + Family.IndexSuffix; }
 
     private:
         bool BooksTried = false, MeshesTried = false;
@@ -812,7 +837,7 @@ namespace
             // Material (0x78): slots {u8 semantic, u8 image} 0x28 (count u8 0x68), image pointers 0x30
             // (count u8 0x6d); its techset 0x20 and sort key u8 0x67, its alpha mode
             IWMaterialBooks::Layout L;
-            L.Profile = "bo7";
+            L.Profile = Profile();
             L.Hashed = true, L.HashMask = Rules().AssetHashMask;
             L.ImageCount = 0x68, L.Slots = 0x28, L.Images = 0x30, L.TableCount = 0x6d, L.Techset = 0x20, L.SortKey = 0x67;
             const std::vector<uint64_t> Hashes(Wanted.begin(), Wanted.end());
@@ -1105,12 +1130,11 @@ namespace
     // u32 28, byte offsets into the transient zone's position data: positions (u64: 21 bits per
     // axis) 40, tangent frames (u32) 44, colours 52 (0: none), uvs (2 floats per layer) 56
     constexpr int64_t DataSize = 128, DtZone = 16, DtLayers = 28, DtXyz = 40, DtTangent = 44, DtColor = 52, DtUv = 56;
-    // gfx_map_trzone (0x190): its index i32 0x14; its draw data inline at 0x18: position data size
-    // u32 0x18, index count u32 0x1c, packed table count u32 0x20, packed indices size u32 0x28,
-    // the position data 0x30, the u16 indices 0x38, the 32-byte packed tables 0x40, the packed
-    // indices 0x48
-    constexpr int64_t TzIndex = 0x14, TzPosSize = 0x18, TzIndexCount = 0x1c, TzTableCount = 0x20, TzPackedSize = 0x28, TzPos = 0x30,
-                      TzIndices = 0x38, TzTables = 0x40, TzPacked = 0x48;
+    // gfx_map_trzone (0x190): its index i32 (Spec::TzIndex, 0x14); its draw data inline (Spec::TzDraw,
+    // 0x18): position data size u32 0, index count u32 4, packed table count u32 8, packed indices
+    // size u32 0x10, the position data 0x18, the u16 indices 0x20, the 32-byte packed tables 0x28,
+    // the packed indices 0x30
+    constexpr int64_t TzPosSize = 0, TzPos = 0x18, TzIndices = 0x20, TzTables = 0x28, TzPacked = 0x30;
     // GfxWorldStaticModels inline at 0x258: model count u32 4, instance count u32 8 (24-byte
     // records at 0xa0: first placement u32 0, count u16 4, model u16 8), placement count u32 0xc
     // (24 bytes at 0x128: origin 3 x i32 / 4096, rotation 4 x u16 over [-1, 1] x y z w, scale half
@@ -1142,15 +1166,16 @@ namespace
         std::unordered_map<int32_t, DrawData> Zones;
         const auto AddZone = [&](uint64_t Tz, const uint8_t* Buf, size_t BufSize, uint64_t Base) {
             DrawData D;
-            D.PosSize = Get<uint32_t>(Tz + TzPosSize);
-            const uint64_t PosAt = Get<uint64_t>(Tz + TzPos), IdxAt = Get<uint64_t>(Tz + TzIndices);
-            const uint64_t TabAt = Get<uint64_t>(Tz + TzTables), PackAt = Get<uint64_t>(Tz + TzPacked);
+            const uint64_t Draw = Tz + (uint64_t)Family.TzDraw;
+            D.PosSize = Get<uint32_t>(Draw + TzPosSize);
+            const uint64_t PosAt = Get<uint64_t>(Draw + TzPos), IdxAt = Get<uint64_t>(Draw + TzIndices);
+            const uint64_t TabAt = Get<uint64_t>(Draw + TzTables), PackAt = Get<uint64_t>(Draw + TzPacked);
             D.Pos = Locate(PosAt, D.PosSize);
             D.Buf = Buf, D.BufSize = BufSize;
             D.Ok = D.Pos != nullptr && IdxAt >= Base && TabAt >= Base && PackAt >= Base && IdxAt - Base < BufSize && TabAt - Base < BufSize &&
                    PackAt - Base < BufSize;
             if (D.Ok) D.Indices = IdxAt - Base, D.Tables = TabAt - Base, D.Packed = PackAt - Base;
-            const int32_t Index = Get<int32_t>(Tz + TzIndex);
+            const int32_t Index = Get<int32_t>(Tz + (uint64_t)Family.TzIndex);
             const auto Have = Zones.find(Index);
             if (Have == Zones.end() || (!Have->second.Ok && D.Ok)) Zones[Index] = D;
         };
@@ -1322,7 +1347,7 @@ namespace
             std::fprintf(Dbg, "[map] static models %u instances %u placements %u placed %zu\n", ModelCount, InstCount, PlaceCount, Placed);
 
         // ---- the terrain: vhmdata's heightmap, drawn where stterrain says (Games/IW/IwTerrain.h)
-        if (const int64_t Vhm = Root("vhmdata"); Vhm >= 0)
+        if (const int64_t Vhm = Family.Terrain != nullptr ? Root("vhmdata") : -1; Vhm >= 0)
         {
             const int64_t St = Root("stterrain");
             IwTerrain::Source Src;
@@ -1336,22 +1361,23 @@ namespace
                 return Locate(Field, 0x78) != nullptr ? Maps::AddMaterial(Scene, GameBlackOps7::ReadXMaterial(Field)) : std::string();
             };
             std::map<std::string, size_t> Read;
-            IwTerrain::Read(Scene, Src, Live().Addr((uint64_t)Vhm), St >= 0 ? Live().Addr((uint64_t)St) : 0, IwTerrain::BlackOps7, IwTerrain::Options(), Read);
+            IwTerrain::Read(Scene, Src, Live().Addr((uint64_t)Vhm), St >= 0 ? Live().Addr((uint64_t)St) : 0, *Family.Terrain, IwTerrain::Options(), Read);
             for (const auto& [K, N] : Read) Counter("map_" + K) += N;
         }
 
         // ---- the scriptables: map_ents (0x948) holds their instances at 0x318 (count u32 0x318, 0x60
         // records at 0x388: definition 0, origin 8, angles 20 (pitch, yaw, roll)); a definition
-        // (scriptable, 0xd8) lists its models (count u32 0xb4, xmodel pointers 0xb8), each placed
+        // (scriptable, 0xd8) lists its models (count u32 0xb4, xmodel pointers 0xb8), each placed.
+        // (Black Ops 7's offsets: the Spec's)
         if (const int64_t Ents = Root("map_ents"); Ents >= 0)
         {
-            const uint32_t Count = At<uint32_t>(Img, Ents + 0x318);
-            const uint64_t Records = PointerAt(Ents + 0x388);
+            const uint32_t Count = At<uint32_t>(Img, Ents + Family.ScriptableCount);
+            const uint64_t Records = PointerAt(Ents + Family.ScriptableRecords);
             size_t Dynamic = 0;
             for (uint32_t K = 0; K < Count && Locate(Records + (uint64_t)K * 0x60, 0x60) != nullptr; K++)
             {
                 const uint64_t Rec = Records + (uint64_t)K * 0x60, Def = Get<uint64_t>(Rec);
-                if (Locate(Def, 0xd8) == nullptr)
+                if (Locate(Def, Family.ScriptableSize) == nullptr)
                 {
                     Counter("map_scriptables_without_definition")++;
                     continue;
@@ -1360,8 +1386,8 @@ namespace
                 Maps::Instance In;
                 for (int A = 0; A < 3; A++) In.Origin[A] = Get<float>(Rec + 8 + A * 4), Angles[A] = Get<float>(Rec + 20 + A * 4);
                 Maps::AnglesToAxis(Angles, In.Axis);
-                const uint32_t ModelsIn = Get<uint32_t>(Def + 0xb4);
-                const uint64_t List = Get<uint64_t>(Def + 0xb8);
+                const uint32_t ModelsIn = Get<uint32_t>(Def + Family.ScriptableModelCount);
+                const uint64_t List = Get<uint64_t>(Def + Family.ScriptableModels);
                 for (uint32_t M = 0; M < ModelsIn && M < 64 && Locate(List + M * 8, 8) != nullptr; M++)
                 {
                     const uint64_t Address = Get<uint64_t>(List + M * 8);
@@ -1410,8 +1436,9 @@ namespace
 
     void BO7Zone::MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const
     {
+        // (a map's _subset_ai zone holds its map_spawn_points, no map_ents)
         const int64_t Ents = Root("map_ents");
-        if (Ents < 0) return;
+        if (Ents < 0 && Family.SpawnPoints < 0) return;
         const auto& Img = Image();
         // a script string the records keep by the low 32 bits of its hash: its text when a zone
         // registered it, else "#<hex>"
@@ -1422,25 +1449,31 @@ namespace
         const auto Vec = [&](int64_t P) { return std::format("{} {} {}", At<float>(Img, P), At<float>(Img, P + 4), At<float>(Img, P + 8)); };
         // the spawn points: count u32 0x38, 0x48-byte records at 0x40 {classname u32 4, origin 0x10,
         // angles 0x1c, its pairs: count u32 0x34, 16-byte records at 0x40 {key (IwEntityKeys) 0, u32
-        // value 8}}
-        const uint32_t Spawns = At<uint32_t>(Img, Ents + 0x38);
-        const int64_t SpawnsAt = Off(PointerAt(Ents + 0x40));
-        for (uint32_t K = 0; SpawnsAt >= 0 && K < Spawns && SpawnsAt + (int64_t)(K + 1) * 0x48 <= (int64_t)Img.size(); K++)
-        {
-            const int64_t R = SpawnsAt + (int64_t)K * 0x48;
-            IwctxReaders::MapEntity E;
-            E.emplace_back("classname", Str(At<uint32_t>(Img, R + 4)));
-            E.emplace_back("origin", Vec(R + 0x10));
-            E.emplace_back("angles", Vec(R + 0x1c));
-            const uint32_t N = At<uint32_t>(Img, R + 0x34);
-            const int64_t Pairs = Off(PointerAt(R + 0x40));
-            for (uint32_t J = 0; Pairs >= 0 && J < N && J < 256 && Pairs + (int64_t)(J + 1) * 16 <= (int64_t)Img.size(); J++)
+        // value 8}}; or (Family.SpawnPoints) in each map_spawn_points asset, the same list
+        const auto ReadSpawns = [&](uint32_t Spawns, int64_t SpawnsAt) {
+            for (uint32_t K = 0; SpawnsAt >= 0 && K < Spawns && SpawnsAt + (int64_t)(K + 1) * 0x48 <= (int64_t)Img.size(); K++)
             {
-                const std::string Key = IwEntityKeys::Name(At<uint64_t>(Img, Pairs + J * 16), IwEntityKeys::Scheme::SaltFirst);
-                if (Key != "classname") E.emplace_back(Key, Str(At<uint32_t>(Img, Pairs + J * 16 + 8)));
+                const int64_t R = SpawnsAt + (int64_t)K * 0x48;
+                IwctxReaders::MapEntity E;
+                E.emplace_back("classname", Str(At<uint32_t>(Img, R + 4)));
+                E.emplace_back("origin", Vec(R + 0x10));
+                E.emplace_back("angles", Vec(R + 0x1c));
+                const uint32_t N = At<uint32_t>(Img, R + 0x34);
+                const int64_t Pairs = Off(PointerAt(R + 0x40));
+                for (uint32_t J = 0; Pairs >= 0 && J < N && J < 256 && Pairs + (int64_t)(J + 1) * 16 <= (int64_t)Img.size(); J++)
+                {
+                    const std::string Key = IwEntityKeys::Name(At<uint64_t>(Img, Pairs + J * 16), IwEntityKeys::Scheme::SaltFirst);
+                    if (Key != "classname") E.emplace_back(Key, Str(At<uint32_t>(Img, Pairs + J * 16 + 8)));
+                }
+                Out.push_back(std::move(E));
             }
-            Out.push_back(std::move(E));
-        }
+        };
+        if (Ents >= 0 && Family.SpawnCount >= 0) ReadSpawns(At<uint32_t>(Img, Ents + Family.SpawnCount), Off(PointerAt(Ents + Family.Spawns)));
+        if (Family.SpawnPoints >= 0)
+            for (const auto& I : Walk().Instances)
+                if (I.Parent < 0 && OwnerIs(I, "map_spawn_points"))
+                    ReadSpawns(At<uint16_t>(Img, I.Pos + Family.SpawnPoints), Off(PointerAt(I.Pos + Family.SpawnPoints + 8)));
+        if (Ents < 0) return;
         // the scriptable instances: count u32 0x318, 0x60-byte records at 0x388 {its scriptable 0,
         // origin 8, angles 0x14 (pitch, yaw, roll), u64 0x20 and 0x28 (one of their own each), u32
         // script strings: classname 0x30, target 0x34, targetname 0x38, script_noteworthy 0x44, one
@@ -1448,8 +1481,8 @@ namespace
         // entities up by (getentitylessscriptablearray(value, #key): 1 010 matches over the 7 zm maps,
         // each in its field only); zm_sat_hornet's 11 lanterns linked by target. A field not named
         // yet written by its offset when not 0
-        const uint32_t Count = At<uint32_t>(Img, Ents + 0x318);
-        const int64_t Records = Off(PointerAt(Ents + 0x388));
+        const uint32_t Count = At<uint32_t>(Img, Ents + Family.ScriptableCount);
+        const int64_t Records = Off(PointerAt(Ents + Family.ScriptableRecords));
         for (uint32_t K = 0; Records >= 0 && K < Count && Records + (int64_t)(K + 1) * 0x60 <= (int64_t)Img.size(); K++)
         {
             const int64_t R = Records + (int64_t)K * 0x60;
@@ -1472,6 +1505,20 @@ namespace
                 if (const uint32_t V = At<uint32_t>(Img, R + F); V != 0) E.emplace_back(std::format("0x{:02x}", F), std::format("0x{:08x}", V));
             Out.push_back(std::move(E));
         }
+    }
+
+    std::vector<std::pair<std::string, std::vector<std::string>>> BO7Zone::CharacterHeads()
+    {
+        std::vector<IwctxAnimOwners::Served> All{ { Name(), Image(), Live().Origin(), &Walk() } };
+        // the zones served beside, their script strings registered (a character's names)
+        std::string Error;
+        const auto* Tables = ExportWriters::ZoneProfile(Profile(), Error);
+        for (const auto& S : Beside.All())
+        {
+            All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
+            if (Tables != nullptr) IwctxReaders::RegisterScriptStrings(IwctxReaders::ZoneStrings(S->Bytes, Tables->Profile.Dir));
+        }
+        return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts());
     }
 
     std::string BO7Zone::AnimOwnerFacts() const
@@ -1506,60 +1553,109 @@ namespace
         return F.dump();
     }
 
-    class BlackOps7Game final : public DiskGame::IDiskGame
+    // Black Ops 7 (Call of Duty HQ's cod25): every offset of the family's zone is its own
+    const BO7Family::Spec& BlackOps7()
     {
-    public:
-        const char* Id() const override { return "bo7"; }
-        const char* Title() const override { return "Call of Duty: Black Ops 7"; }
-        const char* Engine() const override { return "BO7"; }
-        std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<BO7Zone>(std::string()); }
+        static const BO7Family::Spec S = [] {
+            BO7Family::Spec S;
+            S.Id = "bo7", S.Title = "Call of Duty: Black Ops 7", S.Engine = "BO7", S.LiveGame = "BO7";
+            S.Profile = "bo7", S.Folder = "cod25";
+            // the package index's names, its bo7_names.wni among them: names found for the game's
+            // hashes in its own strings and the index's (cod-hash-recovery; the hash packages)
+            S.NamePackages = { "bo7_names.wni" };
+            // soundbank (0x40): aliases 0x20 (u32 count 0x34) of 0x48 {entries 0x10, hash 0x18, u16
+            // count 0x34}, an entry 0x30 with its sndasset at 0x20
+            S.SoundLinks = { 0x20, 0x34, 0x48, 0x18, 0x10, 0x34, 0x30, 0x20 };
+            S.Techsets = &BO7::TechsetFormat;
+            S.VfxLayout = &BO7::VfxLayout;
+            // scriptable (0xd8, its loader 0x3888d90) and scriptablevariant (0x58, 0x388f490): no
+            // key/value table, dumped by offset
+            S.Scriptables = { { "scriptable" }, { "scriptablevariant" } };
+            // the weapon assets as struct dumps, a weapon's name at 8, an attachment's at 0x248, its
+            // tunables, accuracy, blueprints named after it; the fields proven so far named (WeaponFields)
+            S.Weapons = { { "weapon", 8, BO7Zone::WeaponFields() }, { "attachment", 0x248, BO7Zone::AttachmentFields() },
+                          { "weapontunables", -1, BO7Zone::TunablesFields() }, { "weaponaccuracy" }, { "weapontrigger" }, { "weaponarchetype" },
+                          { "weaponblueprint", -1, BO7Zone::WeaponBlueprintFields() }, { "attachmentblueprint", -1, BO7Zone::AttachmentBlueprintFields(), 0x40 },
+                          { "grappleweapontunables" }, { "deployableweaponconfig" }, { "animpkg", -1, BO7Zone::AnimPkgFields() },
+                          // the suit a player state's 0x1a48 indexes (0x4528a40: DB find, type 0x51); 0x43cde50
+                          // returns 0xe18 as the sprint multiplier (0xdec under a perk; a dvar >= 0
+                          // overrides both, default -1.0), 0x43a28f0 multiplies 0xe78 in when super
+                          // sprinting. Its name hash is at 0x20 (+0 is a key table the zone's suits share)
+                          { "suit", -1, { { "0x0e18", { "sprint_speed_multiplier", "f32" } }, { "0x0e78", { "super_sprint_speed_multiplier", "f32" } } }, 0x20 } };
+            S.Stats = [] { return &BO7Zone::StatsLayout(); };
+            return S;
+        }();
+        return S;
+    }
 
-        // (the install index opens every zone, the 41 333 transient (_tr) ones included: a map's
-        // references name assets of other maps' transient zones and of other modes' items)
-
-        // its zones open on the index's workers: their decompression and walk share nothing, its
-        // handlers and fixups run under the session lock, ResolveZones is serialized
-        bool IndexInParallel() const override { return true; }
-
-        // the string cipher's strings (DiskGame::EnsureStringCipher): the zones' script strings
-        const DiskGame::CipherSource* CipherStrings() const override
-        {
-            static const DiskGame::CipherSource Multiplayer = IwctxReaders::ScriptStringCipher("bo7");
-            return &Multiplayer;
-        }
-
-        std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
-                                                  std::string& Error) const override
-        {
-            // the packages the readers stream mesh and image data from (--install: the cod25 folder or the HQ install)
-            auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
-            if (!Options.Install.empty() && Packages == nullptr)
-            {
-                Error = "could not open the packages of " + Options.Install;
-                return nullptr;
-            }
-            auto Zone = std::make_unique<BO7Zone>(Path);
-            Zone->ServesPackages(std::move(Packages));
-            // (--install: where the global zones are when not beside the level, whose index LoadIndexed reads)
-            Zone->SetInstall(this, Options, Options.Install);
-            Zone->Indexing = Options.Indexing;
-            if (!Zone->Open(Error)) return nullptr;
-            return Zone;
-        }
-
-        // the anims' sets, characters, scenes and entities (Games/IW/IwctxAnimOwners.h): a zone's own
-        // facts, then those of the mode's shared zones when it did not serve them beside itself (a
-        // level serves its global zones)
-        std::vector<std::string> AnimOwnerDocuments() const override { return { IwctxAnimOwners::DocumentName }; }
-        void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
-        {
-            IwctxAnimOwners::Fill(*this, Options, Zones, Out, [&Options](const std::string& Zone, const IwctxAnimOwners::Json& Facts) {
-                return Facts.value("beside", false) ? std::vector<std::string>() : IwctxAnimOwners::SharedZones(Zone, Options.Install, "cod25", { "global_shared_mp", "ingame_shared_mp", "ingame_zm" },
-                                                                                  { "global_shared_mp", "ingame_shared_mp", "ingame_mp" });
-            });
-        }
-    };
-
-    const BlackOps7Game Game;
+    const BO7Family::Game Game(BlackOps7());
     const DiskGame::Registration Registered(Game);
+}
+
+std::unique_ptr<DiskGame::IDiskZone> BO7Family::Game::Unopened() const
+{
+    return std::make_unique<BO7Zone>(std::string(), S);
+}
+
+bool BO7Family::Game::ListZones(const std::string& Install, const DiskGame::ExportOptions& Options, std::vector<std::string>& Names,
+                                std::string& Error) const
+{
+    if (!IDiskGame::ListZones(Install, Options, Names, Error)) return false;
+    std::error_code Ec;
+    if (!fs::is_directory(fs::path(Install) / S.Folder, Ec)) return true;
+    // (another title's zones walked with this one's tables read as garbage: Modern Warfare 4's
+    // campaign and multiplayer share the root)
+    const std::string Prefix = ExportNaming::Lower(S.Folder);
+    std::erase_if(Names, [&](const std::string& N) {
+        const std::string L = ExportNaming::Lower(N);
+        return L.size() <= Prefix.size() || L.compare(0, Prefix.size(), Prefix) != 0 || (L[Prefix.size()] != '\\' && L[Prefix.size()] != '/');
+    });
+    if (Names.empty()) Error = std::string("no ") + S.Folder + " fast file in " + Install;
+    return !Names.empty();
+}
+
+// the string cipher's strings (DiskGame::EnsureStringCipher): the zones' script strings
+const DiskGame::CipherSource* BO7Family::Game::CipherStrings() const
+{
+    static std::mutex Lock;
+    static std::map<std::string, std::unique_ptr<DiskGame::CipherSource>> Sources;
+    const std::lock_guard<std::mutex> G(Lock);
+    auto& Source = Sources[S.Profile];
+    if (!Source) Source = std::make_unique<DiskGame::CipherSource>(IwctxReaders::ScriptStringCipher(S.Profile));
+    return Source.get();
+}
+
+std::unique_ptr<DiskGame::IDiskZone> BO7Family::Game::Open(const std::string& Path, const DiskGame::ExportOptions& Options, std::string& Error) const
+{
+    // the packages the readers stream mesh and image data from (--install: the game's folder or the HQ install)
+    auto Packages = Options.Install.empty() ? nullptr : TreyarchPackages::Open<XSUBCache>(Options.Install);
+    if (!Options.Install.empty() && Packages == nullptr)
+    {
+        Error = "could not open the packages of " + Options.Install;
+        return nullptr;
+    }
+    auto Zone = std::make_unique<BO7Zone>(Path, S);
+    Zone->ServesPackages(std::move(Packages));
+    // (--install: where the global zones are when not beside the level, whose index LoadIndexed reads)
+    Zone->SetInstall(this, Options, Options.Install);
+    Zone->Indexing = Options.Indexing;
+    if (!Zone->Open(Error)) return nullptr;
+    return Zone;
+}
+
+// the anims' sets, characters, scenes and entities (Games/IW/IwctxAnimOwners.h): a zone's own
+// facts, then those of the mode's shared zones when it did not serve them beside itself (a
+// level serves its global zones)
+std::vector<std::string> BO7Family::Game::AnimOwnerDocuments() const
+{
+    return { IwctxAnimOwners::DocumentName };
+}
+void BO7Family::Game::AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const
+{
+    IwctxAnimOwners::Fill(*this, Options, Zones, Out, [this, &Options](const std::string& Zone, const IwctxAnimOwners::Json& Facts) {
+        if (Facts.value("beside", false)) return std::vector<std::string>();
+        if (!S.AnimZones.empty()) return IwctxAnimOwners::SharedZones(Zone, Options.Install, S.Folder, S.AnimZones, S.AnimZones);
+        return IwctxAnimOwners::SharedZones(Zone, Options.Install, S.Folder, { "global_shared_mp", "ingame_shared_mp", "ingame_zm" },
+                                            { "global_shared_mp", "ingame_shared_mp", "ingame_mp" });
+    });
 }

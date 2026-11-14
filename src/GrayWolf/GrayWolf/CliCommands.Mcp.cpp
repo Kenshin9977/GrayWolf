@@ -708,9 +708,11 @@ namespace
         if (const auto F = OptString(Args, "audio_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--audio-format", Csv({ F }, &AudioFormats, "audio_format") });
         if (OptBool(Args, "material_gdt", false)) Cmd.insert(Cmd.end(), { "--material-gdt", "on" });
         if (OptBool(Args, "split_maps", false)) Cmd.insert(Cmd.end(), { "--split-maps", "on" });
+        Cmd.insert(Cmd.end(), { "--model-images", OptBool(Args, "model_images", true) ? "on" : "off" });
         if (OptBool(Args, "sound_aliases", false)) Cmd.insert(Cmd.end(), { "--sound-aliases", "on" });
         if (OptBool(Args, "map_radiant", false)) Cmd.insert(Cmd.end(), { "--map-radiant", "on" });
         if (OptBool(Args, "decompile", false)) Cmd.push_back("--decompile");
+        Cmd.push_back(OptBool(Args, "with_heads", true) ? "--with-heads" : "--with-heads=off");
         if (const auto L = OptString(Args, "languages"); !L.empty()) Cmd.insert(Cmd.end(), { "--languages", L });
         if (!OptBool(Args, "pull_dependencies", true)) throw ToolError("pull_dependencies=false is not offered by the CLI yet");
 
@@ -880,7 +882,8 @@ namespace
             "sound) and name_filter (substrings). Formats: model_format (cast, semodel, xmodel_export, glb, ...; several allowed), "
             "anim_format (cast, seanim, xanim_export), image_format (png, tga, dds), audio_format (opus, wav, flac). Black Ops III "
             "mod tools: material_gdt (material/image GDT entries), sound_aliases (alias CSV beside the audio), map_radiant (a map's "
-            ".map). decompile: scripts decompiled (kind script). What the assets need from other zones (textures, rigs) is pulled "
+            ".map). decompile: scripts decompiled (kind script). with_heads: each character's body also joined with its head "
+            "(models/<body>+<head>/, one skeleton). What the assets need from other zones (textures, rigs) is pulled "
             "too. A whole level takes minutes: wait=false returns a job id at once, followed with graywolf_export_status. One "
             "export runs at a time.",
             Schema(R"({"type": "object", "required": ["install", "zones", "out_name"], "properties": {
@@ -890,8 +893,10 @@ namespace
                 "model_format": )" + OptArr + R"(, "anim_format": )" + OptArr + R"(,
                 "image_format": )" + OptStr + R"(, "audio_format": )" + OptStr + R"(,
                 "material_gdt": {"type": "boolean", "default": false}, "split_maps": {"type": "boolean", "default": false},
+                "model_images": {"type": "boolean", "default": true},
                 "sound_aliases": {"type": "boolean", "default": false},
                 "map_radiant": {"type": "boolean", "default": false}, "decompile": {"type": "boolean", "default": false},
+                "with_heads": {"type": "boolean", "default": true},
                 "languages": )" + OptStr + R"(,
                 "pull_dependencies": {"type": "boolean", "default": true}, "wait": {"type": "boolean", "default": true}}})"),
             Schema(R"({"type": "object", "properties": {"job": {"type": "string"}, "state": {"type": "string"}, "out": {"type": "string"},

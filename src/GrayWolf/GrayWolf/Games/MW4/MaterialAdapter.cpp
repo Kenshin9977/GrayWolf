@@ -31,4 +31,5 @@ namespace
     };
     const ModernWarfare4Materials Adapter;
     const Materials::AdapterRegistration Registered("MW4", Adapter);
+    const Materials::AdapterRegistration RegisteredCampaign("MW4SP", Adapter);   // the campaign's: the same material struct
 }

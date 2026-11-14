@@ -192,19 +192,24 @@ namespace
         // a stream entry's word: {u16 locale, u16 pak index, u32 checksum}
         uint64_t PakOf(const PakEntry& E) const override { return (E.Pak >> 16) & 0xffff; }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // how the anim owners and the heads read it (IwZoneAnimOwners.h)
+        IwZoneAnimOwners::ZoneView OwnerView() const
+        {
+            return { &Image(), &Walk(), [this](uint64_t A) { return Off(A); }, [this](int64_t F) { return TextAt(F); },
+                     [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                     [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                         N = AssetName(DiskGame::Kind::Rawfile, P);
+                         return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                     },
+                     [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots };
+        }
+        // its characters' bodies and heads, from its compiled scripts' strings (IwZoneAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override { return IwZoneAnimOwners::BodyHeads(OwnerView()); }
         // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
         {
             ZonekitZone::Documents(Out);
-            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
-                                                             [this](int64_t F) { return TextAt(F); },
-                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
-                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
-                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
-                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
-                                                             },
-                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
-                                        Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), OwnerView(), Out);
         }
         // what Defines lists beyond the profile's walk: images, names by reference, model headers
         std::string IndexKey() const override { return ZonekitZone::IndexKey() + "_images_names1"; }
@@ -390,6 +395,12 @@ namespace
         }
 
         // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
         std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
         void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
         {

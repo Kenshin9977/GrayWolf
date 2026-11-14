@@ -32,6 +32,7 @@ namespace IwTerrain
         int64_t Geometry = -1;                            // stterrain's geometry struct (0x1a0: the partial nodes), -1: none
         int64_t LayerList = 0, LayerSize = 0;             // in it: the layers (count u32 0xdc, at LayerList, LayerSize each)
         int64_t VhmLevels = 0, VhmTileCount = 0, VhmTiles = 0;   // Images: u8, u32, the list (8 bytes a tile); Levels: u32, -, the records
+        int64_t LayerCount = 0xdc;                        // in the geometry struct: the layers' u32 count
     };
     constexpr Layout BlackOps7{ 0x15c, 0x160, 0x1f4, 0x1f8, 0x1dc, 0x1e0, TileKind::Buffers, 0x18, 0xe8, 0x238 };
     constexpr Layout BlackOps6{ 0x15c, 0x160, 0x204, 0x208, 0x1e0, 0x1e8, TileKind::Buffers, 0x10, 0xe0, 0x210 };
@@ -45,6 +46,14 @@ namespace IwTerrain
     // Modern Warfare III's vhmdata (0x68): its levels' records (count u32 0x4c, 0x50); its
     // stterrain is not read (every node drawn, no colour map)
     constexpr Layout ModernWarfare3{ 0, 0, 0, 0, 0, 0, TileKind::Levels, -1, 0, 0, 0x4c, 0, 0x50 };
+    // Modern Warfare 4's stterrain (0x3f8): Black Ops 7's fields moved: the geometry struct (0x1d8)
+    // at 0x20, its layers (0x248 each, u32 count 0x110) at 0x120, the node records 0x1a0 (count
+    // 0x19c), material records 0x260 (0x25c), colour records 0x220 (0x21c, 0x40 each, the colour
+    // map at 8); vhmdata (0x50): Black Ops 7's tile set (0x50 records at 0x38, count 0x34)
+    constexpr Layout ModernWarfare4{ 0x19c, 0x1a0, 0x25c, 0x260, 0x21c, 0x220, TileKind::Buffers, 0x20, 0x120, 0x248, 0, 0, 0, 0x110 };
+    // its campaign's stterrain (0x3f0, sp26-cod.exe 0x21fcef0): the multiplayer's, every field 8
+    // bytes on (the geometry struct at 0x18, unchanged within; vhmdata unchanged)
+    constexpr Layout ModernWarfare4Campaign{ 0x194, 0x198, 0x254, 0x258, 0x214, 0x218, TileKind::Buffers, 0x18, 0x120, 0x248, 0, 0, 0, 0x110 };
 
     // a tile's samples (R16, row-major)
     struct Tile

@@ -17,8 +17,10 @@
 #include <array>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Maps
@@ -91,6 +93,12 @@ namespace Maps
         // layer, index K - 2), and the overlay triangles left out for a weight of 0 at their corners
         size_t Layers = 0, LayersCarried = 0, LayersNoColour = 0, LayersUndrawn = 0, LayersNoGdt = 0, OverlayMaterials = 0;
         size_t OverlayPatches[3] = { 0, 0, 0 }, OverlayInModels[3] = { 0, 0, 0 }, OverlayUnweighted = 0;
+        // the target's tools' own assets the map names as they are (IRadiantTarget::Stock): placements
+        // and entities of such a model (no file written), materials (no GDT entry)
+        size_t StockModels = 0, StockMaterials = 0;
+        // in a mod tools tree, what an entity names that the tree lacks: an effect (share/raw/fx/<fxdef>.efx:
+        // the fx entity left out), a colour grading (share/raw/grades/<name>.lvi: the pbg_box's use of it off)
+        size_t EffectsMissing = 0, GradesMissing = 0;
     };
     // With Gdt (the material_gdt setting), the model files name their materials by their GDT asset
     // names (MaterialGdt::AssetName) and the GDT is left to the caller: its model entries and the
@@ -105,6 +113,10 @@ namespace Maps
         std::vector<std::string> ModelEntries;  // the xmodel entries (LF)
         std::set<std::string> Materials;       // scene material names, and the overlays' (below)
         std::map<std::string, BlendLayer> Overlays;   // the blend layers' overlay materials the files name
+        // the materials the target's tools define themselves (IRadiantTarget::Stock), named as they
+        // are and left out of Materials: no entry of the GDT
+        std::shared_ptr<const std::unordered_set<std::string>> Stock;
+        std::set<std::string> StockNamed;     // those the files name
     };
     // With Tree (a Black Ops III Mod Tools root, the mod_tools setting), the files go into it rather
     // than beside MapPath: map_source/graywolf/<map>.map, model_export/graywolf/<map>/,

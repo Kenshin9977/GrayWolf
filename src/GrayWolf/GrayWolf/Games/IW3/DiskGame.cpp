@@ -49,6 +49,15 @@ namespace
         }
 
         // its string tables, then its GSC source and animtrees (the anim owners': IwClassicAnimOwners.h)
+        // the character scripts' bodies and heads, this zone's then its shared zones' (a multiplayer
+        // map's characters are common_mp's): IwClassicAnimOwners::BodyHeads
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return IwClassicAnimOwners::BodyHeads(*this, FastFilePath(), Docs, [this](const std::string& Path) { return OtherZone(Path); });
+        }
+
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
         {
             ZonekitZone::Documents(Out);
@@ -193,8 +202,16 @@ namespace
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const ExportOptions& Options, std::string& Error) const override
         {
             auto Zone = std::make_unique<Cod4Zone>(Path, Iw3Family::InstallOf(Path, Options.Install));
+            Zone->OpenedBy(this, Options);
             if (!Zone->Open(Error)) return nullptr;
             return Zone;
+        }
+
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
         }
 
         // the anims' weapons, player types and characters (IwClassicAnimOwners.h)

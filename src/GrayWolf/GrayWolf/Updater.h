@@ -108,6 +108,9 @@ namespace Updater
         void DownloadApp();
         // Starts the helper on the staged app; the caller then quits.
         bool ApplyAndRestart(std::string& Message);
+        // Ends the other GrayWolf.exe processes running from the app folder (another window, one
+        // closed but still finishing a job, an `mcp` server), which refuse ApplyAndRestart; how many
+        bool EndOthers(size_t& Ended, std::string& Message);
         View Get();
     }
 }

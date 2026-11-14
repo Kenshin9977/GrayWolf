@@ -144,6 +144,9 @@ namespace
             Value = P < 0 ? std::string() : ZoneStr(P);
         }
 
+        // its characters' bodies and heads (Bo3AnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override { return Bo3AnimOwners::BodyHeads(*this); }
+
         // its string tables, and the facts its anims' owners are read from (Bo3AnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
         {
@@ -914,6 +917,29 @@ namespace
                     Models.emplace(Scene.Sky.Model, VirtualGameSession::Base + I.Pos);
                     break;
                 }
+
+        // ---- the models the entities name and no placement holds (a script_model: Nacht's help room
+        // door, its debris couches, the radio), this zone's: exported with the placed ones, for the
+        // entities that name them (a Radiant .map keeps such an entity only with its model)
+        std::vector<Maps::Entity> Ents;
+        if (!Scene.MapEnts.empty() && Maps::ParseEntities(Scene.MapEnts, Ents))
+        {
+            std::set<std::string> Named;
+            for (const auto& E : Ents)
+                if (const auto M = E.find("model"); M != E.end() && !M->second.empty() && M->second[0] != '*' && M->second[0] != '?' &&
+                                                    !Models.count(M->second))
+                    Named.insert(M->second);
+            for (const auto& I : Walk().Instances)
+            {
+                if (Named.empty()) break;
+                if (I.Parent >= 0 || !OwnerIs(I, ModelType())) continue;
+                const std::string Name = ModelAt(VirtualGameSession::Base + I.Pos);
+                if (Named.erase(Name) == 0) continue;
+                Models.emplace(Name, VirtualGameSession::Base + I.Pos);
+                Counter("map_entity_models")++;
+            }
+            Counter("map_entity_models_elsewhere") += Named.size();
+        }
         return true;
     }
 
@@ -944,6 +970,12 @@ namespace
 
         // the anims' AI types, scenes, barriers, weapons and player bodies (Bo3AnimOwners.h)
         std::vector<std::string> AnimOwnerDocuments() const override { return Bo3AnimOwners::Documents(); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
         void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
         {
             Bo3AnimOwners::Fill(*this, Options, Zones, Out);

@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,6 +37,18 @@ namespace ModToolsTree
     bool WriteKept(const std::filesystem::path& File, const std::string& Bytes);
     // A file the export wrote, hard-linked (else copied) as To in the tree, replacing what is there
     bool Place(const std::filesystem::path& From, const std::filesystem::path& To);
+    // The asset names (lower case) the GDTs already in the tree define (source_data/, texture_assets/,
+    // model_export/, the stock ones and those a user or another export added), but Except: an entry
+    // of the same name in a GDT GrayWolf writes is a duplicate APE and the linker refuse
+    std::unordered_set<std::string> DefinedAssets(const std::filesystem::path& Root, const std::filesystem::path& Except);
+    // The same names with their entries' GDF (lower case: "xmodel.gdf", "material.gdf"; "" for an
+    // entry derived from another). StockOnly: the tree's own GDTs alone, GrayWolf's left out
+    // (source_data/graywolf_*.gdt, model_export/graywolf/): what the mod tools ship or a user made
+    std::unordered_map<std::string, std::string> DefinedTypes(const std::filesystem::path& Root, const std::filesystem::path& Except,
+                                                              bool StockOnly);
+    // Gdt, a GDT GrayWolf writes in the tree (<Root>/source_data/<file>): the entries (Gdt::Entry
+    // texts) another GDT of the tree defines removed, said once in the run's warnings; how many
+    size_t LeaveOutDefined(const std::filesystem::path& Gdt, std::vector<std::string>& Entries);
 
     // What a run put in the tree: Begin at its start, Take at its end (one run at a time)
     struct Record

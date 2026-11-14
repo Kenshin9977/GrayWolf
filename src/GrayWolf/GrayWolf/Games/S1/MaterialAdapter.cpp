@@ -9,13 +9,25 @@
 // the emissive map (34614347, the images named "_ems").
 namespace
 {
-    std::vector<Materials::SemanticRole> Rows()
+    std::vector<Materials::SemanticRole> Table()
     {
         std::vector<Materials::SemanticRole> R = Materials::SpecularGlossTable();
         R.push_back({ 0x6001F931, Materials::Role::Occlusion, 0 });
         R.push_back({ 0x34614347, Materials::Role::Emissive });
         return R;
     }
-    const Materials::SemanticAdapter Adapter("aw", Rows());
+    // the gloss's specular power, exp2(16 g), then GGX's alpha^2 = 2 / (power + 2) (the lit pixel
+    // shaders, mp_blackbox, 207 of 600): Black Ops III's gloss scale (log2 of the power), glossRange 0..16
+    class AdvancedWarfareMaterials final : public Materials::SemanticAdapter
+    {
+    public:
+        AdvancedWarfareMaterials() : SemanticAdapter("aw", Table()) {}
+    protected:
+        void Refine(const Materials::Source&, Materials::Description& D, bool) const override
+        {
+            if (!D.Roughness.Empty() && D.Roughness.Invert) D.GlossRange[0] = 0.0f, D.GlossRange[1] = 16.0f;
+        }
+    };
+    const AdvancedWarfareMaterials Adapter;
     const Materials::AdapterRegistration Registered("S1", Adapter);
 }

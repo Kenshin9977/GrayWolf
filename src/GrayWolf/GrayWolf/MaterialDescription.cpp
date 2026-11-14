@@ -106,8 +106,9 @@ namespace
     class LegacySpecularAdapterImpl final : public SemanticAdapter
     {
     public:
-        LegacySpecularAdapterImpl(bool AlphaIsRoughness, bool ColourGamma2)
-            : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names), RoughAlpha(AlphaIsRoughness), Gamma2(ColourGamma2) {}
+        LegacySpecularAdapterImpl(bool AlphaIsRoughness, bool ColourGamma2, LegacyGloss Gloss)
+            : SemanticAdapter("legacy-specular", SpecularGlossTable(), Unmatched::Names), RoughAlpha(AlphaIsRoughness), Gamma2(ColourGamma2),
+              GlossMax(Gloss == LegacyGloss::Treyarch ? 13.0f : 9.3775f) {}
     protected:
         // an exporter without semantics gives no colour map: the readers' hints and the names
         bool Matched(const Description& D) const override { return !D.Albedo.Empty(); }
@@ -127,9 +128,13 @@ namespace
             if (D.Roughness.Empty()) D.Roughness = { D.Specular.Path, 3, !RoughAlpha };
             // the table reads the specular map's alpha as a gloss: a roughness in this game's
             else if (RoughAlpha && D.Roughness.Path == D.Specular.Path && D.Roughness.Channel == 3) D.Roughness.Invert = false;
+            // the gloss's specular power, exp2(GlossMax * gloss): Black Ops III's gloss scale (its
+            // gbuffer stores log2 of the power / 17), so its glossRange is 0..GlossMax
+            if (!D.Roughness.Empty()) D.GlossRange[0] = 0.0f, D.GlossRange[1] = GlossMax;
         }
     private:
         bool RoughAlpha, Gamma2;
+        float GlossMax;
     };
 
     const char* AlphaName(AlphaMode A)
@@ -321,10 +326,13 @@ const IAdapter& DefaultAdapter()
     return Default;
 }
 
-const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2)
+const IAdapter& LegacySpecularAdapter(bool AlphaIsRoughness, bool ColourGamma2, LegacyGloss Gloss)
 {
-    static const LegacySpecularAdapterImpl Each[2][2] = { { { false, false }, { false, true } }, { { true, false }, { true, true } } };
-    return Each[AlphaIsRoughness][ColourGamma2];
+    using G = LegacyGloss;
+    static const LegacySpecularAdapterImpl Each[2][2][2] = {
+        { { { false, false, G::Iw }, { false, false, G::Treyarch } }, { { false, true, G::Iw }, { false, true, G::Treyarch } } },
+        { { { true, false, G::Iw }, { true, false, G::Treyarch } }, { { true, true, G::Iw }, { true, true, G::Treyarch } } } };
+    return Each[AlphaIsRoughness][ColourGamma2][Gloss == G::Treyarch];
 }
 
 const IAdapter& AdapterFor(const std::string& Engine)
@@ -478,12 +486,19 @@ std::string SidecarText(const Sidecar& S)
         }
         PutMap(J, "roughness", D.Roughness, true);
         PutMap(J, "metalness", D.Metalness, true);
+        if (!D.Metalness.Empty() && D.MetalEnc == Description::MetalEncoding::Reflectance) J["metalness"]["encoding"] = "reflectance";
         PutMap(J, "specular", D.Specular, false);
         if (!D.Specular.Empty() && D.LegacySpecular)
         {
             J["specular"]["legacy"] = true;
             J["specular"]["scale"] = Rounded(D.SpecularScale);
         }
+        if (!D.Specular.Empty() && D.SpecularMask)
+        {
+            J["specular"]["mask"] = true;
+            J["specular"]["tint"] = Floats(D.SpecularTint, 3);
+        }
+        if (D.GlossRange[0] >= 0.0f) J["gloss_range"] = Floats(D.GlossRange, 2);
         PutMap(J, "occlusion", D.Occlusion, true);
         PutMap(J, "emissive", D.Emissive, false);
         if (!D.Emissive.Empty() && (D.EmissiveColor[0] != 1.0f || D.EmissiveColor[1] != 1.0f || D.EmissiveColor[2] != 1.0f))
@@ -542,6 +557,31 @@ std::string SidecarText(const Sidecar& S)
 }
 }
 
+void ForEachPath(Sidecar& S, const std::function<void(std::string& Path)>& F)
+{
+    const auto Visit = [&](Map& M) {
+        if (!M.Empty()) F(M.Path);
+    };
+    for (Description& D : S.Materials)
+    {
+        Visit(D.Tint.Image);
+        Visit(D.Tint.Offset);
+        Visit(D.Color.Mask);
+        for (Layer& L : D.Layers)
+        {
+            Visit(L.Albedo);
+            Visit(L.Normal);
+            Visit(L.Roughness);
+            Visit(L.Mask);
+        }
+        for (Map* M : { &D.Albedo, &D.Normal, &D.Roughness, &D.Metalness, &D.Specular, &D.Occlusion, &D.Emissive, &D.Transmission.Image, &D.AlphaMap.Image })
+            Visit(*M);
+    }
+    for (Source& Src : S.Sources)
+        for (Source::Image& I : Src.Images)
+            if (!I.Path.empty()) F(I.Path);
+}
+
 bool ReadSidecar(const std::string& Path, Sidecar& S)
 {
     std::ifstream In(Path, std::ios::binary);
@@ -571,12 +611,17 @@ bool ReadSidecar(const std::string& Path, Sidecar& S)
             }
             GetMap(J, "roughness", D.Roughness);
             GetMap(J, "metalness", D.Metalness);
+            if (J.contains("metalness") && J["metalness"].is_object() && J["metalness"].value("encoding", std::string()) == "reflectance")
+                D.MetalEnc = Description::MetalEncoding::Reflectance;
             GetMap(J, "specular", D.Specular);
             if (J.contains("specular") && J["specular"].is_object())
             {
                 D.LegacySpecular = J["specular"].value("legacy", false);
                 D.SpecularScale = J["specular"].value("scale", 1.0f);
+                D.SpecularMask = J["specular"].value("mask", false);
+                GetFloats(J["specular"], "tint", D.SpecularTint, 3);
             }
+            GetFloats(J, "gloss_range", D.GlossRange, 2);
             GetMap(J, "occlusion", D.Occlusion);
             GetMap(J, "emissive", D.Emissive);
             if (J.contains("emissive") && J["emissive"].is_object()) GetFloats(J["emissive"], "color", D.EmissiveColor, 3);

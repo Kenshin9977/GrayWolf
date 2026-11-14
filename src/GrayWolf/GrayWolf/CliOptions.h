@@ -73,6 +73,7 @@ struct CliOptions
     std::string MapPng;      // --map-png: on|off, PNG copies of map textures for glTF tools (off)
     std::string MapCast;     // --map-cast: on|off, the map also as a Cast scene (off)
     std::string MaterialGdt; // --material-gdt: on|off, BO3 Mod Tools material GDT entries for the exported materials (off)
+    std::string ModelImages; // --model-images: on|off, each model's textures also in models/<model>/images/ as hard links (off)
     std::string SplitMaps;   // --split-maps: on|off, the packed maps also split into standard files beside them (off)
     std::string MapRadiant;  // --map-radiant: on|off, the map also as a Radiant .map for the mod tools (off)
     std::string ModTools;      // --mod-tools: on|off, the mod tools files written into a BO3 Mod Tools tree (off)
@@ -83,6 +84,7 @@ struct CliOptions
     std::string MapSurfaces; // --map-surfaces: models|patches, the Radiant source's drawn world (models)
     std::string Bo3Usermap;  // --bo3-usermap: off|create|build, a ZM usermap around the map in the Mod Tools tree (off)
     std::string Decompile;   // --decompile[=on|off]: compiled scripts also decompiled (off)
+    std::string WithHeads;   // --with-heads[=first|all|off]: also each character's body with its head joined (off)
     std::string MapTextures; // --map-textures: full|2k|1k, map textures above it copied smaller (full)
     std::string Language;    // --language: auto|english|french|...: CoD1/CoD2, whose localized archives win (auto: --languages')
     std::string Languages;   // --languages: all|auto|en,fr...: the languages exported (DiskGame::ExportOptions::Languages; all)
@@ -155,6 +157,7 @@ struct CliOptions
     std::string OpenMap;           // open-map <map or folder>: a map export opened in Blender (BlenderLauncher.h)
     bool OpenMapReimport = false;  // open-map --reimport: run the import script again, even with a .blend
     bool OpenMapBackground = false;// open-map --background: import and save the .blend without a window
+    std::string OpenMapProps;      // open-map --props fast|objects: the map's props on import (implies --reimport)
     std::string NameFilter;      // --name-filter a,b,c: case-insensitive substrings, match any
     std::string Assets;          // disk-export --assets kind:name,...: only these assets (Context::Only)
     bool UpdateNameDb = false;   // --update-name-db: fetch echo000/cod-name-db's CSVs into package_index\*.wni

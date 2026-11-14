@@ -1,4 +1,5 @@
-// open-map <map or folder> [--reimport] [--background]: a map export opened in Blender
+// open-map <map, model or folder> [--reimport] [--background] [--props fast|objects]: a map export (or a model's, through the
+// <model>_import.py beside its .cast or .gltf) opened in Blender
 // (BlenderLauncher.h), the command line's face of the GUI's "Open in Blender".
 
 #include "stdafx.h"
@@ -32,7 +33,12 @@ int RunOpenMap(const CliOptions& Options)
     else Found = Blender::MapOf(Options.OpenMap, M, Error);
 
     std::string Did;
-    const bool Ok = Found && Blender::Open(M, { Options.OpenMapReimport, Options.OpenMapBackground }, Did, Error);
+    Blender::LaunchOptions O;
+    // a props choice is an import's: it re-imports a map already saved
+    O.Reimport = Options.OpenMapReimport || !Options.OpenMapProps.empty();
+    O.Background = Options.OpenMapBackground;
+    O.Props = Options.OpenMapProps;
+    const bool Ok = Found && Blender::Open(M, O, Did, Error);
     const Blender::Exe B = Blender::Find();
     CliReport(Options, Ok ? "result=ok\ndid=" + Did + "\nblender=" + B.Path + " (" + B.From + ")\n"
                           : "result=error\nreason=" + Error + "\n");
@@ -47,11 +53,15 @@ int RunOpenMap(const CliOptions& Options)
 void AddBlenderCommands(CliCommandBuilders& B)
 {
     B["open-map"] = [](CLI::App& App, CliOptions& Options) {
-        auto* Sub = App.add_subcommand("open-map", "Open a map export in Blender: the first time its import script runs and "
-                                                   "<map>.blend is saved beside it, later that .blend opens");
-        Sub->add_option("map", Options.OpenMap, "The map's .glb, its _import.py, its .blend, or a folder holding one map")
+        auto* Sub = App.add_subcommand("open-map", "Open a map export (or a Cast or glTF model's) in Blender: the first time its "
+                                                   "import script runs and <name>.blend is saved beside it, later that .blend opens");
+        Sub->add_option("map", Options.OpenMap, "The map's .glb, a model's .cast or .gltf, its _import.py, its .blend, or a folder holding one map")
             ->required()->check(CLI::ExistingPath);
         Sub->add_flag("--reimport", Options.OpenMapReimport, "Run the import script again, even when the .blend exists");
         Sub->add_flag("--background", Options.OpenMapBackground, "Import and save the .blend without opening Blender's window");
+        Sub->add_option("--props", Options.OpenMapProps,
+                        "A map's props: fast (map cells, Object > GrayWolf: Make selection editable for a region; the default) or "
+                        "objects (one object per prop, slow on a big map); re-imports the map")
+            ->check(CLI::IsMember({ "fast", "objects" }));
     };
 }

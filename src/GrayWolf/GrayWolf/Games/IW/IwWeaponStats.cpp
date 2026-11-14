@@ -518,10 +518,10 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
     {
         const std::string Type = TypeOf(I);
         const int64_t P = I.Pos;
-        if (Type == "weapon" && L.WeaponDef >= 0)
+        if (Type == "weapon" && (L.WeaponDef >= 0 || L.DefIsWeapon))
         {
             const uint64_t Id = AssetId(P);
-            const int64_t Def = Target(P + L.WeaponDef);
+            const int64_t Def = L.DefIsWeapon ? P : Target(P + L.WeaponDef);
             if (Def < 0 || !Done.insert({ Type, Id }).second) continue;
             const std::string Name = V.Text(P + L.WeaponName);
             if (Name.empty() || !WantsWeapon(Name)) continue;
@@ -1131,6 +1131,7 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
             if (F.At < 0) return "-";
             if (!Weapon) return F.Base == Field::In::Tunables ? "" : "-";
             if (F.Base == Field::In::Weapon) return "";
+            if (F.Base == Field::In::Def && L.DefIsWeapon) return "";
             return F.Base == Field::In::Def && L.WeaponDef >= 0 ? Key(L.WeaponDef) + "/" : "-";
         };
         const auto Name = [&](const Field& F, int64_t Add, const std::string& N, const char* Kind) {
@@ -1179,9 +1180,9 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
         if (L.DefaultAttachments >= 0)
             for (int64_t S = 1; S < L.SlotCount; S++) Put("", L.DefaultAttachments + 8 * S, std::format("default_attachment_slot{}", S), "");
         if (L.DefaultSlots >= 0) Put("", L.DefaultSlots, "default_attachment_slots", "");
-        if (L.WeaponDef >= 0)
+        if (L.WeaponDef >= 0 || L.DefIsWeapon)
         {
-            const std::string D = Key(L.WeaponDef) + "/";
+            const std::string D = L.DefIsWeapon ? std::string() : Key(L.WeaponDef) + "/";
             Put(D, L.DefTunables, "tunables", "");
             Put(D, L.DefSets, "tunables_sets", "");
             Put(D, L.DefSetCount, "tunables_set_count", "i32");

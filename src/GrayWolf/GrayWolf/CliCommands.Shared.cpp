@@ -59,6 +59,12 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
                    "them: <image>_normal (x, y, z), _roughness, _ao, _metalness, _specular, _albedo (off: as stored; the "
                    ".materials.json sidecars describe the stored files either way)")
         ->group("Shared options");
+    App.add_option("--model-images", Options.ModelImages,
+                   "on|off: also give each exported model its own models/<model>/images/ folder holding the textures its "
+                   "materials read, as hard links to the shared images/ files (no extra disk space; a copy where a link "
+                   "cannot be made), which its model files and .materials.json then name (the default; off: they name "
+                   "../../images/)")
+        ->group("Shared options");
     App.add_option("--sound-aliases", Options.SoundAliases,
                    "on|off: the sound kind also writes each zone's sound aliases as a Black Ops III mod tools alias CSV "
                    "(sounds/<zone>.csv, FileSpec relative to sounds/), to port sounds with their behaviour (off: audio only)")
@@ -95,6 +101,13 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
                  "--type script: also decompile the compiled scripts (acts or gsc-tool, by the game's VM); "
                  "--type rawfile: the compiled Lua files (cod-luajit-decompiler or CoDLuaDecompiler, by the bytecode); "
                  "a file the tool does not decompile keeps its bytecode file (--decompile=off: bytecode only)")
+        ->group("Shared options");
+    App.add_flag("--with-heads{first}", Options.WithHeads,
+                 "--type model: also write each character's body with its head joined, one model on one skeleton "
+                 "(models/<body>+<head>/), as the game's character data pairs them, when the zone holds both; the "
+                 "separate models are written as usual (the default: the body's first head). --with-heads=all: one per "
+                 "head the body may wear (off: none). "
+                 "Every game but CoD Online and the OAT readers")
         ->group("Shared options");
     App.add_option("--language", Options.Language,
                    "english|french|german|italian|spanish|russian|polish: CoD1/CoD2, the localized archives that "

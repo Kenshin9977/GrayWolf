@@ -129,7 +129,8 @@ namespace ShellUi
             else if (Sel.Kind == 3)             ImGui::TextDisabled("animation  \xC2\xB7  %s", FormatSize(Sel.SizeBytes).c_str());
             else if (Sel.Kind == 5)             ImGui::TextDisabled("%s", V.FxPanel.Summary().c_str());
             Theme::PopFont();
-            if (Sel.Kind == 4) DrawOpenInBlender(Sel.Path);   // a map export: its .blend, or its import
+            // a map export, or a model's with its <model>_import.py: its .blend, or its import
+            if (Sel.Kind == 4 || Sel.Kind == 0) DrawOpenInBlender(Sel.Path);
             ImGui::Spacing();
         }
 

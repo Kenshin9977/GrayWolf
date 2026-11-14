@@ -45,6 +45,7 @@ namespace
         { "map_surfaces", "--map-surfaces", &CliOptions::MapSurfaces },
         { "material_gdt", "--material-gdt", &CliOptions::MaterialGdt },
         { "split_maps", "--split-maps", &CliOptions::SplitMaps },
+        { "model_images", "--model-images", &CliOptions::ModelImages },
         { "sound_aliases", "--sound-aliases", &CliOptions::SoundAliases },
         { "mod_tools", "--mod-tools", &CliOptions::ModTools },
         { "bo3_usermap", "--bo3-usermap", &CliOptions::Bo3Usermap },
@@ -52,6 +53,7 @@ namespace
         { "map_content", "--map-content", &CliOptions::MapContent },
         { "language", "--language", &CliOptions::Language },
         { "decompile", "--decompile", &CliOptions::Decompile },
+        { "char_heads", "--with-heads", &CliOptions::WithHeads },
     };
 
     bool ReadOptions(const IDiskGame& Game, const CliOptions& Cli, ExportOptions& O, std::string& Error)

@@ -13,6 +13,7 @@
 #include "MapGlbWriter.h"
 #include "MapLive.h"
 #include "MaterialDescription.h"
+#include "ModelImages.h"
 #include "Gdt.h"
 
 #include <algorithm>
@@ -325,8 +326,9 @@ ExportWriters::ModelTextures ZonekitZone::Textures(const DiskGame::Context& C) c
 {
     // Model textures go to the run's images/ folder, each written once (skipprevimg), named from
     // the model's folder models/<name>/ (a copy per model would make most of an install-wide export's
-    // files).
-    return { C.KindDir(DiskGame::Kind::Image), "..\\\\..\\\\images\\\\",
+    // files). With model_images, the model files name their own images/ folder, linked to these
+    // once the run has written them (ModelImages.h).
+    return { C.KindDir(DiskGame::Kind::Image), ModelImages::Relative(C),
              ExportWriters::ImageExtension(ExportWriters::ImageFormatSetting()) };
 }
 
@@ -991,11 +993,77 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
     auto Since = std::chrono::steady_clock::now();
     Settle();
     if (K == DiskGame::Kind::Model) Counter("time_model_files_drain_ms") += Ms(Since);
+    // with char_heads on, the bodies written here with their heads
+    if (K == DiskGame::Kind::Model && DiskGame::CharacterHeads.Of(C.Settings) != "off" && !C.Cancelled())
+    {
+        std::unordered_map<std::string, int64_t> Bodies;
+        for (size_t N = 0; N < Assets.size(); N++)
+            if (Counted[N]) Bodies.emplace(ExportNaming::Lower(Assets[N].second), Assets[N].first);
+        ExportWithHeads(Bodies, Tex, C, T);
+    }
     C.Advance(Assets.size(), Assets.size());
     if (NotImage) T.Fail(ZoneName, K, "", std::to_string(NotImage) + " texture slots point at no image, left out");
     Since = std::chrono::steady_clock::now();
     if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);
     if (K == DiskGame::Kind::Model) Counter("time_model_textures_ms") += Ms(Since);
+}
+
+std::unique_ptr<DiskGame::IDiskZone> ZonekitZone::OtherZone(const std::string& Other) const
+{
+    std::string Error;
+    return OpenerGame != nullptr && OpenerOptions ? OpenerGame->Open(Other, *OpenerOptions, Error) : nullptr;
+}
+
+void ZonekitZone::ExportWithHeads(const std::unordered_map<std::string, int64_t>& Bodies, const ExportWriters::ModelTextures& Tex,
+                                  const DiskGame::Context& C, DiskGame::Totals& T)
+{
+    using DiskGame::Kind;
+    const bool Every = DiskGame::CharacterHeads.Of(C.Settings) == "all";
+    const auto Pairs = CharacterHeads();
+    if (Pairs.empty() || Bodies.empty()) return;
+    // the models this zone holds whole, by lower-case name (a head need not be asked for)
+    std::unordered_map<std::string, std::pair<int64_t, std::string>> Held;
+    for (const auto& I : R.Instances)
+    {
+        if (!OwnerIs(I, ModelType())) continue;
+        const std::string Name = AssetName(Kind::Model, I.Pos);
+        if (Unwritable(Kind::Model, I.Pos) != nullptr || IsReference(Kind::Model, Name, I.Pos)) continue;
+        Held.try_emplace(ExportNaming::Lower(Name), I.Pos, Name);
+    }
+    for (const auto& [Body, Heads] : Pairs)
+    {
+        const auto B = Bodies.find(Body);
+        const auto BodyHeld = Held.find(Body);
+        if (B == Bodies.end() || BodyHeld == Held.end()) continue;
+        bool Any = false;
+        for (const auto& Head : Heads)
+        {
+            const auto H = Held.find(Head);
+            if (H == Held.end())
+            {
+                Counter("models_with_heads_head_elsewhere")++;
+                continue;
+            }
+            const std::string Joined = ExportNaming::SafeFileName(BodyHeld->second.second) + "+" + ExportNaming::SafeFileName(H->second.second);
+            std::vector<CoDModel_t> Parts(2);
+            Parts[0].AssetName = ExportNaming::SafeFileName(BodyHeld->second.second);
+            Parts[0].AssetPointer = Live().Addr((uint64_t)B->second);
+            Parts[1].AssetName = ExportNaming::SafeFileName(H->second.second);
+            Parts[1].AssetPointer = Live().Addr((uint64_t)H->second.first);
+            const std::string Dir = (fs::path(C.KindDir(Kind::Model)) / Joined).string();
+            ExportWriters::MakeDirs(Dir);
+            size_t Read = 0;
+            std::string Crash;
+            // the head is bound in its own space (MW2's: j_spine4 its origin): moved onto the body's
+            const int Code = ExportWriters::ExportComposite(Joined, Parts, Dir, Tex, Read, Crash, true);
+            if (Code == static_cast<int>(ExportGameResult::Success) && Read == 2) Counter("models_with_heads_written")++;
+            else T.Fail(ZoneName, Kind::Model, Joined, "body with head: code " + std::to_string(Code) + ", parts read " + std::to_string(Read) +
+                                                          (Crash.empty() ? "" : " " + Crash));
+            Any = true;
+            if (!Every) break;
+        }
+        if (!Any) Counter("models_with_heads_no_head_here")++;
+    }
 }
 
 void ZonekitZone::ExportTextures(const std::set<std::string>& Names, const DiskGame::Context& C, DiskGame::Totals& T)

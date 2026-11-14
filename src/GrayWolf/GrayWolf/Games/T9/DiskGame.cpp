@@ -177,6 +177,14 @@ namespace
             return true;
         }
 
+        // its characters' bodies and heads, from its anim owners' facts (TreyarchAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            Documents(Docs);
+            return TreyarchAnimOwners::BodyHeads(Docs);
+        }
+
         // with its anim owners' facts (TreyarchAnimOwners.h): aitype (0x12f8: its name a string at
         // 8, characters 0x798, animmappingtables 0x800), character (bodies and heads at 0x60-0x78),
         // xmodelalias (models from 8), animmappingtable {hash, aliases 8, lists 0x10, count 0x18} of
@@ -801,6 +809,12 @@ namespace
         const char* Engine() const override { return "T9"; }
         std::vector<std::string> Aliases() const override { return { "coldwar-disk-export" }; }
         std::unique_ptr<DiskGame::IDiskZone> Unopened() const override { return std::make_unique<ColdWarZone>(std::string()); }
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
         // the language's core_common strings, decrypted, their keys hashed as BO4's
         // (Treyarch::HashedLocalizeKey): multiplayer maps by mpui/ (mp_black_sea "Armada"),
         // Fireteam maps by mpui/ or presence/ (wz_duga "Duga"), a ww_ copy of a level by its own;

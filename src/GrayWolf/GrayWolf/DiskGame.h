@@ -239,7 +239,15 @@ namespace DiskGame
     // split_maps: also the packed maps the models' and maps' materials read (a "nog", a specular
     // with its gloss in alpha) split into standard files beside them (MaterialSplit.h)
     extern const Setting SplitMaps;
+    // model_images: each model's textures also in its own models/<model>/images/ folder, hard links
+    // to the shared images/ files (no disk space), which its files then name (ModelImages.h)
+    extern const Setting ModelImagesFolder;
     const std::vector<Setting>& CommonSettings();
+    // char_heads: also each character's body with its head joined, one model on one skeleton
+    // (models/<body>+<head>/), as the game's character data pairs them: off, the first head, every
+    // head. Not common: a game whose zones give the pairs (ZonekitZone::CharacterHeads) lists it
+    // among its Settings().
+    extern const Setting CharacterHeads;
 
     // A material's images as its zone's reader reads them (XImage_t's usage as a number, the
     // semantic's hash, the image's name), by the material's name as the install index lists it
@@ -615,6 +623,10 @@ namespace DiskGame
             // a zone is a container of levels, named by those it holds (IDiskZone::HeldLevels): every
             // zone is opened once
             bool ByLevels = false;
+            // levels no string names yet, named by their file names: a zone matching one of these
+            // patterns, past a first word that is not (a language, "ww_", "techsets_"), is a part
+            // of the shortest such zone its name begins with ("mp_x_entities", "fra_mp_x": mp_x)
+            std::vector<std::string> ByFileName = {};
         };
         // none by default: the game's zones are shown by file name only
         virtual const LevelNaming* LevelNames() const { return nullptr; }

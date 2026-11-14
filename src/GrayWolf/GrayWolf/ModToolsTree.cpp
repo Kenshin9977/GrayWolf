@@ -160,6 +160,67 @@ bool Place(const fs::path& From, const fs::path& To)
     return !Ec;
 }
 
+std::unordered_map<std::string, std::string> DefinedTypes(const fs::path& Root, const fs::path& Except, bool StockOnly)
+{
+    std::unordered_map<std::string, std::string> Names;
+    std::error_code Ec;
+    for (const char* Sub : { "source_data", "texture_assets", "model_export" })
+        for (fs::recursive_directory_iterator It(Root / Sub, Ec), End; !Ec && It != End; It.increment(Ec))
+        {
+            const fs::path& P = It->path();
+            const std::string File = ExportNaming::Lower(P.filename().string());
+            // GrayWolf's own (model_export/graywolf/, graywolf_*.gdt): no stock asset
+            if (StockOnly && File == "graywolf" && It->is_directory(Ec))
+            {
+                It.disable_recursion_pending();
+                continue;
+            }
+            if (ExportNaming::Lower(P.extension().string()) != ".gdt" || !It->is_regular_file(Ec)) continue;
+            if (StockOnly && File.rfind("graywolf_", 0) == 0) continue;
+            if (std::error_code Eq; fs::equivalent(P, Except, Eq)) continue;
+            std::ifstream In(P, std::ios::binary);
+            // an entry's head: "name" ( "type.gdf" ), or "name" [ "parent" ]; a key is "key" "value"
+            for (std::string Line; std::getline(In, Line);)
+            {
+                size_t I = Line.find_first_not_of(" \t");
+                if (I == std::string::npos || Line[I] != '"') continue;
+                const size_t Close = Line.find('"', I + 1);
+                if (Close == std::string::npos) continue;
+                const size_t J = Line.find_first_not_of(" \t", Close + 1);
+                if (J == std::string::npos || (Line[J] != '(' && Line[J] != '[')) continue;
+                // its GDF, "" for an entry derived from another ([ "parent" ])
+                std::string Type;
+                if (const size_t A = Line.find('"', J), Z = A == std::string::npos ? A : Line.find('"', A + 1); Line[J] == '(' && Z != std::string::npos)
+                    Type = ExportNaming::Lower(Line.substr(A + 1, Z - A - 1));
+                Names.emplace(ExportNaming::Lower(Line.substr(I + 1, Close - I - 1)), std::move(Type));
+            }
+        }
+    return Names;
+}
+
+std::unordered_set<std::string> DefinedAssets(const fs::path& Root, const fs::path& Except)
+{
+    std::unordered_set<std::string> Names;
+    for (const auto& [Name, Type] : DefinedTypes(Root, Except, false)) Names.insert(Name);
+    return Names;
+}
+
+size_t LeaveOutDefined(const fs::path& Gdt, std::vector<std::string>& Entries)
+{
+    const auto Defined = DefinedAssets(Gdt.parent_path().parent_path(), Gdt);
+    const size_t Was = Entries.size();
+    std::erase_if(Entries, [&](const std::string& E) {
+        const size_t A = E.find('"'), Z = A == std::string::npos ? A : E.find('"', A + 1);
+        if (Z == std::string::npos) return false;
+        std::string Name = E.substr(A + 1, Z - A - 1);
+        for (char& C : Name) C = (char)std::tolower((unsigned char)C);
+        return Defined.count(Name) != 0;
+    });
+    const size_t Left = Was - Entries.size();
+    if (Left) Warn(Gdt.filename().string() + ": " + std::to_string(Left) + " entries left out, other GDTs of the mod tools define them");
+    return Left;
+}
+
 void Begin(const std::string& Root)
 {
     std::lock_guard<std::mutex> L(Lock);

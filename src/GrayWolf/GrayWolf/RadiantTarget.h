@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace Maps
 {
@@ -85,11 +86,25 @@ namespace Maps
         virtual std::vector<std::pair<std::string, std::string>> WorldModelKeys() const { return {}; }
         // a material of the map's by its GDT entry's name (MaterialGdt::PrefixedName)
         std::string MaterialName(const std::string& Material) const;
+        // Whether the target's tools define the source's asset Name as an entry of Gdf ("xmodel.gdf",
+        // "material.gdf") themselves, the same asset: a map of the game the tools are for (Black Ops
+        // III's own in its mod tools). Such an asset is named as it is and neither written nor
+        // defined again: the tools' own is exact (its techniques, tints and gloss ranges, its LODs
+        // and collision), where a copy is an approximation and, under the same name, a duplicate.
+        virtual bool Stock(const std::string& Name, const char* Gdf) const { return false; }
     };
 
-    // Game: the source game's id (the export's folder); Stem: the map's file stem
+    // Game: the source game's id (the export's folder); Stem: the map's file stem; Stock: the assets
+    // the tree's own GDTs define, by lower-case name, with their GDF (ModToolsTree::DefinedTypes),
+    // empty for a map of another game; Tree: the mod tools tree (its effects and colour gradings,
+    // which an entity of the map may name: "" none checked)
     std::unique_ptr<IRadiantTarget> PlainTarget(const std::string& Stem);
-    std::unique_ptr<IRadiantTarget> Bo3ModToolsTarget(const std::string& Game, const std::string& Stem);
+    std::unique_ptr<IRadiantTarget> Bo3ModToolsTarget(const std::string& Game, const std::string& Stem,
+                                                      std::unordered_map<std::string, std::string> Stock = {},
+                                                      const std::string& Tree = std::string());
+    // The Stock a Black Ops III map gets in the mod tools tree Tree (its stock GDTs' assets); empty
+    // for another game's map
+    std::unordered_map<std::string, std::string> Bo3StockAssets(const MapScene& Scene, const std::string& Tree);
 
     // A source game's tool material as Black Ops III's mod tools name it (the tools Radiant's
     // configs/navmesh.json and the shipped maps use): kept when the mod tools have it, else its

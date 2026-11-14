@@ -189,9 +189,11 @@ namespace Blender
         const std::string Ext = Lower(U(P.extension()));
         if (Ext == ".glb" || Ext == ".blend") Out = Named(P.parent_path(), P.stem().wstring());
         else if (const std::wstring Name = ScriptMap(P); !Name.empty()) Out = Named(P.parent_path(), Name);
+        // a model's .cast or .gltf: opened the same way through the <model>_import.py beside it
+        else if (Ext == ".cast" || Ext == ".gltf") Out = Named(P.parent_path(), P.stem().wstring());
         else
         {
-            Error = "not a map: " + File + " (a map's .glb, its _import.py or its .blend)";
+            Error = "not a map or a model export: " + File + " (its .glb, .cast, its _import.py or its .blend)";
             return false;
         }
         return true;
@@ -228,7 +230,8 @@ namespace Blender
         }
         if (Import && !M.HasScript())
         {
-            Error = "no import script beside the map: " + M.Script + " (export the map again: GrayWolf writes <map>_import.py next to the .glb)";
+            Error = "no import script beside it: " + M.Script + " (export it again: GrayWolf writes <name>_import.py next to a map's .glb, "
+                    "and next to a Cast or glTF model with the Blender script format on)";
             return false;
         }
 
@@ -245,6 +248,7 @@ namespace Blender
                 L"bpy.ops.wm.save_as_mainfile(filepath=a[1])";
             if (O.Background) Cmd += L" --background --python-exit-code 1";
             Cmd += L" --python-expr " + Quote(Expr) + L" -- " + Quote(W(M.Script)) + L" " + Quote(W(M.Blend));
+            if (!O.Props.empty()) Cmd += L" --props " + Quote(W(O.Props));
         }
 
         STARTUPINFOW Si{};

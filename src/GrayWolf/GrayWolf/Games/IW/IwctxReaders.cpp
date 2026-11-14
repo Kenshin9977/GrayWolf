@@ -342,7 +342,7 @@ void IwctxReaders::LoadNameIndexes()
     });
 }
 
-void IwctxReaders::LoadGameNames(std::initializer_list<const char*> Packages)
+void IwctxReaders::LoadGameNames(const std::vector<const char*>& Packages)
 {
     static std::mutex Lock;
     static std::set<std::string> Loaded;

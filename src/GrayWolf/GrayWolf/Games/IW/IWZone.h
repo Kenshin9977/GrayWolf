@@ -177,6 +177,9 @@ protected:
     // A zone string's text through the profile's string cipher (Games/Common/StringCipher.h,
     // strings.cipher.txt): false when it is encrypted and no table knows its cipher
     bool CipherDecrypt(const std::string& Raw, std::string& Text) const;
+    // Whether the cipher's table is one rebuilt from the install's zones (no strings.cipher.txt in
+    // the profile): its texts may be wrong, as its hash check tells (StringCipher::HashChecks)
+    bool CipherRebuilt() const;
     // A zone string's text, decrypted when it is encrypted (CipherDecrypt), else as it is
     std::string Decrypted(const std::string& Raw) const
     {

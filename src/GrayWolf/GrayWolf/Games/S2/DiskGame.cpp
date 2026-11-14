@@ -404,19 +404,24 @@ namespace
             if (Dxgi != 0) W = DiskGame::Sizes::ImageWeight(Width, Height, Dxgi, 1, At<uint8_t>(Image(), Pos + ImageMapType) == 5 ? 6 : 1);
         }
         bool ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models) override;
+        // how the anim owners and the heads read it (IwZoneAnimOwners.h)
+        IwZoneAnimOwners::ZoneView OwnerView() const
+        {
+            return { &Image(), &Walk(), [this](uint64_t A) { return Off(A); }, [this](int64_t F) { return TextAt(F); },
+                     [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
+                     [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
+                         N = AssetName(DiskGame::Kind::Rawfile, P);
+                         return RawBytes(P, { 0xc, 0x10, 8 }, B);
+                     },
+                     [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots };
+        }
+        // its characters' bodies and heads, from its compiled scripts' strings (IwZoneAnimOwners::BodyHeads)
+        std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override { return IwZoneAnimOwners::BodyHeads(OwnerView()); }
         // the string tables, then what the anim owners read (IwZoneAnimOwners.h)
         void Documents(std::vector<std::pair<std::string, std::string>>& Out) const override
         {
             ZonekitZone::Documents(Out);
-            IwZoneAnimOwners::Documents(AnimOwnerLayout(), { &Image(), &Walk(), [this](uint64_t A) { return Off(A); },
-                                                             [this](int64_t F) { return TextAt(F); },
-                                                             [this](const std::string& T, int64_t P) { return NamedAsset(T, P); },
-                                                             [this](int64_t P, std::string& N, std::vector<uint8_t>& B) {
-                                                                 N = AssetName(DiskGame::Kind::Rawfile, P);
-                                                                 return RawBytes(P, { 0xc, 0x10, 8 }, B);
-                                                             },
-                                                             [this](uint64_t A, uint64_t N, std::vector<uint8_t>& B) { return BytesAt(A, N, B); }, &Slots },
-                                        Out);
+            IwZoneAnimOwners::Documents(AnimOwnerLayout(), OwnerView(), Out);
         }
         std::function<uint32_t(int64_t, uint32_t, float*, uint32_t)> BlendLayers();
         // a model whose XModelBase is not in this zone, or is a name-only header (",name", no
@@ -468,6 +473,18 @@ namespace
                     X.ImageName = ExportNaming::SafeFileName(X.ImageName);
                     return true;
                 };
+            // with char_heads on, a character's composite body also with its head(s) this zone holds
+            const std::string WithHeads = DiskGame::CharacterHeads.Of(C.Settings);
+            std::map<std::string, std::vector<std::string>> HeadsOf;
+            std::unordered_map<std::string, std::pair<int64_t, std::string>> HeadAt;
+            if (WithHeads != "off")
+            {
+                for (auto& [B, Hs] : CharacterHeads()) HeadsOf[B] = std::move(Hs);
+                for (const auto& I : Walk().Instances)
+                    if (OwnerIs(I, "xmodel"))
+                        if (const std::string N = AssetName(Kind::Model, I.Pos); !IsReference(Kind::Model, N, I.Pos) && Unwritable(Kind::Model, I.Pos) == nullptr)
+                            HeadAt.try_emplace(ExportNaming::Lower(N), I.Pos, N);
+            }
             for (const auto& I : Walk().Instances)
             {
                 if (!OwnerIs(I, "xmodel") || (At<uint32_t>(Img, I.Pos + CompositeFlags) & CompositeFlag) == 0) continue;
@@ -515,6 +532,30 @@ namespace
                 const int Code = ExportWriters::ExportComposite(ExportNaming::SafeFileName(Model), Parts, File.parent_path().string(), Tex, Read, Crash);
                 if (Code == static_cast<int>(ExportGameResult::Success)) Counter("models_composite_written")++, Counter("models_composite_parts_merged") += Read;
                 else T.Fail(Name(), Kind::Model, Model, "composite code " + std::to_string(Code) + (Crash.empty() ? "" : " " + Crash));
+                const auto Heads = HeadsOf.find(ExportNaming::Lower(Model));
+                if (Heads == HeadsOf.end()) continue;
+                for (const auto& Head : Heads->second)
+                {
+                    const auto H = HeadAt.find(Head);
+                    if (H == HeadAt.end())
+                    {
+                        Counter("models_with_heads_head_elsewhere")++;
+                        continue;
+                    }
+                    std::vector<CoDModel_t> With = Parts;
+                    With.emplace_back();
+                    With.back().AssetName = ExportNaming::SafeFileName(H->second.second);
+                    With.back().AssetPointer = Live().Addr((uint64_t)H->second.first);
+                    const std::string Joined = ExportNaming::SafeFileName(Model) + "+" + ExportNaming::SafeFileName(H->second.second);
+                    const fs::path Dir = fs::path(C.KindDir(Kind::Model)) / Joined;
+                    ExportWriters::MakeDirs(Dir.string());
+                    size_t Joins = 0;
+                    std::string Why;
+                    const int Done = ExportWriters::ExportComposite(Joined, With, Dir.string(), Tex, Joins, Why, true);
+                    if (Done == static_cast<int>(ExportGameResult::Success) && Joins == With.size()) Counter("models_with_heads_written")++;
+                    else T.Fail(Name(), Kind::Model, Joined, "body with head: code " + std::to_string(Done) + (Why.empty() ? "" : " " + Why));
+                    if (WithHeads != "all") break;
+                }
             }
             if (!TextureNames.empty()) ExportTextures(TextureNames, C, T);
         }
@@ -1043,6 +1084,12 @@ namespace
         }
 
         // the anims' weapons, trees and animclasses (IwZoneAnimOwners.h)
+        // the char_heads setting (its zones' CharacterHeads)
+        const std::vector<DiskGame::Setting>& Settings() const override
+        {
+            static const std::vector<DiskGame::Setting> Own{ DiskGame::CharacterHeads };
+            return Own;
+        }
         std::vector<std::string> AnimOwnerDocuments() const override { return IwZoneAnimOwners::Patterns(); }
         void AnimOwners(const DiskGame::ExportOptions& Options, const std::vector<AnimZone>& Zones, ::AnimOwners::Book& Out) const override
         {

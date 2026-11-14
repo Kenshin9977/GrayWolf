@@ -144,4 +144,16 @@ public:
     void PrepareBones(uint32_t BoneCount);
 
     void GenerateLocalPositions(bool Translations, bool Rotations);
+
+    // Part joined into this model (a composite's part, a head on its body, both bound in the same
+    // space): a bone of a name this model has is that bone (this model's transform kept), the others
+    // are appended under their parent; materials joined by name; Part's submeshes moved in with their
+    // weights and materials remapped. MaterialOf, when given, gets each of Part's materials' index
+    // here and NewMaterial whether it was appended. Rebind: Part is bound in its own space (a head
+    // whose root, j_spine4, is its origin): its vertices are first moved onto this model's bind pose by
+    // the bones they are weighted to (each by its bones' this-bind x part-bind^-1, the weights blending
+    // them, as a skin bound to this skeleton at rest draws it), its own bones by their nearest shared
+    // ancestor's. Returns how many bones were appended.
+    size_t Join(WraithModel& Part, std::vector<int32_t>* MaterialOf = nullptr, std::vector<bool>* NewMaterial = nullptr,
+                bool Rebind = false);
 };

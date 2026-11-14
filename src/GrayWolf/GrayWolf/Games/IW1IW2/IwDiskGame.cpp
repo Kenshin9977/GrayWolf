@@ -17,6 +17,7 @@
 #include "Games/IwClassic/IwClassicAnimOwners.h"
 #include "MapSceneExport.h"
 #include "MaterialDescription.h"
+#include "ModelImages.h"
 #include "ScriptExport.h"
 #include "SettingsManager.h"
 #include "WraithAnim.h"
@@ -438,6 +439,13 @@ namespace
                     // CoD2's converter names a packed image "~<rgb source>-rgb&<alpha source>-l...":
                     // a specular map's alpha is then its cosine power map, a gloss
                     if (I.Path.find("-rgb&") != std::string::npos) D.Roughness = { I.Path, 3, true };
+                    // a pre-PBR reflection colour (phong.hlsl: lightSpecular0 * spec.rgb * a lookup
+                    // of (spec.a, N.H)), as the later IW games' (LegacySpecularAdapter): read as F0 it
+                    // is a mirror. The gloss's power: a lookup texture the game builds; CoD4's
+                    // exp2(9.3775 g) assumed (not read off CoD2)
+                    D.LegacySpecular = true;
+                    D.SpecularScale = 0.2f;
+                    if (!D.Roughness.Empty()) D.GlossRange[0] = 0.0f, D.GlossRange[1] = 9.3775f;
                     break;
                 default: break;
                 }
@@ -1225,25 +1233,31 @@ namespace
 
         // One model: LOD 0 (every LOD with --lods, each its own file) written with its materials'
         // sidecar; its textures added to Textures.
-        bool ExportModel(const Asset& A, const std::string& Dir, std::map<std::string, std::string>& Textures, std::string& Error)
+        bool ExportModel(const Asset& A, const std::string& Dir, const std::string& Relative, std::map<std::string, std::string>& Textures,
+                         std::string& Error)
         {
             size_t Lods = 1;
-            if (!ExportLod(A, Dir, Textures, Error, 0, &Lods)) return false;
+            if (!ExportLod(A, Dir, Relative, Textures, Error, 0, &Lods)) return false;
             if (SettingsManager::GetSetting("exportalllods") == "true")
                 for (size_t L = 1; L < Lods; L++)
                 {
                     std::string Why;
-                    if (!ExportLod(A, Dir, Textures, Why, L, nullptr)) Counter("model_lods_unread")++;
+                    if (!ExportLod(A, Dir, Relative, Textures, Why, L, nullptr)) Counter("model_lods_unread")++;
                 }
             return true;
         }
-        bool ExportLod(const Asset& A, const std::string& Dir, std::map<std::string, std::string>& Textures, std::string& Error, size_t LodIndex,
-                       size_t* LodCount)
+        bool ExportLod(const Asset& A, const std::string& Dir, const std::string& Relative, std::map<std::string, std::string>& Textures,
+                       std::string& Error, size_t LodIndex, size_t* LodCount)
         {
             BuiltModel B;
             if (!BuildModel(A.Path, A.Name, B, Error, LodIndex, LodCount)) return false;
-            // a texture is named where the image writer puts it
-            const std::string Relative = "..\\\\..\\\\images\\\\";
+            return WriteBuilt(B, Dir, Relative, Textures, Error);
+        }
+        // A built model written with its materials' sidecar; its textures added to Textures
+        bool WriteBuilt(BuiltModel& B, const std::string& Dir, const std::string& Relative, std::map<std::string, std::string>& Textures,
+                        std::string& Error)
+        {
+            // a texture is named where the image writer puts it (Relative: ModelImages::Relative)
             const std::string Ext = ExportWriters::ImageExtension(ExportWriters::ImageFormatSetting());
             Materials::Sidecar Side;
             Adapter Describer;
@@ -1284,6 +1298,47 @@ namespace
                 return false;
             }
             return true;
+        }
+
+        // With char_heads on, each body exported here joined with its head(s) as the install's character
+        // scripts pair them (IwClassicAnimOwners::BodyHeads): models/<body>+<head>/, LOD 0
+        void ExportWithHeads(const std::vector<Asset>& Bodies, const Context& C, Totals& T, const std::string& Dir,
+                             std::map<std::string, std::string>& Textures)
+        {
+            std::vector<std::pair<std::string, std::string>> Docs;
+            for (const auto& [Path, A] : Files->Files())
+            {
+                std::vector<uint8_t> Bytes;
+                if ((Path.rfind("character/", 0) == 0 || Path.rfind("xmodelalias/", 0) == 0) && Extension(Path) == ".gsc" && Files->Read(Path, Bytes))
+                    Docs.emplace_back(Path, std::string(Bytes.begin(), Bytes.end()));
+            }
+            const bool Every = DiskGame::CharacterHeads.Of(C.Settings) == "all";
+            const auto Pairs = IwClassicAnimOwners::BodyHeads(Docs);
+            for (const auto& Body : Bodies)
+            {
+                const auto P = std::find_if(Pairs.begin(), Pairs.end(), [&](const auto& X) { return X.first == ExportNaming::Lower(Body.Name); });
+                if (P == Pairs.end()) continue;
+                for (const auto& Head : P->second)
+                {
+                    BuiltModel B, H;
+                    std::string Error;
+                    if (!BuildModel(Body.Path, Body.Name, B, Error) || !BuildModel("xmodel/" + Head, Head, H, Error))
+                    {
+                        Counter("models_with_heads_head_elsewhere")++;
+                        continue;
+                    }
+                    std::vector<bool> New;
+                    B.Model->Join(*H.Model, nullptr, &New, true);
+                    for (size_t M = 0; M < New.size() && M < H.Images.size(); M++)
+                        if (New[M]) B.Images.push_back(H.Images[M]);
+                    const std::string Joined = ExportNaming::SafeFileName(Body.Name) + "+" + ExportNaming::SafeFileName(Head);
+                    B.Model->AssetName = Joined + "_LOD0";
+                    if (B.Images.size() == B.Model->Materials.size() && WriteBuilt(B, (fs::path(Dir) / Joined).string(), ModelImages::Relative(C), Textures, Error))
+                        Counter("models_with_heads_written")++;
+                    else T.Fail(ZoneName, Kind::Model, Joined, "body with head: " + (Error.empty() ? std::string("materials") : Error));
+                    if (!Every) break;
+                }
+            }
         }
 
         // Every skeleton, surface and material file of the zone parsed to its end, whether a model's
@@ -1331,16 +1386,18 @@ namespace
             const std::string Dir = C.KindDir(Kind::Model);
             const std::string ImagesDir = C.KindDir(Kind::Image);
             std::map<std::string, std::string> Textures;   // install path -> image name
+            const std::string Relative = ModelImages::Relative(C);
             for (size_t N = 0; N < List.size(); N++)
             {
                 const auto& A = List[N];
                 if (!C.Advance(N, List.size(), A.Name)) return;
                 Kt.Seen++;
                 std::string Error;
-                if (ExportModel(A, (fs::path(Dir) / ExportNaming::SafeFileName(A.Name)).string(), Textures, Error)) Kt.Written++;
+                if (ExportModel(A, (fs::path(Dir) / ExportNaming::SafeFileName(A.Name)).string(), Relative, Textures, Error)) Kt.Written++;
                 else T.Fail(ZoneName, Kind::Model, A.Name, Error);
             }
             C.Advance(List.size(), List.size());
+            if (DiskGame::CharacterHeads.Of(C.Settings) != "off") ExportWithHeads(List, C, T, Dir, Textures);
             if (C.NameFilter.empty() && !C.Only) CheckModelFiles(T);
             for (const auto& U : Unresolved) T.Fail(ZoneName, Kind::Model, "", "material " + U);
             Unresolved.clear();
@@ -1721,7 +1778,7 @@ namespace
 
 const std::vector<DiskGame::Setting>& ArchiveGame::Settings() const
 {
-    static const std::vector<DiskGame::Setting> All = { Language };
+    static const std::vector<DiskGame::Setting> All = { Language, DiskGame::CharacterHeads };
     return All;
 }
 

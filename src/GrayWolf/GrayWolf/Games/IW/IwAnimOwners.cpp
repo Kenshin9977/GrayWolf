@@ -291,4 +291,12 @@ namespace IwAnimOwners
         }
         return Found.size() == 1 ? Found[0] : Text;
     }
+
+    CharacterHeads::Pairs BodyHeads(const Facts& F)
+    {
+        CharacterHeads::Pairs Out;
+        for (const auto& C : F.Characters)
+            if (C.Models.size() > 1) CharacterHeads::Add(Out, C.Models.front(), std::vector<std::string>(C.Models.begin() + 1, C.Models.end()));
+        return Out;
+    }
 }
