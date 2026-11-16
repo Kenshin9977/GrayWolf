@@ -11,6 +11,8 @@ struct XMEBone
     int32_t Parent = -1;
     float Offset[3] = {};
     float Scale[3] = { 1.0f, 1.0f, 1.0f };
+    // the X, Y and Z lines: the bone's axes in model space (identity when the file has none)
+    float Axes[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
 };
 
 // What could be read back out of an XMODEL_EXPORT file

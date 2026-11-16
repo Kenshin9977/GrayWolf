@@ -24,6 +24,10 @@
 #include "SeAnimReader.h"
 #include "CastReader.h"
 #include "XAnimBinReader.h"
+#include "XAnimBinExport.h"
+#include "XMEImport.h"
+#include <unordered_map>
+#include <cstring>
 #include "SkeletalPreview.h"
 #include "WraithAnim.h"
 #include "SEAnimExport.h"
@@ -475,6 +479,214 @@ int RunXAnimBinToSeAnimIn(const CliOptions& Options)
     if (Ok) Ok = BuildWraithAnimFromSeAnimClip(Clip, Anim);
     if (Ok) SEAnim::ExportSEAnim(Anim, Options.XAnimBinToSeAnimOut);
     CliReport(Options, std::format("result={} out={}\n", Ok ? "ok" : "error", Options.XAnimBinToSeAnimOut.c_str()));
+    return Ok ? 0 : 5;
+}
+
+
+// .xanim_bin / .xmodel_bin -> the same records encoded again (WriteXAnimBinRecords): the encoder's
+// check against export2bin's own files. Same payload: every record written back byte for byte.
+int RunXAnimBinRewrite(const CliOptions& Options)
+{
+    std::vector<XAnimBinRecord> Records;
+    bool Ok = ReadXAnimBinRecords(Options.XAnimBinRewriteIn, Records) &&
+              WriteXAnimBinRecords(Records, Options.XAnimBinRewriteOut);
+    std::string Report = std::format("result={} records={}\n", Ok ? "ok" : "error", Records.size());
+    if (Ok)
+    {
+        std::vector<uint8_t> A, B;
+        std::string Error;
+        const bool Read = CodXMBReader::ReadFile(Options.XAnimBinRewriteIn, A, Error) &&
+                          CodXMBReader::ReadFile(Options.XAnimBinRewriteOut, B, Error);
+        const auto Bytes = [](const std::string& P) {
+            std::ifstream In(P, std::ios::binary);
+            return std::vector<char>((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        };
+        const bool SamePayload = Read && A == B, SameFile = Bytes(Options.XAnimBinRewriteIn) == Bytes(Options.XAnimBinRewriteOut);
+        size_t FirstDiff = 0;
+        while (Read && FirstDiff < A.size() && FirstDiff < B.size() && A[FirstDiff] == B[FirstDiff]) FirstDiff++;
+        Report += std::format("payload_bytes={} rewritten_bytes={} payload_same={} file_same={}{}\n", A.size(), B.size(),
+                              SamePayload ? "yes" : "no", SameFile ? "yes" : "no",
+                              SamePayload ? "" : std::format(" first_diff={}", FirstDiff));
+        Ok = SamePayload;
+    }
+    CliReport(Options, Report);
+    return Ok ? 0 : 5;
+}
+
+
+// An XANIM_BIN against the anim it was written from (.cast or .seanim, written in inches: --unit
+// Inch): the bin's model-space parts turned back into keys local to their parents with the rig
+// (--xanim-rig), then each bone the anim keys compared at every frame (its keys interpolated as the
+// writer does), and the notetracks. Reads the bin through XAnimBinReader's records.
+int RunXAnimBinCompare(const CliOptions& Options)
+{
+    struct Q { double X = 0, Y = 0, Z = 0, W = 1; };
+    struct V { double X = 0, Y = 0, Z = 0; };
+    const auto Mul = [](const Q& A, const Q& B) {
+        return Q{ A.W * B.X + A.X * B.W + A.Y * B.Z - A.Z * B.Y, A.W * B.Y - A.X * B.Z + A.Y * B.W + A.Z * B.X,
+                  A.W * B.Z + A.X * B.Y - A.Y * B.X + A.Z * B.W, A.W * B.W - A.X * B.X - A.Y * B.Y - A.Z * B.Z };
+    };
+    const auto Conj = [](const Q& A) { return Q{ -A.X, -A.Y, -A.Z, A.W }; };
+    const auto Rot = [&](const Q& A, const V& P) { const Q R = Mul(Mul(A, { P.X, P.Y, P.Z, 0 }), Conj(A)); return V{ R.X, R.Y, R.Z }; };
+    const auto Norm = [](Q A) { const double L = std::sqrt(A.X * A.X + A.Y * A.Y + A.Z * A.Z + A.W * A.W); return Q{ A.X / L, A.Y / L, A.Z / L, A.W / L }; };
+    const auto Angle = [](const Q& A, const Q& B) {
+        const double D = std::min(1.0, std::fabs(A.X * B.X + A.Y * B.Y + A.Z * B.Z + A.W * B.W));
+        return 2.0 * std::acos(D) * 180.0 / 3.14159265358979323846;
+    };
+    const auto Slerp = [&](const Q& A, Q B, double T) {
+        double D = A.X * B.X + A.Y * B.Y + A.Z * B.Z + A.W * B.W;
+        if (D < 0) { B = { -B.X, -B.Y, -B.Z, -B.W }; D = -D; }
+        double Wa = 1 - T, Wb = T;
+        if (D < 0.9995) { const double Th = std::acos(D), S = std::sin(Th); Wa = std::sin((1 - T) * Th) / S; Wb = std::sin(T * Th) / S; }
+        return Norm({ A.X * Wa + B.X * Wb, A.Y * Wa + B.Y * Wb, A.Z * Wa + B.Z * Wb, A.W * Wa + B.W * Wb });
+    };
+    const auto Lower = [](std::string S) { for (auto& C : S) C = (char)tolower((unsigned char)C); return S; };
+
+    std::string Report, Error;
+    XAnimBinRig Rig;
+    std::vector<XAnimBinRecord> Records;
+    SeAnimClip Clip;
+    if (Options.XAnimRig.empty() || !ReadXAnimBinRig(Options.XAnimRig, Rig, Error))
+        Report = "result=error\nwhy=the rig (--xanim-rig) " + (Error.empty() ? std::string("is missing") : Error) + "\n";
+    else if (!ReadXAnimBinRecords(Options.XAnimBinCompareBin, Records))
+        Report = "result=error\nwhy=the bin is not a token stream\n";
+    else if (!ReadAnimClip(Options.XAnimBinCompareAnim, Clip))
+        Report = "result=error\nwhy=the anim could not be read\n";
+    if (!Report.empty()) { CliReport(Options, Report); return 5; }
+
+    // the bin: parts, then per frame per part its model-space pose
+    std::vector<std::string> Parts;
+    std::vector<std::vector<std::pair<V, Q>>> Frames;
+    std::vector<std::pair<uint32_t, std::string>> BinNotes;
+    uint32_t Rate = 0, Declared = 0;
+    size_t Part = 0;
+    double Axes[3][3] = {};
+    for (const auto& R : Records)
+    {
+        uint16_t U16 = 0; uint32_t U32 = 0; float F[3] = {};
+        if (R.Raw.size() >= 2) std::memcpy(&U16, R.Raw.data(), 2);
+        if (R.Raw.size() >= 4) std::memcpy(&U32, R.Raw.data(), 4);
+        if (R.Raw.size() >= 12) std::memcpy(F, R.Raw.data(), 12);
+        if (R.Keyword == "PART" && R.Type == XAnimBinValueType::UInt16String) Parts.push_back(R.Strings.empty() ? "" : R.Strings[0]);
+        else if (R.Keyword == "FRAMERATE") Rate = U16;
+        else if (R.Keyword == "NUMFRAMES") Declared = U32;
+        else if (R.Keyword == "FRAME" && R.Type == XAnimBinValueType::Raw32) Frames.emplace_back(Parts.size());
+        else if (R.Keyword == "FRAME" && R.Type == XAnimBinValueType::UInt32String) BinNotes.emplace_back(U32, R.Strings.empty() ? "" : R.Strings[0]);
+        else if (R.Keyword == "PART" && R.Type == XAnimBinValueType::UInt16) Part = U16;
+        else if (!Frames.empty() && Part < Parts.size())
+        {
+            if (R.Keyword == "OFFSET") Frames.back()[Part].first = { F[0], F[1], F[2] };
+            else if (R.Keyword == "X" || R.Keyword == "Y" || R.Keyword == "Z")
+            {
+                int16_t S[3]; std::memcpy(S, R.Raw.data(), 6);
+                for (int I = 0; I < 3; I++) Axes[R.Keyword[0] - 'X'][I] = S[I] / 32767.0;
+                if (R.Keyword == "Z")
+                {
+                    double Qd[4];
+                    XAnimBinAxesToQuat(Axes[0], Axes[1], Axes[2], Qd);
+                    Frames.back()[Part].second = { Qd[0], Qd[1], Qd[2], Qd[3] };
+                }
+            }
+        }
+    }
+
+    // the rig's parents and bind (local), by part
+    std::unordered_map<std::string, size_t> RigIx, PartIx;
+    for (size_t I = 0; I < Rig.Bones.size(); I++) RigIx[Lower(Rig.Bones[I].Name)] = I;
+    for (size_t I = 0; I < Parts.size(); I++) PartIx[Lower(Parts[I])] = I;
+    const auto WorldBind = [&](size_t I) {
+        const auto& B = Rig.Bones[I];
+        return std::pair<V, Q>{ { B.Position[0], B.Position[1], B.Position[2] }, Norm({ B.Rotation[0], B.Rotation[1], B.Rotation[2], B.Rotation[3] }) };
+    };
+
+    double WorstRot = 0, WorstPos = 0;
+    std::string WorstRotBone, WorstPosBone;
+    size_t Compared = 0, Missing = 0, RotSamples = 0, PosSamples = 0;
+    std::string NotInRig;   // the anim's bones the rig lacks: left out by the writer, said so
+    for (const auto& Track : Clip.Bones)
+    {
+        const auto RigIt = RigIx.find(Lower(Track.Name));
+        const auto PartIt = PartIx.find(Lower(Track.Name));
+        if (RigIt == RigIx.end()) { NotInRig += (NotInRig.empty() ? "" : ",") + Track.Name; continue; }
+        if (PartIt == PartIx.end()) { Missing++; continue; }
+        Compared++;
+        const int32_t Parent = Rig.Bones[RigIt->second].Parent;
+        // a parent that is no part: a root the anim does not key, the poses' frame (at the origin)
+        const auto ParentIt = Parent < 0 ? PartIx.end() : PartIx.find(Lower(Rig.Bones[(size_t)Parent].Name));
+        const size_t ParentPart = ParentIt == PartIx.end() ? SIZE_MAX : ParentIt->second;
+        const auto Type = Track.HasTypeOverride ? Track.TypeOverride : Clip.Type;
+        const bool Additive = Type == SeAnimBoneType::Additive;
+        // a translation key: an offset from the bind but an absolute anim's non-root bone's (SkeletalPreview.cpp)
+        const bool OffsetsBind = Type != SeAnimBoneType::Absolute || Parent < 0;
+        // the bind local to the parent (an additive key's base)
+        auto [BindPos, BindRot] = WorldBind(RigIt->second);
+        if (Parent >= 0)
+        {
+            const auto [PPos, PRot] = WorldBind((size_t)Parent);
+            BindRot = Norm(Mul(Conj(PRot), BindRot));
+            BindPos = Rot(Conj(PRot), { BindPos.X - PPos.X, BindPos.Y - PPos.Y, BindPos.Z - PPos.Z });
+        }
+        for (uint32_t Fr = 0; Fr < Frames.size(); Fr++)
+        {
+            const auto& [WPos, WRot] = Frames[Fr][PartIt->second];
+            Q LRot = WRot; V LPos = WPos;
+            if (ParentPart != SIZE_MAX)
+            {
+                const auto& [PPos, PRot] = Frames[Fr][ParentPart];
+                LRot = Norm(Mul(Conj(PRot), WRot));
+                LPos = Rot(Conj(PRot), { WPos.X - PPos.X, WPos.Y - PPos.Y, WPos.Z - PPos.Z });
+            }
+            if (!Track.RotKeys.empty())
+            {
+                const auto& K = Track.RotKeys;
+                auto It = std::lower_bound(K.begin(), K.end(), Fr, [](const SeAnimKeyQuat& A, uint32_t F) { return A.Frame < F; });
+                const auto ToQ = [&](const SeAnimQuat& A) { return Norm({ A.x, A.y, A.z, A.w }); };
+                Q Key = It == K.end() ? ToQ(K.back().Value) : ToQ(It->Value);
+                if (It != K.end() && It != K.begin() && It->Frame != Fr)
+                    Key = Slerp(ToQ((It - 1)->Value), ToQ(It->Value), double(Fr - (It - 1)->Frame) / double(It->Frame - (It - 1)->Frame));
+                if (Additive) Key = Norm(Mul(BindRot, Key));
+                const double E = Angle(Key, LRot);
+                RotSamples++;
+                if (E > WorstRot) { WorstRot = E; WorstRotBone = Track.Name + std::format("@{}", Fr); }
+            }
+            if (!Track.PosKeys.empty())
+            {
+                const auto& K = Track.PosKeys;
+                auto It = std::lower_bound(K.begin(), K.end(), Fr, [](const SeAnimKeyVec3& A, uint32_t F) { return A.Frame < F; });
+                const auto ToV = [](const SeAnimVec3& A) { return V{ A.x, A.y, A.z }; };
+                V Key = It == K.end() ? ToV(K.back().Value) : ToV(It->Value);
+                if (It != K.end() && It != K.begin() && It->Frame != Fr)
+                {
+                    const V A = ToV((It - 1)->Value), B = ToV(It->Value);
+                    const double T = double(Fr - (It - 1)->Frame) / double(It->Frame - (It - 1)->Frame);
+                    Key = { A.X + (B.X - A.X) * T, A.Y + (B.Y - A.Y) * T, A.Z + (B.Z - A.Z) * T };
+                }
+                if (OffsetsBind) Key = { BindPos.X + Key.X, BindPos.Y + Key.Y, BindPos.Z + Key.Z };
+                const double E = std::sqrt((Key.X - LPos.X) * (Key.X - LPos.X) + (Key.Y - LPos.Y) * (Key.Y - LPos.Y) + (Key.Z - LPos.Z) * (Key.Z - LPos.Z));
+                PosSamples++;
+                if (E > WorstPos) { WorstPos = E; WorstPosBone = Track.Name + std::format("@{}", Fr); }
+            }
+        }
+    }
+
+    // notetracks: the anim's ("end" aside) against the bin's
+    std::vector<std::pair<uint32_t, std::string>> AnimNotes;
+    for (const auto& [Name, Keys] : Clip.Notifications)
+        if (Name != "end" && Name != "loop_end")
+            for (const auto F : Keys) AnimNotes.emplace_back(F, Name);
+    std::sort(AnimNotes.begin(), AnimNotes.end());
+    std::sort(BinNotes.begin(), BinNotes.end());
+
+    const bool FramesOk = Frames.size() == Declared && Declared >= Clip.FrameCount;
+    const bool Ok = FramesOk && Missing == 0 && AnimNotes == BinNotes && WorstRot < 0.05 && WorstPos < 0.05;
+    static const char* const TypeNames[] = { "absolute", "additive", "relative", "delta" };
+    Report = std::format("result={}\nanim_type={}\nparts={} frames={} declared={} anim_frames={} framerate={} anim_framerate={:.2f}\n"
+                         "bones_compared={} bones_missing={} not_in_rig={} rot_samples={} pos_samples={}\n"
+                         "max_rot_deg={:.5f} at={}\nmax_pos={:.5f} at={}\nnotes_bin={} notes_anim={} notes_same={}\n",
+                         Ok ? "ok" : "differs", TypeNames[(size_t)Clip.Type & 3], Parts.size(), Frames.size(), Declared, Clip.FrameCount, Rate, Clip.FrameRate,
+                         Compared, Missing, NotInRig.empty() ? "-" : NotInRig, RotSamples, PosSamples, WorstRot, WorstRotBone, WorstPos, WorstPosBone,
+                         BinNotes.size(), AnimNotes.size(), AnimNotes == BinNotes ? "yes" : "no");
+    CliReport(Options, Report);
     return Ok ? 0 : 5;
 }
 
@@ -950,6 +1162,18 @@ void AddModelPreviewCommands(CliCommandBuilders& B)
         auto* Sub = App.add_subcommand("xanimbin-to-seanim", "Convert one .xanim_bin to .seanim");
         Sub->add_option("infile", Options.XAnimBinToSeAnimIn, ".xanim_bin input")->required()->check(CLI::ExistingFile);
         Sub->add_option("outfile", Options.XAnimBinToSeAnimOut, ".seanim output")->required();
+    };
+    B["xanimbin-rewrite"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-rewrite",
+            "Read a .xanim_bin / .xmodel_bin's records and encode them again (the XANIM_BIN writer's encoder), compare the payloads");
+        Sub->add_option("infile", Options.XAnimBinRewriteIn, ".xanim_bin or .xmodel_bin input")->required()->check(CLI::ExistingFile);
+        Sub->add_option("outfile", Options.XAnimBinRewriteOut, "where the records are written again")->required();
+    };
+    B["xanimbin-compare"] = [](CLI::App& App, CliOptions& Options) {
+        auto* Sub = App.add_subcommand("xanimbin-compare",
+            "Compare an XANIM_BIN with the .cast / .seanim it was written from (in inches), through --xanim-rig");
+        Sub->add_option("bin", Options.XAnimBinCompareBin, ".xanim_bin")->required()->check(CLI::ExistingFile);
+        Sub->add_option("anim", Options.XAnimBinCompareAnim, ".cast or .seanim, exported with --unit Inch")->required()->check(CLI::ExistingFile);
     };
     B["xanimbin-export-dir"] = [](CLI::App& App, CliOptions& Options) {
         auto* Sub = App.add_subcommand("xanimbin-export-dir",

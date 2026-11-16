@@ -208,6 +208,65 @@ CoDPackageCache::PackageObjectFinish XPAKCache::ReadPackageObject(uint64_t Cache
     };
 }
 
+std::vector<std::pair<std::string, XPAKCache::NamedObject>> XPAKCache::ReadNamed(uint32_t P)
+{
+    std::vector<std::pair<std::string, NamedObject>> Out;
+    if (FileSystem == nullptr || P >= (uint32_t)PackageFilePaths.size())
+        return Out;
+    // the index: records of { key u64, length u64, text }, the text "field: value" lines
+    CoDFileHandle Reader(FileSystem->OpenFile(PackageFilePaths[P], "r"), FileSystem.get());
+    if (!Reader.IsValid())
+        return Out;
+    const auto Header = Reader.Read<BO3XPakHeader>();
+    if (Header.Magic != 0x4950414b || Header.Version == 0xD || Header.IndexSize == 0 ||
+        Header.IndexOffset + Header.IndexSize > (uint64_t)Reader.Size() || Header.IndexSize > (1ull << 30))
+        return Out;
+    Reader.Seek(Header.IndexOffset, SEEK_SET);
+    std::vector<uint8_t> Raw((size_t)Header.IndexSize);
+    Reader.Read(Raw.data(), Raw.size());
+    for (size_t At = 0; At + 16 <= Raw.size();)
+    {
+        uint64_t Key = 0, Length = 0;
+        std::memcpy(&Key, Raw.data() + At, 8);
+        std::memcpy(&Length, Raw.data() + At + 8, 8);
+        if (Length > Raw.size() - At - 16)
+            break;
+        const std::string Text((const char*)Raw.data() + At + 16, (size_t)Length);
+        At += 16 + (size_t)Length;
+        NamedObject Object;
+        Object.Key = Key;
+        // an object shared by identical assets has a "name" line for each
+        std::vector<std::string> ObjectNames;
+        size_t Line = 0;
+        while (Line < Text.size())
+        {
+            size_t End = Text.find('\n', Line);
+            if (End == std::string::npos) End = Text.size();
+            const std::string L = Text.substr(Line, End - Line);
+            Line = End + 1;
+            const size_t Colon = L.find(": ");
+            if (Colon == std::string::npos) continue;
+            const std::string Field = L.substr(0, Colon), Value = L.substr(Colon + 2);
+            const auto Number = [&] { return (uint32_t)std::strtoul(Value.c_str(), nullptr, 10); };
+            if (Field == "name") ObjectNames.push_back(ExportNaming::Lower(Value));
+            else if (Field == "type") Object.Type = Value;
+            else if (Field == "format") Object.Format = Value;
+            else if (Field == "semantic") Object.Semantic = Value;
+            else if (Field == "width") Object.Width = Number();
+            else if (Field == "height") Object.Height = Number();
+            else if (Field == "levels") Object.Levels = Number();
+            else if (Field == "size0") Object.Size = std::strtoull(Value.c_str(), nullptr, 10);
+            else if (Field.rfind("size", 0) == 0) Object.Parts++;
+        }
+        if (Object.Size != 0) Object.Parts++;
+        if (!Exists(Key))
+            continue;
+        for (auto& ObjectName : ObjectNames)
+            if (!ObjectName.empty()) Out.emplace_back(std::move(ObjectName), Object);
+    }
+    return Out;
+}
+
 bool XPAKCache::FindNamed(const std::string& Name, const std::string& Stem, NamedObject& Out)
 {
     const std::string Want = ExportNaming::Lower(Name), Prefix = ExportNaming::Lower(Stem);
@@ -221,50 +280,9 @@ bool XPAKCache::FindNamed(const std::string& Name, const std::string& Stem, Name
         if (It == Named.end())
         {
             It = Named.emplace(P, std::unordered_map<std::string, NamedObject>()).first;
-            if (FileSystem == nullptr)
-                continue;
-            // the index: records of { key u64, length u64, text }, the text "field: value" lines
-            CoDFileHandle Reader(FileSystem->OpenFile(PackageFilePaths[P], "r"), FileSystem.get());
-            if (!Reader.IsValid())
-                continue;
-            const auto Header = Reader.Read<BO3XPakHeader>();
-            if (Header.Magic != 0x4950414b || Header.Version == 0xD || Header.IndexSize == 0 ||
-                Header.IndexOffset + Header.IndexSize > (uint64_t)Reader.Size() || Header.IndexSize > (1ull << 30))
-                continue;
-            Reader.Seek(Header.IndexOffset, SEEK_SET);
-            std::vector<uint8_t> Raw((size_t)Header.IndexSize);
-            Reader.Read(Raw.data(), Raw.size());
-            for (size_t At = 0; At + 16 <= Raw.size();)
-            {
-                uint64_t Key = 0, Length = 0;
-                std::memcpy(&Key, Raw.data() + At, 8);
-                std::memcpy(&Length, Raw.data() + At + 8, 8);
-                if (Length > Raw.size() - At - 16)
-                    break;
-                const std::string Text((const char*)Raw.data() + At + 16, (size_t)Length);
-                At += 16 + (size_t)Length;
-                NamedObject Object;
-                Object.Key = Key;
-                std::string ObjectName;
-                size_t Line = 0;
-                while (Line < Text.size())
-                {
-                    size_t End = Text.find('\n', Line);
-                    if (End == std::string::npos) End = Text.size();
-                    const std::string L = Text.substr(Line, End - Line);
-                    Line = End + 1;
-                    const size_t Colon = L.find(": ");
-                    if (Colon == std::string::npos) continue;
-                    const std::string Field = L.substr(0, Colon), Value = L.substr(Colon + 2);
-                    if (Field == "name") ObjectName = ExportNaming::Lower(Value);
-                    else if (Field == "type") Object.Type = Value;
-                    else if (Field == "size0") Object.Size = std::strtoull(Value.c_str(), nullptr, 10);
-                    else if (Field.rfind("size", 0) == 0) Object.Parts++;
-                }
-                if (Object.Size != 0) Object.Parts++;
-                if (!ObjectName.empty() && Exists(Key))
-                    It->second.emplace(ObjectName, Object);
-            }
+            // a name's first record
+            for (auto& [ObjectName, Object] : ReadNamed(P))
+                It->second.emplace(std::move(ObjectName), std::move(Object));
         }
         const auto Found = It->second.find(Want);
         if (Found != It->second.end())
@@ -274,6 +292,18 @@ bool XPAKCache::FindNamed(const std::string& Name, const std::string& Stem, Name
         }
     }
     return false;
+}
+
+std::vector<std::pair<std::string, XPAKCache::NamedObject>> XPAKCache::NamedObjects(const std::string& Package)
+{
+    const std::filesystem::path Want(Package);
+    for (uint32_t P = 0; P < (uint32_t)PackageFilePaths.size(); P++)
+    {
+        std::error_code Ec;
+        if (std::filesystem::equivalent(std::filesystem::path(PackageFilePaths[P]), Want, Ec))
+            return ReadNamed(P);
+    }
+    return {};
 }
 
 std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, uint8_t* buffer, size_t bufferSize, size_t decompressedSize, size_t& resultSize, bool paddedBlocks)

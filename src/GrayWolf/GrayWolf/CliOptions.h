@@ -66,7 +66,8 @@ struct CliOptions
     std::string RenderGlbPng; // --render-glb-png <in.glb>: headless PNG render, --out sets the path
     std::string AudioFormat; // "opus" (default), "wav" or "flac" (setting exportsnd, ExportWriters::WriteSound)
     std::string ModelFormat; // --model-format: cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, comma list
-    std::string AnimFormat;  // --anim-format: cast|seanim|xanim_export|none, comma list
+    std::string AnimFormat;  // --anim-format: cast|seanim|xanim_export|xanim_bin|none, comma list
+    std::string XAnimRig;    // --xanim-rig: the model (.xmodel_bin, .xmodel_export) XANIM_BIN anims are posed on (setting xanim_bin_rig)
     std::string ImageFormat; // --image-format: png|tga|dds (sets exportimg)
     bool KeepImages = false; // --keep-images: an image file already there is neither written nor pulled again
     std::string UiRes;       // --ui-res: 4k|1080|all, which BO4 UI resolution zones to read (4k)
@@ -82,6 +83,8 @@ struct CliOptions
     std::string MapContent;  // --map-content: all|terrain, the map's terrain alone (all)
     std::string MapCollision;// --map-collision: on|off, the map's collision also as <map>_collision.json (off)
     std::string MapSurfaces; // --map-surfaces: models|patches, the Radiant source's drawn world (models)
+    std::string MapProps;    // --map-props: all|no_foliage|large, the Radiant source's placements (all)
+    std::string MapFit;      // --map-fit: fit|strict|off, a mod tools level fitted to BO3's tools' limits (fit)
     std::string Bo3Usermap;  // --bo3-usermap: off|create|build, a ZM usermap around the map in the Mod Tools tree (off)
     std::string Decompile;   // --decompile[=on|off]: compiled scripts also decompiled (off)
     std::string WithHeads;   // --with-heads[=first|all|off]: also each character's body with its head joined (off)
@@ -116,6 +119,8 @@ struct CliOptions
     std::string XAnimBinSelfTest; // --xanimbin-selftest <file>: assemble Layer 2, report bone/frame/notify counts
     std::string XAnimBinToSeAnimIn;  // --xanimbin-to-seanim <in.xanim_bin> <out.seanim>
     std::string XAnimBinToSeAnimOut;
+    std::string XAnimBinRewriteIn, XAnimBinRewriteOut;    // xanimbin-rewrite <in> <out>: the records encoded again
+    std::string XAnimBinCompareBin, XAnimBinCompareAnim;  // xanimbin-compare <bin> <anim> (--xanim-rig)
     std::string XAnimBinExportDirIn;  // --xanimbin-export-dir <xanim_export dir> <out dir>: bulk
     std::string XAnimBinExportDirOut; // .xanim_bin -> .seanim, mirroring the source tree, so the
                                        // result is browsable with the existing --ui <dir>
@@ -158,6 +163,7 @@ struct CliOptions
     bool OpenMapReimport = false;  // open-map --reimport: run the import script again, even with a .blend
     bool OpenMapBackground = false;// open-map --background: import and save the .blend without a window
     std::string OpenMapProps;      // open-map --props fast|objects: the map's props on import (implies --reimport)
+    std::string MapLimits;         // map-limits <file.map>: cod2map's plane slots and bevels of a Radiant .map
     std::string NameFilter;      // --name-filter a,b,c: case-insensitive substrings, match any
     std::string Assets;          // disk-export --assets kind:name,...: only these assets (Context::Only)
     bool UpdateNameDb = false;   // --update-name-db: fetch echo000/cod-name-db's CSVs into package_index\*.wni

@@ -128,6 +128,8 @@
     <ClInclude Include="WraithX.h" />
     <ClInclude Include="XAnimRawExport.h" />
     <ClInclude Include="XMBExport.h" />
+    <ClInclude Include="XBin.h" />
+    <ClInclude Include="XAnimBinExport.h" />
     <ClInclude Include="XMEExport.h" />
     <ClInclude Include="XNALaraExport.h" />
   </ItemGroup>
@@ -174,6 +176,8 @@
     <ClCompile Include="WraithX.cpp" />
     <ClCompile Include="XAnimRawExport.cpp" />
     <ClCompile Include="XMBExport.cpp" />
+    <ClCompile Include="XBin.cpp" />
+    <ClCompile Include="XAnimBinExport.cpp" />
     <ClCompile Include="XMEExport.cpp" />
     <ClCompile Include="XNALaraExport.cpp" />
   </ItemGroup>

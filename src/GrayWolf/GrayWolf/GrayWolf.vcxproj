@@ -239,6 +239,7 @@
     <ClCompile Include="RadiantTarget.cpp" />
     <ClCompile Include="MapRadiantBound.cpp" />
     <ClCompile Include="MapRadiantLayers.cpp" />
+    <ClCompile Include="MapRadiantPlanes.cpp" />
     <ClCompile Include="MapRadiantTextures.cpp" />
     <ClCompile Include="SoundAliasCsv.cpp" />
     <ClCompile Include="MapCollisionWriter.cpp" />
@@ -388,6 +389,7 @@
     <ClInclude Include="AlphaRule.h" />
     <ClInclude Include="MapRadiantBound.h" />
     <ClInclude Include="MapRadiantLayers.h" />
+    <ClInclude Include="MapRadiantPlanes.h" />
     <ClInclude Include="MapRadiantTextures.h" />
     <ClInclude Include="MapRadiantGeometry.h" />
     <ClInclude Include="SoundAliasCsv.h" />

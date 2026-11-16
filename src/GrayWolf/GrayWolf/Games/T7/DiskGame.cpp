@@ -46,6 +46,27 @@ namespace
     // GfxImage: the name pointer at 0xf8 (formats: Bo3ZoneImages.cpp)
     constexpr int64_t ImageNameAt = 0xf8;
 
+    // A string table's string hash (StringTable cells, StructuredTable cells and headers): djb2 of
+    // the lower-case string, h = h * 33 + c from 5381
+    uint32_t TableHash(const std::string& S)
+    {
+        uint32_t H = 5381;
+        for (const char Ch : S) H = H * 33 + (uint8_t)std::tolower((unsigned char)Ch);
+        return H;
+    }
+
+    // Why Bo3WriteZoneImages left images out, in its report's words (no_payload, no_dds, no_write)
+    std::string NotWrittenWhy(const std::string& Report)
+    {
+        std::string Why;
+        for (const char* Key : { "no_payload=", "no_dds=", "no_write=" })
+        {
+            const size_t At = Report.find(Key);
+            if (At != std::string::npos) Why += " " + Report.substr(At, Report.find('\n', At) - At);
+        }
+        return Why;
+    }
+
     // The packages beside a zone, loaded once per folder for the run: a BO3 zone folder holds
     // dozens of .xpak files and indexing them is the slow part. A Game Pass copy splits the zone
     // folder across its packages (the MP maps' DLC holds no base.xpak): the same folder in the
@@ -140,8 +161,7 @@ namespace
         void LocalizeEntry(int64_t Pos, std::string& Key, std::string& Value) const override
         {
             Key = Text(Pos + 8);
-            const int64_t P = Key.empty() ? -1 : Landed(Pos);
-            Value = P < 0 ? std::string() : ZoneStr(P);
+            Value = Key.empty() ? std::string() : Shared(Pos);
         }
 
         // its characters' bodies and heads (Bo3AnimOwners::BodyHeads)
@@ -254,6 +274,14 @@ namespace
             const int64_t P = Landed(Pos);
             return P < 0 ? std::string() : ZoneStr(P);
         }
+        // A string field read wherever the relocation landed it: inline, or a back reference to the
+        // same text earlier in the zone (the linker shares one string between fields: a localize
+        // entry's text, a string table's cells). Empty when it resolves nowhere in this zone.
+        std::string Shared(int64_t Pos) const
+        {
+            const int64_t P = Landed(Pos);
+            return P < 0 ? std::string() : ZoneStr(P);
+        }
         // Whether this XModel's own LOD0 surfaces resolve inside this zone at all (inline or a
         // same-zone back reference) - live-reader-equivalent, unlike Text()'s exact-inline gate.
         bool HasLocalMesh(int64_t ModelPos) const
@@ -288,16 +316,7 @@ namespace
         if (const size_t At = Report.find("normals_expanded="); At != std::string::npos)
             if (const size_t N = std::strtoull(Report.c_str() + At + 17, nullptr, 10)) Counter("images_normal_expanded") += N;
         if (Written < Images.size() && !C.Cancelled())
-        {
-            // why, in the writer's words (no_payload, no_dds, no_write)
-            std::string Why;
-            for (const char* Key : { "no_payload=", "no_dds=", "no_write=" })
-            {
-                const size_t At = Report.find(Key);
-                if (At != std::string::npos) Why += " " + Report.substr(At, Report.find('\n', At) - At);
-            }
-            T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(Images.size() - Written) + " not written:" + Why);
-        }
+            T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(Images.size() - Written) + " not written:" + NotWrittenWhy(Report));
     }
 
     void T7Zone::Described(std::vector<Bo3ZoneImage>& Images, size_t& WithoutPixels,
@@ -540,12 +559,15 @@ namespace
         Counter("material_textures_with_png") += TexturesWithPng;
     }
 
-    // StringTable (48): Columns x Rows grid of deferred cell strings, no real column names.
+    // StringTable (48): Columns x Rows grid of cells, no real column names. A cell (16 bytes) is the
+    // string's pointer, then the djb2 hash of the lower-case string (h = h * 33 + c from 5381): a
+    // string the zone already holds (another cell, another table's) is a back reference to it, read
+    // where it landed (Shared), and the hash checks each cell read.
     void T7Zone::ExportStringTables(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Data];
         const std::string Dir = C.KindDir(DiskGame::Kind::Data);
-        size_t CellsTotal = 0;
+        size_t CellsTotal = 0, HashMismatch = 0;
 
         for (const auto& I : Walk().Instances)
         {
@@ -567,7 +589,11 @@ namespace
                 {
                     Cap.Cells.resize((size_t)Cells);
                     for (uint64_t Ci = 0; Ci < Cells; Ci++)
-                        Cap.Cells[(size_t)Ci] = Text(Arr + (int64_t)Ci * 16);
+                    {
+                        const int64_t Cell = Arr + (int64_t)Ci * 16;
+                        Cap.Cells[(size_t)Ci] = Shared(Cell);
+                        if (TableHash(Cap.Cells[(size_t)Ci]) != At<uint32_t>(Zone(), Cell + 8)) HashMismatch++;
+                    }
                 }
             }
             CellsTotal += Cap.Cells.size();
@@ -575,14 +601,18 @@ namespace
             else T.Fail(Name(), DiskGame::Kind::Data, Nm, "write failed");
         }
         Counter("stringtable_cells_total") += CellsTotal;
+        Counter("stringtable_cells_hash_mismatch") += HashMismatch;
     }
 
-    // StructuredTable (49): a real header row plus row/column cells (Type/Text/Number per cell).
+    // StructuredTable (49): a real header row plus row/column cells (Type/Text/Number per cell). A
+    // cell (24 bytes) is its type, its string's pointer at 8, its number at 0x10 and the string's
+    // hash at 0x14; a header (16 bytes) the pointer and the hash at 8. Strings are read as a string
+    // table's (Shared, back references included) and checked by the same hash.
     void T7Zone::ExportStructuredTables(const DiskGame::Context& C, DiskGame::Totals& T)
     {
         auto& Kt = T.Kinds[DiskGame::Kind::Data];
         const std::string Dir = C.KindDir(DiskGame::Kind::Data);
-        size_t CellsTotal = 0;
+        size_t CellsTotal = 0, HashMismatch = 0;
 
         for (const auto& I : Walk().Instances)
         {
@@ -609,7 +639,8 @@ namespace
                         auto& Cell = Cap.Cells[(size_t)Ci];
                         Cell.Type = (int32_t)At<uint32_t>(Zone(), EntryPos);
                         Cell.Number = (int32_t)At<uint32_t>(Zone(), EntryPos + 0x10);
-                        Cell.Text = Text(EntryPos + 8);
+                        Cell.Text = Shared(EntryPos + 8);
+                        if (!Cell.Text.empty() && TableHash(Cell.Text) != At<uint32_t>(Zone(), EntryPos + 0x14)) HashMismatch++;
                     }
                 }
             }
@@ -620,7 +651,11 @@ namespace
                 {
                     Cap.Headers.resize((size_t)Cap.ColumnCount);
                     for (int32_t Hi = 0; Hi < Cap.ColumnCount; Hi++)
-                        Cap.Headers[(size_t)Hi] = Text(Arr + (int64_t)Hi * 16);
+                    {
+                        const int64_t Head = Arr + (int64_t)Hi * 16;
+                        Cap.Headers[(size_t)Hi] = Shared(Head);
+                        if (TableHash(Cap.Headers[(size_t)Hi]) != At<uint32_t>(Zone(), Head + 8)) HashMismatch++;
+                    }
                 }
             }
             CellsTotal += Cap.Cells.size();
@@ -628,6 +663,7 @@ namespace
             else T.Fail(Name(), DiskGame::Kind::Data, Nm, "write failed");
         }
         Counter("structuredtable_cells_total") += CellsTotal;
+        Counter("structuredtable_strings_hash_mismatch") += HashMismatch;
     }
 
     void T7Zone::ReadDdlStructs(int64_t Arr, uint32_t Count, std::vector<Bo3DdlStructDefCapture>& Out) const
@@ -943,6 +979,63 @@ namespace
         return true;
     }
 
+    // A package (.xpak) given as the zone: the images its own index names, their data in it or in
+    // another package of its folder (Bo3DescribePackageImages; most packages are an index only, the
+    // data in initial.xpak, mp_initial.xpak...). What a zone does not hold: a 2D interface image
+    // only Lua and the string tables name (t7_callingcard_zm_samantha_house, base_patch_tu15.xpak).
+    class T7PackageZone final : public DiskGame::IDiskZone
+    {
+    public:
+        explicit T7PackageZone(const std::string& Path) : File(Path), ZoneName(fs::path(Path).filename().string())
+        {
+            // a package holds images only: nothing of the game's other kinds is in it
+            for (const DiskGame::Kind K : DiskGame::AllKinds())
+                Exports(K, [](const DiskGame::Context&, DiskGame::Totals&) {});
+            Exports(DiskGame::Kind::Image, [this](const DiskGame::Context& C, DiskGame::Totals& T) { ExportImages(C, T); });
+        }
+        void Open()
+        {
+            Packages = PackagesFor(File);
+            Images = Bo3DescribePackageImages(*Packages, File, Unread);
+        }
+        const std::string& Name() const override { return ZoneName; }
+        bool WalkedToEnd() const override { return true; }
+        void Defines(std::vector<DiskGame::AssetId>& Out) const override
+        {
+            for (const auto& I : Images) Out.push_back({ DiskGame::Kind::Image, I.Name });
+        }
+        void Weighs(std::vector<std::pair<DiskGame::AssetId, DiskGame::Weight>>& Out) const override
+        {
+            for (const auto& I : Images)
+                Out.push_back({ { DiskGame::Kind::Image, I.Name }, DiskGame::Sizes::ImageWeight(I.Width, I.Height, I.Format, I.Levels, 1) });
+        }
+
+    private:
+        void ExportImages(const DiskGame::Context& C, DiskGame::Totals& T)
+        {
+            auto& Kt = T.Kinds[DiskGame::Kind::Image];
+            std::vector<Bo3ZoneImage> Wanted;
+            for (const auto& I : Images)
+                if (C.Wants(DiskGame::Kind::Image, I.Name)) Wanted.push_back(I);
+            T.Counters["package_images_named"] += Images.size();
+            T.Counters["package_images_unread"] += Unread;
+            Kt.Seen += Wanted.size();
+            std::string Report;
+            const size_t Written = Bo3WriteZoneImages(ByteView(), Wanted, *Packages, C.KindDir(DiskGame::Kind::Image), "", Report,
+                                                      [&](size_t Done, size_t Count) {
+                                                          return Done < Wanted.size() ? C.Advance(Done, Count, Wanted[Done].Name) : C.Advance(Done, Count);
+                                                      });
+            Kt.Written += Written;
+            if (Written < Wanted.size() && !C.Cancelled())
+                T.Fail(Name(), DiskGame::Kind::Image, "", std::to_string(Wanted.size() - Written) + " not written:" + NotWrittenWhy(Report));
+        }
+
+        std::string File, ZoneName;
+        std::shared_ptr<XPAKCache> Packages;   // its folder's (PackagesFor)
+        std::vector<Bo3ZoneImage> Images;
+        size_t Unread = 0;
+    };
+
     class T7Game final : public DiskGame::IDiskGame
     {
     public:
@@ -1039,6 +1132,12 @@ namespace
         std::unique_ptr<DiskGame::IDiskZone> Open(const std::string& Path, const DiskGame::ExportOptions& Options,
                                                   std::string& Error) const override
         {
+            if (ExportNaming::Lower(fs::path(Path).extension().string()) == ".xpak")
+            {
+                auto Package = std::make_unique<T7PackageZone>(Path);
+                Package->Open();
+                return Package;
+            }
             auto Zone = std::make_unique<T7Zone>(Path, Options.AudioFormat, Options.ActsExe);
             if (!Options.Profile.empty()) Zone->SetProfile(Options.Profile);
             Zone->Options = Options;

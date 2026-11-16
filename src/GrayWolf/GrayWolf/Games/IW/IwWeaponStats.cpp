@@ -74,18 +74,46 @@ namespace
     };
 
     // the stats of a weapon with attachments (slot, index) chosen
+    // an attachment of the alternate mode slot that is an alternate mode (not a normal attachment)
+    bool IsAltMode(const IwWeaponStats::Layout& L, int Slot, const Map& A)
+    {
+        return L.AltSlot >= 0 && Slot == L.AltSlot && A.contains("alt_normal") && A["alt_normal"].get<int>() == 0;
+    }
+
+    // the stats of a weapon with attachments (slot, index) chosen; AltActive: with the alternate
+    // mode (the alternate slot's attachment) active
     std::vector<std::string> LoadoutStats(const IwWeaponStats::Layout& L, const Weapon& Wp, const Map& Pkgs, const Map& Attachments, const std::vector<std::pair<int, int>>& Picks,
-                                          std::string& Unknown)
+                                          std::string& Unknown, bool AltActive = false)
     {
         const Map& W = *Wp.W;
         const Map& T = *Wp.T;
-        std::vector<const Map*> Atts;
+        // the attachments in the game's gather order (its first holding a field wins); an alternate mode
+        // counts only while active, then first, and alone unless it keeps the others
+        std::vector<std::pair<int, const Map*>> Picked;
         for (const auto& [Slot, Index] : Picks)
         {
             const auto& List = W["slots"][(size_t)Slot];
             const std::string Id = Index < (int)List.size() ? List[(size_t)Index].get<std::string>() : "";
-            if (Attachments.contains(Id)) Atts.push_back(&Attachments[Id]);
+            if (Attachments.contains(Id)) Picked.push_back({ Slot, &Attachments[Id] });
             else Unknown += (Unknown.empty() ? "" : " ") + std::format("slot{}#{}", Slot, Index);
+        }
+        if (!L.SlotOrder.empty())
+        {
+            const auto Rank = [&](int Slot) {
+                const auto It = std::find(L.SlotOrder.begin(), L.SlotOrder.end(), Slot);
+                return (int)(It - L.SlotOrder.begin());
+            };
+            std::stable_sort(Picked.begin(), Picked.end(), [&](const auto& A, const auto& B) { return Rank(A.first) < Rank(B.first); });
+        }
+        std::vector<const Map*> Atts;
+        const Map* Alt = nullptr;
+        for (const auto& [Slot, A] : Picked)
+            if (IsAltMode(L, Slot, *A)) Alt = A;
+            else Atts.push_back(A);
+        if (Alt != nullptr && AltActive && IntOr(*Alt, "alt_active", 0) != 0)
+        {
+            if (IntOr(*Alt, "alt_with_others", 0) == 0) Atts.clear();
+            Atts.insert(Atts.begin(), Alt);
         }
         // the package time of a field: the override with the most groups whose groups all match
         const auto Time = [&](const char* Field) -> int {
@@ -130,14 +158,69 @@ namespace
             const float StfA = Snap((float)T["sprint_out_time_scale"].get<double>());
             return std::to_string(std::max(1, (int)((float)Tm * StfA * StfB + StfC)));
         };
+        // an override the active alternate mode alone may give (u8 AttAltMode 1)
+        const auto Overrides = [&](const Map* A) { return !A->contains("alt_only_overrides") || (A == Alt && AltActive); };
         int Clip = -1;
         float ClipScale = 1.0f;
-        for (const Map* A : Atts)
+        if (L.ClipOverrideScaled)
         {
-            if (IntOr(*A, "clip_size_override", -1) >= 0) Clip = (*A)["clip_size_override"].get<int>();
-            ClipScale += (float)FloatOr(*A, "clip_size_scale", 1.0) - 1.0f;
+            // (0x4637cbd) the first attachment's override replaces the base clip, then x max(0, 1 + sum(scale
+            // - 1)) (within 1e-6 of 1: 1), truncated
+            int Base = T.contains("clip_size") ? T["clip_size"].get<int>() : -1;
+            for (const Map* A : Atts)
+                if (IntOr(*A, "clip_size_override", -1) >= 0)
+                {
+                    Base = (*A)["clip_size_override"].get<int>();
+                    break;
+                }
+            for (const Map* A : Atts) ClipScale += (float)FloatOr(*A, "clip_size_scale", 1.0) - 1.0f;
+            ClipScale = std::max(ClipScale, 0.0f);
+            if (std::fabs(1.0f - ClipScale) <= 1e-6f) ClipScale = 1.0f;
+            if (Base >= 0) Clip = (int)((float)Base * ClipScale);
         }
-        if (Clip < 0 && T.contains("clip_size")) Clip = (int)((float)T["clip_size"].get<int>() * ClipScale);
+        else
+        {
+            for (const Map* A : Atts)
+            {
+                if (IntOr(*A, "clip_size_override", -1) >= 0) Clip = (*A)["clip_size_override"].get<int>();
+                ClipScale += (float)FloatOr(*A, "clip_size_scale", 1.0) - 1.0f;
+            }
+            if (Clip < 0 && T.contains("clip_size")) Clip = (int)((float)T["clip_size"].get<int>() * ClipScale);
+        }
+        // max ammo (0x46690c0): the first attachment with an ammo block decides: by magazines (its reserve
+        // magazines when > 0, else the weapon's) or its max ammo when >= 0; the weapon's otherwise. By
+        // magazines: clip x magazines; else (int)(max x max(0, 1 + sum(scale - 1)))
+        std::string MaxAmmo;
+        if (L.AttMaxAmmoScale >= 0 && T.contains("max_ammo"))
+        {
+            bool ByClips = IntOr(T, "max_ammo_by_clips", 0) != 0;
+            int Max = T["max_ammo"].get<int>(), Reserve = IntOr(T, "reserve_clips", 0);
+            for (const Map* A : Atts)
+                if (A->contains("ammo_override"))
+                {
+                    const Map& O = (*A)["ammo_override"];
+                    if (O["by_clips"].get<int>() != 0)
+                    {
+                        ByClips = true;
+                        if (O["reserve_clips"].get<int>() > 0) Reserve = O["reserve_clips"].get<int>();
+                    }
+                    else
+                    {
+                        ByClips = false;
+                        if (O["max_ammo"].get<int>() >= 0) Max = O["max_ammo"].get<int>();
+                    }
+                    break;
+                }
+            if (ByClips) MaxAmmo = Clip >= 0 ? std::to_string(Clip * Reserve) : "";
+            else
+            {
+                float S = 1.0f;
+                for (const Map* A : Atts) S += (float)FloatOr(*A, "max_ammo_scale", 1.0) - 1.0f;
+                S = std::max(S, 0.0f);
+                if (std::fabs(1.0f - S) <= 1e-6f) S = 1.0f;
+                MaxAmmo = std::to_string((int)((float)Max * S));
+            }
+        }
         // the ADS times K (0 in, 1 out): the same divisor, addition K and override K
         const float AdsS = Snap(Sum("ads_speed_scale", 1.0));
         const auto AdsTime = [&](size_t K, const char* Field) -> std::string {
@@ -164,6 +247,54 @@ namespace
         const auto Int = [](int V) { return V < 0 ? std::string() : std::to_string(V); };
         std::vector<std::string> Out = { Int(Clip), Int(Time("reload")), Int(Time("reload_empty")), Int(Time("reload_add")), Int(Time("reload_empty_add")),
                                          Stf("sprint_out"), Stf("super_sprint_out"), AdsTime(0, "ads_time"), AdsTime(1, "ads_out_time"), Vel };
+        if (L.AttMaxAmmoScale >= 0) Out.insert(Out.begin() + 1, MaxAmmo);
+        // pellets (0x4676de0): the first attachment whose ammo block holds a count >= 0 replaces the tunables'
+        if (L.Pellets.At >= 0 && L.AttAmmoPellets >= 0)
+        {
+            int Pellets = IntOr(T, "pellets", -1);
+            // (0x7340fd2: one projectile unless the class (0x46542a0: the first attachment's override, else the
+            // weapon's) is the spread class, 0x4680e40)
+            bool Spread = L.SpreadClass < 0 || (W.contains("class") && W["class"].get<std::string>() == ClassNames[L.SpreadClass]);
+            if (L.AttClass >= 0)
+                for (const Map* A : Atts)
+                    if (A->contains("class_override"))
+                    {
+                        Spread = (*A)["class_override"].get<int>() == L.SpreadClass;
+                        break;
+                    }
+            for (const Map* A : Atts)
+                if (IntOr(*A, "pellets_override", -1) >= 0)
+                {
+                    Pellets = (*A)["pellets_override"].get<int>();
+                    break;
+                }
+            Out.insert(Out.begin() + (L.AttMaxAmmoScale >= 0 ? 2 : 1), Int(Pellets >= 0 && !Spread ? 1 : Pellets));
+        }
+        // the fire time (0x463a9b0, no player): the first attachment's override replaces the tunables',
+        // then x max(0, 1 + sum(scale - 1)) (within 1e-6 of 1: 1), truncated
+        if (L.AttFireTime >= 0)
+        {
+            std::string Ms, Rpm;
+            if (T.contains("fire_time"))
+            {
+                int Base = T["fire_time"].get<int>();
+                for (const Map* A : Atts)
+                    if (A->contains("fire_time_override") && Overrides(A))
+                    {
+                        Base = (*A)["fire_time_override"].get<int>();
+                        break;
+                    }
+                float S = 1.0f;
+                for (const Map* A : Atts) S += (float)FloatOr(*A, "fire_time_scale", 1.0) - 1.0f;
+                S = std::max(S, 0.0f);
+                if (std::fabs(1.0f - S) <= 1e-6f) S = 1.0f;
+                const int Fire = (int)(S * (float)Base);
+                Ms = std::to_string(Fire);
+                if (Fire > 0) Rpm = Num(60000.0 / Fire, 2);
+            }
+            Out.push_back(Ms);
+            Out.push_back(Rpm);
+        }
         // the burst delay: the first attachment's override replaces the tunables' (its own scale then
         // left out), the others' scales add their deviation; floor(t x scale + 0.5)
         if (L.BurstDelay.At >= 0)
@@ -175,7 +306,7 @@ namespace
                 bool Overridden = false;
                 for (const Map* A : Atts)
                 {
-                    if (!Overridden && A->contains("burst_delay_override"))
+                    if (!Overridden && A->contains("burst_delay_override") && Overrides(A))
                     {
                         Base = (float)(*A)["burst_delay_override"].get<int>();
                         Overridden = true;
@@ -231,18 +362,476 @@ namespace
                 }
             Out.push_back(G != nullptr ? Num(L.GravityInches * G->get<double>() * 0.0254, 2) : std::string());
         }
+        // damage by range (0x46386d0, 0x464a150): the first attachment's override record replaces the
+        // weapon's, then each attachment multiplies the 5 damages and 4 ranges by its scale table's
+        // record, or (without one) every damage by its damage scale and every range by its range
+        // scale (when not 0); a product within 1e-6 of 1 is 1; damages truncated
+        if (L.AttDamageTable >= 0)
+        {
+            std::vector<std::string> Cells(9);
+            if (T.contains("damage") && T.contains("ranges"))
+            {
+                int D[5];
+                float R[4], Sd[5] = { 1, 1, 1, 1, 1 }, Sr[4] = { 1, 1, 1, 1 };
+                for (int K = 0; K < 5; K++) D[K] = T["damage"][K].get<int>();
+                for (int K = 0; K < 4; K++) R[K] = (float)T["ranges"][K].get<double>();
+                for (const Map* A : Atts)
+                    if (A->contains("damage_override"))
+                    {
+                        for (int K = 0; K < 5; K++) D[K] = (*A)["damage_override"][K].get<int>();
+                        for (int K = 0; K < 4; K++) R[K] = (float)(*A)["ranges_override"][K].get<double>();
+                        break;
+                    }
+                for (const Map* A : Atts)
+                {
+                    if (A->contains("damage_range_scales"))
+                    {
+                        const auto& S = (*A)["damage_range_scales"];
+                        for (int K = 0; K < 5; K++) Sd[K] *= (float)S[K].get<double>();
+                        for (int K = 0; K < 4; K++) Sr[K] *= (float)S[5 + K].get<double>();
+                        continue;
+                    }
+                    const float Ds = (float)FloatOr(*A, "damage_scale", 1.0), Rs = (float)FloatOr(*A, "range_scale", 0.0);
+                    for (int K = 0; K < 5; K++) Sd[K] *= Ds;
+                    if (Rs != 0.0f)
+                        for (int K = 0; K < 4; K++) Sr[K] *= Rs;
+                }
+                const auto Snap6 = [](float V) { return std::fabs(1.0f - V) <= 1e-6f ? 1.0f : V; };
+                const auto Dmg = [&](int K) { return std::to_string((int)(Snap6(Sd[K]) * (float)D[K])); };
+                const auto Metres = [&](int K) { return Num((double)(Snap6(Sr[K]) * R[K] / InchesPerMetre), 2); };
+                Cells = { Dmg(4), Metres(0), Dmg(1), Metres(1), Dmg(2), Metres(2), Dmg(3), Metres(3), Dmg(0) };
+            }
+            Out.insert(Out.end(), Cells.begin(), Cells.end());
+        }
+        // the hit location multipliers: the first attachment's table replaces the weapon's (0x4642180)
+        if (L.AttHit >= 0)
+        {
+            const Map* Hit = T.contains("hit") ? &T["hit"] : nullptr;
+            for (const Map* A : Atts)
+                if (A->contains("hit_override"))
+                {
+                    Hit = &(*A)["hit_override"];
+                    break;
+                }
+            for (size_t H = 1; H < std::size(HitLocations); H++)
+                Out.push_back(Hit != nullptr && (*Hit)[H].is_number() ? Num((*Hit)[H].get<double>(), 4) : std::string());
+        }
+        // penetration (0x4648ad0, 0x46489e0): the first attachment's level and depth scale replace the
+        // weapon's; the attachments' additions summed, and a non-zero level with a non-zero addition
+        // clamped to [1, max]
+        if (L.DefPenetration >= 0)
+        {
+            int Level = IntOr(W, "penetration_level", -1), Add = 0;
+            double Scale = FloatOr(W, "penetration_depth_scale", -1.0);
+            for (const Map* A : Atts)
+                if (A->contains("penetration_override"))
+                {
+                    Level = (*A)["penetration_override"][0].get<int>();
+                    Scale = (*A)["penetration_override"][1].get<double>();
+                    break;
+                }
+            for (const Map* A : Atts) Add += IntOr(*A, "penetration_add", 0);
+            if (Level > 0 && Add != 0) Level = std::clamp(Level + Add, 1, L.PenetrationMax);
+            Out.push_back(Level < 0 ? std::string() : std::to_string(Level));
+            Out.push_back(Scale < 0.0 ? std::string() : Num(Scale, 4));
+        }
+        // the perks the attachments give
+        if (L.AttPerks >= 0)
+        {
+            std::string Perks;
+            for (const Map* A : Atts)
+                if (A->contains("perks"))
+                    for (const auto& P : (*A)["perks"]) Perks += (Perks.empty() ? "" : " ") + P.get<std::string>();
+            Out.push_back(CsvField(Perks));
+        }
         return Out;
     }
 
-    size_t AttachmentTables(const IwWeaponStats::Layout& L, const Map& Weapons, const Map& Tunables, const Map& Pkgs, const Map& Attachments, const Map& Names,
-                            const Map& Strings, const std::string& Dir, std::string& AttCsv, std::string& LoadCsv)
+    // the hit location columns of the attachment tables (",hit_helmet,..."), when the layout gives the override
+    std::string HitColumns(const IwWeaponStats::Layout& L)
     {
+        std::string S;
+        if (L.AttHit >= 0)
+            for (size_t K = 1; K < std::size(HitLocations); K++) S += std::string(",hit_") + HitLocations[K];
+        return S;
+    }
+
+    // compatibility (0x46143c0 (A, B, slot of B), true when A's lists name B): B's group in A's group
+    // list, B's own id in A's id list, B's slot in A's slot list; each match as {via, A's field}
+    std::vector<std::pair<std::string, std::string>> Excludes(const IwWeaponStats::Layout& L, const Map& A, const Map& B, int SlotB)
+    {
+        std::vector<std::pair<std::string, std::string>> R;
+        const auto In = [&](const char* Key, const std::string& V) {
+            if (!A.contains(Key) || V.empty() || V == "00000000") return false;
+            for (const auto& E : A[Key])
+                if (E.get<std::string>() == V) return true;
+            return false;
+        };
+        if (B.contains("group") && In("excludes_groups", B["group"].get<std::string>()))
+            R.push_back({ "group " + B.value("group_name", B["group"].get<std::string>()), std::format("0x{:x}", L.AttExGroups) });
+        if (B.contains("self_id") && In("excludes_ids", B["self_id"].get<std::string>())) R.push_back({ "attachment", std::format("0x{:x}", L.AttExIds) });
+        if (L.SlotId && SlotB >= 0 && SlotB < (int)L.SlotNames.size() && In("excludes_slots", std::format("{:08x}", L.SlotId(L.SlotNames[(size_t)SlotB]))))
+            R.push_back({ "slot " + L.SlotNames[(size_t)SlotB], std::format("0x{:x}", L.AttExSlots) });
+        return R;
+    }
+
+    // a weapon's attachments: slot, index in the slot's list, facts
+    struct Present
+    {
+        int Slot = 0, Index = 0;
+        std::string Id;
+        const Map* A = nullptr;
+    };
+
+    // the game's drop (0x4614550): over the slots in order, an attachment whose lists name another one
+    // still present is removed; returns the removed ones' positions in P
+    std::vector<size_t> Dropped(const IwWeaponStats::Layout& L, const std::vector<Present>& P)
+    {
+        std::vector<bool> Gone(P.size(), false);
+        std::vector<size_t> Order(P.size());
+        for (size_t I = 0; I < P.size(); I++) Order[I] = I;
+        std::stable_sort(Order.begin(), Order.end(), [&](size_t X, size_t Y) { return P[X].Slot < P[Y].Slot; });
+        std::vector<size_t> Out;
+        for (const size_t I : Order)
+            for (const size_t J : Order)
+            {
+                if (Gone[I] || Gone[J] || P[I].Slot == P[J].Slot || P[I].Id == P[J].Id) continue;
+                if (!Excludes(L, *P[I].A, *P[J].A, P[J].Slot).empty())
+                {
+                    Gone[I] = true;
+                    Out.push_back(I);
+                }
+            }
+        return Out;
+    }
+
+    // a Zombies weapon's Pack-a-Punch attachments (a weaponmetadataentry bundle, read by the scripts): the
+    // slot 0 attachment of each level, and the variants used while the weapon holds an attachment
+    struct PapVariant
+    {
+        std::string Holding, Pap, Pap4;
+    };
+    struct PapInfo
+    {
+        std::string Base, Pap, Pap4;
+        std::vector<PapVariant> Variants;
+    };
+
+    // the weaponmetadataentry bundles the bundles kind wrote beside this kind's folder (the zones' folders
+    // under <out>/<game>/bundles), by weapon; keys by their FNV-1a 64 hash (some have no known name)
+    // what the custom settings files take from the bundles: the custom settings bundles asked for (by id:
+    // the bundle and its zone folder), the weaponmetadataentry bundles' Pack-a-Punch scales by weapon, the
+    // weapon lists' scales and the entries they hold
+    struct PapList
+    {
+        std::string Name;
+        Map Scales = Map::array();      // levels 1-4 (null: the key absent)
+        std::set<std::string> Entries;  // entry bundle ids
+    };
+    struct BundleSet
+    {
+        std::map<std::string, std::pair<Map, std::string>> Settings;
+        std::map<std::string, std::pair<std::string, Map>> Entries;   // weapon -> {entry id, its own scales}
+        std::vector<PapList> Lists;
+    };
+
+    std::map<std::string, PapInfo> PapTable(const IwWeaponStats::Layout& L, const std::string& Dir, const std::set<std::string>& Wanted, BundleSet& Set)
+    {
+        std::map<std::string, PapInfo> Out;
+        if (L.PapBundleType.empty() && Wanted.empty()) return Out;
+        std::error_code Ec;
+        const fs::path Root = fs::path(Dir).parent_path() / "bundles";
+        if (!fs::is_directory(Root, Ec)) return Out;
+        // (a field absent or not a string: "")
+        const auto Text = [](const Map& O, const char* K) { return O.is_object() && O.contains(K) && O[K].is_string() ? O[K].get<std::string>() : std::string(); };
+        const auto Str = [&](const Map& Fields, uint64_t Key) -> std::string {
+            const std::string K = Hex(Key);
+            for (const auto& F : Fields)
+                if (Text(F, "key_hash") == K) return Text(F, "value");
+            return "";
+        };
+        for (const auto& E : fs::recursive_directory_iterator(Root, Ec))
+        {
+            if (E.path().extension() != ".json") continue;
+            std::ifstream In(E.path(), std::ios::binary);
+            Map B = Map::parse(In, nullptr, false);
+            if (B.is_discarded() || !B["fields"].is_array()) continue;
+            const std::string Type = Text(B, "type_name");
+            if (const std::string Id = Text(B, "id"); Wanted.count(Id))
+            {
+                Set.Settings[Id] = { B, E.path().parent_path().filename().string() };
+                continue;
+            }
+            const Map& F = B["fields"];
+            // a scale: the float (or int) of a key, null when absent
+            const auto Scale = [&](const Map& Fields, uint64_t Key) -> Map {
+                const std::string K = Hex(Key);
+                for (const auto& X : Fields)
+                    if (Text(X, "key_hash") == K && X["value"].is_number()) return X["value"];
+                return nullptr;
+            };
+            if (!L.PapListType.empty() && Type == L.PapListType)
+            {
+                PapList P;
+                P.Name = Text(B, "name");
+                for (int K = 0; K < 4; K++) P.Scales.push_back(Scale(F, L.PapListKeys[2 + K]));
+                for (const auto& X : F)
+                    if (Text(X, "key_hash") == Hex(L.PapListKeys[0]) && X["value"].is_array())
+                        for (const auto& Item : X["value"])
+                            if (Item.is_array())
+                                for (const auto& Y : Item)
+                                    if (Text(Y, "key_hash") == Hex(L.PapListKeys[1]) && !Text(Y, "value").empty()) P.Entries.insert(Text(Y, "value"));
+                Set.Lists.push_back(std::move(P));
+                continue;
+            }
+            if (Type != L.PapBundleType || L.PapBundleType.empty()) continue;
+            const std::string Weapon = Str(F, L.PapKeys[0]);
+            if (Weapon.empty()) continue;
+            {
+                Map Own = Map::array();
+                bool Any = false;
+                for (int K = 0; K < 4; K++)
+                {
+                    Own.push_back(L.PapEntryScales[K] != 0 ? Scale(F, L.PapEntryScales[K]) : Map(nullptr));
+                    Any = Any || !Own.back().is_null();
+                }
+                Set.Entries[Weapon] = { Text(B, "id"), Any ? Own : Map(nullptr) };
+            }
+            PapInfo P{ Str(F, L.PapKeys[1]), Str(F, L.PapKeys[2]), Str(F, L.PapKeys[3]), {} };
+            for (const auto& X : F)
+                if (Text(X, "key_hash") == Hex(L.PapKeys[4]) && X["value"].is_array())
+                    for (const auto& Item : X["value"])
+                        if (Item.is_array()) P.Variants.push_back({ Str(Item, L.PapKeys[5]), Str(Item, L.PapKeys[6]), Str(Item, L.PapKeys[7]) });
+            if (!P.Pap.empty()) Out[Weapon] = std::move(P);
+        }
+        return Out;
+    }
+
+    // the rows of a CSV text (quoted fields as CsvField writes them)
+    std::vector<std::vector<std::string>> CsvRows(const std::string& Text)
+    {
+        std::vector<std::vector<std::string>> Rows(1);
+        std::string Cell;
+        bool Quoted = false;
+        for (size_t I = 0; I < Text.size(); I++)
+        {
+            const char C = Text[I];
+            if (Quoted)
+            {
+                if (C == '"' && I + 1 < Text.size() && Text[I + 1] == '"') Cell += '"', I++;
+                else if (C == '"') Quoted = false;
+                else Cell += C;
+            }
+            else if (C == '"') Quoted = true;
+            else if (C == ',') Rows.back().push_back(std::move(Cell)), Cell.clear();
+            else if (C == '\n') Rows.back().push_back(std::move(Cell)), Cell.clear(), Rows.emplace_back();
+            else if (C != '\r') Cell += C;
+        }
+        if (!Cell.empty() || !Rows.back().empty()) Rows.back().push_back(std::move(Cell));
+        if (Rows.back().empty()) Rows.pop_back();
+        return Rows;
+    }
+
+    // a bundle's fields as the custom settings file writes them: the key's name ("name", null when only its
+    // hash is known), its 64-bit key hash, its script hash, the type and the value; a struct's fields under
+    // "fields", an array's elements under "elements" (a struct element: its fields)
+    Json SettingsFields(const Map& Fields)
+    {
+        Json Out = Json::array();
+        for (const auto& F : Fields)
+        {
+            if (!F.is_object()) continue;
+            Json O;
+            const std::string Key = F.value("key", std::string()), KeyHash = F.value("key_hash", std::string());
+            O["name"] = Key != KeyHash ? Json(Key) : Json(nullptr);
+            O["key_hash"] = KeyHash;
+            O["script_hash"] = F.value("script_hash", std::string());
+            const std::string Type = F.value("type", std::string());
+            O["type"] = Type;
+            const Map& V = F.contains("value") ? F["value"] : Map(nullptr);
+            if ((Type == "struct" || Type == "keyed_struct") && V.is_array()) O["fields"] = SettingsFields(V);
+            else if (Type == "array" && V.is_array())
+            {
+                if (F.contains("element_type")) O["element_type"] = F["element_type"];
+                Json Elements = Json::array();
+                for (const auto& E : V) Elements.push_back(E.is_array() ? SettingsFields(E) : Json::parse(E.dump()));
+                O["elements"] = std::move(Elements);
+            }
+            else O["value"] = Json::parse(V.dump());
+            if (F.contains("value_hash")) O["value_hash"] = F["value_hash"];
+            Out.push_back(std::move(O));
+        }
+        return Out;
+    }
+
+    // every string value of the fields (nested ones too) with the path of its key: "name" or the key hash
+    void SettingsStrings(const Json& Fields, const std::string& Path, std::vector<std::pair<std::string, std::string>>& Out)
+    {
+        for (const auto& F : Fields)
+        {
+            const std::string Here = Path + (Path.empty() ? "" : ".") + (F["name"].is_string() ? F["name"].get<std::string>() : F["key_hash"].get<std::string>());
+            if (F.contains("fields")) SettingsStrings(F["fields"], Here, Out);
+            if (F.contains("elements"))
+                for (size_t K = 0; K < F["elements"].size(); K++)
+                    if (F["elements"][K].is_array()) SettingsStrings(F["elements"][K], Here + std::format("[{}]", K), Out);
+            if (F.contains("value") && F["value"].is_string()) Out.emplace_back(Here, F["value"].get<std::string>());
+        }
+    }
+
+    // weapon_custom_settings/<weapon>.json for every weapon whose definition names a custom settings bundle;
+    // the weapons its settings name with their damages, and its Pack-a-Punch levels where they differ
+    size_t CustomSettingsFiles(const IwWeaponStats::Layout& L, const Map& Weapons, const Map& Strings, const std::string& Dir, const BundleSet& Set,
+                               const std::map<std::string, PapInfo>& Paps, const std::map<std::string, std::map<std::string, std::string>>& Rows,
+                               const std::string& AttCsv)
+    {
+        // weapon_attachments.csv by {weapon, attachment}
+        std::vector<std::string> AttHead;
+        std::map<std::pair<std::string, std::string>, std::vector<std::string>> AttRows;
+        {
+            auto All = CsvRows(AttCsv);
+            if (!All.empty())
+            {
+                AttHead = All[0];
+                const auto Col = [&](const char* N) { return (size_t)(std::find(AttHead.begin(), AttHead.end(), N) - AttHead.begin()); };
+                const size_t WCol = Col("weapon"), ACol = Col("attachment");
+                for (size_t I = 1; I < All.size(); I++)
+                    if (WCol < All[I].size() && ACol < All[I].size()) AttRows.try_emplace({ All[I][WCol], All[I][ACol] }, All[I]);
+            }
+        }
+        // the columns a level compares (the stats, not the row's description)
+        static const std::set<std::string> NotStats = { "weapon", "slot", "index", "attachment", "display_name", "slot_name", "alt_mode", "excludes", "brings", "perks" };
+        // the stats a linked weapon brings (its first tunables set's row)
+        static const char* const Linked[] = { "class", "fire_time_ms", "clip_size", "max_ammo", "pellets", "muzzle_velocity_mps", "explosion_radius_m",
+                                              "explosion_inner_damage", "explosion_outer_damage", "explosion_inner_radius_m", "explosion_mid_radius_m",
+                                              "explosion_mid_damage", "damage_max", "range_max_m", "damage_mid1", "range_mid1_m", "damage_mid2", "range_mid2_m",
+                                              "damage_mid3", "range_mid3_m", "damage_min" };
+        const fs::path Out = fs::path(Dir) / "weapon_custom_settings";
+        std::error_code Ec;
+        fs::remove_all(Out, Ec);
+        size_t Written = 0;
+        std::set<std::string> Seen;
+        for (const auto& W : Weapons)
+        {
+            if (!W.contains("custom_settings")) continue;
+            const std::string Name = W["name"].get<std::string>(), Id = W["custom_settings"].get<std::string>();
+            const auto It = Set.Settings.find(Id);
+            if (It == Set.Settings.end() || !Seen.insert(Name).second) continue;
+            const Map& B = It->second.first;
+            Json J;
+            J["weapon"] = Name;
+            J["weapon_id"] = W["id"];
+            if (W.contains("display") && Strings.contains(W["display"].get<std::string>())) J["display_name"] = Strings[W["display"].get<std::string>()];
+            Json S;
+            S["bundle_id"] = Id;
+            S["bundle_type"] = B.contains("type") ? Json::parse(B["type"].dump()) : Json(nullptr);
+            S["zone"] = It->second.second;
+            S["fields"] = SettingsFields(B["fields"]);
+            // (counts: the fields, nested ones included, and those named)
+            size_t All = 0, Named = 0;
+            const std::function<void(const Json&)> Count = [&](const Json& Fs) {
+                for (const auto& F : Fs)
+                {
+                    All++, Named += F["name"].is_string() ? 1 : 0;
+                    if (F.contains("fields")) Count(F["fields"]);
+                    if (F.contains("elements"))
+                        for (const auto& E : F["elements"])
+                            if (E.is_array()) Count(E);
+                }
+            };
+            Count(S["fields"]);
+            S["field_count"] = All;
+            S["named_fields"] = Named;
+            // the weapons the settings name (a sub-weapon: a grenade, a fireball...) with their damages
+            std::vector<std::pair<std::string, std::string>> Values;
+            SettingsStrings(S["fields"], "", Values);
+            Json Links = Json::array();
+            for (const auto& [Path, Value] : Values)
+            {
+                Json Lk;
+                Lk["field"] = Path;
+                Lk["name"] = Value;
+                if (const auto R = Rows.find(Value); R != Rows.end())
+                {
+                    Lk["kind"] = "weapon";
+                    Json Stats;
+                    for (const char* C : Linked)
+                        if (const auto V = R->second.find(C); V != R->second.end() && !V->second.empty()) Stats[C] = V->second;
+                    Lk["stats"] = std::move(Stats);
+                }
+                else if (AttRows.count({ Name, Value })) Lk["kind"] = "attachment";
+                else continue;
+                Links.push_back(std::move(Lk));
+            }
+            S["linked"] = std::move(Links);
+            J["custom_settings"] = std::move(S);
+            // Pack-a-Punch levels 0-4: the slot 0 attachment of each level (base; pap for 1-3; pap4, else pap,
+            // for 4), the stats of weapon_attachments.csv that differ from level 0's, the damage scale
+            if (const auto P = Paps.find(Name); P != Paps.end())
+            {
+                Json Levels = Json::array();
+                const auto Row0 = AttRows.find({ Name, P->second.Base.empty() ? std::string("(none)") : P->second.Base });
+                const auto Entry = Set.Entries.find(Name);
+                for (int Lv = 0; Lv <= 4; Lv++)
+                {
+                    const std::string Att = Lv == 0 ? P->second.Base : Lv < 4 || P->second.Pap4.empty() ? P->second.Pap : P->second.Pap4;
+                    Json E;
+                    E["level"] = Lv;
+                    E["attachment"] = Att;
+                    if (Lv > 0 && Entry != Set.Entries.end())
+                    {
+                        if (!Entry->second.second.is_null() && !Entry->second.second[Lv - 1].is_null())
+                            E["damage_scale"] = Json{ { "value", Json::parse(Entry->second.second[Lv - 1].dump()) },
+                                                      { "source", "weaponmetadataentry " + Entry->second.first + " key " + Hex(L.PapEntryScales[Lv - 1]) } };
+                        else
+                        {
+                            // the list's scale (the game mode's list: each list holding the weapon's entry)
+                            Json ByList = Json::array();
+                            for (const auto& Ls : Set.Lists)
+                                if (Ls.Entries.count(Entry->second.first) && !Ls.Scales[Lv - 1].is_null())
+                                    ByList.push_back(Json{ { "list", Ls.Name }, { "value", Json::parse(Ls.Scales[Lv - 1].dump()) },
+                                                           { "source", "weaponmetadata " + Ls.Name + " key " + Hex(L.PapListKeys[2 + Lv - 1]) } });
+                            if (!ByList.empty()) E["damage_scale_by_list"] = std::move(ByList);
+                        }
+                    }
+                    const auto Rw = AttRows.find({ Name, Att });
+                    if (Lv > 0 && Rw != AttRows.end() && Row0 != AttRows.end())
+                    {
+                        Json Diff;
+                        for (size_t C = 0; C < AttHead.size() && C < Rw->second.size() && C < Row0->second.size(); C++)
+                            if (!NotStats.count(AttHead[C]) && Rw->second[C] != Row0->second[C])
+                                Diff[AttHead[C]] = Json{ { "level0", Row0->second[C] }, { "value", Rw->second[C] } };
+                        E["stats_changed"] = std::move(Diff);
+                        E["source"] = "weapon_attachments.csv, weapon " + Name + " with " + Att;
+                    }
+                    Levels.push_back(std::move(E));
+                }
+                J["pack_a_punch"] = std::move(Levels);
+            }
+            const std::string Text = J.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
+            fs::create_directories(Out, Ec);
+            if (ExportWriters::WriteBytes(Out / (ExportNaming::SafeFileName(Name) + ".json"), (const uint8_t*)Text.data(), Text.size())) Written++;
+        }
+        return Written;
+    }
+
+    size_t AttachmentTables(const IwWeaponStats::Layout& L, const Map& Weapons, const Map& Tunables, const Map& Pkgs, const Map& Attachments, const Map& Names,
+                            const Map& Strings, const std::string& Dir, std::string& AttCsv, std::string& LoadCsv, std::string& RulesCsv,
+                            const std::map<std::string, PapInfo>& Paps)
+    {
+        const bool Rules = L.AttGroup >= 0 && !L.SlotNames.empty();
         // (the columns LoadoutStats appends for the fields the layout gives, in its order)
-        const std::string Stats = std::string("clip_size,reload_ms,reload_empty_ms,reload_add_ms,reload_empty_add_ms,sprint_to_fire_ms,"
-                                              "super_sprint_to_fire_ms,ads_time_ms,ads_out_time_ms,muzzle_velocity_mps") +
-                                  (L.BurstDelay.At >= 0 ? ",burst_delay_ms" : "") +
+        const std::string Stats = std::string("clip_size,") + (L.AttMaxAmmoScale >= 0 ? "max_ammo," : "") +
+                                  (L.Pellets.At >= 0 && L.AttAmmoPellets >= 0 ? "pellets," : "") +
+                                  "reload_ms,reload_empty_ms,reload_add_ms,reload_empty_add_ms,sprint_to_fire_ms,"
+                                  "super_sprint_to_fire_ms,ads_time_ms,ads_out_time_ms,muzzle_velocity_mps" +
+                                  (L.AttFireTime >= 0 ? ",fire_time_ms,rpm" : "") + (L.BurstDelay.At >= 0 ? ",burst_delay_ms" : "") +
                                   (L.ExplosionDamage.At >= 0 ? ",explosion_inner_damage,explosion_outer_damage" : "") +
-                                  (L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f ? ",gravity_mps2" : "");
+                                  (L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f ? ",gravity_mps2" : "") +
+                                  (L.AttDamageTable >= 0 ? ",damage_max,range_max_m,damage_mid1,range_mid1_m,damage_mid2,range_mid2_m,"
+                                                           "damage_mid3,range_mid3_m,damage_min"
+                                                         : "") +
+                                  HitColumns(L) + (L.DefPenetration >= 0 ? ",penetration_level,penetration_depth_scale" : "") +
+                                  (L.AttPerks >= 0 ? ",perks" : "");
         const auto Display = [&](const std::string& Asset) -> std::string {
             if (!Names.contains(Asset)) return "";
             const std::string H = Names[Asset].get<std::string>();
@@ -258,7 +847,15 @@ namespace
             Weapon Wp{ &W, &Tunables[Tid], W.contains("animpkg") && Pkgs.contains(W["animpkg"].get<std::string>()) ? &Pkgs[W["animpkg"].get<std::string>()] : nullptr };
             ByName[W["name"].get<std::string>()] = Wp;
         }
-        AttCsv = std::string("weapon,slot,index,attachment,display_name,") + Stats + "\n";
+        const std::string Extra = Rules ? ",slot_name,alt_mode,excludes,brings" : "";
+        AttCsv = std::string("weapon,slot,index,attachment,display_name,") + Stats + Extra + "\n";
+        if (Rules)
+            RulesCsv = "weapon,slot,slot_name,attachment,display_name,rule,other_slot,other_slot_name,other_attachment,other_display_name,"
+                       "other_is_default,via,source\n";
+        const auto SlotName = [&](int S) { return S >= 0 && S < (int)L.SlotNames.size() ? L.SlotNames[(size_t)S] : std::string(); };
+        const auto AttName = [&](const std::string& Id) {
+            return Attachments.contains(Id) ? Attachments[Id]["name"].get<std::string>() : "attachment_" + Id;
+        };
         size_t Rows = 0;
         for (const auto& [Name, Wp] : ByName)
         {
@@ -266,27 +863,83 @@ namespace
             const auto Base = LoadoutStats(L, Wp, Pkgs, Attachments, {}, Unknown);
             AttCsv += CsvField(Name) + ",,,(none),";
             for (const auto& V : Base) AttCsv += "," + V;
+            if (Rules) AttCsv += ",,,,";
             AttCsv += "\n";
             const auto& Slots = (*Wp.W)["slots"];
+            std::vector<Present> All;
             for (size_t S = 0; S < Slots.size(); S++)
                 for (size_t K = 0; K < Slots[S].size(); K++)
+                    if (const std::string Id = Slots[S][K].get<std::string>(); Attachments.contains(Id)) All.push_back({ (int)S, (int)K, Id, &Attachments[Id] });
+            // the weapon's default part of each slot
+            std::map<int, std::string> Defaults;
+            if (Wp.W->contains("defaults"))
+                for (const auto& D : (*Wp.W)["defaults"]) Defaults[D["slot"].get<int>()] = D["attachment"].get<std::string>();
+            // the slot an attachment id holds on this weapon (-1 none)
+            const auto SlotOf = [&](const std::string& Id) {
+                for (const auto& X : All)
+                    if (X.Id == Id) return X.Slot;
+                return -1;
+            };
+            for (const auto& X : All)
+            {
+                const std::string Asset = (*X.A)["name"].get<std::string>();
+                const bool Alt = IsAltMode(L, X.Slot, *X.A);
+                std::string U;
+                const auto St = LoadoutStats(L, Wp, Pkgs, Attachments, { { X.Slot, X.Index } }, U, Alt);
+                AttCsv += CsvField(Name) + "," + std::to_string(X.Slot) + "," + std::to_string(X.Index) + "," + CsvField(Asset) + "," + CsvField(Display(Asset));
+                for (const auto& V : St) AttCsv += "," + V;
+                if (Rules)
                 {
-                    const std::string Id = Slots[S][K].get<std::string>();
-                    if (!Attachments.contains(Id)) continue;
-                    const std::string Asset = Attachments[Id]["name"].get<std::string>();
-                    std::string U;
-                    const auto St = LoadoutStats(L, Wp, Pkgs, Attachments, { { (int)S, (int)K } }, U);
-                    AttCsv += CsvField(Name) + "," + std::to_string(S) + "," + std::to_string(K) + "," + CsvField(Asset) + "," + CsvField(Display(Asset));
-                    for (const auto& V : St) AttCsv += "," + V;
-                    AttCsv += "\n";
-                    Rows++;
+                    // the other attachments of the weapon either one's lists name, the ones it brings
+                    std::string Ex, Br;
+                    for (const auto& Y : All)
+                        if (Y.Slot != X.Slot && (!Excludes(L, *X.A, *Y.A, Y.Slot).empty() || !Excludes(L, *Y.A, *X.A, X.Slot).empty()))
+                            Ex += (Ex.empty() ? "" : " ") + (*Y.A)["name"].get<std::string>();
+                    if (X.A->contains("brings"))
+                        for (const auto& B : (*X.A)["brings"]) Br += (Br.empty() ? "" : " ") + AttName(B.get<std::string>());
+                    const std::string Mode = !Alt ? "" : IntOr(*X.A, "alt_active", 0) != 0 ? "active" : "never_active";
+                    AttCsv += "," + CsvField(SlotName(X.Slot)) + "," + Mode + "," + CsvField(Ex) + "," + CsvField(Br);
+                    // the rules: what its lists exclude (one row per attachment named, one per slot), what it brings
+                    const std::string Head = CsvField(Name) + "," + std::to_string(X.Slot) + "," + CsvField(SlotName(X.Slot)) + "," + CsvField(Asset) + "," +
+                                             CsvField(Display(Asset)) + ",";
+                    std::set<int> SlotsBlocked;
+                    for (const auto& Y : All)
+                    {
+                        if (Y.Slot == X.Slot) continue;
+                        for (const auto& [Via, Source] : Excludes(L, *X.A, *Y.A, Y.Slot))
+                        {
+                            if (Via.rfind("slot ", 0) == 0)
+                            {
+                                if (SlotsBlocked.insert(Y.Slot).second)
+                                    RulesCsv += Head + "blocks_slot," + std::to_string(Y.Slot) + "," + CsvField(SlotName(Y.Slot)) + ",,,," + CsvField(Via) + "," + Source + "\n";
+                                continue;
+                            }
+                            const std::string Other = (*Y.A)["name"].get<std::string>();
+                            const auto D = Defaults.find(Y.Slot);
+                            RulesCsv += Head + "excludes," + std::to_string(Y.Slot) + "," + CsvField(SlotName(Y.Slot)) + "," + CsvField(Other) + "," +
+                                        CsvField(Display(Other)) + "," + (D != Defaults.end() && D->second == Y.Id ? "1" : "") + "," + CsvField(Via) + "," + Source + "\n";
+                        }
+                    }
+                    if (X.A->contains("brings"))
+                        for (const auto& B : (*X.A)["brings"])
+                        {
+                            const std::string Id = B.get<std::string>(), Other = AttName(Id);
+                            const int S = SlotOf(Id);
+                            const auto D = Defaults.find(S);
+                            RulesCsv += Head + "brings," + (S >= 0 ? std::to_string(S) : "") + "," + CsvField(SlotName(S)) + "," + CsvField(Other) + "," +
+                                        CsvField(Display(Other)) + "," + (D != Defaults.end() && D->second == Id ? "1" : "") + ",installed," +
+                                        std::format("0x{:x}", L.AttBrings) + "\n";
+                        }
                 }
+                AttCsv += "\n";
+                Rows++;
+            }
         }
         // loadouts.txt: "<weapon>: <attachment>, <attachment>"
         std::ifstream In(fs::path(Dir) / "loadouts.txt");
         if (In)
         {
-            LoadCsv = std::string("weapon,attachments,not_found,") + Stats + "\n";
+            LoadCsv = std::string("weapon,attachments,not_found,") + (Rules ? "brought,dropped,alt_mode,pap_variant," : "") + Stats + "\n";
             for (std::string Line; std::getline(In, Line);)
             {
                 while (!Line.empty() && (Line.back() == '\r' || Line.back() == ' ')) Line.pop_back();
@@ -325,9 +978,75 @@ namespace
                         }
                     if (!Found) Missing += (Missing.empty() ? "" : "; ") + Want;
                 }
+                std::string Brought, Gone, AltName, PapVariantName;
+                if (Rules)
+                {
+                    // the attachments the picks bring take their slots (0x4612510, 0x4614550), then the game
+                    // drops each attachment whose lists name another one present (0x46143c0)
+                    std::vector<Present> P;
+                    for (const auto& [S, K] : Picks)
+                    {
+                        const std::string Id = Slots[(size_t)S][(size_t)K].get<std::string>();
+                        P.push_back({ S, K, Id, &Attachments[Id] });
+                    }
+                    std::vector<Present> Add;
+                    for (const auto& X : P)
+                        if (X.A->contains("brings"))
+                            for (const auto& B : (*X.A)["brings"])
+                                for (size_t S = 0; S < Slots.size(); S++)
+                                    for (size_t K = 0; K < Slots[S].size(); K++)
+                                        if (Slots[S][K].get<std::string>() == B.get<std::string>() && Attachments.contains(B.get<std::string>()))
+                                            Add.push_back({ (int)S, (int)K, B.get<std::string>(), &Attachments[B.get<std::string>()] });
+                    for (const auto& X : Add)
+                    {
+                        std::erase_if(P, [&](const Present& Y) { return Y.Slot == X.Slot; });
+                        P.push_back(X);
+                        Brought += (Brought.empty() ? "" : " ") + (*X.A)["name"].get<std::string>();
+                    }
+                    std::vector<bool> Keep(P.size(), true);
+                    for (const size_t I : Dropped(L, P))
+                    {
+                        Keep[I] = false;
+                        Gone += (Gone.empty() ? "" : " ") + (*P[I].A)["name"].get<std::string>();
+                    }
+                    // Pack-a-Punch: while the weapon holds a variant's attachment, the scripts' bundle names
+                    // another slot 0 attachment for the level
+                    if (const auto Pi = Paps.find(Name); Pi != Paps.end())
+                        for (size_t I = 0; I < P.size(); I++)
+                        {
+                            if (!Keep[I]) continue;
+                            const std::string Own = (*P[I].A)["name"].get<std::string>();
+                            const bool Level4 = Own == Pi->second.Pap4;
+                            if (Own != Pi->second.Pap && !Level4) continue;
+                            for (const auto& V : Pi->second.Variants)
+                            {
+                                bool Holds = false;
+                                for (size_t J = 0; J < P.size(); J++)
+                                    if (Keep[J] && (*P[J].A)["name"].get<std::string>() == V.Holding) Holds = true;
+                                const std::string Want = Level4 ? V.Pap4 : V.Pap;
+                                if (!Holds || Want.empty()) continue;
+                                for (size_t K = 0; K < Slots[(size_t)P[I].Slot].size(); K++)
+                                    if (const std::string Id = Slots[(size_t)P[I].Slot][K].get<std::string>();
+                                        Attachments.contains(Id) && Attachments[Id]["name"].get<std::string>() == Want)
+                                    {
+                                        P[I] = { P[I].Slot, (int)K, Id, &Attachments[Id] };
+                                        PapVariantName = Want;
+                                    }
+                                break;
+                            }
+                        }
+                    Picks.clear();
+                    for (size_t I = 0; I < P.size(); I++)
+                        if (Keep[I])
+                        {
+                            Picks.push_back({ P[I].Slot, P[I].Index });
+                            if (IsAltMode(L, P[I].Slot, *P[I].A)) AltName = (*P[I].A)["name"].get<std::string>();
+                        }
+                }
                 std::string U;
                 const auto St = LoadoutStats(L, It->second, Pkgs, Attachments, Picks, U);
                 LoadCsv += CsvField(Name) + "," + CsvField(Trim(Rest)) + "," + CsvField(Missing);
+                if (Rules) LoadCsv += "," + CsvField(Brought) + "," + CsvField(Gone) + "," + CsvField(AltName.empty() ? "" : AltName + " (inactive)") + "," + CsvField(PapVariantName);
                 for (const auto& V : St) LoadCsv += "," + V;
                 LoadCsv += "\n";
             }
@@ -494,6 +1213,7 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
         F32("move_speed_scale", L.MoveSpeedScale);
         F32("ads_move_speed_scale", L.AdsMoveSpeedScale);
         I32("reserve_clips", L.ReserveClips);
+        I32("pellets", L.Pellets);
         if (const int64_t P = Base(L.ExplosionDamage); P >= 0) T["explosion_damage"] = Json::array({ At<int32_t>(Img, P), At<int32_t>(Img, P + 4) });
         if (const int64_t P = Base(L.ExplosionRings); P >= 0)
         {
@@ -539,6 +1259,12 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
             }
             if (L.DefAnimPkg >= 0)
                 if (const uint64_t Pkg = RefId(Def + L.DefAnimPkg, 0)) W["animpkg"] = Hex(Pkg);
+            // the bullet penetration: level (definition u8) and depth scale (weapon f32)
+            if (L.DefPenetration >= 0) W["penetration_level"] = At<uint8_t>(Img, Def + L.DefPenetration);
+            if (L.WeaponPenetrationScale >= 0) W["penetration_depth_scale"] = (double)At<float>(Img, P + L.WeaponPenetrationScale);
+            // the script bundle the scripts read as weapon.weaponcustomsettings (its id; the bundles kind writes it)
+            if (L.DefCustomSettings >= 0)
+                if (const uint64_t B = RefId(Def + L.DefCustomSettings, 0)) W["custom_settings"] = Hex(B);
             // the tunables sets and each one's tags ({u32 count, u64 *tags})
             Json Sets = Json::array();
             if (L.DefSets >= 0)
@@ -725,13 +1451,24 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
             // the burst delay: an attachment's i32 replaces the tunables' (not an alternate mode's), the
             // modifier block's f32 +4 scales it
             if (L.AttBurstDelay >= 0)
-                if (const int64_t B = Target(P + L.AttBurstDelay); B >= 0 && !(L.AttAltMode >= 0 && At<uint8_t>(Img, P + L.AttAltMode) == 1))
+                if (const int64_t B = Target(P + L.AttBurstDelay); B >= 0 && !(L.AttAltMode >= 0 && L.AltSlot < 0 && At<uint8_t>(Img, P + L.AttAltMode) == 1))
                     A["burst_delay_override"] = At<int32_t>(Img, B);
             if (L.AttBurstDelayScale >= 0 && L.AttModifiers >= 0)
             {
                 const int64_t T = Target(P + L.AttModifiers);
                 const int64_t B = T >= 0 ? Target(T + L.AttBurstDelayScale) : -1;
                 A["burst_delay_scale"] = B >= 0 ? (double)At<float>(Img, B + 4) : 1.0;
+            }
+            // the fire time: an attachment's i32 (0: none) replaces the tunables' (not an alternate
+            // mode's), the modifier block's f32 +4 scales it
+            if (L.AttFireTime >= 0)
+                if (const int32_t F = At<int32_t>(Img, P + L.AttFireTime); F != 0 && !(L.AttAltMode >= 0 && L.AltSlot < 0 && At<uint8_t>(Img, P + L.AttAltMode) == 1))
+                    A["fire_time_override"] = F;
+            if (L.AttFireTimeScale >= 0 && L.AttModifiers >= 0)
+            {
+                const int64_t T = Target(P + L.AttModifiers);
+                const int64_t B = T >= 0 ? Target(T + L.AttFireTimeScale) : -1;
+                A["fire_time_scale"] = B >= 0 ? (double)At<float>(Img, B + 4) : 1.0;
             }
             // the ballistic block that replaces the tunables' (its gravity factor and flag)
             if (L.AttBallistic >= 0)
@@ -740,6 +1477,113 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
                     if (L.BallisticFlag >= 0) A["ballistic_override"] = At<uint8_t>(Img, B + L.BallisticFlag);
                     if (L.BallisticGravity >= 0) A["gravity_override"] = (double)At<float>(Img, B + L.BallisticGravity);
                 }
+            // damage by range: the override table's first record (5 damages, 4 ranges in inches), the
+            // scale table's first record (5 damage scales, 4 range scales), else the uniform damage
+            // scale (modifier block +4) and range scale (0: none)
+            if (L.AttDamageTable >= 0)
+                if (const int64_t B = Target(P + L.AttDamageTable); B >= 0)
+                {
+                    Json D = Json::array(), Rg = Json::array();
+                    for (int K = 0; K < 5; K++) D.push_back(At<int32_t>(Img, B + 4 * K));
+                    for (int K = 0; K < 4; K++) Rg.push_back((double)At<float>(Img, B + 0x14 + 4 * K));
+                    A["damage_override"] = std::move(D);
+                    A["ranges_override"] = std::move(Rg);
+                }
+            if (L.AttDamageScales >= 0)
+                if (const int64_t B = Target(P + L.AttDamageScales); B >= 0)
+                {
+                    Json S = Json::array();
+                    for (int K = 0; K < 9; K++) S.push_back((double)At<float>(Img, B + 4 * K));
+                    A["damage_range_scales"] = std::move(S);
+                }
+            if (L.AttDamageScale >= 0 && L.AttModifiers >= 0)
+            {
+                const int64_t T = Target(P + L.AttModifiers);
+                const int64_t B = T >= 0 ? Target(T + L.AttDamageScale) : -1;
+                A["damage_scale"] = B >= 0 ? (double)At<float>(Img, B + 4) : 1.0;
+            }
+            if (L.AttRangeScale >= 0) A["range_scale"] = (double)At<float>(Img, P + L.AttRangeScale);
+            // the hit location multipliers that replace the weapon's
+            if (L.AttHit >= 0)
+                if (const int64_t B = Target(P + L.AttHit); B >= 0)
+                {
+                    Json Hit = Json::array();
+                    for (int K = 0; K < 22; K++) Hit.push_back((double)At<float>(Img, B + 4 * K));
+                    A["hit_override"] = std::move(Hit);
+                }
+            // penetration: the level and depth scale that replace the weapon's, the level addition
+            if (L.AttPenetration >= 0)
+                if (const int64_t B = Target(P + L.AttPenetration); B >= 0)
+                    A["penetration_override"] = Json::array({ At<uint8_t>(Img, B), (double)At<float>(Img, B + 4) });
+            if (L.AttPenetrationAdd >= 0) A["penetration_add"] = At<int32_t>(Img, P + L.AttPenetrationAdd);
+            // the perks it gives, by name (#<hash> when no zone string names it)
+            if (L.AttPerks >= 0 && L.AttPerkCount >= 0)
+                if (const int64_t B = Target(P + L.AttPerks); B >= 0)
+                {
+                    Json Perks = Json::array();
+                    for (uint32_t K = 0; K < At<uint8_t>(Img, P + L.AttPerkCount); K++)
+                    {
+                        const uint32_t H = At<uint32_t>(Img, B + 4 * (int64_t)K);
+                        const std::string S = V.ScriptString ? V.ScriptString(H) : std::string();
+                        Perks.push_back(S.empty() ? std::format("#{:08x}", H) : S);
+                    }
+                    A["perks"] = std::move(Perks);
+                }
+            // compatibility: its group and own id, the groups, slots and own ids it excludes (u32s), the
+            // attachments it brings (u64 ids)
+            const auto Hex8 = [](uint32_t V) { return std::format("{:08x}", V); };
+            const auto U32List = [&](int64_t Base, uint32_t Count) {
+                Json List = Json::array();
+                for (uint32_t K = 0; Base >= 0 && K < Count; K++) List.push_back(Hex8(At<uint32_t>(Img, Base + 4 * (int64_t)K)));
+                return List;
+            };
+            if (L.AttGroup >= 0 && L.AttSelfId >= 0)
+            {
+                const uint32_t Group = At<uint32_t>(Img, P + L.AttGroup);
+                if (Group != 0)
+                {
+                    A["group"] = Hex8(Group);
+                    if (const std::string S = V.ScriptString ? V.ScriptString(Group) : std::string(); !S.empty()) A["group_name"] = S;
+                }
+                A["self_id"] = Hex8(At<uint32_t>(Img, P + L.AttSelfId));
+                if (L.AttExGroups >= 0 && L.AttExGroupCount >= 0)
+                    if (const uint8_t Nx = At<uint8_t>(Img, P + L.AttExGroupCount); Nx != 0) A["excludes_groups"] = U32List(Target(P + L.AttExGroups), Nx);
+                if (L.AttExSlots >= 0 && L.AttExSlotCount >= 0)
+                    if (const uint8_t Nx = At<uint8_t>(Img, P + L.AttExSlotCount); Nx != 0) A["excludes_slots"] = U32List(Target(P + L.AttExSlots), Nx);
+                if (L.AttExIds >= 0 && L.AttExIdCount >= 0)
+                    if (const uint8_t Nx = At<uint8_t>(Img, P + L.AttExIdCount); Nx != 0) A["excludes_ids"] = U32List(P + L.AttExIds, Nx);
+                if (L.AttBrings >= 0 && L.AttBringCount >= 0)
+                    if (const uint8_t Nx = At<uint8_t>(Img, P + L.AttBringCount); Nx != 0)
+                    {
+                        Json List = Json::array();
+                        for (uint32_t K = 0; K < Nx; K++) List.push_back(Hex(At<uint64_t>(Img, P + L.AttBrings + 0x10 * (int64_t)K) & IdBits));
+                        A["brings"] = std::move(List);
+                    }
+            }
+            // the alternate mode's flags; an attachment whose u8 AttAltMode is 1 overrides the fire time
+            // and the burst delay only as the active alternate mode (0x4637124, 0x463a9b0)
+            if (L.AltSlot >= 0 && L.AttAltActive >= 0 && L.AttAltWithOthers >= 0 && L.AttAltNormal >= 0)
+            {
+                if (L.AttAltMode >= 0 && At<uint8_t>(Img, P + L.AttAltMode) == 1) A["alt_only_overrides"] = 1;
+                A["alt_active"] = At<uint8_t>(Img, P + L.AttAltActive);
+                uint8_t Keep = At<uint8_t>(Img, P + L.AttAltWithOthers);
+                // (0x4653c37: alone only when the block is set and its byte is 0)
+                if (L.AttAltBlock >= 0 && L.AttAltBlockKeep >= 0)
+                    if (const int64_t B = Target(P + L.AttAltBlock); B < 0 || At<uint8_t>(Img, B + L.AttAltBlockKeep) != 0) Keep = 1;
+                A["alt_with_others"] = Keep;
+                A["alt_normal"] = At<uint8_t>(Img, P + L.AttAltNormal);
+            }
+            // max ammo: the scale, and the clip override block's max ammo, reserve magazines and flag
+            if (L.AttMaxAmmoScale >= 0) A["max_ammo_scale"] = (double)At<float>(Img, P + L.AttMaxAmmoScale);
+            if (L.AttClipOverride >= 0 && L.AttAmmoMax >= 0 && L.AttAmmoReserve >= 0 && L.AttAmmoByClips >= 0)
+                if (const int64_t Ov = Target(P + L.AttClipOverride); Ov >= 0)
+                    A["ammo_override"] = Json{ { "max_ammo", At<int32_t>(Img, Ov + L.AttAmmoMax) },
+                                               { "reserve_clips", At<int32_t>(Img, Ov + L.AttAmmoReserve) },
+                                               { "by_clips", At<uint8_t>(Img, Ov + L.AttAmmoByClips) } };
+            if (L.AttClipOverride >= 0 && L.AttAmmoPellets >= 0)
+                if (const int64_t Ov = Target(P + L.AttClipOverride); Ov >= 0) A["pellets_override"] = At<int32_t>(Img, Ov + L.AttAmmoPellets);
+            if (L.AttClass >= 0)
+                if (const uint8_t Cl = At<uint8_t>(Img, P + L.AttClass); Cl != 0) A["class_override"] = Cl;
             Attachments[Hex(Id)] = std::move(A);
             N.Attachments++;
         }
@@ -926,6 +1770,7 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
           { "explosion_inner_radius_m", "explosion_mid_radius_m", "explosion_mid_damage" });
     After("prone_speed_scale", L.MoveSpeedScale.At >= 0, { "move_speed_scale" });
     After(L.MoveSpeedScale.At >= 0 ? "move_speed_scale" : "prone_speed_scale", L.AdsMoveSpeedScale.At >= 0, { "ads_move_speed_scale" });
+    After("hit_soft", L.DefPenetration >= 0, { "penetration_level", "penetration_depth_scale" });
 
     // the UI's speed: base x suit multiplier(s), through the weapon's scale entry (max(add, 0) x mul
     // x speed + offset; mul = the tunables scale, add 1, offset 0)
@@ -1067,6 +1912,8 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
             }
             Cells["move_speed_scale"] = FloatCell("move_speed_scale", 4);
             Cells["ads_move_speed_scale"] = FloatCell("ads_move_speed_scale", 4);
+            if (W.contains("penetration_level")) Cells["penetration_level"] = std::to_string(W["penetration_level"].get<int>());
+            if (W.contains("penetration_depth_scale")) Cells["penetration_depth_scale"] = Num(W["penetration_depth_scale"].get<double>(), 4);
             Table.push_back({ Name, K, std::move(Cells) });
         }
     }
@@ -1082,21 +1929,46 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
                          "Zones read so far (facts/): ";
     for (size_t I = 0; I < Zones.size(); I++) Readme += (I ? ", " : "") + Zones[I];
     Readme += L.Columns;
-    std::string AttCsv, LoadCsv;
-    const size_t AttRows = AttachmentTables(L, Weapons, Tunables, Pkgs, Attachments, AttachmentNames, Strings, Dir, AttCsv, LoadCsv);
+    std::string AttCsv, LoadCsv, RulesCsv, PapCsv;
+    std::set<std::string> WantedSettings;
+    for (const auto& W : Weapons)
+        if (W.contains("custom_settings")) WantedSettings.insert(W["custom_settings"].get<std::string>());
+    BundleSet Bundles;
+    const auto Paps = PapTable(L, Dir, WantedSettings, Bundles);
+    if (!Paps.empty())
+    {
+        PapCsv = "weapon,base_attachment,pap_attachment,pap4_attachment,variant_when_holding,variant_pap,variant_pap4\n";
+        for (const auto& [W, P] : Paps)
+        {
+            const std::string Head = CsvField(W) + "," + CsvField(P.Base) + "," + CsvField(P.Pap) + "," + CsvField(P.Pap4) + ",";
+            if (P.Variants.empty()) PapCsv += Head + ",,\n";
+            for (const auto& V : P.Variants) PapCsv += Head + CsvField(V.Holding) + "," + CsvField(V.Pap) + "," + CsvField(V.Pap4) + "\n";
+        }
+    }
+    const size_t AttRows = AttachmentTables(L, Weapons, Tunables, Pkgs, Attachments, AttachmentNames, Strings, Dir, AttCsv, LoadCsv, RulesCsv, Paps);
     Readme += L.AttachmentNotes;
+    if (!RulesCsv.empty()) Readme += L.RulesNotes;
     std::string PartsCsv;
     const size_t PartRows = L.DefaultAttachments >= 0 || L.DefaultSlots >= 0 ? DefaultPartsTable(L, Weapons, Attachments, AttachmentNames, Strings, PartsCsv) : 0;
     if (PartRows != 0) Readme += L.DefaultPartsNotes;
     std::string AnimCsv;
     const size_t AnimRows = L.PkgAnims >= 0 ? AnimTable(Weapons, Pkgs, AnimCsv) : 0;
     if (AnimRows != 0) Readme += L.AnimNotes;
+    if (L.DefCustomSettings >= 0)
+    {
+        // each weapon's first tunables set's cells, for the weapons a custom settings bundle names
+        std::map<std::string, std::map<std::string, std::string>> FirstRows;
+        for (const auto& R : Table) FirstRows.try_emplace(R.Weapon, R.Cells);
+        if (CustomSettingsFiles(L, Weapons, Strings, Dir, Bundles, Paps, FirstRows, AttCsv) != 0) Readme += L.CustomSettingsNotes;
+    }
     std::error_code E2;
     fs::create_directories(Dir, E2);
     if (AttRows != 0)
     {
         ExportWriters::WriteBytes(fs::path(Dir) / "weapon_attachments.csv", (const uint8_t*)AttCsv.data(), AttCsv.size());
         if (!LoadCsv.empty()) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_loadouts.csv", (const uint8_t*)LoadCsv.data(), LoadCsv.size());
+        if (!PapCsv.empty()) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_zm_pap.csv", (const uint8_t*)PapCsv.data(), PapCsv.size());
+        if (!RulesCsv.empty()) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_attachment_rules.csv", (const uint8_t*)RulesCsv.data(), RulesCsv.size());
     }
     if (PartRows != 0) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_default_parts.csv", (const uint8_t*)PartsCsv.data(), PartsCsv.size());
     if (AnimRows != 0) ExportWriters::WriteBytes(fs::path(Dir) / "weapon_anims.csv", (const uint8_t*)AnimCsv.data(), AnimCsv.size());
@@ -1190,6 +2062,7 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
             Put(D, L.DefAnimPkg, "animpkg", "");
             Put(D, L.DefOverrides, "animpkg_overrides", "");
             Put(D, L.DefOverrideCount, "animpkg_override_count", "i32");
+            Put(D, L.DefCustomSettings, "custom_settings", "");
             Byte(D, L.DefClass, "class");
         }
         Tunables(true);
@@ -1204,6 +2077,18 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L, const 
         Put("", L.AttModifiers, "modifiers", "");
         Put("", L.AttAdsOverride, "ads_time_override", "");
         Put("", L.AttExplosion, "explosion_radius_override", "");
+        Put("", L.AttDamageTable, "damage_table_override", "");
+        Put("", L.AttDamageScales, "damage_range_scales", "");
+        Put("", L.AttRangeScale, "range_scale", "f32");
+        Put("", L.AttHit, "hit_multipliers_override", "");
+        Put("", L.AttPenetration, "penetration_override", "");
+        Put("", L.AttPenetrationAdd, "penetration_level_add", "i32");
+        Put("", L.AttPerks, "perks", "");
+        Put("", L.AttGroup, "group", "");
+        Put("", L.AttSelfId, "self_id", "");
+        Put("", L.AttExGroups, "excludes_groups", "");
+        Put("", L.AttExSlots, "excludes_slots", "");
+        Put("", L.AttMaxAmmoScale, "max_ammo_scale", "f32");
         Put("", L.AttWorldModel, "world_model", L.AttModelCount >= 0 ? "" : "hash");
         Put("", L.AttViewModel, "view_model", L.AttModelCount >= 0 ? "" : "hash");
     }

@@ -55,6 +55,13 @@ size_t Bo3ExportZoneImages(const std::string& FastFilePath, const std::string& X
 bool Bo3DescribeZoneImage(ByteView Zone, size_t Start, XPAKCache& Cache,
                           Bo3ZoneImage& Image, const std::string& ZoneStem = std::string());
 
+// The images one loaded package's index names, with their data in it (XPAKCache::NamedObjects):
+// a 2D interface image may be in no zone (Lua and string tables name it, its record is only the
+// package's). Per name its largest record: its size and format from the index (its "width" is the
+// image's height), its levels the mip chain its size holds, largest first. Unread: the records
+// left out (a format or a size that does not fit).
+std::vector<Bo3ZoneImage> Bo3DescribePackageImages(XPAKCache& Cache, const std::string& Package, size_t& Unread);
+
 // Writes described images (Bo3ExportZoneImages' second half). Returns how many were written.
 // Step(done, count) as it goes, when given (DiskGame::Context::Advance); false stops there.
 size_t Bo3WriteZoneImages(ByteView Zone, const std::vector<Bo3ZoneImage>& Images,

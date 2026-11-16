@@ -15,6 +15,25 @@ namespace
 {
     bool Starts(const std::string& S, const char* Prefix) { return S.rfind(Prefix, 0) == 0; }
 
+    // cod2map64.exe's own checks on brushes and collision (the constants it compares with,
+    // graywolf-tools/docs/bo3-modtools-limits.md): MAX_MAP_PLANES_COMPILE 0xa0000 slots,
+    // MAX_MAP_BRUSHES (the linker's 65535), MAX_MAP_BRUSHSIDES 0xa0000, MAX_MAP_COLLISIONTRIS 0x80000,
+    // MAX_MAP_COLLISIONVERTS 0x40000, non-dynamic brush models 0x400, MAX_MAP_ENTITIES 0x20000,
+    // "Exceeded %d static map models" 0x10000, MAX_MAP_MATERIALS 0x2e00, MAX_MAP_TRIANGLES
+    // 0x2ee000; Radiant's 256 exploders
+    IRadiantTarget::Limits CompilerLimits()
+    {
+        IRadiantTarget::Limits L;
+        L.Entities = 0x20000, L.StaticModels = 0x10000, L.Materials = 0x2e00, L.WorldTriangles = 0x2ee000;
+        // brushes: cod2map's MAX_MAP_BRUSHES is 0x20000, but the linker keeps them in 16 bits
+        // (CMod_LoadBrushes, 65535); assets: the linker's fast file ("More than %i assets")
+        L.PlaneSlots = 0xa0000, L.Brushes = 0xffff, L.BrushSides = 0xa0000, L.Assets = 0x10000;
+        L.CollisionTriangles = 0x80000, L.CollisionVertices = 0x40000;
+        L.Exploders = 0x100, L.BrushModels = 0x400;
+        return L;
+    }
+    // the game's map as it has it (a .map beside the export, for Black Ops III's Radiant or an older
+    // game's): its models, names and logic; told what Black Ops III's cod2map would refuse of it
     class Plain final : public IRadiantTarget
     {
     public:
@@ -31,20 +50,21 @@ namespace
         float MinModelScale() const override { return -std::numeric_limits<float>::infinity(); }
         // as the clip map has them: coplanar (about 0.08 degrees)
         Merge CollisionMerge() const override { return { 0.01, 1.0 - 1e-6 }; }
-        double CollisionPlaneBudget() const override { return std::numeric_limits<double>::infinity(); }
-        double BrushSideBudget() const override { return std::numeric_limits<double>::infinity(); }
+        // prisms while Black Ops III's cod2map takes them with room to spare: BO2's zm_transit's
+        // 22078 prisms (about 509000 slots with the clip map's brushes) stopped a user's build on
+        // MAX_MAP_PLANES_COMPILE, and ours, brushes alone, on MAX_MAP_NODES; as patches it builds
+        double CollisionPlaneBudget() const override { return 0xa0000 * 0.5; }
         size_t MaxModelSurfaces() const override { return std::numeric_limits<size_t>::max(); }
         size_t MaxMaterialVertices() const override { return std::numeric_limits<size_t>::max(); }
         double MinPatchTriangleArea() const override { return 0.0; }
         size_t MaxBrushSides() const override { return std::numeric_limits<size_t>::max(); }
-        double CollisionTriangleBudget() const override { return std::numeric_limits<double>::infinity(); }
         Margin PlayMargin() const override { return { 0.0, 0.0 }; }
-        Limits HardLimits() const override { return {}; }
+        Limits HardLimits() const override { return CompilerLimits(); }
+        bool Fits() const override { return false; }
 
     private:
         std::string Map, None;
     };
-
     // In a mod tools tree: the map named after its game too (CoD4's and MWR's mp_shipment never
     // share a .map, a usermap or an asset name there), every asset name the map's own, so two maps
     // or BO3's stock assets (lambert1) never define one twice; XMODEL_BIN, the linker refusing
@@ -88,29 +108,28 @@ namespace
         // every collision triangle a patch of its own, at its exact height, which takes no plane
         // (cod2map's MAX_MAP_PLANES, 131072, ended Ghosts' and AW's prisms): no prism at all
         double CollisionPlaneBudget() const override { return 0.0; }
-        // cod2map alone on variants of IW's mp_flip (cod2map_probe): 153912 brush sides stop on
-        // MAX_MAP_PLANES_COMPILE, about 86000 pass; Ghosts' mp_prisonbreak built with 72110
-        double BrushSideBudget() const override { return 100000.0; }
-        // the linker keeps a model's surface count in a byte: Ghosts' dense tiles had 256 and more
-        // ("(SMallType) 0x0 == (BigType) 0x100")
+        // the linker keeps a model's surface count in a byte (255; it errs past 256): Ghosts' dense
+        // tiles had 256 and more ("(SMallType) 0x0 == (BigType) 0x100")
         size_t MaxModelSurfaces() const override { return 200; }
-        // the linker makes one draw surface of a model's surfaces of one material, of 16-bit
-        // indices ("surf->numverts <= (64 * 1024 - 2)": Cold War's p9_wz_silo_panel_metal); some
-        // room for the vertices it adds
+        // the linker makes one draw surface of a model's surfaces of one material: 65533 vertices at
+        // most (">= 0xfffe": Cold War's p9_wz_silo_panel_metal) and 32768 triangles ("tris * 3 >
+        // 0x18000"); 60000 corners keep both (20000 triangles)
         size_t MaxMaterialVertices() const override { return 60000; }
         // cod2map asserts on a collision patch whose triangle it drops ("tot_faces == triCount",
         // AW): slivers of under a square unit left out
         double MinPatchTriangleArea() const override { return 1.0; }
         // "Winding point limit (64) exceeded on brush face" (BO4's mp_frenetic: a cylinder's)
         size_t MaxBrushSides() const override { return 60; }
-        // the maps built so far kept up to 95000 (Ghosts' mp_prisonbreak 89806); IW's mp_flip
-        // (122988) stopped cod2map on MAX_MAP_PLANES_COMPILE
-        double CollisionTriangleBudget() const override { return 95000.0; }
         Margin PlayMargin() const override { return { 4096.0, 2048.0 }; }
         // the linker's byte of surfaces (0x100 asserts) and 16-bit indices (64 * 1024 - 2),
-        // cod2map's asset names (64), the brush sides of IW's mp_flip that stopped cod2map once
-        // its largest brush models were left out (about 86000 built, 153912 did not)
-        Limits HardLimits() const override { return { 255, 64 * 1024 - 2, 64, 153000 }; }
+        // cod2map's asset names (64); cod2map64.exe's own checks (CompilerLimits)
+        bool Fits() const override { return true; }
+        Limits HardLimits() const override
+        {
+            Limits L = CompilerLimits();
+            L.ModelSurfaces = 255, L.MaterialVertices = 64 * 1024 - 2, L.NameLength = 64;
+            return L;
+        }
         // static, lit per vertex: a static model is otherwise lit from one point, a tile's the
         // world's origin, under BO1's mp_firingrange's ground (its floors black). Treyarch's own
         // long models (barbed wire, sandbag rows, boards) carry "vertexbake" "1.0" so (map_source/_prefabs)

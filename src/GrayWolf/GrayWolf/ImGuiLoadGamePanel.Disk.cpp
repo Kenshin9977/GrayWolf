@@ -152,6 +152,41 @@ namespace
         ImGui::EndCombo();
     }
 
+    // XANIM_BIN's skeleton (setting xanim_bin_rig, --xanim-rig): the model the anims' GDT entries
+    // name, whose bones every frame poses; without it no XANIM_BIN is written
+    void XAnimRigRow()
+    {
+        static char Buf[1024];
+        static bool Loaded = false;
+        static std::string Checked;
+        static bool Exists = false;
+        if (!Loaded)
+        {
+            SetBuf(Buf, sizeof(Buf), SettingsManager::GetSetting("xanim_bin_rig", ""));
+            Loaded = true;
+        }
+        const char* Tip = "XANIM_BIN anims are posed on this model's skeleton: the .xmodel_bin or .xmodel_export their "
+                          "GDT entry names as \"model\" (a Mod Tools model_export file, or one exported here). Each frame "
+                          "poses the anim's bones (and their parents) on it; an anim's bones it lacks are left out.";
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("XANIM_BIN skeleton");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Tip);
+        ImGui::SameLine(ImGui::GetFontSize() * 12.0f);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputTextWithHint("##xanimrig", ".xmodel_bin or .xmodel_export file", Buf, sizeof(Buf)))
+            SettingsManager::SetSetting("xanim_bin_rig", Buf);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Tip);
+        if (Checked != Buf)
+        {
+            Checked = Buf;
+            std::error_code Ec;
+            Exists = !Checked.empty() && std::filesystem::is_regular_file(std::filesystem::path(Checked), Ec);
+        }
+        if (!Exists)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), Buf[0] == 0 ? "No skeleton: no XANIM_BIN is written"
+                                                                          : "No such file: no XANIM_BIN is written");
+    }
+
     // The formats the ticked (or picked) kinds are written in: the settings every export reads,
     // the GUI's as the CLI's (--model-format, --anim-format, --image-format, --audio-format)
     template <class Pred>
@@ -166,7 +201,10 @@ namespace
         if (Models)
             FormatsRow("Model format", "The files each model is written as; several may be ticked.\nThe Library shows Cast, SEModel and XMODEL_EXPORT models","##fmtmodel", ExportFormats::Models);
         if (Anims)
+        {
             FormatsRow("Anim format", "The files each animation is written as; several may be ticked.\nThe Library shows Cast and SEAnim anims","##fmtanim", ExportFormats::Anims);
+            if (SettingsManager::GetSetting("export_xanimbin") == "true") XAnimRigRow();
+        }
         if (Images)
             FormatRow("Image format", "Images, and the textures written beside the models", "##fmtimage", ExportFormats::ImageSetting,
                       ExportFormats::ImageDefault, ExportFormats::Images);
@@ -533,6 +571,10 @@ void LoadGamePanel::DoDiskExport()
     LastRun.Cancelled = T.Cancelled;
     LastRun.Written = Written;
     LastRun.Failures = T.Failures.size();
+    LastRun.Causes = DiskGame::Causes(T.Failures);
+    LastRun.Absent = T.Absent.size();
+    LastRun.AbsentCauses = DiskGame::Causes(T.Absent);
+    LastRun.Warnings = T.Warnings;
     LastRun.ZoneErrors = T.ZoneErrors;
     LastRun.OutDir = C.OutRoot;
     LastRun.RunLog = DiskGame::RunLogPath(C);
@@ -1077,6 +1119,29 @@ void LoadGamePanel::DrawLastRun()
         }
         EndBanner();
     }
+    // what the install does not hold (a texture the game streams on demand, a pack not installed):
+    // not written, not a failure
+    if (!R.Warnings.empty())
+    {
+        BeginBanner("##lastrun_warn", ImVec4(0.24f, 0.20f, 0.10f, 1.0f), ImVec4(0.52f, 0.42f, 0.16f, 1.0f));
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted((std::to_string(R.Warnings.size()) + (R.Warnings.size() == 1 ? " warning" : " warnings") +
+                                " (written, but past what the target's tools take; see the export log)").c_str());
+        for (size_t K = 0; K < R.Warnings.size() && K < 6; K++) ImGui::BulletText("%s", R.Warnings[K].c_str());
+        ImGui::PopTextWrapPos();
+        EndBanner();
+    }
+    if (R.Absent > 0)
+    {
+        BeginBanner("##lastrun_absent", ImVec4(0.16f, 0.16f, 0.18f, 1.0f), ImVec4(0.32f, 0.32f, 0.36f, 1.0f));
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted((Thousands(R.Absent) + (R.Absent == 1 ? " asset is" : " assets are") +
+                                " not in this install, so not written (see the export log)").c_str());
+        for (size_t K = 0; K < R.AbsentCauses.size() && K < 3; K++)
+            ImGui::BulletText("%s %s", Thousands(R.AbsentCauses[K].first).c_str(), R.AbsentCauses[K].second.c_str());
+        ImGui::PopTextWrapPos();
+        EndBanner();
+    }
     if (!R.ZoneErrors.empty() || R.Failures > 0)
     {
         BeginBanner("##lastrun_err", ImVec4(0.23f, 0.13f, 0.14f, 1.0f), ImVec4(0.48f, 0.23f, 0.25f, 1.0f));
@@ -1096,7 +1161,15 @@ void LoadGamePanel::DrawLastRun()
             }
         }
         if (R.Failures > 0)
+        {
             ImGui::TextColored(Amber, "%s assets could not be written (see the export log)", Thousands(R.Failures).c_str());
+            // the causes, the largest first (the log has each one)
+            ImGui::PushTextWrapPos(0.0f);
+            for (size_t K = 0; K < R.Causes.size() && K < 4; K++)
+                ImGui::BulletText("%s %s", Thousands(R.Causes[K].first).c_str(), R.Causes[K].second.c_str());
+            if (R.Causes.size() > 4) ImGui::TextDisabled("and %zu more causes", R.Causes.size() - 4);
+            ImGui::PopTextWrapPos();
+        }
         if (R.OutDir.empty())
         {
             ImGui::SameLine();

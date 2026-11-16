@@ -27,6 +27,8 @@ namespace Maps
         // the same, for work that measures several things: it adds them to the counters it is given
         std::function<void(std::map<std::string, size_t>& Counters)> LaterCounters;
         std::string LaterWhat;   // what the work later does, for the progress and the log ("" : "once the dependencies are written")
+        // written, but past what the target's tools take (DiskGame::Totals::Warnings)
+        std::vector<std::string> Warnings;
     };
 
     // What a writer tells of its work as it goes: a stage ("texturing brushes"), Done of Count (0
@@ -53,7 +55,9 @@ namespace Maps
     // entries of its models' materials (the material_gdt setting); Tree: written into a Black Ops III
     // Mod Tools tree (the mod_tools setting, ModToolsTree.h), "" beside the map; Patches: the drawn
     // world as a patch per triangle rather than models (the map_surfaces setting); Game: the source
-    // game's id
-    std::unique_ptr<ISceneWriter> RadiantWriter(bool Materials, const std::string& Tree, bool Patches, const std::string& Game);
+    // game's id; Props: the placements kept (the map_props setting: "all", "no_foliage", "large"); Fit:
+    // the fitting of a mod tools level to BO3's tools' limits (the map_fit setting: "fit", "strict", "off")
+    std::unique_ptr<ISceneWriter> RadiantWriter(bool Materials, const std::string& Tree, bool Patches, const std::string& Game,
+                                                const std::string& Props = "all", const std::string& Fit = "fit");
     const ISceneWriter& CollisionWriter();   // MapCollisionWriter.cpp: the clip map's collision as JSON
 }

@@ -22,6 +22,7 @@
 #include "XboxPackages.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -116,8 +117,12 @@ const Setting MapCast{ "map_cast", "Map scene", { { "off", ".glb (Blender)" }, {
 const Setting MapRadiant{ "map_radiant", "Map source", { { "off", "None" }, { "on", "+ Radiant .map (mod tools)" } },
                           "off", { Kind::Map } };
 
-const Setting MapSurfaces{ "map_surfaces", "Radiant surfaces", { { "models", "As models (fast in Radiant)" }, { "patches", "A patch per triangle" } },
+const Setting MapSurfaces{ "map_surfaces", "Radiant surfaces", { { "models", "As models (fast in Radiant)" }, { "patches", "A patch per triangle (small maps only)" } },
                            "models", { Kind::Map } };
+const Setting MapProps{ "map_props", "Radiant placements",
+                        { { "all", "All" }, { "no_foliage", "All but foliage" }, { "large", "No foliage, no small props" } }, "all", { Kind::Map } };
+const Setting MapFit{ "map_fit", "Radiant fitting (mod tools)",
+                      { { "fit", "Fit BO3's limits (85 %)" }, { "strict", "Fit with more room (70 %)" }, { "off", "Off (only told)" } }, "fit", { Kind::Map } };
 const Setting GdtMaterials{ "material_gdt", "Mod tools materials", { { "off", "None" }, { "on", "+ BO3 material GDT" } },
                             "off", { Kind::Model, Kind::Map } };
 const Setting SoundAliases{ "sound_aliases", "Sound aliases", { { "off", "None" }, { "on", "+ alias CSV (BO3 mod tools)" } },
@@ -146,7 +151,7 @@ const Setting CharacterHeads{ "char_heads", "Character heads",
 
 const std::vector<Setting>& CommonSettings()
 {
-    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps, ModelImagesFolder };
+    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, MapProps, MapFit, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps, ModelImagesFolder };
     return All;
 }
 
@@ -443,6 +448,36 @@ const IDiskGame* Detect(const std::string& Input)
     return nullptr;
 }
 
+std::vector<std::pair<size_t, std::string>> Causes(const std::vector<std::string>& Lines)
+{
+    std::map<std::string, size_t> By;
+    for (const std::string& Line : Lines)
+    {
+        const size_t Colon = Line.find(": ");
+        const std::string Rest = Colon == std::string::npos ? Line : Line.substr(Colon + 2);
+        const size_t K = Rest.find(' '), N = K == std::string::npos ? K : Rest.find(' ', K + 1);
+        std::string Why = N == std::string::npos ? std::string() : Rest.substr(N + 1), Cause;
+        int Depth = 0;
+        for (size_t I = 0; I < Why.size(); I++)
+        {
+            const char Ch = Why[I];
+            if (Ch == '(') Depth++;
+            else if (Ch == ')') Depth = Depth > 0 ? Depth - 1 : 0;
+            else if (Depth == 0 && std::isdigit((unsigned char)Ch))
+            {
+                if (Cause.empty() || Cause.back() != 'N') Cause += 'N';
+            }
+            else if (Depth == 0) Cause += Ch;
+        }
+        while (!Cause.empty() && Cause.back() == ' ') Cause.pop_back();
+        By[Rest.substr(0, K) + (Cause.empty() ? std::string() : ": " + Cause)]++;
+    }
+    std::vector<std::pair<size_t, std::string>> Out;
+    for (const auto& [C, Count] : By) Out.emplace_back(Count, C);
+    std::stable_sort(Out.begin(), Out.end(), [](const auto& A, const auto& B) { return A.first > B.first; });
+    return Out;
+}
+
 std::string Report(const Totals& T)
 {
     std::ostringstream Os;
@@ -468,6 +503,7 @@ std::string Report(const Totals& T)
     for (const auto& F : T.Failures) Os << "failure " << F << "\n";
     if (!T.Absent.empty()) Os << "absent_from_install=" << T.Absent.size() << "\n";
     for (const auto& A : T.Absent) Os << "absent " << A << "\n";
+    for (const auto& W : T.Warnings) Os << "warning " << W << "\n";
     if (!T.Unresolved.empty()) Os << "deps_unresolved=" << T.Unresolved.size() << "\n";
     for (const auto& U : T.Unresolved) Os << "unresolved " << U << "\n";
     if (!T.IndexRenamed.empty()) Os << "index_renamed=" << T.IndexRenamed.size() << "\n";
@@ -1475,6 +1511,7 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
             Mon.Log("  each one: " + List.string());
         }
     }
+    for (const auto& W : T.Warnings) Mon.Log("  warning " + W);
     Mon.Summarize(T);
     return T;
 }

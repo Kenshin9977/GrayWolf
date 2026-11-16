@@ -141,6 +141,12 @@
     <ClInclude Include="XMBExport.h">
       <Filter>Header Files\Exporters</Filter>
     </ClInclude>
+    <ClInclude Include="XBin.h">
+      <Filter>Header Files\Exporters</Filter>
+    </ClInclude>
+    <ClInclude Include="XAnimBinExport.h">
+      <Filter>Header Files\Exporters</Filter>
+    </ClInclude>
     <ClInclude Include="GLTFExport.h">
       <Filter>Header Files\Exporters</Filter>
     </ClInclude>
@@ -243,6 +249,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="XMBExport.cpp">
+      <Filter>Source Files\Exporters</Filter>
+    </ClCompile>
+    <ClCompile Include="XBin.cpp">
+      <Filter>Source Files\Exporters</Filter>
+    </ClCompile>
+    <ClCompile Include="XAnimBinExport.cpp">
       <Filter>Source Files\Exporters</Filter>
     </ClCompile>
     <ClCompile Include="GLTFExport.cpp">

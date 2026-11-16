@@ -34,7 +34,7 @@ namespace DiskGame
 {
     // The asset kinds, one row each in Kinds below. A new kind is a row there (and here) plus its
     // exporter in the readers that support it: --type, the report and the GUI read the table.
-    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons, WeaponStats, MapInfo, Scriptables, MapEnts, AiTypes, Material };
+    enum class Kind { Model, Anim, Image, Sound, Rawfile, Data, Localize, Map, Script, Gdt, Fx, MaterialLinks, SoundLinks, AssetRefs, Techsets, ScriptBundles, Weapons, WeaponStats, MapInfo, Scriptables, MapEnts, AiTypes, Material, Perks };
 
     struct KindInfo
     {
@@ -103,6 +103,10 @@ namespace DiskGame
         // effect draws with, pulled from the zone that defines it (ZonekitZone::ExportMaterials,
         // FxPreview reads them); by name only
         { Kind::Material, "material", "materials", "Materials (JSON + images)", false, true },
+        // the perks (Black Ops 7 and Modern Warfare 4's perk asset: its key/value settings tree, the
+        // values the game reads from it named with their units) and the player's base settings
+        // they scale (health, sprint speeds), one JSON per asset under its zone; by name only
+        { Kind::Perks, "perks", "perks", "Perks (JSON)", false, true },
     };
     constexpr bool KindsInOrder()
     {
@@ -213,6 +217,13 @@ namespace DiskGame
     // map_surfaces: the drawn world no brush side draws, in the Radiant source, as models (tiles of
     // the world, few for Radiant to draw) or a patch per triangle
     extern const Setting MapSurfaces;
+    // map_props: the placements the Radiant source keeps: all, all but foliage (grass, weeds, bushes:
+    // a modern map's tens of thousands), or neither foliage nor small props (under 24 units), for a
+    // level the Black Ops III tools build in less time and fewer static models
+    extern const Setting MapProps;
+    // map_fit: a mod tools level fitted to Black Ops III's tools' limits while it is written (fit: at 0.85 of
+    // each, what a player misses least left out first; strict: at 0.7; off: only told, <map>.limits.txt)
+    extern const Setting MapFit;
     // material_gdt: also Black Ops III Mod Tools GDT entries for the exported materials (MaterialGdt.h):
     // the models' as source_data/graywolf_<out folder>.gdt (their XMODEL_EXPORT files naming them),
     // a map's in its Radiant GDT (with map_radiant)
@@ -394,6 +405,9 @@ namespace DiskGame
         // the install holds (the game ships without it). Reported, not a failure.
         std::vector<std::string> Absent;
         void Lacks(const std::string& Zone, Kind K, const std::string& Name, const std::string& Why);
+        // "<zone>: <what>": written, but past what the target's tools take (a Radiant .map past
+        // Black Ops III's compiler limits, a mode turned down for the map's size). Not a failure.
+        std::vector<std::string> Warnings;
         // the run's asset index: one row per file a data kind wrote (bundles, mapinfo, struct dumps,
         // mapents), written once after the run as <out>/asset_index.csv (Export)
         struct IndexRow
@@ -916,4 +930,7 @@ namespace DiskGame
                   const Context& C, const ProgressFn& OnProgress = nullptr, const std::atomic<bool>* Cancel = nullptr);
 
     std::string Report(const Totals& T);
+    // Failures' or Absent's lines ("<zone>: <kind> <name> <why>") by cause, "<kind>: <why>" its details
+    // (numbers, a parenthesis) left out, the largest first: what a banner names
+    std::vector<std::pair<size_t, std::string>> Causes(const std::vector<std::string>& Lines);
 }

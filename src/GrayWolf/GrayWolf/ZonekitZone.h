@@ -374,6 +374,10 @@ protected:
         std::function<std::unique_ptr<XImageDDS>(int64_t Pos, const std::string& Name)> Decode;
         std::function<bool(int64_t Pos)> Held;             // unset: every image listed is here
         std::function<std::string(int64_t Pos)> FailWhy;   // what a failure says, "" unset
+        // an image not read whose pixels the install does not hold (its mips in no package: a texture
+        // the game streams on demand, a pack not installed): reported as absent (Totals::Lacks), not
+        // failed, with what Absent returns; "" or unset: a failure
+        std::function<std::string(int64_t Pos)> Absent;
         bool OnePerName = false;     // a later image of a name already written is left out
         bool NamesChecked = false;   // an unnamed image is left out, an unreadable name failed
     };
@@ -562,6 +566,9 @@ protected:
         int64_t Table = 0x10, TypeHash = -1;
         std::vector<std::pair<std::string, int64_t>> Strings, Hashes;
         std::function<uint64_t(const std::string&)> NameHash;
+        // set: each tree once read (its name and settings type found), before it is written or
+        // handed to Context::OnTree: a game names the fields it has proven (Black Ops 7's perks)
+        std::function<void(nlohmann::ordered_json&)> Annotate;
     };
     void ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> Owners, const ScriptBundleLayout& L,
                             std::function<std::string(const std::string&)> Decrypt = nullptr);

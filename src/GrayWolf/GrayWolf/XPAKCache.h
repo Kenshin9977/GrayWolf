@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "CoDPackageCache.h"
 
@@ -33,10 +35,17 @@ public:
         uint64_t Size = 0;   // size0
         uint32_t Parts = 0;  // how many offsetN/sizeN pairs
         std::string Type;
+        // an image's fields as the index writes them: "width" and "height" (Black Ops III's: the
+        // image's height and width, XPAKSupport), "levels", "format" (BC7, BC1_SRGB...), "semantic"
+        uint32_t Width = 0, Height = 0, Levels = 0;
+        std::string Format, Semantic;
     };
     // Searches the index of the loaded packages whose file stem is Stem or starts with Stem + "_"
     // (each read once, on first use); false when none names it.
     bool FindNamed(const std::string& Name, const std::string& Stem, NamedObject& Out);
+    // Every named object of one loaded package (its path) whose data a loaded package holds,
+    // (lower-case name, object), in index order: a name may have several (an image's mips)
+    std::vector<std::pair<std::string, NamedObject>> NamedObjects(const std::string& Package);
 
     static std::unique_ptr<uint8_t[]> DecompressPackageObject(uint64_t cacheID, uint8_t* buffer, size_t bufferSize, size_t decompressedSize, size_t& resultSize,
                                                                 bool paddedBlocks = false);
@@ -56,6 +65,8 @@ private:
     // Whether a package aligns its data blocks to 4 bytes (its version, read when its handle opens)
     std::unordered_map<uint32_t, bool> Padded;
 
+    // the named objects of package P's index whose data a loaded package holds
+    std::vector<std::pair<std::string, NamedObject>> ReadNamed(uint32_t P);
     // FindNamed's index, per package read so far (lower-case names)
     std::mutex NamedLock;
     std::unordered_map<uint32_t, std::unordered_map<std::string, NamedObject>> Named;

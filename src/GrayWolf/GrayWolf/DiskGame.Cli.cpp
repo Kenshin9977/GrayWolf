@@ -43,6 +43,8 @@ namespace
         { "map_cast", "--map-cast", &CliOptions::MapCast },
         { "map_radiant", "--map-radiant", &CliOptions::MapRadiant },
         { "map_surfaces", "--map-surfaces", &CliOptions::MapSurfaces },
+        { "map_props", "--map-props", &CliOptions::MapProps },
+        { "map_fit", "--map-fit", &CliOptions::MapFit },
         { "material_gdt", "--material-gdt", &CliOptions::MaterialGdt },
         { "split_maps", "--split-maps", &CliOptions::SplitMaps },
         { "model_images", "--model-images", &CliOptions::ModelImages },
@@ -145,7 +147,7 @@ int Run(const IDiskGame& Game, const CliOptions& Options, const std::string& Inp
         O.Settings["mod_tools_root"] = ModToolsTree::Resolve(O.Settings["mod_tools_root"], Error);
         if (O.Settings["mod_tools_root"].empty()) return Fail("--mod-tools: " + Error);
     }
-    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons || K == Kind::WeaponStats || K == Kind::MapInfo || K == Kind::Scriptables || K == Kind::MapEnts || K == Kind::AiTypes; }) && !C.Kinds.empty();
+    O.ZoneAlone = std::all_of(C.Kinds.begin(), C.Kinds.end(), [](Kind K) { return K == Kind::MaterialLinks || K == Kind::SoundLinks || K == Kind::AssetRefs || K == Kind::Techsets || K == Kind::ScriptBundles || K == Kind::Weapons || K == Kind::WeaponStats || K == Kind::MapInfo || K == Kind::Scriptables || K == Kind::MapEnts || K == Kind::AiTypes || K == Kind::Perks; }) && !C.Kinds.empty();
     std::vector<std::string> Zones;
     const auto Start = std::chrono::steady_clock::now();
     if (!Game.Zones(Input, O, Zones, Error))

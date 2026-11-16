@@ -54,6 +54,7 @@ namespace
         { "export_castanim", { ".cast" }, 1.0, "Cast" },
         { "export_seanim", { ".seanim" }, 0.82, "SEAnim" },
         { "export_directxanim", { "" }, 0.37, "XANIM_EXPORT" },
+        { "export_xanimbin", { ".xanim_bin" }, 2.3, "XANIM_BIN" },   // BO3 only: 1.8 to 2.9 of Cast (every part every frame)
     };
     // exportimg's values; DDS keeps the game's block compression (and mips)
     const std::vector<Format> ImageFormats = {

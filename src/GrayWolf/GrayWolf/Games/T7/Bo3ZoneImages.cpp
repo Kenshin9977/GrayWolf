@@ -2,6 +2,7 @@
 
 #include "Bo3ZoneImages.h"
 
+#include "DiskGameSizes.h"
 #include "ExportNaming.h"
 #include "ExportWriters.h"
 #include "FastFile.h"
@@ -11,7 +12,9 @@
 #include "SettingsManager.h"
 
 #include <filesystem>
+#include <map>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -141,6 +144,58 @@ bool Bo3DescribeZoneImage(ByteView Zone, size_t Start, XPAKCache& Cache, Bo3Zone
     Image.Semantic = Base[Start + SemanticOffset];
     Image.Name = Name;
     return true;
+}
+
+namespace
+{
+    // The index's format names as the zones' image records give the same images (the DXGI format):
+    // measured over core_ui, zm_genesis and mp_freerun_01's images the index also names
+    uint8_t DxgiOfIndexFormat(const std::string& Format)
+    {
+        static const std::unordered_map<std::string, uint8_t> Formats = {
+            { "BC1", 71 }, { "BC1_SRGB", 72 }, { "BC2", 74 }, { "BC2_SRGB", 75 }, { "BC3", 77 }, { "BC3_SRGB", 78 },
+            { "BC4", 80 }, { "BC4_SNORM", 81 }, { "BC5", 83 }, { "BC5_SNORM", 84 }, { "BC6_UH", 95 }, { "BC6_SH", 96 },
+            { "BC7", 98 }, { "BC7_SRGB", 99 }, { "R8G8B8A8", 28 }, { "R8G8B8A8_SRGB", 29 }, { "R8_UN", 61 },
+            { "R16G16B16A16F", 10 },
+        };
+        const auto It = Formats.find(Format);
+        return It == Formats.end() ? 0 : It->second;
+    }
+}
+
+std::vector<Bo3ZoneImage> Bo3DescribePackageImages(XPAKCache& Cache, const std::string& Package, size_t& Unread)
+{
+    // per name, its largest record (a name has one per streamed mip, the smallest ones chained)
+    std::map<std::string, XPAKCache::NamedObject> Largest;
+    for (auto& [Name, Object] : Cache.NamedObjects(Package))
+    {
+        if (Object.Type != "image" || Object.Parts != 1) continue;
+        auto& L = Largest[Name];
+        if (Object.Size > L.Size) L = std::move(Object);
+    }
+    std::vector<Bo3ZoneImage> Out;
+    for (const auto& [Name, Object] : Largest)
+    {
+        Bo3ZoneImage Image;
+        Image.Name = Name;
+        Image.Hash = Object.Key;
+        Image.Width = Object.Height;
+        Image.Height = Object.Width;
+        Image.Format = DxgiOfIndexFormat(Object.Format);
+        Image.Semantic = Object.Semantic == "normalMap" ? NormalMapSemantic : 0;
+        // the levels whose chain is its size (its "levels" says fewer than some hold)
+        Image.Levels = 0;
+        for (uint8_t L = 1; Image.Format != 0 && L <= 16 && Image.Levels == 0; L++)
+            if (DiskGame::Sizes::ImageWeight(Image.Width, Image.Height, Image.Format, L, 1).Bytes == Object.Size) Image.Levels = L;
+        if (Image.Levels == 0 || Image.Width == 0 || Image.Height == 0 || Object.Size > 0xFFFFFFFFull)
+        {
+            Unread++;
+            continue;
+        }
+        Image.Size = (uint32_t)Object.Size;
+        Out.push_back(std::move(Image));
+    }
+    return Out;
 }
 
 std::vector<Bo3ZoneImage> Bo3ScanZoneImages(const std::string& FastFilePath,

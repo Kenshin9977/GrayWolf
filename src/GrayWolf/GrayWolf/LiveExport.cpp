@@ -25,6 +25,9 @@
 #include "OBJExport.h"
 #include "XAnimRawExport.h"
 #include "XMBExport.h"
+#include "XAnimBinExport.h"
+#include "XAnimBinReader.h"
+#include "AppLog.h"
 #include "GLTFExport.h"
 #include "CastExport.h"
 #include "MaterialDescription.h"
@@ -324,6 +327,8 @@ namespace
         bool Result = false;
 
         if (SettingsManager::GetSetting("export_directxanim") == "true" && !ExportWriters::HasFile(ExportPath))
+            Result = true;
+        if (SettingsManager::GetSetting("export_xanimbin") == "true" && !ExportWriters::HasFile(ExportPath + ".XANIM_BIN"))
             Result = true;
         if (SettingsManager::GetSetting("export_seanim") == "true" && !ExportWriters::HasFile(ExportPath + ".seanim"))
             Result = true;
@@ -747,6 +752,36 @@ ExportGameResult LiveExport::ExportAnim(const CoDAnim_t* Animation, const std::s
     return ExportGameResult::Success;
 }
 
+namespace
+{
+    // The skeleton XANIM_BIN anims are written for (setting xanim_bin_rig, --xanim-rig): read once
+    // per file, its error logged once
+    const XAnimBinRig* XAnimBinRigFor(const std::string& Path)
+    {
+        static std::mutex Lock;
+        static std::map<std::string, std::unique_ptr<XAnimBinRig>> Rigs;
+        std::lock_guard<std::mutex> Guard(Lock);
+        auto It = Rigs.find(Path);
+        if (It != Rigs.end()) return It->second.get();
+        auto Rig = std::make_unique<XAnimBinRig>();
+        std::string Error;
+        if (Path.empty())
+        {
+            AppLog::Log().warn("XANIM_BIN: no skeleton given (Anim format's XANIM_BIN skeleton, --xanim-rig): "
+                               "the anims are not written as XANIM_BIN");
+            Rig.reset();
+        }
+        else if (!ReadXAnimBinRig(Path, *Rig, Error))
+        {
+            AppLog::Log().warn("XANIM_BIN: the skeleton {} could not be read ({}): the anims are not written as XANIM_BIN", Path, Error);
+            Rig.reset();
+        }
+        else
+            AppLog::Log().info("XANIM_BIN: skeleton {}, {} bones", Path, Rig->Bones.size());
+        return (Rigs[Path] = std::move(Rig)).get();
+    }
+}
+
 ExportGameResult LiveExport::ExportWraithAnim(WraithAnim& Anim, const std::string& ExportPath)
 {
     // Note: DirectXAnim below is always exported in game units (inches), the
@@ -759,6 +794,20 @@ ExportGameResult LiveExport::ExportWraithAnim(WraithAnim& Anim, const std::strin
     {
         auto XAnimVer = (SettingsManager::GetSetting("directxanim_ver") == "17") ? XAnimRawVersion::WorldAtWar : XAnimRawVersion::BlackOps;
         XAnimRaw::ExportXAnimRaw(Anim, (std::filesystem::path(ExportPath) / Anim.AssetName).string(), XAnimVer);
+    }
+    // Black Ops III Mod Tools' XANIM_BIN: every frame posed on the skeleton the anim's GDT entry names
+    if (SettingsManager::GetSetting("export_xanimbin") == "true")
+    {
+        if (const XAnimBinRig* Rig = XAnimBinRigFor(SettingsManager::GetSetting("xanim_bin_rig", "")))
+        {
+            XAnimBinStats Stats;
+            if (!XAnimBin::ExportXAnimBin(Anim, *Rig, (std::filesystem::path(ExportPath) / (Anim.AssetName + ".XANIM_BIN")).string(), &Stats))
+                AppLog::Log().warn("XANIM_BIN: {} could not be written (none of its bones is in the skeleton {}, or the "
+                                   "file could not be made)", Anim.AssetName, Rig->Source);
+            else if (!Stats.Unmatched.empty())
+                AppLog::Log().warn("XANIM_BIN: {}: {} of its bones are not in the skeleton {} (left out), {} first",
+                                   Anim.AssetName, Stats.Unmatched.size(), Rig->Source, Stats.Unmatched.front());
+        }
     }
 
     // The following formats are scaled, unless the user asked for game units (inches)

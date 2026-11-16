@@ -6,17 +6,10 @@
 #include "BinaryWriter.h"
 #include "Compression.h"
 #include "WraithModel.h"
+#include "XBin.h"
 
 #include <algorithm>
 #include <format>
-
-// 5 Byte *LZ4* Magic
-const char XMBMagic[5] = { 0x2A, 0x4C, 0x5A, 0x34, 0x2A };
-
-uint64_t ComputePadding(uint64_t Value)
-{
-    return (Value + 0x3) & 0xFFFFFFFFFFFFFC;
-}
 
 int16_t ClampFloatToShort(float Value)
 {
@@ -63,13 +56,8 @@ void WriteMetaVec4Block(MemoryWriter& Writer, int32_t Hash, float X, float Y, fl
     Writer.Write(W);
 }
 
-void WriteStringAligned(MemoryWriter& Writer, const std::string& Value)
-{
-    Writer.WriteNullTerminatedString(Value);
-    auto PadSize = ComputePadding(Value.size() + 1) - (Value.size() + 1);
-    auto Padding = std::make_unique<uint8_t[]>(PadSize);
-    Writer.Write((uint8_t*)Padding.get(), PadSize);
-}
+// the token stream's strings and container are export2bin's, shared with the XANIM_BIN writer (XBin.h)
+using XBin::WriteStringAligned;
 
 void WriteCommentBlock(MemoryWriter& Writer, const std::string& Comment)
 {
@@ -374,12 +362,5 @@ void CodXMB::ExportXMB(const WraithModel& Model, const std::string& FileName)
     WriteMeshData(Writer, Model);
     WriteObjects(Writer, Model);
     WriteMaterials(Writer, Model);
-    auto FileWriter = BinaryWriter();
-    FileWriter.Create(FileName);
-    auto CompressedSize = Compression::CompressionSizeLZ4((uint32_t)Writer.GetPosition());
-    auto CompressedBuffer = std::make_unique<int8_t[]>(CompressedSize);
-    auto ResultSize = Compression::CompressLZ4Block(Writer.GetCurrentStream(), CompressedBuffer.get(), Writer.GetPosition(), CompressedSize);
-    FileWriter.Write(XMBMagic);
-    FileWriter.Write((uint32_t)Writer.GetPosition());
-    FileWriter.Write(CompressedBuffer.get(), ResultSize);
+    XBin::SaveContainer(FileName, Writer.GetCurrentStream(), (uint32_t)Writer.GetPosition());
 }

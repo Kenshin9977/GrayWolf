@@ -94,7 +94,8 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
     {
         Radiant = Maps::RadiantWriter(DiskGame::GdtMaterials.Of(C.Settings) == "on", ModToolsTree::RootOf(C),
                                       DiskGame::MapSurfaces.Of(C.Settings) == "patches",
-                                      std::filesystem::path(C.OutRoot).filename().string());   // <out>/<game id>
+                                      std::filesystem::path(C.OutRoot).filename().string(),   // <out>/<game id>
+                                      DiskGame::MapProps.Of(C.Settings), DiskGame::MapFit.Of(C.Settings));
         Writers.push_back(Radiant.get());
     }
     if (DiskGame::MapCollision.Of(C.Settings) == "on") Writers.push_back(&Maps::CollisionWriter());
@@ -119,6 +120,7 @@ bool WriteMapFiles(MapScene& Scene, const std::set<std::string>& Names,
         }
         if (W == Writers.front()) Written = true;
         for (const auto& [Key, V] : Result.Counters) Counters[Key] += V;
+        for (const std::string& Warning : Result.Warnings) T.Warnings.push_back(Zone + ": map " + Scene.Name + " " + W->Extension() + ": " + Warning);
         const std::string LaterWhat = Writing + ": " + (Result.LaterWhat.empty() ? std::string("once the dependencies are written") : Result.LaterWhat);
         if (Result.Later) C.After([Later = Result.Later, Key = Result.LaterCounter, &T]() { T.Counters[Key] += Later(); }, LaterWhat);
         if (Result.LaterCounters) C.After([Later = Result.LaterCounters, &T]() { Later(T.Counters); }, LaterWhat);

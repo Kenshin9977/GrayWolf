@@ -23,7 +23,13 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
     App.add_option("--model-format", Options.ModelFormat,
         "cast|semodel|obj|ma|xna|xmodel_export|xmodel_bin|smd|gltf|glb|none, or a comma list (cast,semodel)")->group("Shared options");
     App.add_option("--anim-format", Options.AnimFormat,
-        "cast|seanim|xanim_export|none, or a comma list (cast,seanim)")->group("Shared options");
+        "cast|seanim|xanim_export|xanim_bin|none, or a comma list (cast,seanim). xanim_bin (Black Ops III Mod Tools) "
+        "needs --xanim-rig")->group("Shared options");
+    App.add_option("--xanim-rig", Options.XAnimRig,
+        "The model XANIM_BIN anims are written for (.xmodel_bin or .xmodel_export: the one their GDT entry names as "
+        "\"model\"): each frame poses the anim's bones (and their parents) on its skeleton, an anim's bones it "
+        "lacks are left out")
+        ->check(CLI::ExistingFile)->group("Shared options");
     App.add_option("--image-format", Options.ImageFormat, "png|tga|dds")->group("Shared options");
     App.add_flag("--keep-images", Options.KeepImages,
                  "keep the image files an earlier run wrote: neither decoded nor written again, nor pulled from other zones "
@@ -82,7 +88,17 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
         ->check(CLI::ExistingDirectory)->group("Shared options");
     App.add_option("--map-surfaces", Options.MapSurfaces,
                    "models|patches: with --map-radiant, the drawn world no brush draws as models, tiles of the world "
-                   "(the default: few objects for Radiant), or a patch per triangle")
+                   "(the default: few objects for Radiant), or a patch per triangle (small maps only: Radiant holds each "
+                   "patch as an object; past 250000 drawn triangles the models are written instead, with a warning)")
+        ->group("Shared options");
+    App.add_option("--map-props", Options.MapProps,
+                   "all|no_foliage|large: with --map-radiant, the placements the .map keeps: all (the default), all but "
+                   "foliage (models named grass, foliage, weeds, bushes...), or neither foliage nor props under 24 units")
+        ->group("Shared options");
+    App.add_option("--map-fit", Options.MapFit,
+                   "fit|strict|off: with --map-radiant and --mod-tools on, the level fitted to Black Ops III's tools' limits "
+                   "while it is written: fit (the default: at 85 % of each limit, what a player misses least left out first, "
+                   "each step a warning), strict (at 70 %), off (nothing left out; <map>.limits.txt tells what the tools refuse)")
         ->group("Shared options");
     App.add_option("--bo3-usermap", Options.Bo3Usermap,
                    "off|create|build: with --map-radiant and --mod-tools on, a ZM usermap around the map, made as the Mod Tools "

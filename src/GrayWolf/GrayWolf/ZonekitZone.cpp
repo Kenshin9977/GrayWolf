@@ -243,7 +243,10 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
         auto Dds = L.Decode(Pos, ImageName);
         if (!Dds)
         {
-            T.Fail(Name(), Kind::Image, ImageName, L.FailWhy ? L.FailWhy(Pos) : std::string());
+            if (const std::string Why = L.Absent ? L.Absent(Pos) : std::string(); !Why.empty())
+                T.Lacks(Name(), Kind::Image, ImageName, Why);
+            else
+                T.Fail(Name(), Kind::Image, ImageName, L.FailWhy ? L.FailWhy(Pos) : std::string());
             continue;
         }
         Sink.Write(std::move(Dds), Path);

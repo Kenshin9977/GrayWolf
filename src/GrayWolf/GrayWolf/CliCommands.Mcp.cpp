@@ -105,7 +105,7 @@ namespace
 
     const std::vector<std::string> kKinds = { "model", "anim", "image", "sound", "rawfile", "data", "localize", "map", "script", "material" };
     const std::vector<std::string> kModelFormats = { "cast", "semodel", "obj", "ma", "xna", "xmodel_export", "xmodel_bin", "smd", "gltf", "glb" };
-    const std::vector<std::string> kAnimFormats = { "cast", "seanim", "xanim_export" };
+    const std::vector<std::string> kAnimFormats = { "cast", "seanim", "xanim_export", "xanim_bin" };
 
     // A --report file: key=value lines, a key met twice holds them all; other lines under Lines.
     struct Report
@@ -704,6 +704,7 @@ namespace
         if (const long long L = OptInt(Args, "limit", 0); L != 0) Cmd.insert(Cmd.end(), { "--limit", std::to_string(std::clamp<long long>(L, 1, 100000)) });
         if (const auto F = OptList(Args, "model_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--model-format", Csv(F, &kModelFormats, "model_format") });
         if (const auto F = OptList(Args, "anim_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--anim-format", Csv(F, &kAnimFormats, "anim_format") });
+        if (const auto R = OptString(Args, "xanim_rig"); !R.empty()) Cmd.insert(Cmd.end(), { "--xanim-rig", R });
         if (const auto F = OptString(Args, "image_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--image-format", Csv({ F }, &ImageFormats, "image_format") });
         if (const auto F = OptString(Args, "audio_format"); !F.empty()) Cmd.insert(Cmd.end(), { "--audio-format", Csv({ F }, &AudioFormats, "audio_format") });
         if (OptBool(Args, "material_gdt", false)) Cmd.insert(Cmd.end(), { "--material-gdt", "on" });
@@ -880,8 +881,9 @@ namespace
             "Game panel runs). zones: as graywolf_list_zones names them (find an asset's zone with graywolf_find_assets). assets: "
             "only these, \"kind:name\" (\"model:wpn_t7_ar_standard\", \"image:i_x\"); else kinds (default model, anim, image, "
             "sound) and name_filter (substrings). Formats: model_format (cast, semodel, xmodel_export, glb, ...; several allowed), "
-            "anim_format (cast, seanim, xanim_export), image_format (png, tga, dds), audio_format (opus, wav, flac). Black Ops III "
-            "mod tools: material_gdt (material/image GDT entries), sound_aliases (alias CSV beside the audio), map_radiant (a map's "
+            "anim_format (cast, seanim, xanim_export, xanim_bin), image_format (png, tga, dds), audio_format (opus, wav, flac). "
+            "xanim_bin (Black Ops III mod tools) needs xanim_rig: the model (.xmodel_bin, .xmodel_export) the anims' GDT entries "
+            "name, on whose skeleton every frame is posed. Black Ops III mod tools: material_gdt (material/image GDT entries), sound_aliases (alias CSV beside the audio), map_radiant (a map's "
             ".map). decompile: scripts decompiled (kind script). with_heads: each character's body also joined with its head "
             "(models/<body>+<head>/, one skeleton). What the assets need from other zones (textures, rigs) is pulled "
             "too. A whole level takes minutes: wait=false returns a job id at once, followed with graywolf_export_status. One "
@@ -890,7 +892,7 @@ namespace
                 "install": {"type": "string"}, "zones": {"type": "array", "items": {"type": "string"}}, "out_name": {"type": "string"},
                 "game": )" + OptStr + R"(, "assets": )" + OptArr + R"(, "kinds": )" + OptArr + R"(, "name_filter": )" + OptArr + R"(,
                 "limit": {"type": ["integer", "null"], "default": null},
-                "model_format": )" + OptArr + R"(, "anim_format": )" + OptArr + R"(,
+                "model_format": )" + OptArr + R"(, "anim_format": )" + OptArr + R"(, "xanim_rig": )" + OptStr + R"(,
                 "image_format": )" + OptStr + R"(, "audio_format": )" + OptStr + R"(,
                 "material_gdt": {"type": "boolean", "default": false}, "split_maps": {"type": "boolean", "default": false},
                 "model_images": {"type": "boolean", "default": true},
@@ -967,7 +969,8 @@ int RunMcp(const CliOptions& Options)
         "GrayWolf extracts Call of Duty assets (models, anims, images, sounds, maps, scripts) from the games' files, offline. "
         "Start with graywolf_list_installs, then graywolf_list_zones or graywolf_find_assets (by asset name) for an install, "
         "then graywolf_export. Exports write under " + Utf8(g_OutRoot) + ". For Black Ops III mod tools use model_format "
-        "xmodel_export, anim_format xanim_export, and material_gdt / sound_aliases.";
+        "xmodel_export, anim_format xanim_bin with xanim_rig (the anims' model), and material_gdt / "
+        "sound_aliases.";
     Mcp::Log("mcp: GrayWolf " + Info.Version + ", output root " + Utf8(g_OutRoot));
 
     const int Code = Mcp::Serve(Info, Tools(), [] {

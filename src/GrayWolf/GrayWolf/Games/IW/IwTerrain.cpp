@@ -350,6 +350,13 @@ namespace
         // the map's own texels (one before, two after)
         const uint32_t N = W - 3;
         std::vector<float> Uv;
+        // the same layers by texel (Maps::TexelLayers), for a writer drawing each layer's own material
+        auto Texels = std::make_shared<Maps::TexelLayers>();
+        Texels->Size = N;
+        Texels->Index.resize((size_t)N * N);
+        for (uint32_t R = 0; R < N; R++)
+            for (uint32_t C = 0; C < N; C++) Texels->Index[(size_t)R * N + C] = Index[(size_t)(R + 1) * W + C + 1];
+        Texels->Layers.resize(Count);
         for (uint32_t K = 0; K < Count; K++)
         {
             std::vector<uint8_t> Mask((size_t)N * N, 0);
@@ -370,6 +377,8 @@ namespace
             // the layer's world-to-uv scales over the grid's span (the grid's uv is 0..1)
             Uv[2 * K] = std::abs(Get<float>(Src, Rec + 0x10)) * 2.0f * Get<float>(Src, Src.Vtm + 0x14);
             Uv[2 * K + 1] = std::abs(Get<float>(Src, Rec + 0x24)) * 2.0f * Get<float>(Src, Src.Vtm + 0x18);
+            Texels->Layers[K].Material = Material;
+            Texels->Layers[K].Scale[0] = Uv[2 * K], Texels->Layers[K].Scale[1] = Uv[2 * K + 1];
             if (FILE* Dbg = Maps::DebugFile())
                 for (const Maps::Texture& T : It->second.Textures) std::fprintf(Dbg, "[terrain layer] %u %s %u %s\n", K, Material.c_str(), T.Semantic, T.Image.c_str());
             for (const Maps::Texture& T : It->second.Textures)
@@ -383,6 +392,8 @@ namespace
         }
         Mat.Constants.assign(1, std::vector<uint8_t>(Uv.size() * 4));
         std::memcpy(Mat.Constants[0].data(), Uv.data(), Uv.size() * 4);
+        if (std::any_of(Texels->Layers.begin(), Texels->Layers.end(), [](const Maps::TexelLayers::Layer& Ly) { return !Ly.Material.empty(); }))
+            Mat.Texels = std::move(Texels);
     }
 }
 

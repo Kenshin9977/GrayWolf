@@ -6,8 +6,10 @@
 // by name and the images they use, the sky, the ambient colour and the entity string. Positions
 // stay in the game's space (Z up, inches); triangles keep the game's winding.
 
+#include <cmath>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -77,6 +79,34 @@ namespace Maps
     // a writer of colours (Radiant, XMODEL_EXPORT, glTF's COLOR_0) writes white for them (Tint).
     enum class VertexColors { Tint, LayerWeights };
 
+    // A terrain's material layers by texel (Games/IW/IwTerrain): an index map of Size x Size texels
+    // over the surface's UV (0..1, texel (r, c) at uv (c, r) / (Size - 1)) naming the layer drawn
+    // there, each layer a material of the scene's ("" when unread) tiled at its UV scale (its UV the
+    // surface's times Scale). What a writer without the blend (a Radiant .map) draws in place of
+    // the baked colour map, which spans the whole terrain at a few texels per metre.
+    struct TexelLayers
+    {
+        uint32_t Size = 0;
+        std::vector<uint8_t> Index;   // Size * Size, row-major
+        struct Layer
+        {
+            std::string Material;
+            float Scale[2] = { 1, 1 };
+        };
+        std::vector<Layer> Layers;
+        // the layer at uv (u, v), -1 when none with a material
+        int At(float U, float V) const
+        {
+            if (Size < 2 || Index.size() < (size_t)Size * Size) return -1;
+            const auto Texel = [this](float X) {
+                const float T = std::round(X * (float)(Size - 1));
+                return (uint32_t)(T < 0 ? 0.0f : T > (float)(Size - 1) ? (float)(Size - 1) : T);
+            };
+            const uint8_t K = Index[(size_t)Texel(V) * Size + Texel(U)];
+            return K < Layers.size() && !Layers[K].Material.empty() ? (int)K : -1;
+        }
+    };
+
     struct Material
     {
         std::string Name;
@@ -86,6 +116,7 @@ namespace Maps
         std::vector<Texture> Textures;
         std::vector<std::vector<uint8_t>> Constants;   // the game's constant blocks (the adapter's tint, layers)
         int SortKey = -1;                               // the game's sort key, -1 when unknown
+        std::shared_ptr<const TexelLayers> Texels;      // a terrain's layers by texel, null when none
     };
 
     // An image's pixels: PNG bytes embedded in the .glb, or files (absolute paths, which may be

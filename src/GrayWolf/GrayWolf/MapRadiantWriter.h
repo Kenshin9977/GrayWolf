@@ -77,6 +77,27 @@ namespace Maps
         size_t BrushesOverBudget = 0;
         // the target's hard limits passed (RadiantTarget.h HardLimits), each a line of <map>.limits.txt
         size_t LimitsOver = 0;
+        // with patches asked (the map_surfaces setting), the drawn triangles of a world too large for a
+        // patch each (MostPatches): its models instead
+        size_t PatchesRefused = 0;
+        // the placements map_props left out: of foliage, of small props
+        size_t FoliageLeftOut = 0, SmallLeftOut = 0;
+        // what Black Ops III's cod2map makes of the brushes written (MapRadiantPlanes.h): plane slots,
+        // those the sides use, the bevels it adds, the brush sides it keeps; the slots the prisms
+        // would have taken (when weighed); the patches' collision triangles and vertices
+        size_t PlaneSlots = 0, PlaneSidePlanes = 0, BoxBevels = 0, EdgeBevels = 0, CollisionBrushSides = 0, PrismPlaneSlots = 0;
+        size_t PatchCollisionTriangles = 0, PatchCollisionVertices = 0;
+        // what fitting the map to Black Ops III's tools did (graywolf-tools/docs/bo3-modtools-limits.md):
+        // world brushes written as collision patches (planes, brushes), brushes made clip only (nodes)
+        // and the sides left to split the BSP, collision triangles left out (farthest from play),
+        // placements left out past the static models' room, exploders and brush entities let go
+        size_t BrushesAsPatches = 0, BrushesFlat = 0, StructuralSides = 0, CollisionFitted = 0, PlacementsFitted = 0;
+        size_t ExplodersDropped = 0, BrushEntitiesDropped = 0, PlaneSlotsPlanned = 0;
+        // brush models whose drawn triangles were in their own space, written where their entity stands
+        size_t BrushModelsPlaced = 0;
+        // what the caller should tell (written, but past what the target's tools take): the limits
+        // passed, a mode turned down
+        std::vector<std::string> Warnings;
         // the sides given the drawn world's materials: the clip map's world brushes', the collision
         // triangles' prisms', the brush entities'
         RadiantTextureStats Textures, PrismTextures, EntityTextures;
@@ -86,6 +107,9 @@ namespace Maps
         // the world's vertices whose colour holds layer weights (MapScene's VertexColors), not white:
         // written white (patches, models), the weights not carried over
         size_t VertexWeightsWhite = 0;
+        // the terrain triangles drawn by their layer's own material (MapScene's TexelLayers), not the
+        // terrain's baked colour map
+        size_t TexelLayerTriangles = 0;
         // the later layers of the layered materials (MapRadiantLayers.h): those the materials have
         // (material, layer), carried as overlays, left out (no colour image; no triangle drawn, its
         // weight 0 at every corner; without the material GDT, which defines their materials); the
@@ -126,7 +150,14 @@ namespace Maps
     // Radiant draws one by one; a brush entity's stay patches (they move with it).
     // Game: the source game's id, which a tree's map name takes (RadiantTarget.h). Progress: its
     // stages as it goes (MapSceneWriter.h); false from it stops the writing (Error "cancelled").
+    // Props: the placements kept (the map_props setting): "all"; "no_foliage" (LeavesOut); "large"
+    // (no foliage, no model under SmallProp units on every side, scaled)
     bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStats& Stats, std::string& Error,
                       RadiantGdt* ForGdt = nullptr, const std::string& Tree = std::string(), bool Patches = false,
-                      const std::string& Game = std::string(), const WriteProgress& Progress = {});
+                      const std::string& Game = std::string(), const WriteProgress& Progress = {}, const std::string& Props = "all",
+                      const std::string& Fit = "fit");
+    // Whether a model's name says foliage: one of its words (between non-letters) grass, foliage,
+    // weed(s), bush(es), shrub, fern, ivy, vine(s), hedge, plant(s), flower(s), leaf, leaves, reed(s), moss
+    bool FoliageName(const std::string& Model);
+    constexpr double SmallProp = 24.0;
 }

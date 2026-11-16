@@ -35,7 +35,9 @@ namespace ExportFormats
     inline constexpr Format Anims[] = {
         { "export_castanim", "Cast", "Cast (.cast) (default)" },
         { "export_seanim", "SEAnim", "SEAnim (.seanim): SETools' format" },
-        { "export_directxanim", "XANIM_EXPORT", "Call of Duty mod tools' text format (no extension)" },
+        { "export_directxanim", "XANIM_EXPORT", "World at War / Black Ops mod tools' raw anim (no extension)" },
+        { "export_xanimbin", "XANIM_BIN", "Black Ops III mod tools' binary format (.XANIM_BIN): every frame posed on the "
+          "XANIM_BIN skeleton, the model the anim's GDT entry names" },
     };
 
     // setting exportimg, PNG when unset (ExportWriters::ImageFormatSetting)

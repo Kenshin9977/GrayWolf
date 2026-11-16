@@ -3,10 +3,14 @@
 #include "XAnimBinReader.h"
 #include "Compression.h"
 #include "SeAnimReader.h"
+#include "XAnimBinExport.h"
+#include "XMEImport.h"
+#include "MemoryWriter.h"
 
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <unordered_map>
 
 namespace
@@ -121,27 +125,13 @@ namespace
         { "EXTRA",              XAnimBinValueType::Raw32x4,      58 },
     };
 
-    // CRC-16/CCITT (poly 0x1021), seeded with the field's own valueType instead of the usual
-    // 0/0xFFFF - `FUN_1400132d0` in the doc, exactly as decompiled.
-    uint16_t XAnimFieldTag(const char* Name, uint32_t ValueType)
-    {
-        uint32_t Crc = ValueType;
-        for (const char* P = Name; *P; P++)
-        {
-            Crc ^= (uint32_t)(uint8_t)*P << 8;
-            for (int Bit = 0; Bit < 8; Bit++)
-                Crc = (Crc & 0x8000) ? ((Crc << 1) ^ 0x1021) : (Crc << 1);
-        }
-        return (uint16_t)Crc;
-    }
-
     const std::unordered_map<uint16_t, const XAnimKeyword*>& TagLookup()
     {
         static const std::unordered_map<uint16_t, const XAnimKeyword*> Map = [] {
             std::unordered_map<uint16_t, const XAnimKeyword*> M;
             for (const auto& K : kKeywords)
             {
-                const uint16_t Tag = XAnimFieldTag(K.Name, (uint32_t)K.Type);
+                const uint16_t Tag = XBin::Tag(K.Name, K.Type);
                 M[Tag] = &K; // no collisions across the 60 entries; a collision would let the second entry win
                              // and show up as a desync a few records later.
             }
@@ -167,16 +157,9 @@ namespace
         Rec.Strings.clear();
         Rec.UVs.clear();
 
-        // Gap types (from the decompiled writers, and checked against every .xanim_bin and .xmodel_bin the
-        // Mod Tools ship): cases 1/4/5/6/8/9/10/0xb write 2 literal zero bytes right after the tag, before
-        // the type-specific payload (case 0's string-alignment pad is separate and additional). Cases
-        // 2/3/7/0xc/0xd/0xe/0xf/0x12 have no gap. 0x13 (TRI16) is never exercised by a shipped file.
-        if (K.Type == XAnimBinValueType::String || K.Type == XAnimBinValueType::Marker ||
-            K.Type == XAnimBinValueType::Raw32 || K.Type == XAnimBinValueType::Raw32_2 ||
-            K.Type == XAnimBinValueType::UInt8Nx4 || K.Type == XAnimBinValueType::Raw32_3 ||
-            K.Type == XAnimBinValueType::Raw32x2 || K.Type == XAnimBinValueType::Raw32x3 ||
-            K.Type == XAnimBinValueType::Raw32x4 || K.Type == XAnimBinValueType::UInt32String ||
-            K.Type == XAnimBinValueType::UInt32x2String)
+        // Gap types (XBin::HasGap): 2 literal zero bytes right after the tag, before the values (case 0's
+        // string-alignment pad is separate and additional). 0x13 (TRI16) is never exercised by a shipped file.
+        if (XBin::HasGap(K.Type))
         {
             std::vector<uint8_t> Pad2;
             if (!C.Take(2, Pad2) || Pad2[0] != 0 || Pad2[1] != 0) return false;
@@ -527,4 +510,137 @@ bool ReadXAnimBinClip(const std::string& Path, SeAnimClip& Out)
                                           // relative-to-previous).
     Out.Looping = false; // not encoded in this format
     return true;
+}
+
+bool WriteXAnimBinRecords(const std::vector<XAnimBinRecord>& Records, const std::string& Path)
+{
+    MemoryWriter W(0x100000);
+    for (const auto& R : Records)
+    {
+        XBin::WriteField(W, R.Keyword.c_str(), R.Type);
+        const auto Raw = [&] { if (!R.Raw.empty()) W.Write(R.Raw.data(), (uint32_t)R.Raw.size()); };
+        const auto Str = [&](size_t I) { XBin::WriteStringAligned(W, I < R.Strings.size() ? R.Strings[I] : std::string()); };
+        switch (R.Type)
+        {
+        case XAnimBinValueType::String: Str(0); break;
+        case XAnimBinValueType::Marker: break;
+        case XAnimBinValueType::UVArray:
+            W.Write<uint16_t>((uint16_t)R.UVs.size());
+            for (const auto& [U, V] : R.UVs) { W.Write(U); W.Write(V); }
+            break;
+        case XAnimBinValueType::UInt16String:
+        case XAnimBinValueType::UInt32String:
+        case XAnimBinValueType::UInt32x2String: Raw(); Str(0); break;
+        case XAnimBinValueType::UInt16String3: Raw(); Str(0); Str(1); Str(2); break;
+        default: Raw(); break;   // the fixed shapes: their bytes as read
+        }
+    }
+    return XBin::SaveContainer(Path, W.GetCurrentStream(), (uint32_t)W.GetPosition());
+}
+
+void XAnimBinAxesToQuat(const double X[3], const double Y[3], const double Z[3], double Q[4])
+{
+    // m[row][column], columns X, Y, Z
+    const double m[3][3] = { { X[0], Y[0], Z[0] }, { X[1], Y[1], Z[1] }, { X[2], Y[2], Z[2] } };
+    const double Trace = m[0][0] + m[1][1] + m[2][2];
+    if (Trace > 0)
+    {
+        const double S = std::sqrt(Trace + 1.0) * 2;
+        Q[3] = 0.25 * S; Q[0] = (m[2][1] - m[1][2]) / S; Q[1] = (m[0][2] - m[2][0]) / S; Q[2] = (m[1][0] - m[0][1]) / S;
+    }
+    else if (m[0][0] > m[1][1] && m[0][0] > m[2][2])
+    {
+        const double S = std::sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2;
+        Q[3] = (m[2][1] - m[1][2]) / S; Q[0] = 0.25 * S; Q[1] = (m[0][1] + m[1][0]) / S; Q[2] = (m[0][2] + m[2][0]) / S;
+    }
+    else if (m[1][1] > m[2][2])
+    {
+        const double S = std::sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2;
+        Q[3] = (m[0][2] - m[2][0]) / S; Q[0] = (m[0][1] + m[1][0]) / S; Q[1] = 0.25 * S; Q[2] = (m[1][2] + m[2][1]) / S;
+    }
+    else
+    {
+        const double S = std::sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2;
+        Q[3] = (m[1][0] - m[0][1]) / S; Q[0] = (m[0][2] + m[2][0]) / S; Q[1] = (m[1][2] + m[2][1]) / S; Q[2] = 0.25 * S;
+    }
+    const double L = std::sqrt(Q[0] * Q[0] + Q[1] * Q[1] + Q[2] * Q[2] + Q[3] * Q[3]);
+    for (int I = 0; I < 4; I++) Q[I] = L > 0 ? Q[I] / L : (I == 3 ? 1 : 0);
+}
+
+namespace
+{
+    bool CheckRig(const XAnimBinRig& Rig, std::string& Error)
+    {
+        if (Rig.Bones.empty()) { Error = "the model has no bone"; return false; }
+        for (size_t I = 0; I < Rig.Bones.size(); I++)
+        {
+            const int32_t P = Rig.Bones[I].Parent;
+            if (P >= (int32_t)I) { Error = "bone " + Rig.Bones[I].Name + "'s parent comes after it"; return false; }
+            if (Rig.Bones[I].Name.empty()) { Error = "bone " + std::to_string(I) + " has no name"; return false; }
+        }
+        return true;
+    }
+}
+
+bool ReadXAnimBinRig(const std::string& Path, XAnimBinRig& Out, std::string& Error)
+{
+    Out = XAnimBinRig{};
+    Out.Source = std::filesystem::path(Path).filename().string();
+    std::string Ext = std::filesystem::path(Path).extension().string();
+    for (auto& C : Ext) C = (char)std::tolower((unsigned char)C);
+
+    if (Ext == ".xmodel_export")
+    {
+        XMEModel Model;
+        if (!CodXMEReader::ReadFile(Path, Model, Error)) return false;
+        for (const auto& B : Model.Bones)
+        {
+            XAnimBinRig::Bone R;
+            R.Name = B.Name;
+            R.Parent = B.Parent;
+            for (int I = 0; I < 3; I++) R.Position[I] = B.Offset[I];
+            const double X[3] = { B.Axes[0][0], B.Axes[0][1], B.Axes[0][2] };
+            const double Y[3] = { B.Axes[1][0], B.Axes[1][1], B.Axes[1][2] };
+            const double Z[3] = { B.Axes[2][0], B.Axes[2][1], B.Axes[2][2] };
+            XAnimBinAxesToQuat(X, Y, Z, R.Rotation);
+            Out.Bones.push_back(std::move(R));
+        }
+        return CheckRig(Out, Error);
+    }
+
+    std::vector<XAnimBinRecord> Records;
+    if (!ReadXAnimBinRecords(Path, Records)) { Error = "not an XMODEL_BIN (or XMODEL_EXPORT) model"; return false; }
+    struct Axes { double X[3] = { 1, 0, 0 }, Y[3] = { 0, 1, 0 }, Z[3] = { 0, 0, 1 }; };
+    std::vector<Axes> Rows;
+    int64_t Current = -1;
+    for (const auto& R : Records)
+    {
+        if (R.Keyword == "NUMVERTS" || R.Keyword == "NUMVERTS32") break;
+        if (R.Keyword == "NUMBONES") { Out.Bones.resize(RawU16(R)); Rows.resize(Out.Bones.size()); continue; }
+        if (R.Keyword == "BONE" && R.Type == XAnimBinValueType::UInt32x2String)
+        {
+            const uint32_t Index = RawU32(R, 0), Parent = RawU32(R, 4);
+            if (Index >= Out.Bones.size() || R.Strings.empty()) { Error = "a bone outside NUMBONES"; return false; }
+            Out.Bones[Index].Name = R.Strings[0];
+            Out.Bones[Index].Parent = (int32_t)Parent;   // 0xFFFFFFFF: -1, a root
+            continue;
+        }
+        if (R.Keyword == "BONE" && R.Type == XAnimBinValueType::UInt16)
+        {
+            Current = RawU16(R);
+            if (Current >= (int64_t)Out.Bones.size()) { Error = "a bone outside NUMBONES"; return false; }
+            continue;
+        }
+        if (Current < 0) continue;
+        auto& B = Out.Bones[(size_t)Current];
+        if (R.Keyword == "OFFSET")
+            for (int I = 0; I < 3; I++) B.Position[I] = RawF32(R, 4 * I);
+        else if (R.Keyword == "X" || R.Keyword == "Y" || R.Keyword == "Z")
+        {
+            double* Row = R.Keyword == "X" ? Rows[(size_t)Current].X : (R.Keyword == "Y" ? Rows[(size_t)Current].Y : Rows[(size_t)Current].Z);
+            for (int I = 0; I < 3; I++) Row[I] = DequantInt16N(RawU16(R, 2 * I));
+        }
+    }
+    for (size_t I = 0; I < Out.Bones.size(); I++) XAnimBinAxesToQuat(Rows[I].X, Rows[I].Y, Rows[I].Z, Out.Bones[I].Rotation);
+    return CheckRig(Out, Error);
 }

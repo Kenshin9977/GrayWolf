@@ -2,11 +2,13 @@
 
 #include "MaterialDescription.h"
 #include "Games/IW/IwMaterialAlpha.h"
+#include "Games/IW/IwTerrain.h"
 
 // Modern Warfare 4 materials: Black Ops 7's material struct (0x78, the same {semantic, image} slots),
 // described as Black Ops 7's (Games/BO7/MaterialAdapter.cpp): the first layer's colour 0x47 (sRGB)
 // and "nog" 0x48 (gloss r, normal y g, occlusion b, normal x a), its opacity map 0x4a, the alpha mode
-// from the sort key. Not yet checked against Modern Warfare 4's shaders.
+// from the sort key, the terrain's material layers (Games/IW/IwTerrain). Not yet checked against
+// Modern Warfare 4's shaders.
 namespace
 {
     constexpr uint32_t Color = 0x47, Nog = 0x48, OpacityMap = 0x4a;
@@ -27,6 +29,7 @@ namespace
         {
             if (BySemantic && !D.Normal.Empty()) D.NormalEnc = Materials::NormalEncoding::AG;
             IwMaterialAlpha::Apply(M, M.BySemantic(OpacityMap), D);
+            IwTerrain::DescribeLayers(M, D);
         }
     };
     const ModernWarfare4Materials Adapter;

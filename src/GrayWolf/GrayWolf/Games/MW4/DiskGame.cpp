@@ -60,6 +60,9 @@ namespace
         S.SpawnPoints = 8;
         // scriptable (0xe8): its models u32 0xc4, xmodel pointers 0xc8 (Black Ops 7: 0xb4, 0xb8)
         S.ScriptableSize = 0xe8, S.ScriptableModelCount = 0xc4, S.ScriptableModels = 0xc8;
+        // perk (0xd0, 0x20905b0): its settings table at 8 (Black Ops 7's), two impulsemotions at 0x60
+        // and 0x78 (the perks kind, Games/BO7/Perks.h)
+        S.PerkAssets = { { "impulsemotion", 0x60 }, { "impulsemotion_2", 0x78 } };
         S.Terrain = &IwTerrain::ModernWarfare4;
         return S;
     }
@@ -101,6 +104,8 @@ namespace
             // map_ents (0x948): the scriptable instances' struct still at 0x308 (count u32 0x308, 0x60
             // records at 0x378, the multiplayer's); scriptable (0xd8, 0x21d4f40): its models u32 0xb4, pointers 0xb8, as Black Ops 7's
             S.ScriptableSize = 0xd8, S.ScriptableModelCount = 0xb4, S.ScriptableModels = 0xb8;
+            // perk (0x68, 0x21c3410): its table at 8, an impulsemotion at 0x40, as Black Ops 7's
+            S.PerkAssets = { { "impulsemotion", 0x40 } };
             S.Terrain = &IwTerrain::ModernWarfare4Campaign;
             return S;
         }();

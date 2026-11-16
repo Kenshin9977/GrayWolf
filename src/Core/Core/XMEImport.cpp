@@ -94,6 +94,7 @@ bool CodXMEReader::ReadText(const std::string& Text, XMEModel& Model, std::strin
     bool SawModel = false;
     // Which bone the OFFSET and SCALE lines that follow belong to
     int64_t CurrentBone = -1;
+    bool BonesDone = false;
 
     while (NextLine(Stream, Line))
     {
@@ -111,7 +112,7 @@ bool CodXMEReader::ReadText(const std::string& Text, XMEModel& Model, std::strin
         {
             Model.Bones.resize((size_t)strtoul(Rest.c_str(), nullptr, 10));
         }
-        else if (Keyword == "BONE")
+        else if (Keyword == "BONE" && !BonesDone)
         {
             // Two spellings share the keyword. The declaration carries a parent and a
             // quoted name, the later block is just an index followed by OFFSET and SCALE.
@@ -153,9 +154,16 @@ bool CodXMEReader::ReadText(const std::string& Text, XMEModel& Model, std::strin
         {
             ReadTriple(Rest, Model.Bones[(size_t)CurrentBone].Scale);
         }
-        else if (Keyword == "NUMVERTS")
+        else if ((Keyword == "X" || Keyword == "Y" || Keyword == "Z") && CurrentBone >= 0)
+        {
+            ReadTriple(Rest, Model.Bones[(size_t)CurrentBone].Axes[Keyword[0] - 'X']);
+        }
+        else if (Keyword == "NUMVERTS" || Keyword == "NUMVERTS32")
         {
             Model.VertexCount = (uint32_t)strtoul(Rest.c_str(), nullptr, 10);
+            // the vertices' OFFSET and BONE lines are not the bones' any more
+            CurrentBone = -1;
+            BonesDone = true;
         }
         else if (Keyword == "NUMFACES")
         {

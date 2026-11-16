@@ -167,6 +167,7 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
             fs::path File;
             std::string Id, Name, Type, AssetType;
             uint64_t TypeHash = 0;
+            const BundleOwner* Owner = nullptr;
         };
         std::vector<Pending> Out;
         for (const auto& I : R.Instances)
@@ -239,7 +240,7 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
             B["fields"] = Table(Tab, 0);
             if (!Name.empty()) Texts.insert(Name);
             Out.push_back({ std::move(B), Dir / (ExportNaming::SafeFileName(Name.empty() ? Hex(Id) : Name) + ".json"), Hex(Id), Name,
-                            Ty != 0 ? Hex(Ty) : std::string(), O->Type, Ty });
+                            Ty != 0 ? Hex(Ty) : std::string(), O->Type, Ty, O });
         }
         // a settings type's name: the one an index gives, or a text of the zone's bundles, the asset
         // type names, whose hash (L.TypeNameHash) is the type's
@@ -265,6 +266,7 @@ void ZonekitZone::ExportsBundleTrees(DiskGame::Kind K, std::vector<BundleOwner> 
         {
             if (P.TypeHash != 0)
                 if (const auto It = TypeNames.find(P.TypeHash); It != TypeNames.end()) P.B["type_name"] = It->second, TypesNamed++;
+            if (P.Owner != nullptr && P.Owner->Annotate) P.Owner->Annotate(P.B);
             if (C.OnTree)
             {
                 // read in memory (a game's anim owners): no file, no index entry

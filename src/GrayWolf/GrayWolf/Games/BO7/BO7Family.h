@@ -59,6 +59,11 @@ namespace BO7Family
         // the scriptable kind's types (scriptable, scriptablevariant), the weapons kind's
         std::vector<DumpType> Scriptables, Weapons;
         const IwWeaponStats::Layout* (*Stats)() = nullptr;                  // nullptr: no weapon stats kind
+        // perk: its settings (a script bundle's key/value table) and the assets it names (the perks
+        // kind, Games/BO7/Perks.h); Black Ops 7's perk (0x60, 0x387e940): the table at 8, an
+        // impulsemotion at 0x40
+        int64_t PerkTable = 8;
+        std::vector<std::pair<std::string, int64_t>> PerkAssets = { { "impulsemotion", 0x40 } };
 
         // ---- the level
         // gfx_map_trzone (0x190): its index i32, its draw data's inline struct (position data size

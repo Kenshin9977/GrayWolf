@@ -5,6 +5,7 @@
 #include <cstdint>
 
 struct SeAnimClip;
+struct XAnimBinRig;
 
 // Reads the BO3 Mod Tools' `.xanim_bin` format - the compiled form of a `.XANIM_EXPORT` text file,
 // produced by `export2bin.exe`, reverse-engineered from that tool.
@@ -13,35 +14,8 @@ struct SeAnimClip;
 // in retail `.ff` fast files). This reader targets the ~980 animations the Mod Tools ship on disk
 // under `xanim_export/`.
 
-// `valueType` from the doc's keyword table - selects the binary shape below. Numeric values match
-// the real writer's switch cases exactly (see the doc's "valueType -> binary encoding" table).
-// Most cases write 2 literal zero bytes right after the tag, before the payload described below:
-// String/Marker/Raw32/Raw32_2/UInt8Nx4/Raw32_3/Raw32x2/Raw32x3/Raw32x4 do;
-// Int16/UInt16/Int16Nx3/UVArray/UInt16String do not. XAnimBinReader.cpp's ReadRecord is
-// the source of truth for which.
-enum class XAnimBinValueType : uint32_t
-{
-    String = 0,          // Raw bytes, NUL-terminated then padded to 4-byte alignment.
-    Marker = 1,           // No payload at all - the tag alone is the record (ANIMATION, MODEL, X, Y, Z).
-    Int16 = 2,
-    UInt16 = 3,
-    Raw32 = 4,
-    Raw32_2 = 5,          // Same wire shape as Raw32 (1 raw uint32/float), distinct keyword set.
-    UInt8Nx4 = 6,          // Quantized 4x uint8: byte = uint8(value*255+0.5).
-    Int16Nx3 = 7,          // Quantized 3x int16: value*32767+0.5, sign-flipped via XOR if negative.
-    Raw32_3 = 8,
-    Raw32x2 = 9,
-    Raw32x3 = 10,
-    Raw32x4 = 0xb,
-    UInt16Float = 0xc,     // uint16 (bone index) + raw float (weight) - BONE's 2nd overload.
-    UVArray = 0xd,         // uint16 count, then count x (float,float) pairs.
-    UInt16String = 0xe,    // uint16 + string.
-    UInt16String3 = 0xf,   // uint16 + 3 strings.
-    UInt32String = 0x10,
-    UInt32x2String = 0x11,
-    UInt8x2 = 0x12,
-    UInt16x2 = 0x13,
-};
+// `valueType` (XAnimBinValueType) and the record tags, shared with the writers: XBin.h (Core).
+#include "XBin.h"
 
 // One resolved field record from the tagged-record stream. Numeric sub-fields are kept as raw
 // wire bytes in `Raw` (in field order, no re-interpretation - e.g. Raw32x3's 12 bytes may be
@@ -69,6 +43,15 @@ struct XAnimBinRecord
 // desync, not a soft stop - this format has no resync point once a record's length is misjudged).
 bool ReadXAnimBinRecords(const std::string& Path, std::vector<XAnimBinRecord>& Out);
 
+// The other way: the records encoded as export2bin does (XBin.h) into a .xanim_bin / .xmodel_bin.
+// What ReadXAnimBinRecords read gives the same payload back (xanimbin-rewrite checks it on the
+// Mod Tools' files). False when the file cannot be written.
+bool WriteXAnimBinRecords(const std::vector<XAnimBinRecord>& Records, const std::string& Path);
+
+// The quaternion (x, y, z, w) of a rotation given by its axes in model space: an XANIM_BIN's or
+// XMODEL_BIN's X, Y and Z lines, the rotation matrix's columns
+void XAnimBinAxesToQuat(const double X[3], const double Y[3], const double Z[3], double Q[4]);
+
 // Layer 2: assembles the tagged-record stream into a SeAnimClip - PART declarations become the
 // bone list, FRAME/PART(select)/OFFSET/X/Y/Z become per-frame per-bone pos+rot keys (X/Y/Z are 3
 // rows of a rotation matrix, converted to a quaternion here - see the .cpp for the exact
@@ -76,4 +59,14 @@ bool ReadXAnimBinRecords(const std::string& Path, std::vector<XAnimBinRecord>& O
 // `Out.Notifications`. Not verified against a decompiled parser or a text source: the grammar is
 // inferred from XANIM_EXPORT convention and checked only via structural invariants (declared
 // NUMPARTS/NUMFRAMES/NUMKEYS must match what is assembled, else the read fails).
+// NB: the keys are the file's values as they are, and an XANIM_BIN's are model-space (each part's
+// pose in the model, its parents' moves included; X/Y/Z the rotation's axes, the matrix's columns,
+// so the rows reading below gives the inverse rotation), not parent-relative: local keys need the
+// skeleton (XAnimBinExport.h, ReadXAnimBinRig; the xanimbin-compare command converts them).
 bool ReadXAnimBinClip(const std::string& Path, SeAnimClip& Out);
+
+// The skeleton an XANIM_BIN is written for (XAnimBinExport.h): the model the anim's GDT entry
+// names, a .xmodel_bin (its token stream: BONE index parent name, then each bone's OFFSET and X/Y/Z
+// axes) or a .xmodel_export (text). False, with Error, when the file holds no bone or a parent
+// after its child.
+bool ReadXAnimBinRig(const std::string& Path, XAnimBinRig& Out, std::string& Error);

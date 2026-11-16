@@ -17,10 +17,14 @@ std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_
     case 2: ImageDataFormat = ImageFormat::DDS_Standard_R32G32B32A32_FLOAT; break;
     case 10: ImageDataFormat = ImageFormat::DDS_Standard_R16G16B16A16_FLOAT; break;
     case 24: ImageDataFormat = ImageFormat::DDS_Standard_R10G10B10A2_UNORM; break;
+    case 26: ImageDataFormat = ImageFormat::DDS_Standard_R11G11B10_FLOAT; break;   // MW4's small HDR ramps (128x12)
     case 28: ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8; break;
     case 29: ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8_SRGB; break;
     case 34: ImageDataFormat = ImageFormat::DDS_Standard_R16G16_FLOAT; break;
     case 56: ImageDataFormat = ImageFormat::DDS_Standard_R16_UNORM; break;   // BO3's sstMinMax_* (written as BC1 before)
+    // R16_UINT (MW4's 60x66 lookups, 0 to 65535): its bits as R16_UNORM, which a PNG keeps as 16-bit grey
+    // (as an integer format every value past 0 saturates to white)
+    case 57: ImageDataFormat = ImageFormat::DDS_Standard_R16_UNORM; break;
     case 61: ImageDataFormat = ImageFormat::DDS_Standard_R8_UNORM; break;
     case 62: ImageDataFormat = ImageFormat::DDS_Standard_R8_UINT; break;
     case 65: ImageDataFormat = ImageFormat::DDS_Standard_A8_UNORM; break;

@@ -32,6 +32,9 @@
 #include "XMEExport.h"
 #include "XMBExport.h"
 #include "XMEImport.h"
+#include "XAnimBinExport.h"
+#include "XAnimBinReader.h"
+#include "WraithAnim.h"
 #include "Encryption.h"
 #include "HuskyMath.h"
 #include "GameImageProcessors.h"
@@ -499,6 +502,62 @@ static int SelfTest(std::string& Failures)
             const std::string Haystack((const char*)Unpacked.data(), Unpacked.size());
             Check(Haystack.find("j_mainroot") != std::string::npos,
                 "XMODEL_BIN carries the bones we wrote", "j_mainroot missing");
+        }
+
+        // XANIM_BIN: an anim posed on that XMODEL_BIN (read back as the rig), its records read back.
+        // j_mainroot turns 90 degrees about Z by frame 2, j_spine (keyed in place) follows it, tag_origin
+        // (a root the anim does not key) is left out, "end" is the linker's.
+        {
+            XAnimBinRig Rig;
+            std::string RigError;
+            const bool RigOk = ReadXAnimBinRig(BinPath, Rig, RigError);
+            Check(RigOk && Rig.Bones.size() == 3, "XANIM_BIN rig read from the XMODEL_BIN", RigError);
+
+            WraithAnim Anim;
+            Anim.AssetName = "selftest_anim";
+            Anim.AnimType = WraithAnimationType::Relative;
+            Anim.AddRotationKey("j_mainroot", 0, 0, 0, 0, 1);
+            Anim.AddRotationKey("j_mainroot", 2, 0, 0, 0.70710678f, 0.70710678f);
+            Anim.AddTranslationKey("j_spine", 0, 0, 0, 0);
+            Anim.AddNoteTrack("fire", 1);
+            Anim.AddNoteTrack("end", 2);
+
+            const auto AnimPath = (std::filesystem::path(FileSystems::GetApplicationPath()) / "selftest_roundtrip.XANIM_BIN").string();
+            XAnimBinStats Stats;
+            const bool Wrote = RigOk && XAnimBin::ExportXAnimBin(Anim, Rig, AnimPath, &Stats);
+            Check(Wrote, "XANIM_BIN written", "ExportXAnimBin failed");
+
+            std::vector<XAnimBinRecord> Records;
+            if (Wrote && ReadXAnimBinRecords(AnimPath, Records))
+            {
+                const auto U16 = [](const XAnimBinRecord& R) { uint16_t V = 0; std::memcpy(&V, R.Raw.data(), 2); return V; };
+                const auto U32 = [](const XAnimBinRecord& R) { uint32_t V = 0; std::memcpy(&V, R.Raw.data(), 4); return V; };
+                std::vector<std::string> Parts, Notes;
+                uint32_t Frames = 0, Frame = 0, Part = 0;
+                float SpineAt2[3] = {};
+                int16_t RootXAt2[3] = {};
+                for (const auto& R : Records)
+                {
+                    if (R.Keyword == "PART" && R.Type == XAnimBinValueType::UInt16String) Parts.push_back(R.Strings[0]);
+                    else if (R.Keyword == "NUMFRAMES") Frames = U32(R);
+                    else if (R.Keyword == "FRAME" && R.Type == XAnimBinValueType::Raw32) Frame = U32(R);
+                    else if (R.Keyword == "FRAME") Notes.push_back(std::format("{}@{}", R.Strings[0], U32(R)));
+                    else if (R.Keyword == "PART") Part = U16(R);
+                    else if (R.Keyword == "OFFSET" && Frame == 2 && Part == 1) std::memcpy(SpineAt2, R.Raw.data(), 12);
+                    else if (R.Keyword == "X" && Frame == 2 && Part == 0) std::memcpy(RootXAt2, R.Raw.data(), 6);
+                }
+                Check(Parts.size() == 2 && Parts[0] == "j_mainroot" && Parts[1] == "j_spine", "XANIM_BIN parts",
+                      std::format("{} parts", Parts.size()));
+                Check(Frames == 3, "XANIM_BIN frame count", std::format("{}", Frames));
+                Check(Notes.size() == 1 && Notes[0] == "fire@1", "XANIM_BIN notetracks", std::format("{} notes", Notes.size()));
+                Check(std::fabs(SpineAt2[0] + 1) < 1e-3f && std::fabs(SpineAt2[1] - 3) < 1e-3f && std::fabs(SpineAt2[2] - 6) < 1e-3f,
+                      "XANIM_BIN child follows its turned parent", std::format("{} {} {}", SpineAt2[0], SpineAt2[1], SpineAt2[2]));
+                Check(RootXAt2[0] == 0 && RootXAt2[1] == 32767 && RootXAt2[2] == 0, "XANIM_BIN axes quantized as export2bin",
+                      std::format("{} {} {}", RootXAt2[0], RootXAt2[1], RootXAt2[2]));
+            }
+            else
+                Check(false, "XANIM_BIN reads back", AnimPath);
+            std::filesystem::remove(AnimPath, Ec);
         }
 
         std::filesystem::remove(BinPath, Ec);

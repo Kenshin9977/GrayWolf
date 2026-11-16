@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -66,7 +67,8 @@ namespace
         { "gltf", "export_gltf" }, { "glb", "export_glb" } };
     const FormatKey AnimFormats[] = {
         { "cast", "export_castanim" }, { "castanim", "export_castanim" }, { "seanim", "export_seanim" },
-        { "xanim_export", "export_directxanim" }, { "directxanim", "export_directxanim" } };
+        { "xanim_export", "export_directxanim" }, { "directxanim", "export_directxanim" },
+        { "xanim_bin", "export_xanimbin" }, { "xanimbin", "export_xanimbin" } };
 }
 
 void ApplyExportOverrides(const CliOptions& Options)
@@ -79,6 +81,12 @@ void ApplyExportOverrides(const CliOptions& Options)
     if (Options.Lods)                 SettingsManager::SetRunSetting("exportalllods", "true");
     if (Options.KeepImages)           SettingsManager::SetRunSetting("keep_previous_images", "true");
     if (!Options.Unit.empty())        SettingsManager::SetRunSetting("unit", Options.Unit);
+    if (!Options.XAnimRig.empty())
+    {
+        std::error_code Ec;
+        const auto Absolute = std::filesystem::absolute(Options.XAnimRig, Ec);
+        SettingsManager::SetRunSetting("xanim_bin_rig", Ec ? Options.XAnimRig : Absolute.string());
+    }
 }
 
 

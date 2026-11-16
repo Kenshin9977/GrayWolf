@@ -166,6 +166,7 @@ static int RunCli(const CliOptions& Options)
     if (!Options.ExportMapGlb.empty()) return RunExportMapGlb(Options);
 
     if (!Options.OpenMap.empty()) return RunOpenMap(Options);
+    if (!Options.MapLimits.empty()) return RunMapLimits(Options);
 
     if (Options.CerberusSelfTest) return RunCerberusSelfTest(Options);
 
@@ -184,6 +185,10 @@ static int RunCli(const CliOptions& Options)
     if (!Options.XAnimBinSelfTest.empty()) return RunXAnimBinSelfTest(Options);
 
     if (!Options.XAnimBinToSeAnimIn.empty()) return RunXAnimBinToSeAnimIn(Options);
+
+    if (!Options.XAnimBinRewriteIn.empty()) return RunXAnimBinRewrite(Options);
+
+    if (!Options.XAnimBinCompareBin.empty()) return RunXAnimBinCompare(Options);
 
     if (!Options.XAnimBinExportDirIn.empty()) return RunXAnimBinExportDirIn(Options);
 
@@ -258,9 +263,9 @@ static const char* const kHelpOrder[] = {
     "index-assets", "query-assets", "audio-probe",
     "casc-list", "xpak-index", "xsub-index", "xsub-extract", "casc-extract", "zone-decompress",
     "bo4-export-localize-disk", "bo4-export-rawstrings-disk", "zone-walk", "<game commands>", "disk-export",
-    "decode-iwd", "gltf-selftest", "export-map-glb", "open-map", "cerberus-selftest", "seanim-selftest", "cast-selftest",
+    "decode-iwd", "gltf-selftest", "export-map-glb", "open-map", "map-limits", "cerberus-selftest", "seanim-selftest", "cast-selftest",
     "make-test-seanim", "render-anim", "coverage", "oat-extract",
-    "xanimbin-dump", "xanimbin-selftest", "xanimbin-to-seanim", "xanimbin-export-dir",
+    "xanimbin-dump", "xanimbin-selftest", "xanimbin-to-seanim", "xanimbin-rewrite", "xanimbin-compare", "xanimbin-export-dir",
     "oat-fx", "oat-fx-export", "oat-xmodel-materials", "oat-weapon", "oat-rawfiles", "gen-disc", "acts-extract",
     "dump-model", "dump-glb", "render-glb-png", "ui", "ui-grid-shot", "ui-record", "anim-rigs", "preview-window", "render-model", "render-fx",
     "sab-probe", "update-name-db", "update", "apply-update", "import-hash-csv", "bo4-decrypt", "file",
@@ -405,6 +410,8 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             { "export_glb", "false" },
             { "export_blender_script", "true" },   // <model>_import.py beside a Cast or glTF model
             { "export_directxanim", "false" },
+            { "export_xanimbin", "false" },
+            { "xanim_bin_rig", "" },   // the model XANIM_BIN anims are posed on (.xmodel_bin, .xmodel_export)
             { "directxanim_ver", "17" },
             { "global_images", "false" },
             { "patchnormals", "true" },

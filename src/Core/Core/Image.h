@@ -61,7 +61,8 @@ enum class ImageFormat
     DDS_Standard_R8_UNORM,
     DDS_Standard_R8_UINT,
     DDS_Standard_R16G16_FLOAT,
-    DDS_Standard_R16_UNORM
+    DDS_Standard_R16_UNORM,
+    DDS_Standard_R11G11B10_FLOAT
 };
 
 enum class ImagePatch

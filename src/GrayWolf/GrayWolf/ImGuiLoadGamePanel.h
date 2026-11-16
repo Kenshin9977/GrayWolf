@@ -260,6 +260,10 @@ private:
         std::string Headline, Detail, OutDir, RunLog;
         std::vector<std::string> ZoneErrors;
         size_t Failures = 0, Written = 0;
+        // by cause (DiskGame::Causes): what did not go, and what the install does not hold (not a failure)
+        size_t Absent = 0;
+        std::vector<std::pair<size_t, std::string>> Causes, AbsentCauses;
+        std::vector<std::string> Warnings;   // written, past what the target's tools take (Totals::Warnings)
         // written into a Black Ops III Mod Tools tree: its root, the files to open there, the steps left
         std::string ModToolsRoot;
         std::vector<std::string> ModToolsFiles, ModToolsNext;

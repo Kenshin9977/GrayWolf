@@ -92,6 +92,74 @@ namespace IwWeaponStats
         // u8 that picks it (AttExplosionFlag); the ballistic block pointer (the tunables' block replaced)
         int64_t AttBurstDelay = -1, AttAltMode = -1, AttBurstDelayScale = -1, AttExplosionDamage = -1, AttExplosionRings = -1,
                 AttExplosionFlag = -1, AttBallistic = -1;
+        // attachment, damage by range and hits (each table's first record, the one the stats UI shows):
+        // the damage table override (a block laid out as the tunables' damage table: i32 damages 0-0x10,
+        // f32 ranges 0x14-0x20; the first attachment holding one replaces the weapon's), the per-record
+        // scale table (f32: the 5 damage scales, then the 4 range scales; multiplied over the
+        // attachments), the modifier table block whose f32 +4 scales the 5 damages (an attachment
+        // without a scale table), the f32 range scale (likewise; 0 none), the hit location table
+        // override (22 f32, the first attachment's); penetration: a block {u8 level, f32 depth scale}
+        // (the first attachment's replaces the weapon's) and an i32 added to the level (summed); the
+        // perks the attachment gives (u32 script string hashes, count u8 AttPerkCount)
+        int64_t AttDamageTable = -1, AttDamageScales = -1, AttDamageScale = -1, AttRangeScale = -1, AttHit = -1, AttPenetration = -1,
+                AttPenetrationAdd = -1, AttPerks = -1, AttPerkCount = -1;
+        // the weapon's penetration: the level (u8 in its definition) and the depth scale (f32 in the
+        // weapon asset); a level is clamped to [1, PenetrationMax] once an attachment adds to it
+        int64_t DefPenetration = -1, WeaponPenetrationScale = -1;
+        int PenetrationMax = 0;
+        // attachment, fire time: the i32 that replaces the tunables' fire time (0 none; the first
+        // attachment, not an alternate mode's, AttAltMode) and the modifier table block whose f32 +4
+        // scales it (1 + the sum of the attachments' scale - 1)
+        int64_t AttFireTime = -1, AttFireTimeScale = -1;
+        // the order the game gathers a weapon's attachments (slot indexes): "the first attachment holding
+        // a field" is the first in this order (empty: the order the attachments are given)
+        std::vector<int> SlotOrder;
+        // the alternate mode slot (-1 none): its attachment counts only while the mode is active, unless
+        // its u8 AttAltNormal is set (a normal attachment); u8 AttAltActive (0: the mode is never active,
+        // its fields never apply), u8 AttAltWithOthers (0: while active, the weapon's stats are the
+        // attachment's alone)
+        int AltSlot = -1;
+        int64_t AttAltActive = -1, AttAltWithOthers = -1, AttAltNormal = -1;
+        // (or the u8 at +AttAltBlockKeep of the block AttAltBlock points to, when set)
+        int64_t AttAltBlock = -1, AttAltBlockKeep = -1;
+        // the clip override replaces the base clip and is then scaled (true), or replaces the result (false)
+        bool ClipOverrideScaled = false;
+        // max ammo: the attachment's f32 scale (1 + the sum of scale - 1) and, in the clip override
+        // block, the i32 max ammo, the i32 reserve magazines and the u8 that counts the reserve in magazines
+        int64_t AttMaxAmmoScale = -1, AttAmmoMax = -1, AttAmmoReserve = -1, AttAmmoByClips = -1;
+        // pellets a shot: the tunables' i32, replaced by the first attachment's clip override block i32
+        // +AttAmmoPellets when >= 0
+        Field Pellets;
+        int64_t AttAmmoPellets = -1;
+        // the attachment's u8 weapon class override (0 none; the first in gather order wins); pellets only for SpreadClass
+        int64_t AttClass = -1;
+        int SpreadClass = -1;
+        // Zombies Pack-a-Punch: the bundle type (as the bundles kind names it; "" none) and its keys' FNV-1a
+        // 64 hashes: weapon, base, pap, pap4 attachments, the variants array and, in an item, the attachment
+        // held, the pap and pap4 variants
+        std::string PapBundleType;
+        uint64_t PapKeys[8] = {};
+        // a weapon's custom settings (weapon_custom_settings/<weapon>.json): the script bundle pointer in
+        // its definition (-1 none; the bundles kind must write the bundles in the same --out); the Pack-a-Punch
+        // damage multipliers of levels 1-4 the Zombies damage reads: a weaponmetadataentry's own (PapEntryScales),
+        // else its list's (a PapListType bundle: entries in the array PapListKeys[0], each an asset PapListKeys[1];
+        // the four scales PapListKeys[2..5])
+        int64_t DefCustomSettings = -1;
+        std::string PapListType;
+        uint64_t PapEntryScales[4] = {}, PapListKeys[6] = {};
+        // README.txt: the custom settings' notes
+        std::string CustomSettingsNotes;
+        // compatibility: an attachment's group (u32), its own id (u32: the low 32 bits of its name's
+        // script string hash), the groups it excludes (u32 * AttExGroups, count u8 AttExGroupCount), the
+        // slots it excludes (u32 *, a slot named by SlotId(SlotNames[slot])), the attachments it excludes
+        // by own id (u32 inline, count u8); the attachments it brings (inline 16-byte entries, the id
+        // u64 at 0, count u8 AttBringCount)
+        int64_t AttGroup = -1, AttSelfId = -1, AttExGroups = -1, AttExGroupCount = -1, AttExSlots = -1, AttExSlotCount = -1, AttExIds = -1,
+                AttExIdCount = -1, AttBrings = -1, AttBringCount = -1;
+        std::vector<std::string> SlotNames;
+        std::function<uint32_t(const std::string&)> SlotId;
+        // the rules' notes (README.txt, weapon_attachment_rules.csv)
+        std::string RulesNotes;
         // animation package: the anim table's pointer, its i64 count, the sorted u16 anim ids and the
         // xanim pointers of the same index (weapon_anims.csv); an xanim named by its hash (AnimName)
         int64_t PkgAnims = -1, PkgAnimCount = -1, PkgAnimIds = -1, PkgAnimXanims = -1;
@@ -137,6 +205,7 @@ namespace IwWeaponStats
         std::function<int64_t(uint64_t)> Off;              // a relocated pointer's zone offset, -1 elsewhere
         std::function<std::string(int64_t)> Text;          // the decrypted text of the string pointer field at a zone offset
         std::function<std::string(int64_t)> LocalizeText;  // a localize asset's decrypted text, by its position
+        std::function<std::string(uint32_t)> ScriptString; // a script string by the low 32 bits of its hash ("" unknown)
     };
     struct FactsCount
     {

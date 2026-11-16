@@ -2,9 +2,10 @@
 
 // What a Radiant .map is written for (MapRadiantWriter.h). The format is Black Ops III Radiant's
 // whatever the source game; a target says what of the source goes in and by what names.
-// PlainTarget keeps the map as the game has it (a .map beside the export); Bo3ModToolsTarget makes
-// it a level the mod tools build in their tree: names of the map's own, the source's
-// single-player logic left out.
+// PlainTarget keeps the map as the game has it (a .map beside the export, for Black Ops III's
+// Radiant or an older game's); Bo3ModToolsTarget makes it a level the mod tools build in their
+// tree: names of the map's own, the source's single-player logic left out, fitted to the tools'
+// limits (Fits).
 
 #include "MapLive.h"
 #include "MapRadiantWriter.h"
@@ -48,12 +49,10 @@ namespace Maps
             double Distance, MinDot;
         };
         virtual Merge CollisionMerge() const = 0;
-        // the brush sides the collision may take (the clip map's brushes' with the prisms'): past
-        // it, the collision polygons are patches instead (infinite: always prisms)
+        // the compiler's plane slots (MapRadiantPlanes.h) the collision may take (the clip map's
+        // brushes with the prisms): past it, the collision polygons are patches instead (0: always
+        // patches; infinite: always prisms)
         virtual double CollisionPlaneBudget() const = 0;
-        // the brush sides (the world's and the brush models') a map may hold: past it, the brush
-        // models of the most sides keep their drawn triangles only
-        virtual double BrushSideBudget() const = 0;
         // the most surfaces (one per material) a model of the world's drawn triangles takes
         virtual size_t MaxModelSurfaces() const = 0;
         // the most vertices a model's surfaces of one material may hold together (a larger model
@@ -64,9 +63,8 @@ namespace Maps
         virtual double MinPatchTriangleArea() const = 0;
         // the most sides a brush of the clip map's may have and be written
         virtual size_t MaxBrushSides() const = 0;
-        // the collision triangles a map may keep whole; past it, only those in the play area (the
-        // players' starts grown by PlayMargin, across and up)
-        virtual double CollisionTriangleBudget() const = 0;
+        // the play area: the players' starts grown by PlayMargin, across and up (what the writer
+        // keeps first when a limit makes it leave something out)
         struct Margin
         {
             double Across, Up;
@@ -74,13 +72,24 @@ namespace Maps
         virtual Margin PlayMargin() const = 0;
         // what the target's tools refuse outright, checked again on what was written (the rules
         // above keep within them): the most surfaces a model holds, vertices a model's surfaces of
-        // one material hold together, characters an asset name has, brush sides a map holds (the
-        // largest seen to build). Zero: no such limit.
+        // one material hold together, characters an asset name has; entities a map holds, static
+        // models (its misc_models), materials it names, drawn triangles of its world (its
+        // patches'); plane slots, brushes, brush sides with their bevels (MapRadiantPlanes.h), the
+        // patches' collision triangles and vertices. Zero: no such limit. The table:
+        // graywolf-tools/docs/bo3-modtools-limits.md.
         struct Limits
         {
-            size_t ModelSurfaces = 0, MaterialVertices = 0, NameLength = 0, BrushSides = 0;
+            size_t ModelSurfaces = 0, MaterialVertices = 0, NameLength = 0;
+            size_t Entities = 0, StaticModels = 0, Materials = 0, WorldTriangles = 0;
+            size_t PlaneSlots = 0, Brushes = 0, BrushSides = 0, CollisionTriangles = 0, CollisionVertices = 0, Assets = 0;
+            // exploders (Radiant: "This map will fail to link" past 256); brush models (cod2map's
+            // 1024 are the non-dynamic ones', counted as if every one were)
+            size_t Exploders = 0, BrushModels = 0;
         };
         virtual Limits HardLimits() const = 0;
+        // whether the writer fits the map under HardLimits (MapRadiantWriter.cpp: what a player misses
+        // least left out first); false: only told (warnings)
+        virtual bool Fits() const = 0;
         // the keys a model of the world's (a tile of it, its origin the world's) takes besides its
         // model and placement, as (key, value) pairs
         virtual std::vector<std::pair<std::string, std::string>> WorldModelKeys() const { return {}; }

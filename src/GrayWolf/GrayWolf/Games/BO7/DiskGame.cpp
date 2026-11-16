@@ -10,6 +10,7 @@
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/BO7/BO7Family.h"
+#include "Games/BO7/Perks.h"
 #include "Games/BO7/TechsetFormat.h"
 #include "Games/BO7/VfxLayout.h"
 #include "Games/IW/IwWeaponStats.h"
@@ -159,6 +160,7 @@ namespace
                                { { "aitype", 0xb0, -1, { { "0x78", 0x78 } }, {},
                                    [](const std::string& Name) { return GameBlackOps7::HashIWAsset("aitype:" + Name); } } },
                                Bundles, Decrypted);
+            ExportsPerks(Bundles, Decrypted);
             // scriptable (0xd8, its loader 0x3888d90) and scriptablevariant (0x58, 0x388f490): no
             // key/value table, dumped by offset
             ExportsStructDumps(Kind::Scriptables, DumpTypes(Family.Scriptables), Decrypted);
@@ -192,11 +194,15 @@ namespace
                         LocalizeEntry(Pos, Key, Text);
                         return Text;
                     };
+                    // an attachment's perks: the low u32 of their script string hashes
+                    V.ScriptString = [](uint32_t H) { return IwctxReaders::ScriptString32(H); };
                     IwWeaponStats::Export(*Family.Stats(), V, fs::path(FastFilePath()).stem().string(), C, T);
                 });
         }
 
         const BO7Family::Spec& Family;   // what the game on this engine moved
+        // ---- the perks kind (below, with the zone's other data kinds)
+        void ExportsPerks(const ScriptBundleLayout& Bundles, const std::function<std::string(const std::string&)>& Decrypted);
         static std::vector<DumpType> DumpTypes(const std::vector<BO7Family::DumpType>& Types)
         {
             std::vector<DumpType> Out;
@@ -259,6 +265,9 @@ namespace
         // map_ents keeps as records (spawn points, scriptable instances)
         void EntityStrings(std::vector<IwctxReaders::MapEntity>& Out) const;
         void MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const;
+        // the spawn points (map_ents' list, or each map_spawn_points asset's), this zone's, and with
+        // AlsoBeside those of the zones served beside it (MW4: the map's _subset_ai zone)
+        void SpawnPoints(std::vector<IwctxReaders::MapEntity>& Out, bool AlsoBeside) const;
 
         // its characters' bodies and heads, of the zone and those served beside it (IwctxAnimOwners::BodyHeads)
         std::vector<std::pair<std::string, std::vector<std::string>>> CharacterHeads() override;
@@ -288,6 +297,10 @@ namespace
                 { "0x0020/0x1b30", { "tunables", "" } },
                 // the localize key of its display name: sat_weapon/<name>, AK-27 for sat_ar_kite (ens_global)
                 { "0x0040", { "display_name", "" } },
+                // bullet penetration: the depth scale (0x46489e0) and, in the definition, the level u8
+                // (0x4648ad0: 0 none, shotguns 1, SMGs 2, rifles 3, LMGs and snipers 4)
+                { "0x0488", { "penetration_depth_scale", "f32" } },
+                { "0x0020/0x1a40", { "penetration_level_u8@0", "" } },
             };
             // slot s's default attachment, +0x3a0 + 8 s (0x4697c87, when the weapon blueprint gives none)
             for (int S = 1; S < StatsLayout().SlotCount; S++)
@@ -441,6 +454,44 @@ namespace
                 { "0x0030", { "blueprints", "" } },
                 { "0x0268", { "world_model", "hash" } },
                 { "0x0270", { "view_model", "hash" } },
+                // damage by range: the damage table override (first attachment; the tunables' 0x70 layout,
+                // 0x46386d0 / 0x464a150), the per-record damage and range scale table (f32 x10 per record,
+                // multiplied over the attachments), else the uniform range scale (0 none) and damage scale
+                // (the modifier block 0x250->0xd8 +4)
+                { "0x0408", { "damage_table_override", "" } },
+                { "0x0408/0x0000", { "damage_min", "i32" } },
+                { "0x0408/0x0004", { "damage_mid1", "i32" } },
+                { "0x0408/0x0008", { "damage_mid2", "i32" } },
+                { "0x0408/0x000c", { "damage_mid3", "i32" } },
+                { "0x0408/0x0010", { "damage_max", "i32" } },
+                { "0x0408/0x0014", { "range_max_damage", "f32" } },
+                { "0x0408/0x0018", { "range_mid1", "f32" } },
+                { "0x0408/0x001c", { "range_mid2", "f32" } },
+                { "0x0408/0x0020", { "range_mid3", "f32" } },
+                { "0x0410", { "damage_range_scales", "" } },
+                { "0x0410/0x0000", { "damage_min_scale", "f32" } },
+                { "0x0410/0x0004", { "damage_mid1_scale", "f32" } },
+                { "0x0410/0x0008", { "damage_mid2_scale", "f32" } },
+                { "0x0410/0x000c", { "damage_mid3_scale", "f32" } },
+                { "0x0410/0x0010", { "damage_max_scale", "f32" } },
+                { "0x0410/0x0014", { "range_max_damage_scale", "f32" } },
+                { "0x0410/0x0018", { "range_mid1_scale", "f32" } },
+                { "0x0410/0x001c", { "range_mid2_scale", "f32" } },
+                { "0x0410/0x0020", { "range_mid3_scale", "f32" } },
+                { "0x0b94", { "range_scale", "f32" } },
+                // the fire time replacing the tunables' (0 none) and its scale (0x463a9b0)
+                { "0x0bd8", { "fire_time_override", "i32" } },
+                { "0x0250/0x00e0", { "fire_time_scale", "" } },
+                { "0x0250/0x00d8", { "damage_scale", "" } },
+                // the hit location multipliers replacing the weapon's (first attachment, 0x4642180)
+                { "0x09d0", { "hit_multipliers_override", "" } },
+                // penetration (0x4648ad0, 0x46489e0): {u8 level, f32 depth scale} replacing the weapon's, and
+                // the level added (summed, clamped to [1, 6])
+                { "0x0368", { "penetration_override", "" } },
+                { "0x0368/0x0004", { "penetration_depth_scale", "f32" } },
+                { "0x0cbc", { "penetration_level_add", "i32" } },
+                // the perks it gives: u32 script string hashes (count u8 0xd79; builtins 0x752cc20, 0x752fdd0)
+                { "0x0290", { "perks", "" } },
             };
         }
         // an attachmentblueprint (a cosmetic variant of an attachment): its name hash +0x40 (0x4635510
@@ -669,6 +720,9 @@ namespace
                     }
             }
             for (const auto& P : Transient) Transients.push_back(P.string());
+            // the map's _subset_ai zone (loaded with it), where MW4 keeps its spawn points (map_spawn_points)
+            if (Family.SpawnPoints >= 0)
+                if (const fs::path Ai = Dir / (Name() + "_subset_ai.ff"); fs::exists(Ai, Ec)) Transients.push_back(Ai.string());
             std::map<std::string, size_t> Counts;
             const uint64_t Above = Live().Origin() + Image().size();
             Beside.Load(Globals, *Loaded, Above, Counts, true);
@@ -915,8 +969,26 @@ namespace
             L.Decode = [this](int64_t Pos, const std::string& Name) {
                 return GameBlackOps7::LoadXImage(XImage_t(ImageUsageType::Unknown, 0, Live().Addr((uint64_t)Pos), Name));
             };
+            // (where its pixels were looked for, its format and size: what tells a reader's gap from
+            // an image the install lacks)
             L.FailWhy = [this](int64_t Pos) {
-                return std::string(Get<uint64_t>(Live().Addr((uint64_t)Pos) + 0x38) != 0 ? "in zone" : "streamed");
+                const uint64_t A = Live().Addr((uint64_t)Pos);
+                const uint8_t Format = Get<uint8_t>(A + 0x2a);
+                return std::format("{} (format {}, dxgi {}, {}x{}, {} bytes in zone)", Get<uint64_t>(A + 0x38) != 0 ? "in zone" : "streamed", Format,
+                                   GameBlackOps7::DxgiFormat(Format), Get<uint16_t>(A + 0x20), Get<uint16_t>(A + 0x22), Get<uint32_t>(A + 0x18));
+            };
+            // streamed, and none of its mip levels' keys ({u64 key, ...} 24 bytes each at 0x30, count
+            // u8 0x2e & 0xf) is in a package the install holds: the game streams it on demand, or a
+            // pack is not installed. Not a reader's failure
+            L.Absent = [this](int64_t Pos) {
+                const uint64_t A = Live().Addr((uint64_t)Pos);
+                const uint64_t Mips = Get<uint64_t>(A + 0x30);
+                const uint32_t Count = Get<uint8_t>(A + 0x2e) & 0xF;
+                if (Get<uint64_t>(A + 0x38) != 0 || Mips == 0 || Count == 0 || CoDAssets::GamePackageCache == nullptr) return std::string();
+                for (uint32_t K = 0; K < Count; K++)
+                    if (CoDAssets::GamePackageCache->Exists(Get<uint64_t>(Mips + K * 24))) return std::string();
+                return std::string("streamed: none of its mip levels is in a package of the install (a texture the game streams on demand, "
+                                   "or a pack not installed)");
             };
             L.OnePerName = true;
             ExportImageList(C, T, L);
@@ -954,6 +1026,89 @@ namespace
             // damages +0xc / +0x10, rings +0x20.., ring flag +0x60 (0x462c460); ballistic block 0x620 (0x4636140)
             L.AttBurstDelay = 0x5e0, L.AttAltMode = 0xd75, L.AttBurstDelayScale = 0xe8, L.AttExplosionDamage = 0xc, L.AttExplosionRings = 0x20,
             L.AttExplosionFlag = 0x60, L.AttBallistic = 0x620;
+            // attachment, damage by range (0x46386d0 damages, 0x464a150 ranges): the damage table override
+            // 0x408 (the tunables' 0x70 table's layout, first attachment), the scale table 0x410 (f32 x10 per
+            // record: 5 damage scales, 5 range scales; mode 1 at +0x78, mode 2 at +0xf0 when u8 +0x168),
+            // else the modifier block 0x250->0xd8 +4 (every damage) and f32 0xb94 (every range, 0 none);
+            // hits: the first attachment's 22 multipliers at 0x9d0 (0x4642180); penetration: block 0x368 {u8
+            // level, f32 depth scale} (0x4648ad0, 0x46489e0) and i32 0xcbc added to the level, clamped to
+            // [1, 6]; perks: u32 script string hashes at 0x290, count u8 0xd79 (the builtins 0x752cc20,
+            // 0x752fdd0 return / test them)
+            L.AttDamageTable = 0x408, L.AttDamageScales = 0x410, L.AttDamageScale = 0xd8, L.AttRangeScale = 0xb94, L.AttHit = 0x9d0,
+            L.AttPenetration = 0x368, L.AttPenetrationAdd = 0xcbc, L.AttPerks = 0x290, L.AttPerkCount = 0xd79;
+            // weapon penetration: level u8 weapon_def 0x1a40 (0x4648ad0; 0 none, shotguns 1, SMGs and
+            // pistols 2, rifles 3, LMGs and snipers 4), depth scale f32 weapon 0x488 (0x46489e0)
+            L.DefPenetration = 0x1a40, L.WeaponPenetrationScale = 0x488, L.PenetrationMax = 6;
+            // fire time (0x463a9b0, under weaponfiretime 0x74e44ff and the stats UI 0x4ced493): the first
+            // attachment's i32 0xbd8 when not 0 (not an alternate mode's: u8 0xd75), then x (1 + sum of the
+            // modifier block 0x250->0xe0 +4 - 1)
+            L.AttFireTime = 0xbd8, L.AttFireTimeScale = 0xe0;
+            // the order every stat getter gathers the attachments in (0x4653b20 / new 0x4683e70 walks the
+            // 17-byte table 0xb43fe10 / 0xb4a4a70): the first holding a field wins
+            L.SlotOrder = { 0, 5, 10, 11, 13, 16, 9, 8, 7, 6, 12, 4, 3, 2, 1, 14, 15 };
+            // the alternate mode: slot 12's attachment (weapon +0x140, 0x46501b0 / 0x4680500). In the gather,
+            // with u8 0xd91 = 0 it counts only while the weapon's mode is active and its u8 0xd80 is set, then
+            // first, and alone unless u8 0xd8b is set or its block 0x3d8 is null or has u8 +0x3b set
+            L.AltSlot = 12, L.AttAltActive = 0xd80, L.AttAltWithOthers = 0xd8b, L.AttAltNormal = 0xd91, L.AttAltBlock = 0x3d8, L.AttAltBlockKeep = 0x3b;
+            // clip (0x4637c90 / 0x4667fe0): the first override (block 0x400 +8 >= 0) replaces the base clip,
+            // then the scale applies; max ammo (0x46690c0 / 0x4699410): the first attachment's block 0x400
+            // decides (u8 +0x2c by magazines with i32 +0xc magazines when > 0, else i32 +0 when >= 0), the
+            // f32 0xb8c scales a max ammo (1 + sum(scale - 1))
+            L.ClipOverrideScaled = true, L.AttMaxAmmoScale = 0xb8c, L.AttAmmoMax = 0, L.AttAmmoReserve = 0xc, L.AttAmmoByClips = 0x2c;
+            // pellets a shot (0x4676de0 / 0x46a7130, called by the stats UI 0x4cecd8d and the shot code
+            // 0x7340ff0): tunables i32 0x5d4c, replaced by the first attachment's block 0x400 i32 +0x14 >= 0
+            // (a turret of fire type 5 fires 1; a beam weapon's count is clamped to 7 at load, 0x460f52c)
+            L.Pellets = 0x5d4c, L.AttAmmoPellets = 0x14;
+            // the shot fires them only for the spread class (0x7340fd2 -> 0x4680e40 / new 0x46b1190); the class
+            // getter 0x46542a0 / 0x46845f0 takes the first attachment's u8 0xd80 when not 0 (slugs: 1, rifle)
+            L.AttClass = 0xd80, L.SpreadClass = 5;
+            // Zombies Pack-a-Punch (ingame_zm's weaponmetadataentry bundles; none of the keys is a constant
+            // of the exe: the scripts read them): weapon, zombiebaseattachment, zombiepapattachment,
+            // zombiepap4attachment, the variants array (a5d70502eceae270) {baseattachment,
+            // papattachmentvariant, pap4attachmentvariant}
+            L.PapBundleType = "weaponmetadataentry";
+            const uint64_t PapKeys[8] = { 0xa0b610205f2c6e01ull, 0x1ba9d7e8bafa035full, 0xc806ac2759d0d7c9ull, 0xc6131e7d74c41955ull,
+                                          0xa5d70502eceae270ull, 0xd7eb5a64a49de165ull, 0x9d9d89faa4c054dcull, 0x6096090b32ee005cull };
+            std::copy(std::begin(PapKeys), std::end(PapKeys), L.PapKeys);
+            // weapon.weaponcustomsettings (the script field 983195104a0f8848 of the weapon object's getter
+            // table 0xb50e920; its getter 0x7559b00, new exe, takes the weapon's definition from 0xecf7960 by
+            // index and pushes the script bundle at definition +0x308, its key table at +0x10). The Zombies
+            // damage (scripts) scales a weapon's damage by Pack-a-Punch level: its weaponmetadataentry's
+            // scales (keys of levels 1-4), else the weapon list's (weaponmetadata: weaponslist c043d76f186a5ce2,
+            // each item's weaponmetadataentry 32158a4372d3e898, the pap_settings scales of levels 1-4)
+            L.DefCustomSettings = 0x308;
+            L.PapListType = "weaponmetadata";
+            const uint64_t EntryScales[4] = { 0x75ee7bb14e25beabull, 0x58cdd29511c601aaull, 0x37efa1780e2cab49ull, 0x2a57746fa2ae0d50ull };
+            std::copy(std::begin(EntryScales), std::end(EntryScales), L.PapEntryScales);
+            const uint64_t ListKeys[6] = { 0xc043d76f186a5ce2ull, 0x32158a4372d3e898ull, 0x683b0f8d5fd845dfull,
+                                           0x31f30fcfdb318b66ull, 0x989589f6e32526b9ull, 0xdca438c5896050c0ull };
+            std::copy(std::begin(ListKeys), std::end(ListKeys), L.PapListKeys);
+            L.CustomSettingsNotes =
+                "\n\nweapon_custom_settings/<weapon>.json\n"
+                "-------------------------------------\n"
+                "One file per weapon whose definition names a custom settings bundle (definition +0x308: what the\n"
+                "scripts read as weapon.weaponcustomsettings; getter 0x7559b00 in the exe 0x6adb2260). Needs the\n"
+                "bundles kind in the same --out (--type weaponstats,bundles). Each field: name (null when only its\n"
+                "hash is known), key_hash (FNV-1a 64 of the lower-case name), script_hash (the scripts' var_<hash>),\n"
+                "type, value; a struct's fields under fields, an array's under elements. The values' units and\n"
+                "meanings are the scripts' (not on disk): not given. linked: the weapons and attachments the\n"
+                "settings name, a weapon with its damages (weapon_stats.csv, first set). pack_a_punch: levels 0-4,\n"
+                "the slot 0 attachment of each (weaponmetadataentry: base, pap for 1-3, pap4 else pap for 4), the\n"
+                "weapon_attachments.csv stats that differ from level 0, and the damage scale the Zombies damage\n"
+                "applies (the entry's own, else each weapon list's pap_settings scale; which list applies is the\n"
+                "game mode's).";
+            // compatibility (0x46143c0 / 0x4644710 (A, B, slot of B) is true when A's u32 lists name B):
+            // B's u32 0xb48 (its group) in A's 0x280 (count u8 0xd77), B's u32 0xb30 (the low 32 bits of its
+            // name's script string hash) in A's inline 0x298 (count u8 0xd7a), the id of B's slot (0x4635ca0 /
+            // 0x4665ff0: table 0xb4400d0 / 0xb4a4cc0 of 17 script strings, filled at start from the names
+            // below by 0x75d5bb0 / 0x7605ef0) in A's 0x288 (count u8 0xd78). The weapon build 0x4614550 /
+            // 0x46448a0 drops A then (0x461515f). The attachments it brings: inline 0x120, 16 bytes each
+            // {u64 attachment id, ...}, count u8 0x230 (0x4612510 / 0x4642860)
+            L.AttGroup = 0xb48, L.AttSelfId = 0xb30, L.AttExGroups = 0x280, L.AttExGroupCount = 0xd77, L.AttExSlots = 0x288, L.AttExSlotCount = 0xd78,
+            L.AttExIds = 0x298, L.AttExIdCount = 0xd7a, L.AttBrings = 0x120, L.AttBringCount = 0x230;
+            L.SlotNames = { "gametype", "receiver", "frontpiece", "backpiece", "magazine", "override", "muzzle", "reargrip", "trigger",
+                            "extra", "scope", "scopealt", "underbarrel", "modifier", "conversionkit", "dynamic", "other" };
+            L.SlotId = [](const std::string& Name) { return (uint32_t)IwctxReaders::ScriptStringHash(Name); };
             // animation package: its anim table +0x10 (0x4689470: count i64 +0x250, sorted u16 ids
             // +0x258, xanim pointers +0x268 of the same index)
             L.PkgAnims = 0x10, L.PkgAnimCount = 0x250, L.PkgAnimIds = 0x258, L.PkgAnimXanims = 0x268;
@@ -1045,6 +1200,8 @@ namespace
                 "  first mid whose range is set and beyond the distance, else damage_min (0x464c9e0). Ranges are\n"
                 "  inches / 39.37. Other tables (modes, profiles) are in the raw dump only.\n"
                 "- hit_*: the multipliers of the table at 0x530 (0x4642180), by the game's hit location order.\n"
+                "- penetration_level (weapon_def u8 0x1a40, 0x4648ad0) and penetration_depth_scale (weapon f32 0x488,\n"
+                "  0x46489e0): see weapon_attachments.csv below.\n"
                 "- sprint_speed_scale (0x5c14), super_sprint_speed_scale (0x5c28), prone_speed_scale (0x5c08): scales.\n"
                 "- move_speed_scale (f32 0x5bf0) and ads_move_speed_scale (f32 0x5bfc): the standing move scales of the\n"
                 "  speed functions (0x43a05e0, 0x43a28f0), the second while ps+0x1c bit 13 is set, which 0x43eaf50 sets\n"
@@ -1059,8 +1216,21 @@ namespace
                 "weapon +0x80 + slot * 0x10, slot and index as 0x46843b0 reads them). weapon_loadouts.csv: the\n"
                 "lines of loadouts.txt in this folder ('<weapon asset>: <attachment>, <attachment>...', an attachment by\n"
                 "asset or display name), each loadout of the default set. How the attachments combine (the code):\n"
-                "- clip_size: the i32 at 8 of an attachment's block 0x400 when >= 0 (0x4637e2c), else\n"
-                "  (int)(clip x (1 + sum(attachment 0xb90 - 1))) (0x4637d88).\n"
+                "- Every getter gathers the attachments in the slot order 0, 5, 10, 11, 13, 16, 9, 8, 7, 6, 12, 4, 3, 2, 1, 14,\n"
+                "  15 (0x4653b20 over the table 0xb43fe10; new exe 0x4683e70, 0xb4a4a70): 'the first attachment holding a\n"
+                "  field' below is the first in that order (slot 0, Pack-a-Punch, before all others).\n"
+                "- Alternate mode: slot 12's attachment (underbarrel launchers, dual fire, select fire) with u8 0xd91 = 0\n"
+                "  counts only while the weapon's alternate mode is active (and its u8 0xd80 is set): then it comes first,\n"
+                "  alone unless u8 0xd8b is set or its block 0x3d8 is null or holds u8 +0x3b. Its row in\n"
+                "  weapon_attachments.csv (alt_mode 'active') is the weapon in that mode; 'never_active' (0xd80 = 0):\n"
+                "  its fields never apply to these stats. weapon_loadouts.csv shows the weapon with the mode inactive.\n"
+                "- clip_size = (int)(base x max(0, 1 + sum(attachment f32 0xb90 - 1))) (1 within 1e-6), base the i32 at 8\n"
+                "  of the first attachment's block 0x400 that is >= 0, else tunables 0x5d48 (0x4637c90: the override is\n"
+                "  scaled too; new exe 0x4667fe0). Perks (a class table under player perk bit 0xf) not applied.\n"
+                "- max_ammo: the first attachment holding a block 0x400 decides (0x46690c0, new 0x4699410): u8 +0x2c set:\n"
+                "  counted in magazines, i32 +0xc magazines when > 0 (else tunables 0x5d60); else i32 +0 replaces the max\n"
+                "  ammo when >= 0. By magazines: clip_size x magazines (the clip getter it calls, 0x4756590, not traced); else (int)(max x max(0, 1 + sum(attachment f32\n"
+                "  0xb8c - 1))). A mode dvar's extra magazines (0x466944a) not applied.\n"
                 "- reload_ms, reload_empty_ms, the sprint-out times: the animation package of the override entry\n"
                 "  (weapon_def 0x60) with the most condition groups whose groups all match (a group: any of its\n"
                 "  conditions {slot, mask of slot indexes}; a group tied to a blueprint variant never matches here) and\n"
@@ -1076,6 +1246,12 @@ namespace
                 "- Zombies Pack-a-Punch is an attachment of slot 0 (sat_zm_<gun>_pack, _pack4; sat_ob_<gun>_tier1..4 for\n"
                 "  the other mode): its row in weapon_attachments.csv is the upgraded weapon (names only: no code link).\n"
                 "- muzzle_velocity_mps = velocity x product(attachment 0x250->0xd0 +4) (0x46362d4).\n"
+                "- fire_time_ms = (int)(t x max(0, 1 + sum(attachment 0x250->0xe0 +4 - 1))) (0x463a9b0, which weaponfiretime\n"
+                "  and the stats UI call): t is the i32 0xbd8 of the first attachment holding one (0: none; not an attachment\n"
+                "  with u8 0xd75 = 1, an alternate mode, unless active), else tunables 0x5cd4. rpm = 60000 / fire_time_ms.\n"
+                "  Not applied: the alternate mode's times (tunables 0x5cf0, attachment 0xbdc), the fire-rate ramp of\n"
+                "  tunables 0x5aa4 / 0x5d08 (attachment 0x9b8 / 0x9c0; the stats UI ramps over 0x5d4c shots) and the\n"
+                "  player-state factors (aiming, perks, akimbo halving).\n"
                 "- burst_delay_ms = floor(t x max(0, 1 + sum(attachment 0x250->0xe8 +4 - 1)) + 0.5) (0x4637000): t is the\n"
                 "  i32 the first attachment's pointer 0x5e0 leads to (that attachment's own scale then left out), else\n"
                 "  tunables 0x5a50. An attachment with u8 0xd75 = 1 overrides only while it is the weapon's active\n"
@@ -1083,7 +1259,52 @@ namespace
                 "- explosion_inner_damage / explosion_outer_damage: the first attachment with an explosion block (0x578)\n"
                 "  gives the radius, the damages (+0xc / +0x10; three rings +0x20 radii, +0x2c / +0x34 damages) and the\n"
                 "  ring flag (u8 +0x60, 0x462c460).\n"
-                "- gravity_mps2: the first attachment's ballistic block (0x620) replaces the tunables' (0x4636140).\n";
+                "- gravity_mps2: the first attachment's ballistic block (0x620) replaces the tunables' (0x4636140).\n"
+                "- damage_* / range_*_m: the first record of mode 0 (the one the weapon stats UI 0x4cedec0 shows). The first\n"
+                "  attachment with a damage table at 0x408 (laid out as the tunables' 0x70 table) replaces the weapon's\n"
+                "  damages and ranges; then each attachment multiplies them: by its scale table 0x410 when it has one (per\n"
+                "  record 10 f32: the 5 damage scales in the record's order, then the range scales of range_max, mid1, mid2,\n"
+                "  mid3, and +0x24), else every damage by its modifier block 0x250->0xd8 +4 and every range by f32 0xb94\n"
+                "  (0: none). A product within 1e-6 of 1 counts as 1; damages are truncated (0x46386d0, 0x464a150; the stats\n"
+                "  UI calls 0x464cb80 with an outside scale of 1). Ranges in metres (inches / 39.37). A range of 0 is a\n"
+                "  step not used.\n"
+                "- hit_*: the first attachment with a table at 0x9d0 (22 f32, the hit location order) replaces the weapon's\n"
+                "  (0x4642180).\n"
+                "- penetration_level: weapon_def u8 0x1a40, or the u8 at +0 of the first attachment's block 0x368; plus the\n"
+                "  attachments' i32 0xcbc (FMJ: 1), clamped to [1, 6] when both are non-zero (0x4648ad0). 0 does not\n"
+                "  penetrate (0x46126b0 returns no depth). Weapons: shotguns 1, SMGs and pistols 2, rifles and DMRs 3, LMGs and\n"
+                "  snipers 4, the hand cannon 5; 6 is a killstreak's, for which the stats UI shows no depth.\n"
+                "- penetration_depth_scale: weapon f32 0x488, or the f32 at +4 of the first attachment's block 0x368\n"
+                "  (0x46489e0); 0x46126b0 multiplies by it the depth a global table gives for the level and the surface\n"
+                "  (not in the zones: the depth itself is not exported).\n"
+                "- perks: the perks the attachments give, u32 script string hashes at 0x290 (count u8 0xd79) named by the\n"
+                "  zones' strings (#<hash> otherwise): the builtins 0x752cc20 (returns them) and 0x752fdd0 (tests one)\n"
+                "  read the list; e.g. specialty_armorpiercing (FMJ), specialty_incendiary (Dragon's Breath: the burning is\n"
+                "  scripted, not a weapon field).\n";
+            L.RulesNotes =
+                "\nweapon_attachment_rules.csv: which attachments a weapon cannot hold together, from the attachments'\n"
+                "own lists (no weapon or blueprint level list: a weapon only lists its attachments by slot). The weapon\n"
+                "build (0x4614550, new exe 0x46448a0) calls 0x46143c0 (new 0x4644710) on every pair of its attachments,\n"
+                "both ways: (A, B) is true when one of A's lists names B, and A is then dropped (0x461515f).\n"
+                "- excludes, via 'group <id>': B's u32 0xb48 (a group shared by a family: barrels, magazines, lasers...)\n"
+                "  is in A's u32 list 0x280 (count u8 0xd77). Named when a zone string hashes to it.\n"
+                "- excludes, via 'attachment': B's u32 0xb30 (the low 32 bits of the script string hash of B's name) is\n"
+                "  in A's inline u32 list 0x298 (count u8 0xd7a).\n"
+                "- blocks_slot: A's u32 list 0x288 (count u8 0xd78) holds B's slot id: 0x4635ca0 returns the script\n"
+                "  string of the slot (table 0xb4400d0, filled at start: gametype, receiver, frontpiece, backpiece,\n"
+                "  magazine, override, muzzle, reargrip, trigger, extra, scope, scopealt, underbarrel, modifier,\n"
+                "  conversionkit, dynamic, other for slots 0-16): A cannot be used with anything in that slot.\n"
+                "- brings: A's inline list 0x120 (16 bytes each, the attachment id at 0; count u8 0x230) installs those\n"
+                "  attachments in their slots (0x4612510 finds what brought a part; the build puts them in, replacing the\n"
+                "  slot's pick). A part brought so (e.g. a drum magazine that comes with a conversion) may exclude the\n"
+                "  default part of another slot: other_is_default marks it.\n"
+                "- The Gunsmith UI asks the same test (0x8eb6340, a Lua builtin: true when an equipped attachment's lists\n"
+                "  name the candidate).\n"
+                "- weapon_attachments.csv: excludes (the weapon's attachments either list names), brings, slot_name (the\n"
+                "  slot's script string), alt_mode. weapon_loadouts.csv: brought (installed by the picks), dropped (what\n"
+                "  the build removes, in slot order), stats of what remains with the alternate mode inactive.\n"
+                "- Not here: how many attachments a loadout may hold. The build walks all 17 slots with no count; the\n"
+                "  Gunsmith asks the Lua function GetMaxAttachmentPipCount (0x8eb3af7), compiled with hashed names.\n";
             L.AnimNotes =
                 "\nweapon_anims.csv: the anim table of each weapon's base animation package (weapon_def 0x350): the\n"
                 "package's +0x10 block holds a bitset of anim ids, the count (i64 +0x250), the sorted u16 ids (+0x258) and\n"
@@ -1408,11 +1629,15 @@ namespace
             Counter("map_scriptable_instances") += Dynamic;
         }
 
-        // ---- the entities (EntityStrings)
+        // ---- the entities (EntityStrings), then the spawn points: where a Radiant map or a usermap
+        // puts the player (the scriptable instances are drawn above)
         std::vector<IwctxReaders::MapEntity> Ents;
         EntityStrings(Ents);
+        const size_t Strings = Ents.size();
+        SpawnPoints(Ents, true);
         Scene.MapEnts += IwctxReaders::EntityText(Ents);
-        Counter("map_ents") += Ents.size();
+        Counter("map_ents") += Strings;
+        Counter("map_spawn_points") += Ents.size() - Strings;
         return true;
     }
 
@@ -1434,6 +1659,68 @@ namespace
                 IwctxReaders::EntityPairs(Img, I.Pos + 0x10, OffOf, PtrAt, Out, IwEntityKeys::Scheme::SaltFirst, EntityPairs);
     }
 
+    void BO7Zone::SpawnPoints(std::vector<IwctxReaders::MapEntity>& Out, bool AlsoBeside) const
+    {
+        // the spawn classes by name: the rebuilt string cipher misses some of the zones' texts
+        // (MW4's mp_spawn_point, 359 of mp_rex_transit's 387 spawn points), so a record would keep
+        // its class as a hash a Radiant map or a usermap does not take for a spawn point. Each name
+        // is registered by its own hash: only a class with exactly that hash gets it
+        static const bool Registered = [] {
+            std::vector<std::string> Names = { "info_player_start", "mp_spawn_point", "mp_global_intermission" };
+            for (const char* Mode : { "", "tdm_", "dm_", "dom_", "sd_", "sr_", "koth_", "hq_", "ctf_", "war_", "gun_", "conf_", "grind_", "arena_",
+                                      "infect_", "ball_", "blitz_", "siege_", "control_", "dd_", "xfire_", "robj_", "cyber_", "brm_", "br_", "gw_",
+                                      "arm_", "hc_", "vip_", "bounty_", "ffa_", "sab_", "dem_", "snipe_", "jugg_", "payload_", "escort_", "kc_",
+                                      "oic_", "risk_", "plunder_", "dmz_", "exfil_", "1v1_", "2v2_", "gunfight_" })
+                for (const char* Role : { "spawn", "spawn_start", "spawn_allies", "spawn_axis", "spawn_allies_start", "spawn_axis_start",
+                                          "spawn_secondary", "spawn_attacker", "spawn_defender", "spawn_attacker_start", "spawn_defender_start",
+                                          "spawn_attacker_secondary", "spawn_defender_secondary", "spawn_attacker_a", "spawn_attacker_b",
+                                          "spawn_defender_a", "spawn_defender_b", "spawn_team_three", "spawn_team_three_start", "spawn_point" })
+                    Names.push_back(std::string("mp_") + Mode + Role);
+            IwctxReaders::RegisterScriptStrings(Names);
+            return true;
+        }();
+        (void)Registered;
+        const auto Str = [](uint32_t H) {
+            const std::string S = IwctxReaders::ScriptString32(H);
+            return !S.empty() ? S : std::format("#{:08x}", H);
+        };
+        const auto Vec = [&](uint64_t A) { return std::format("{} {} {}", Get<float>(A), Get<float>(A + 4), Get<float>(A + 8)); };
+        // a list: 0x48-byte records {classname u32 4, origin 0x10, angles 0x1c, its pairs: count u32
+        // 0x34, 16-byte records at 0x40 {key (IwEntityKeys) 0, u32 value 8}}, read by address (this
+        // zone's or a zone's served beside it)
+        const auto Read = [&](uint32_t Spawns, uint64_t SpawnsAt) {
+            for (uint32_t K = 0; SpawnsAt != 0 && K < Spawns && Locate(SpawnsAt + (uint64_t)K * 0x48, 0x48) != nullptr; K++)
+            {
+                const uint64_t R = SpawnsAt + (uint64_t)K * 0x48;
+                IwctxReaders::MapEntity E;
+                E.emplace_back("classname", Str(Get<uint32_t>(R + 4)));
+                E.emplace_back("origin", Vec(R + 0x10));
+                E.emplace_back("angles", Vec(R + 0x1c));
+                const uint32_t N = Get<uint32_t>(R + 0x34);
+                const uint64_t Pairs = Get<uint64_t>(R + 0x40);
+                for (uint32_t J = 0; Pairs != 0 && J < N && J < 256 && Locate(Pairs + (uint64_t)J * 16, 16) != nullptr; J++)
+                {
+                    const std::string Key = IwEntityKeys::Name(Get<uint64_t>(Pairs + J * 16), IwEntityKeys::Scheme::SaltFirst);
+                    if (Key != "classname") E.emplace_back(Key, Str(Get<uint32_t>(Pairs + J * 16 + 8)));
+                }
+                Out.push_back(std::move(E));
+            }
+        };
+        // map_ents: count u32 Family.SpawnCount, the records at Family.Spawns
+        if (const int64_t Ents = Root("map_ents"); Ents >= 0 && Family.SpawnCount >= 0)
+            Read(Get<uint32_t>(Live().Addr((uint64_t)(Ents + Family.SpawnCount))), Get<uint64_t>(Live().Addr((uint64_t)(Ents + Family.Spawns))));
+        // or (Family.SpawnPoints) each map_spawn_points asset: u16 count, the records 8 bytes on
+        if (Family.SpawnPoints < 0) return;
+        const auto List = [&](uint64_t Asset) { Read(Get<uint16_t>(Asset + Family.SpawnPoints), Get<uint64_t>(Asset + Family.SpawnPoints + 8)); };
+        for (const auto& I : Walk().Instances)
+            if (I.Parent < 0 && OwnerIs(I, "map_spawn_points")) List(Live().Addr((uint64_t)I.Pos));
+        if (!AlsoBeside) return;
+        for (const auto& S : Beside.All())
+            for (const auto& I : S->R.Instances)
+                if (!S->Before && I.Parent < 0 && I.Owner < S->R.OwnerNames.size() && S->R.OwnerNames[I.Owner] == "map_spawn_points")
+                    List(S->Base + (uint64_t)I.Pos);
+    }
+
     void BO7Zone::MapEntities(std::vector<IwctxReaders::MapEntity>& Out) const
     {
         // (a map's _subset_ai zone holds its map_spawn_points, no map_ents)
@@ -1446,34 +1733,9 @@ namespace
             const std::string S = IwctxReaders::ScriptString32(H);
             return !S.empty() ? S : std::format("#{:08x}", H);
         };
-        const auto Vec = [&](int64_t P) { return std::format("{} {} {}", At<float>(Img, P), At<float>(Img, P + 4), At<float>(Img, P + 8)); };
-        // the spawn points: count u32 0x38, 0x48-byte records at 0x40 {classname u32 4, origin 0x10,
-        // angles 0x1c, its pairs: count u32 0x34, 16-byte records at 0x40 {key (IwEntityKeys) 0, u32
-        // value 8}}; or (Family.SpawnPoints) in each map_spawn_points asset, the same list
-        const auto ReadSpawns = [&](uint32_t Spawns, int64_t SpawnsAt) {
-            for (uint32_t K = 0; SpawnsAt >= 0 && K < Spawns && SpawnsAt + (int64_t)(K + 1) * 0x48 <= (int64_t)Img.size(); K++)
-            {
-                const int64_t R = SpawnsAt + (int64_t)K * 0x48;
-                IwctxReaders::MapEntity E;
-                E.emplace_back("classname", Str(At<uint32_t>(Img, R + 4)));
-                E.emplace_back("origin", Vec(R + 0x10));
-                E.emplace_back("angles", Vec(R + 0x1c));
-                const uint32_t N = At<uint32_t>(Img, R + 0x34);
-                const int64_t Pairs = Off(PointerAt(R + 0x40));
-                for (uint32_t J = 0; Pairs >= 0 && J < N && J < 256 && Pairs + (int64_t)(J + 1) * 16 <= (int64_t)Img.size(); J++)
-                {
-                    const std::string Key = IwEntityKeys::Name(At<uint64_t>(Img, Pairs + J * 16), IwEntityKeys::Scheme::SaltFirst);
-                    if (Key != "classname") E.emplace_back(Key, Str(At<uint32_t>(Img, Pairs + J * 16 + 8)));
-                }
-                Out.push_back(std::move(E));
-            }
-        };
-        if (Ents >= 0 && Family.SpawnCount >= 0) ReadSpawns(At<uint32_t>(Img, Ents + Family.SpawnCount), Off(PointerAt(Ents + Family.Spawns)));
-        if (Family.SpawnPoints >= 0)
-            for (const auto& I : Walk().Instances)
-                if (I.Parent < 0 && OwnerIs(I, "map_spawn_points"))
-                    ReadSpawns(At<uint16_t>(Img, I.Pos + Family.SpawnPoints), Off(PointerAt(I.Pos + Family.SpawnPoints + 8)));
+        SpawnPoints(Out, false);
         if (Ents < 0) return;
+        const auto Vec = [&](int64_t P) { return std::format("{} {} {}", At<float>(Img, P), At<float>(Img, P + 4), At<float>(Img, P + 8)); };
         // the scriptable instances: count u32 0x318, 0x60-byte records at 0x388 {its scriptable 0,
         // origin 8, angles 0x14 (pitch, yaw, roll), u64 0x20 and 0x28 (one of their own each), u32
         // script strings: classname 0x30, target 0x34, targetname 0x38, script_noteworthy 0x44, one
@@ -1551,6 +1813,53 @@ namespace
         MapEntities(Ents);
         IwctxAnimOwners::AddMapEntities(F, Ents);
         return F.dump();
+    }
+
+    // The perks kind (Games/BO7/Perks.h): each perk's settings tree (its key/value table at
+    // Family.PerkTable, read as the script bundles are; the table loader 0x3887a40), its proven
+    // fields named with their units; then perks/<zone>/perk_effects.json (the effect fields of every
+    // perk of the zone) and, for a zone holding the private match menus (global), match_options.json:
+    // each match option's values and default (commonOption.maxHealth: the base maximum health)
+    void BO7Zone::ExportsPerks(const ScriptBundleLayout& Bundles, const std::function<std::string(const std::string&)>& Decrypted)
+    {
+        using Json = BO7Perks::Json;
+        auto Effects = std::make_shared<Json>(Json::array());
+        BundleOwner Perk{ "perk", Family.PerkTable, -1, {}, Family.PerkAssets, [](const std::string& Name) { return GameBlackOps7::HashIWAsset(Name); } };
+        Perk.Annotate = [Effects](Json& Tree) { BO7Perks::Annotate(Tree, *Effects); };
+        ExportsBundleTrees(DiskGame::Kind::Perks, { Perk }, Bundles, Decrypted);
+        const auto Trees = *ExporterOf(DiskGame::Kind::Perks);
+        Exports(DiskGame::Kind::Perks, [this, Trees, Effects](const DiskGame::Context& C, DiskGame::Totals& T) {
+            *Effects = Json::array();
+            Trees(C, T);
+            if (C.OnTree) return;
+            const fs::path Dir = fs::path(C.KindDir(DiskGame::Kind::Perks)) / ExportNaming::SafeFileName(Name());
+            auto& Kt = T.Kinds[DiskGame::Kind::Perks];
+            const auto Write = [&](const char* File, const Json& J) {
+                const std::string S = J.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
+                if (ExportWriters::WriteBytes(Dir / File, (const uint8_t*)S.data(), S.size())) Kt.Written++;
+                else T.Fail(Name(), DiskGame::Kind::Perks, File, "write failed");
+            };
+            if (!Effects->empty())
+            {
+                Json J;
+                J["source"] = "the zone's perk assets: their key/value table's fields whose name is proven (FNV-1a 64 of the name = the key); "
+                              "the unit and meaning come from the name and the perk's in-game text, the scripts reading them are not shipped";
+                J["perks"] = *Effects;
+                Write("perk_effects.json", J);
+                Counter("perks_with_effects") += Effects->size();
+            }
+            // the private match menus are script bundles of this zone, read in memory
+            if (const auto* B = ExporterOf(DiskGame::Kind::ScriptBundles))
+            {
+                std::vector<std::pair<std::string, Json>> Read;
+                IwctxAnimOwners::ReadExported(*B, DiskGame::Kind::ScriptBundles, Read);
+                if (Json O = BO7Perks::MatchOptions(Read); !O.is_null())
+                {
+                    Counter("match_options") += O["options"].size();
+                    Write("match_options.json", O);
+                }
+            }
+        });
     }
 
     // Black Ops 7 (Call of Duty HQ's cod25): every offset of the family's zone is its own
