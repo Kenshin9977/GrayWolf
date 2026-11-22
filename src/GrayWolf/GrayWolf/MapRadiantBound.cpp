@@ -318,6 +318,12 @@ void CutToBound(const MapScene& Scene, const SkyBound& Bound, BoundedWorld& Out)
     Out.CollisionVertices = Scene.Collision.Vertices;
     const auto& Ct = Scene.Collision.Triangles;
     Out.CollisionTriangles.reserve(Ct.size());
+    const auto& Cm = Scene.Collision.TriangleMaterials;
+    const bool Materials = Cm.size() * 3 == Ct.size();
+    // a triangle kept (or each piece of one cut) keeps its material
+    const auto Keep = [&](size_t K, size_t Pieces) {
+        if (Materials) Out.CollisionMaterials.insert(Out.CollisionMaterials.end(), Pieces, Cm[K / 3]);
+    };
     for (size_t K = 0; K + 2 < Ct.size(); K += 3)
     {
         const uint32_t Tri[3] = { Ct[K], Ct[K + 1], Ct[K + 2] };
@@ -325,6 +331,7 @@ void CutToBound(const MapScene& Scene, const SkyBound& Bound, BoundedWorld& Out)
             (size_t)Tri[2] * 3 + 2 >= Scene.Collision.Vertices.size())
         {
             Out.CollisionTriangles.insert(Out.CollisionTriangles.end(), Tri, Tri + 3);
+            Keep(K, 1);
             continue;
         }
         double P[3][3];
@@ -335,6 +342,7 @@ void CutToBound(const MapScene& Scene, const SkyBound& Bound, BoundedWorld& Out)
         if (C == Cut::Whole || C == Cut::Left)
         {
             Out.CollisionTriangles.insert(Out.CollisionTriangles.end(), Tri, Tri + 3);
+            Keep(K, 1);
             continue;
         }
         const std::vector<Corner> Poly = C == Cut::Gone ? std::vector<Corner>{} : Clip({ In[0], In[1], In[2] }, Bound.Lo, Bound.Hi);
@@ -347,6 +355,7 @@ void CutToBound(const MapScene& Scene, const SkyBound& Bound, BoundedWorld& Out)
         const uint32_t First = (uint32_t)(Out.CollisionVertices.size() / 3);
         for (const Corner& Q : Poly) Out.CollisionVertices.insert(Out.CollisionVertices.end(), { Q.V.Pos[0], Q.V.Pos[1], Q.V.Pos[2] });
         for (uint32_t J = 1; J + 1 < (uint32_t)Poly.size(); J++) Out.CollisionTriangles.insert(Out.CollisionTriangles.end(), { First, First + J, First + J + 1 });
+        Keep(K, Poly.size() - 2);
     }
     if (Out.CollisionCut + Out.CollisionClipped)
     {

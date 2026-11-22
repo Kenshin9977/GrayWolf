@@ -71,6 +71,8 @@ namespace
             { "Black Ops 4",                    2018, {},                         { "BlackOps4.exe" },                   "bo4" },
             { "Modern Warfare (2019)",          2019, {},                         { "ModernWarfare.exe" },               "mw2019" },
             { "Black Ops Cold War",             2020, {},                         { "BlackOpsColdWar.exe" },             "coldwar" },
+            // Steam's copy (2026): .ff/.fp/.xsub at the folder's root, no CASC (Games/S4)
+            { "Vanguard",                       2021, { 1985820 },                { "Vanguard.exe" },                    "vanguard" },
             { "Call of Duty HQ",                2022, { 1938090 },                { "cod.exe", "cod23-cod.exe", "cod24-cod.exe", "cod25-cod.exe", "cod26-cod.exe" }, "" },
         };
         return All;

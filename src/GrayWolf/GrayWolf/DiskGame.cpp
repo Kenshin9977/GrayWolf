@@ -131,6 +131,9 @@ const Setting ModToolsOutput{ "mod_tools", "Mod tools files", { { "off", "In the
                               "on", { Kind::Model, Kind::Map, Kind::Sound } };
 const Setting Bo3Usermap{ "bo3_usermap", "BO3 usermap", { { "off", "None" }, { "create", "Create zm_<map>" }, { "build", "Create, compile, light, link" } },
                           "create", { Kind::Map } };
+const Setting Bo3UsermapDebug{ "bo3_usermap_debug", "BO3 usermap diagnostic", { { "off", "None" }, { "prone", "Prone test (+ zm_graywolf_ref)" },
+                                                                                 { "cull", "Culling test (+ zm_graywolf_ref)" }, { "both", "Prone and culling tests" } },
+                               "off", { Kind::Map } };
 const Setting MapCollision{ "map_collision", "Map collision", { { "off", "None" }, { "on", "+ collision .json (clip map)" } },
                             "off", { Kind::Map } };
 
@@ -151,7 +154,7 @@ const Setting CharacterHeads{ "char_heads", "Character heads",
 
 const std::vector<Setting>& CommonSettings()
 {
-    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, MapProps, MapFit, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, MapCollision, MapContent, ScriptDecompile, SplitMaps, ModelImagesFolder };
+    static const std::vector<Setting> All = { MapPng, MapTextures, MapCast, MapRadiant, MapSurfaces, MapProps, MapFit, GdtMaterials, SoundAliases, ModToolsOutput, Bo3Usermap, Bo3UsermapDebug, MapCollision, MapContent, ScriptDecompile, SplitMaps, ModelImagesFolder };
     return All;
 }
 
@@ -274,7 +277,7 @@ void Totals::Lacks(const std::string& Zone, Kind K, const std::string& Name, con
     Absent.push_back(Zone + ": " + KindName(K) + " " + Name + (Why.empty() ? "" : " " + Why));
 }
 
-bool IDiskGame::Zones(const std::string& Input, const ExportOptions&, std::vector<std::string>& Out, std::string& Error) const
+bool IDiskGame::Zones(const std::string& Input, const ExportOptions& Options, std::vector<std::string>& Out, std::string& Error) const
 {
     const fs::path In(Input);
     std::error_code Ec;
@@ -286,12 +289,19 @@ bool IDiskGame::Zones(const std::string& Input, const ExportOptions&, std::vecto
     }
     else if (ExportNaming::Lower(In.extension().string()) == ".txt")
     {
-        // a list: one zone path per line (a long run cut in parts, or several runs side by side)
+        // a list: one zone path per line (a long run cut in parts, or several runs side by side); a
+        // casc:<pattern> line goes through the game's own Zones, as on the command line
         std::ifstream List(In);
         for (std::string Line; std::getline(List, Line);)
         {
             while (!Line.empty() && (Line.back() == '\r' || Line.back() == ' ')) Line.pop_back();
-            if (!Line.empty() && fs::exists(fs::path(Line), Ec)) Out.push_back(Line);
+            if (Line.rfind("casc:", 0) == 0)
+            {
+                std::vector<std::string> One;
+                if (!Zones(Line, Options, One, Error)) return false;
+                Out.insert(Out.end(), One.begin(), One.end());
+            }
+            else if (!Line.empty() && fs::exists(fs::path(Line), Ec)) Out.push_back(Line);
         }
     }
     else if (fs::exists(In, Ec))
@@ -1443,7 +1453,30 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         ModToolsTree::Record R = ModToolsTree::Take();
         T.ModTools.Next = ModToolsTree::NextSteps(R);
         // bo3_usermap: a ZM usermap around each map the run put in the tree, then built when asked
-        const std::string Usermap = Bo3Usermap.Of(Run.Settings);
+        const std::string Usermap = Bo3Usermap.Of(Run.Settings), Debug = Bo3UsermapDebug.Of(Run.Settings);
+        // usermap Name's diagnostic (bo3_usermap_debug) put in or taken out, then built when asked
+        const auto Finish = [&](const std::string& Name, const std::string& Prefab, bool Made) {
+            std::string Error;
+            if (ModToolsUsermap::SetDebug(R.Root, Name, Prefab, Debug, Error)) Mon.Log("usermap " + Name + ": diagnostic " + Debug);
+            if (!Error.empty()) Mon.Log("usermap " + Name + ": diagnostic not set: " + Error);
+            if (Usermap != "build")
+            {
+                T.ModTools.Next.push_back("Build " + Name + " in the Mod Tools launcher (Compile, Light, Link), then Run it");
+                return;
+            }
+            // the reference level only when made, or its diagnostic changed (or never linked)
+            std::error_code Ec;
+            if (!Made && Name == ModToolsUsermap::ReferenceName && fs::exists(fs::path(R.Root) / "usermaps" / Name / "zone" / (Name + ".ff"), Ec)) return;
+            Mon.Where(Name, "building");
+            const auto Steps = ModToolsUsermap::Build(R.Root, Name, [&](const std::string& L) { Mon.Log("usermap " + Name + " " + L); },
+                                                      [&] { Mon.Touch(); return !Run.Cancelled(); });
+            const bool Built = !Steps.empty() && Steps.size() == 4 && Steps.back().Exit == 0;
+            for (const auto& S : Steps) T.Counters["bo3_usermap_" + S.Label + "_errors"] += S.Errors;
+            T.ModTools.Next.push_back(Built ? "Run " + Name + " from the Mod Tools launcher (built: compiled, lit, linked)"
+                                            : Name + " did not build: see usermaps\\" + Name + "\\graywolf_" +
+                                                  (Steps.empty() ? std::string("gdtdb") : Steps.back().Label) + ".log");
+        };
+        bool Any = false;
         if (!R.Root.empty() && Usermap != "off" && !T.Cancelled)
             for (const std::string& F : R.Files)
             {
@@ -1458,20 +1491,22 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
                     continue;
                 }
                 Mon.Log("usermap " + M.Name + (M.Created ? ": made from the ZM Mod Level template" : ": already there, kept as it is"));
-                if (Usermap != "build")
-                {
-                    T.ModTools.Next.push_back("Build " + M.Name + " in the Mod Tools launcher (Compile, Light, Link), then Run it");
-                    continue;
-                }
-                Mon.Where(M.Name, "building");
-                const auto Steps = ModToolsUsermap::Build(R.Root, M.Name, [&](const std::string& L) { Mon.Log("usermap " + M.Name + " " + L); },
-                                                          [&] { Mon.Touch(); return !Run.Cancelled(); });
-                const bool Built = !Steps.empty() && Steps.size() == 4 && Steps.back().Exit == 0;
-                for (const auto& S : Steps) T.Counters["bo3_usermap_" + S.Label + "_errors"] += S.Errors;
-                T.ModTools.Next.push_back(Built ? "Run " + M.Name + " from the Mod Tools launcher (built: compiled, lit, linked)"
-                                                : M.Name + " did not build: see usermaps\\" + M.Name + "\\graywolf_" +
-                                                      (Steps.empty() ? std::string("gdtdb") : Steps.back().Label) + ".log");
+                Finish(M.Name, "graywolf/" + P.filename().string(), M.Created);
+                Any = true;
             }
+        // the diagnostic's reference: the template's own room, where prone works
+        if (Any && Debug != "off" && !T.Cancelled)
+        {
+            const ModToolsUsermap::Made M = ModToolsUsermap::Reference(R.Root);
+            if (!M.Error.empty())
+                Mon.Log("usermap " + M.Name + ": " + M.Error);
+            else
+            {
+                std::string Error;
+                const bool Changed = ModToolsUsermap::SetDebug(R.Root, M.Name, "zm/" + M.Name + ".map", Debug, Error);
+                Finish(M.Name, "zm/" + M.Name + ".map", M.Created || Changed);
+            }
+        }
         T.ModTools.Root = std::move(R.Root);
         T.ModTools.Files = std::move(R.Files);
         T.ModTools.Kept = std::move(R.Kept);

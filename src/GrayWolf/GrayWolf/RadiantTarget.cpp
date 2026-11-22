@@ -6,6 +6,7 @@
 #include "MaterialGdt.h"
 #include "ModToolsTree.h"
 
+#include <cmath>
 #include <limits>
 #include <set>
 
@@ -130,13 +131,19 @@ namespace
             L.ModelSurfaces = 255, L.MaterialVertices = 64 * 1024 - 2, L.NameLength = 64;
             return L;
         }
-        // static, lit per vertex: a static model is otherwise lit from one point, a tile's the
-        // world's origin, under BO1's mp_firingrange's ground (its floors black). Treyarch's own
-        // long models (barbed wire, sandbag rows, boards) carry "vertexbake" "1.0" so (map_source/_prefabs)
-        std::vector<std::pair<std::string, std::string>> WorldModelKeys() const override
-        {
-            return { { "static", "1" }, { "vertexbake", "1.0" } };
-        }
+        // static: in the baked shadows and probes. ("vertexbake", written before, is a worldspawn key
+        // of old prefabs that neither Radiant, cod2map nor the linker reads; cod2map's "bake" of a
+        // misc_model into the level, TryBakeMiscModel at 0x1400be270, is code nothing calls.)
+        std::vector<std::pair<std::string, std::string>> WorldModelKeys() const override { return { { "static", "1" } }; }
+        // the floors patches, lit by the bake's lightmaps as Treyarch's ground is (brushes and
+        // terrain patches): as the world's static models, BO1's mp_nuked's road, pavements and
+        // lawns came out black in game where its walls, models of the same tiles, were lit
+        bool FloorsAsPatches() const override { return true; }
+        // caulk (brushes): cod2map makes a patch an Umbra target only, a caulk one too (its Umbra
+        // scene in C:\UmbraDebug: no occluder from patches), and a caulk brush side an occluder.
+        // Without it Umbra had no ground under those floors: with the camera low in mp_nuked's
+        // yards every model vanished (zm_nk_tiles, floors in the models, fine but black)
+        std::string FloorOccluder() const override { return "caulk"; }
 
         // Left out: the source's single-player logic (LeftOut), the misc_model entities its
         // placements stand for (CoD1 and CoD2 keep their placed models so; the copy would name
@@ -146,6 +153,7 @@ namespace
         // game's limited entities.
         bool Admit(Entity& E, const MapScene& Scene, RadiantStats& Stats) const override
         {
+            if (VehicleAsModel(E, Scene)) Stats.VehiclesAsModels++;
             const auto Class = E.find("classname");
             const std::string C = Class == E.end() ? std::string() : Class->second;
             // another game's breakable glass names a glass type BO3 does not have ("glass_dec_glass02":
@@ -214,16 +222,47 @@ namespace
             return std::filesystem::is_regular_file(std::filesystem::path(Tree) / "share" / "raw" / Folder / (Name + Ext), Ec);
         }
 
+        // A vehicle (script_vehicle*) whose model the export holds, as a script_model of that model
+        // where it stands: BO3 has none of the source's vehicle types (the linker refuses them), and
+        // left out it went missing from the port (BO2 zm_transit's bus). Not when a placement already
+        // stands for it (the IW readers place their vehicles' models): that one draws it. Its keys
+        // but the placement's and its names left out (a vehicle's spawnflags mean other things on a
+        // script_model). Whether E was turned.
+        bool VehicleAsModel(Entity& E, const MapScene& Scene) const
+        {
+            const auto Class = E.find("classname");
+            if (Class == E.end() || !Starts(Class->second, "script_vehicle")) return false;
+            const auto M = E.find("model");
+            if (M == E.end() || M->second.empty() || M->second[0] == '*' || M->second[0] == '?') return false;
+            if (!Scene.Models.count(M->second) && !Stock(M->second, "xmodel.gdf")) return false;
+            float Origin[3] = { 0, 0, 0 };
+            EntityFloats(E, "origin", Origin, 3);
+            for (const auto* List : { &Scene.StaticInstances, &Scene.DynamicInstances })
+                for (const Instance& I : *List)
+                    if (I.Model == M->second && std::fabs(I.Origin[0] - Origin[0]) < 1.0f && std::fabs(I.Origin[1] - Origin[1]) < 1.0f &&
+                        std::fabs(I.Origin[2] - Origin[2]) < 1.0f)
+                        return false;
+            Entity Kept;
+            for (const char* Key : { "origin", "angles", "model", "modelscale", "targetname", "script_noteworthy" })
+                if (const auto K = E.find(Key); K != E.end()) Kept[Key] = K->second;
+            Kept["classname"] = "script_model";
+            E = std::move(Kept);
+            return true;
+        }
+
         // What a level Black Ops III builds has no use for, of an older game's entities: its AI
         // spawners and vehicles (BO3 has no such aitype or vehicle; the linker refuses them), path
         // and cover nodes (BO3's AI walk the navmesh its compiler makes), weapons lying about and
         // turrets (the source game's weapons; any entity with a "weaponinfo", CoD2's misc_mg42 too),
         // the multiplayer helicopters' ceiling (a zombies level crashes spawning heli_height_lock:
-        // strtol on a null key, BO1's mp_firingrange)
+        // strtol on a null key, BO1's mp_firingrange), the old compilers' visibility hint boxes
+        // (occlusion_override: no game reads it; BO3's cod2map takes its caulk brushes for Umbra
+        // occluders, five boxes over BO1's mp_nuked's yards hid the hedges, fences and lamp posts
+        // standing in or behind them as the player moved)
         static bool LeftOut(const std::string& Class)
         {
             for (const char* Start : { "actor_", "script_vehicle", "info_vehicle_node", "node_", "weapon_", "misc_turret", "misc_mg42",
-                                       "heli_height_lock" })
+                                       "heli_height_lock", "occlusion_override" })
                 if (Starts(Class, Start)) return true;
             return false;
         }

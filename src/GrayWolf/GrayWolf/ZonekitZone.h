@@ -154,7 +154,8 @@ public:
     // its MaterialType materials' images through ReadsMaterials' reader (ZonekitZone.Materials.cpp)
     bool MaterialImages(DiskGame::MaterialBook& Out) override;
     // Visit each zone-level asset of the profile's gdt type Id (<profile>/gdt/<Id>/) with the type
-    // and how it reads the zone (Gdt::Type::Values); false and Error when the profile has no such type
+    // and how it reads the zone (Gdt::Type::Values), then each one another type's assets point at
+    // (the type's found_in); false and Error when the profile has no such type
     bool ForEachGdtAsset(const std::string& Id, const std::function<void(const Gdt::Type&, const Gdt::Memory&, int64_t Pos)>& Visit,
                          std::string& Error) const;
 
@@ -287,6 +288,10 @@ protected:
     void AddStaticModels(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, int64_t Array,
                          uint32_t Count, int64_t Stride, int64_t ModelField, int64_t Placement = 0);
     void AddMapEnts(Maps::MapScene& Scene, const char* Type = "map_ents");
+    // the models the entity string's vehicles (script_vehicle*) name and no placement holds,
+    // this zone's, added to Models (exported with the placed ones): the Radiant export keeps a
+    // vehicle as a script_model of its model (counters map_vehicle_models, *_elsewhere)
+    void AddVehicleModels(const Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models);
     // The clip map's brushes (MapCollision.h) into Scene.Collision: the zone-level asset of the
     // first of Types the zone holds, read with the game's layout. False when there is none.
     bool AddCollision(Maps::MapScene& Scene, const std::vector<const char*>& Types, const Maps::ClipLayout& L);
@@ -488,11 +493,15 @@ protected:
     // other; constants: the 16-byte constants at Constants, u8 count at ConstantCount, and the
     // FNV-1a 64 of their bytes). The techset decides the prefix of the material's name (m, tm,
     // twc...). With ModelMaterials (an xmodel's material handles: name 8, u16 count 0x10),
-    // models/<zone>.csv: model_id,model,surface,material_id, a model's materials in surface order
+    // models/<zone>.csv: model_id,model,surface,material_id, a model's materials in surface order.
+    // With ModelLods instead (Black Ops 4, Cold War): an xmodel's list of ModelLodStride-byte
+    // entries, one per LOD (u16 count at ModelLodCount), each {u16 count 0, material handles 8}:
+    // the first LOD's surfaces, the model named as the model kind names it
     struct MaterialLinkLayout
     {
         int64_t SlotCount = 0, ImageCount = 0, Slots = 0, Images = 0;
         int64_t Techset = -1, Flags = 0, Layers = 0, Constants = 0, ConstantCount = 0, ModelMaterials = -1;
+        int64_t ModelLods = -1, ModelLodCount = 0, ModelLodStride = 0;
         // the records of Slots -1, and the image's fields: Black Ops 4's records are 0x20 {image 0,
         // semantic hash u32 8}, its image {hash 0x20, width u16 0x68, height 0x6a, format u32 0x64}
         int64_t RecordSize = 16, RecordSemantic = 0, RecordImage = 8;
@@ -522,8 +531,11 @@ protected:
     // id of a zone-level asset of this zone it points to (with its type), "str" a string it holds
     // (through Decrypt when the game encrypts them). Ids on 63 bits (an asset that keeps no hash
     // in front: @ and its position in the zone); values are not checked: a join on known ids
-    // sorts them out
-    void ExportsAssetRefs(std::function<std::string(const std::string&)> Decrypt = nullptr);
+    // sorts them out. Kept: bulk types written all the same (Cold War's materials, models and
+    // images), their reads of more than KeptReadMax bytes (pixels, vertices, constants) giving
+    // their pointers alone
+    static constexpr int64_t KeptReadMax = 0x200;
+    void ExportsAssetRefs(std::function<std::string(const std::string&)> Decrypt = nullptr, std::set<std::string, std::less<>> Kept = {});
     // The techsets kind (Exports(Kind::Techsets, ...), Techsets.h), for Modern Warfare III, Black
     // Ops 6 and 7: the zone's techsets, their shaders (bytecode from the zone or the install's
     // packages) and its materials' bindings, read by the game's Format

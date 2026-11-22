@@ -21,15 +21,16 @@
 #include <fstream>
 #include <vector>
 
-XPAKCache::XPAKCache()
+namespace
 {
-    Siren::Initialize(L"oo2core_6_win64.dll");
+    // The games' own Oodle, the first found: Black Ops 4 ships oo2core_6, Modern Warfare 2019
+    // oo2core_7 (a later Oodle decodes the earlier ones' blocks)
+    constexpr std::string_view OodleDlls[] = { "oo2core_6_win64.dll", "oo2core_7_win64.dll", "oo2core_8_win64.dll" };
 }
 
-XPAKCache::~XPAKCache()
-{
-    Siren::Shutdown();
-}
+XPAKCache::XPAKCache() = default;
+
+XPAKCache::~XPAKCache() = default;
 
 void XPAKCache::LoadPackageCache(const std::string& BasePath)
 {
@@ -320,10 +321,10 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
     auto result = std::make_unique_for_overwrite<uint8_t[]>(decompressedSize);
     const auto Oodle = [&](const int8_t* From, size_t FromSize, size_t Size) {
         uint8_t* To = result.get() + resultSize;
-        if (Siren::Decompress((const uint8_t*)From, FromSize, To, Size) != Size)
+        if (Siren::Decompress(OodleDlls, (const uint8_t*)From, FromSize, To, Size) != Size)
         {
             std::memset(To, 0, Size);
-            Siren::Decompress((const uint8_t*)From, FromSize, To, Size);
+            Siren::Decompress(OodleDlls, (const uint8_t*)From, FromSize, To, Size);
         }
     };
     auto reader = MemoryReader((int8_t*)buffer, bufferSize, true);

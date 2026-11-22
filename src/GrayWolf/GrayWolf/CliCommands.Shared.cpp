@@ -105,6 +105,14 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
                    "launcher makes one (usermaps/zm_<map>/, map_source/zm/zm_<map>.map holding the map as a prefab; one already "
                    "there is kept); build: then compiled, lit and linked as the launcher's Compile, Light and Link do (minutes)")
         ->group("Shared options");
+    App.add_option("--bo3-usermap-debug", Options.Bo3UsermapDebug,
+                   "off|prone|cull|both: with --bo3-usermap, an in-game diagnostic in the usermap. prone: scripts measuring the "
+                   "floor and the room around the player and forcing prone (by key, console dvar gwp_cmd, or over every spawn "
+                   "point), logged as \"GWP key=value\" console lines (+set logfile 2: console_mp.log). cull: what hides the "
+                   "placed models (an eye-height sweep, Umbra and LOD tests, script_model twins, the static models in view; "
+                   "keys and console dvar gwc_cmd), logged as \"GWC key=value\" lines. Also zm_graywolf_ref, the ZM template's "
+                   "room with the same scripts, to compare with. off (the default) takes the scripts out again")
+        ->group("Shared options");
     App.add_option("--map-collision", Options.MapCollision,
                    "on|off: also write the map's collision as <map>_collision.json (the clip map's brushes, brush "
                    "models, triggers and triangles), for navigation and top-down tools")

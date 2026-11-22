@@ -264,6 +264,8 @@
     <ClCompile Include="CharacterHeads.cpp" />
     <ClCompile Include="ModToolsTree.cpp" />
     <ClCompile Include="ModToolsUsermap.cpp" />
+    <ClCompile Include="ModToolsUsermapDebug.cpp" />
+    <ClCompile Include="ModToolsUsermapCull.cpp" />
     <ClCompile Include="GameInstalls.cpp" />
     <ClCompile Include="Languages.cpp" />
     <ClCompile Include="XboxPackages.cpp" />

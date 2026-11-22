@@ -108,12 +108,32 @@ namespace
     // name (a link to an identical image's file not made, the image not read again) together
     void FailUnwritten(DiskGame::Totals& T, const std::string& Zone, const ExportWriters::ImageSinkStats& W, size_t Missing)
     {
-        std::vector<std::string> Files = W.FailedFiles;
+        std::vector<std::pair<std::string, std::string>> Files;   // file, what its build threw ("" the writer failed)
+        for (size_t K = 0; K < W.FailedFiles.size(); K++)
+            Files.emplace_back(W.FailedFiles[K], K < W.FailedWhy.size() ? W.FailedWhy[K] : std::string());
         std::sort(Files.begin(), Files.end());
-        for (const std::string& F : Files)
-            T.Fail(Zone, DiskGame::Kind::Image, fs::path(F).stem().string(), "not written: the image writer failed on it (" + fs::path(F).filename().string() + ")");
+        for (const auto& [F, Why] : Files)
+            T.Fail(Zone, DiskGame::Kind::Image, fs::path(F).stem().string(),
+                   !Why.empty() ? Why : "not written: the image writer failed on it (" + fs::path(F).filename().string() + ")");
         if (const size_t Unnamed = W.Failed - (std::min)(W.Failed, Files.size()) + Missing)
             T.Fail(Zone, DiskGame::Kind::Image, "", std::to_string(Unnamed) + " not written: a link to an identical image's file not made, the image not read again");
+    }
+
+    // Decode's image; one that throws (the game's Oodle found nowhere: Siren::Decompress) is none,
+    // what it threw in Why
+    template <class F>
+    std::unique_ptr<XImageDDS> ImageOrThrown(F Decode, std::string& Why)
+    {
+        Why.clear();
+        try
+        {
+            return Decode();
+        }
+        catch (const std::exception& E)
+        {
+            Why = E.what();
+            return nullptr;
+        }
     }
 }
 
@@ -174,8 +194,9 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
     {
         const auto& [ImageName, Pos] = Order[N];
         if (!C.Advance(N, Order.size(), ImageName)) break;
-        auto Dds = Decode(N, Keys[N]);
-        if (!Dds && Pos < 0)
+        std::string Threw;
+        auto Dds = ImageOrThrown([&] { return Decode(N, Keys[N]); }, Threw);
+        if (!Dds && Pos < 0 && Threw.empty())
         {
             Kt.References++;
             C.Needs(Kind::Image, ImageName);
@@ -186,7 +207,7 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
         if (!Dds)
         {
             Counter("images_unread")++;
-            T.Fail(Name(), Kind::Image, ImageName, O.Unread);
+            T.Fail(Name(), Kind::Image, ImageName, !Threw.empty() ? Threw : std::string(O.Unread));
             continue;
         }
         const std::string Path = (Dir / (ExportNaming::SafeFileName(ImageName) + Sink.Extension())).string();
@@ -198,7 +219,8 @@ void ZonekitZone::ExportNamedImages(const DiskGame::Context& C, DiskGame::Totals
         Sink.Write(std::move(Dds), Path);
     }
     size_t Missing = 0;
-    const auto W = Sink.Finish([&](size_t Tag) { uint64_t Key = 0; return Decode(Tag, Key); }, Missing, [&](size_t Tag) { return Keys[Tag]; });
+    const auto W = Sink.Finish([&](size_t Tag) { uint64_t Key = 0; std::string Threw; return ImageOrThrown([&] { return Decode(Tag, Key); }, Threw); },
+                               Missing, [&](size_t Tag) { return Keys[Tag]; });
     Kt.Written += W.Written;
     Kt.Linked += W.Linked;
     FailUnwritten(T, Name(), W, Missing);
@@ -240,10 +262,13 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
             Kt.Known++;
             continue;
         }
-        auto Dds = L.Decode(Pos, ImageName);
+        std::string Threw;
+        auto Dds = ImageOrThrown([&] { return L.Decode(Pos, ImageName); }, Threw);
         if (!Dds)
         {
-            if (const std::string Why = L.Absent ? L.Absent(Pos) : std::string(); !Why.empty())
+            if (!Threw.empty())
+                T.Fail(Name(), Kind::Image, ImageName, Threw);
+            else if (const std::string Why = L.Absent ? L.Absent(Pos) : std::string(); !Why.empty())
                 T.Lacks(Name(), Kind::Image, ImageName, Why);
             else
                 T.Fail(Name(), Kind::Image, ImageName, L.FailWhy ? L.FailWhy(Pos) : std::string());
@@ -252,7 +277,8 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
         Sink.Write(std::move(Dds), Path);
     }
     size_t Missing = 0;
-    const auto W = Sink.Finish([&](size_t Pos) { return L.Decode((int64_t)Pos, std::string()); }, Missing,
+    const auto W = Sink.Finish([&](size_t Pos) { std::string Threw; return ImageOrThrown([&] { return L.Decode((int64_t)Pos, std::string()); }, Threw); },
+                               Missing,
                                [&](size_t Pos) { return L.KeyOf((int64_t)Pos, Sink.Extension()); });
     Kt.Written += W.Written;
     Kt.Linked += W.Linked;
@@ -1135,6 +1161,31 @@ void ZonekitZone::AddStaticModels(Maps::MapScene& Scene, std::map<std::string, u
     }
 }
 
+void ZonekitZone::AddVehicleModels(const Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models)
+{
+    std::vector<Maps::Entity> Ents;
+    if (Scene.MapEnts.empty() || !Maps::ParseEntities(Scene.MapEnts, Ents)) return;
+    std::set<std::string> Named;
+    for (const auto& E : Ents)
+    {
+        const auto Class = E.find("classname");
+        const auto M = E.find("model");
+        if (Class == E.end() || Class->second.rfind("script_vehicle", 0) != 0) continue;
+        if (M != E.end() && !M->second.empty() && M->second[0] != '*' && M->second[0] != '?' && !Models.count(M->second))
+            Named.insert(M->second);
+    }
+    for (const auto& I : Walk().Instances)
+    {
+        if (Named.empty()) break;
+        if (I.Parent >= 0 || !OwnerIs(I, ModelType())) continue;
+        const std::string Name = ModelAt(Live().Origin() + I.Pos);
+        if (Named.erase(Name) == 0) continue;
+        Models.emplace(Name, Live().Origin() + I.Pos);
+        Counter("map_vehicle_models")++;
+    }
+    Counter("map_vehicle_models_elsewhere") += Named.size();
+}
+
 void ZonekitZone::AddMapEnts(Maps::MapScene& Scene, const char* Type)
 {
     // zone-level, else inside another asset (CoD4, World at War: the clipMap_t's)
@@ -1486,6 +1537,16 @@ bool ZonekitZone::ForEachGdtAsset(const std::string& Id, const std::function<voi
     const Gdt::Memory M = GdtMemory();
     for (const auto& I : R.Instances)
         if (I.Parent < 0 && OwnerIs(I, (*It)->ZoneType().c_str())) Visit(**It, M, I.Pos);
+    // and those another type's assets hold in a pointer array (FoundIn, as ExportGdt reads them; an
+    // asset several hold is visited once per holder)
+    for (const auto& In : (*It)->FoundIn())
+        for (const auto& I : R.Instances)
+        {
+            if (I.Parent >= 0 || !OwnerIs(I, In.ZoneType.c_str())) continue;
+            const int64_t List = Off(PointerAt(I.Pos + In.Pointers));
+            for (int K = 0; List >= 0 && K < In.Count; K++)
+                if (const int64_t A = Off(PointerAt(List + 8 * (int64_t)K)); A >= 0) Visit(**It, M, A);
+        }
     return true;
 }
 

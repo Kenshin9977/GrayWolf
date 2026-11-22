@@ -285,10 +285,25 @@ void ZonekitZone::ExportsMaterialLinks(const MaterialLinkLayout& L)
         std::string Models;
         for (const auto& I : R.Instances)
         {
-            if (L.ModelMaterials < 0 || !OwnerIs(I, "xmodel")) continue;
-            const int64_t Handles = Off(PointerAt(I.Pos + L.ModelMaterials));
-            const uint32_t Count = Handles >= 0 ? At<uint16_t>(Img, I.Pos + 0x10) : 0;
-            const std::string Name = TextAt(I.Pos + 8);
+            if ((L.ModelMaterials < 0 && L.ModelLods < 0) || !OwnerIs(I, "xmodel")) continue;
+            int64_t Handles = -1;
+            uint32_t Count = 0;
+            std::string Name;
+            if (L.ModelLods >= 0)
+            {
+                // Treyarch's: the first LOD's list (the others name the same handles: mp_firebase's
+                // models point every LOD at one list, or past it)
+                const int64_t Lods = At<uint16_t>(Img, I.Pos + L.ModelLodCount) != 0 ? Off(PointerAt(I.Pos + L.ModelLods)) : -1;
+                Handles = Lods >= 0 ? Off(PointerAt(Lods + 8)) : -1;
+                Count = Handles >= 0 ? At<uint16_t>(Img, Lods) : 0;
+                Name = AssetName(DiskGame::Kind::Model, I.Pos);
+            }
+            else
+            {
+                Handles = Off(PointerAt(I.Pos + L.ModelMaterials));
+                Count = Handles >= 0 ? At<uint16_t>(Img, I.Pos + 0x10) : 0;
+                Name = TextAt(I.Pos + 8);
+            }
             for (uint32_t K = 0; K < Count; K++)
             {
                 const uint64_t Field = PointerAt(Handles + (int64_t)K * 8);
@@ -391,10 +406,10 @@ void ZonekitZone::ExportsSoundLinks(const SoundLinkLayout& L)
     });
 }
 
-void ZonekitZone::ExportsAssetRefs(std::function<std::string(const std::string&)> Decrypt)
+void ZonekitZone::ExportsAssetRefs(std::function<std::string(const std::string&)> Decrypt, std::set<std::string, std::less<>> Kept)
 {
     using DiskGame::Kind;
-    Exports(Kind::AssetRefs, [this, Decrypt](const DiskGame::Context& C, DiskGame::Totals& T) {
+    Exports(Kind::AssetRefs, [this, Decrypt, Kept](const DiskGame::Context& C, DiskGame::Totals& T) {
         auto& Kt = T.Kinds[Kind::AssetRefs];
         constexpr uint64_t IdBits = 0x7FFFFFFFFFFFFFFFull;
         static const std::set<std::string, std::less<>> Bulk = { "image", "material", "xmodel", "xmodelsurfs", "xanim", "sndasset", "techset",
@@ -413,7 +428,9 @@ void ZonekitZone::ExportsAssetRefs(std::function<std::string(const std::string&)
         std::string Rows;
         for (const auto& I : R.Instances)
         {
-            if (I.Parent >= 0 || Bulk.count(Type(I)) != 0) continue;
+            if (I.Parent >= 0) continue;
+            const bool Bulky = Bulk.count(Type(I)) != 0;
+            if (Bulky && Kept.count(Type(I)) == 0) continue;
             Kt.Seen++;
             // its hash, or for a type that keeps none in front (a pointer, 0), @ and its position
             const uint64_t Head = At<uint64_t>(Img, I.Pos), Id = Head & IdBits;
@@ -437,6 +454,8 @@ void ZonekitZone::ExportsAssetRefs(std::function<std::string(const std::string&)
                     if (Printable && Seen.insert({ 2, std::hash<std::string>{}(Text) }).second) Put("str", Text);
                     continue;
                 }
+                // (a bulk type's large reads, pixels, vertices, constants: their pointers alone)
+                const bool PointersOnly = Bulky && Size > KeptReadMax;
                 for (int64_t B = 0; B + 8 <= Size && Pos + B + 8 <= (int64_t)Img.size(); B += 8)
                 {
                     const uint64_t V = At<uint64_t>(Img, Pos + B);
@@ -451,7 +470,7 @@ void ZonekitZone::ExportsAssetRefs(std::function<std::string(const std::string&)
                         continue;
                     }
                     const uint64_t H = V & IdBits;
-                    if ((V >> 63) == 0 && V < (1ull << 40)) continue;
+                    if (PointersOnly || ((V >> 63) == 0 && V < (1ull << 40))) continue;
                     if (H != Id && Seen.insert({ 0, H }).second) Put("hash", std::format("{:016x}", H));
                 }
             }

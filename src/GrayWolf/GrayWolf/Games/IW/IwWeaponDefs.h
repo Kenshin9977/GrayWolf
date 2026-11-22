@@ -31,6 +31,10 @@ namespace IwWeaponDefs
         // when the value is 0: the i32 at this offset times clipSize (WWII's ammo, a count of magazines)
         int64_t TimesClip = -1;
         bool Byte = false;   // a one-byte flag (0 or 1), not an i32
+        bool Real = false;   // an f32, whatever its name says
+        // written only when the i32 at this offset of the same struct is not 0 (-1: always): a field that
+        // means nothing without another (Infinite Warfare's charge, without a charge type)
+        int64_t If = -1;
     };
     struct Layout
     {
@@ -55,6 +59,8 @@ namespace IwWeaponDefs
         // the exe's name tables: weapType, weapClass, fireType values; the hit locations (index 0 none:
         // the same 22 in each of these exes)
         std::vector<std::string> Types, Classes, FireTypes;
+        // the chargeType values (Infinite Warfare's), by the exe's table
+        std::vector<std::string> ChargeTypes;
         std::vector<std::string> HitLocations = { "none", "helmet", "head", "neck", "torso_upper", "torso_lower", "right_arm_upper",
                                                   "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand", "left_hand",
                                                   "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower", "right_foot",
@@ -102,7 +108,35 @@ namespace IwWeaponDefs
             // (u16 list), entries (16 bytes) and count (i32)
             int64_t Type = 0x10, AltA = 0x18, AltB = 0x88, Offsets = 0x58, Entries = 0x60, EntryCount = 0x68, DisplayName = 8;
             std::string ComboTable;             // the string table of the class builder's pairs (lower case)
+            // whose rules (s2.game: "s2" WWII, "s1" Advanced Warfare, whose attachments keep the same override
+            // lists); attachments every weapon's list is given too (rows computed for them: the zombies' level
+            // attachments the scripts add by name, not in the weapons' lists)
+            std::string Rules = "s2";
+            std::vector<std::string> Extra;
         } Attachments;
+        // Infinite Warfare's attachments (WeaponFiles' iw7 rules): the weapon asset's attachment lists (a
+        // pointer to attachment pointers, its u32 count), written as the weapon file's attachments in that
+        // order; each attachment asset written as an attachment file (ATTACHMENTFILE\iw7.format\1\...) with
+        // the blocks and scales the exe's accessors read: its kind (i32), the damage table (a block: i32
+        // damages 0-0x10, f32 ranges 0x18-0x24), the hit location table (22 f32), the ammo block (i32 max,
+        // start, clip), the ammo scale, range scale, fire time and its scale; the weapon type it gives (i32, 0
+        // none: named by Types) and its projectile block (pointer: i32 explosion radius 0, inner and outer
+        // damage 8 and 0xc, projectile speed 0x14), its charge block (pointer: i32 type 0, f32 gain 4, cost
+        // per shot 8, loss when idle 0xc, empty cooldown 0x10), its weapon class (i32, named by Classes), its ammo
+        // general block (pointer: i32 fire type 0xc, named by FireTypes), its general block (pointer: u8 bolt
+        // action 0), its burst block (pointer: i32 burst cooldown 0) and burst cooldown scale (f32), its ammo used
+        // per shot (i32, 0 none) and its ammo block's requireAmmoUsedPerShot (u8 0x18). The alternate
+        // mode's list (AltList, among Lists: the gather 0x743cf0 leaves its attachment out of the primary mode
+        // unless its class is none) written apart (iw7.altSlot). Off when Lists is empty.
+        struct Iw7Attachments
+        {
+            std::vector<std::pair<int64_t, int64_t>> Lists;
+            int64_t AltList = 0x58;
+            int64_t DisplayName = 8, Kind = 0x18, WeaponType = 0x1c, Class = 0x20, Ammo = 0xe8, Damage = 0xf0, Projectile = 0x160,
+                    Charge = 0x168, Hits = 0x190, AmmoGeneral = 0x88, General = 0xc8, Burst = 0x188,
+                    AmmoScale = 0x198, RangeScale = 0x19c, FireTime = 0x1a8, FireTimeScale = 0x1b0, BurstScale = 0x1b4,
+                    AmmoPerShot = 0x1f0;
+        } Iw7;
     };
 
     // A game's README notes: its name, the language zone of the display names, the zone the fields were

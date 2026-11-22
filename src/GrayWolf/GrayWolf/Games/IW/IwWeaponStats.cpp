@@ -73,6 +73,62 @@ namespace
         const Map* Base = nullptr;
     };
 
+    // the shot cycle's columns (Layout: FireDelay...), "" when the layout does not give them
+    bool HasShotCycle(const IwWeaponStats::Layout& L) { return L.FireDelay.At >= 0 && L.ChargeKind.At >= 0; }
+    constexpr const char* ShotCycleColumns = "fire_delay_ms,rechamber_ms,charge_ms,charge_cooldown_ms,shot_interval_ms";
+
+    // fire delay, rechamber, charge time, wait after a full charge, the interval between two shots
+    // (Fire: the fire time, -1 unknown; Rechamber: the package's, -1 none); Atts in gather order
+    std::vector<std::string> ShotCycle(const IwWeaponStats::Layout& L, const Map& T, int Fire, int Rechamber, const std::vector<const Map*>& Atts)
+    {
+        const auto First = [&](const char* Key) -> const Map* {
+            for (const Map* A : Atts)
+                if (A->contains(Key)) return A;
+            return nullptr;
+        };
+        // the fire delay (0x4679220): the first attachment's block replaces it, x the attachments' scales
+        int Delay = IntOr(T, "fire_delay", 0);
+        if (const Map* A = First("fire_delay_override")) Delay = (*A)["fire_delay_override"].get<int>();
+        float DelayScale = 1.0f;
+        for (const Map* A : Atts) DelayScale *= (float)FloatOr(*A, "fire_delay_scale", 1.0);
+        Delay = std::max(0, (int)((float)Delay * DelayScale));
+        // bolt action (0x46932a0): the rechamber state follows the fire time (0x45f4950)
+        bool Bolt = IntOr(T, "bolt_action", 0) != 0;
+        if (const Map* A = First("bolt_action_override")) Bolt = (*A)["bolt_action_override"].get<int>() != 0;
+        // (a weapon with u8 BoltReloadOnly chambers between shots without the rechamber state)
+        const int Rech = Bolt && Rechamber > 0 && IntOr(T, "bolt_reload_only", 0) == 0 ? Rechamber : 0;
+        // the charge (0x46b33e0 kind, 0x46b2df0 time, 0x46b2d00 / 0x46b2ca0 waits): the first attachment's block
+        int Kind = IntOr(T, "charge_kind", 0);
+        float Time = (float)FloatOr(T, "charge_time", 0.0), Cd = (float)FloatOr(T, "charge_cooldown", 0.0),
+              CdAlt = (float)FloatOr(T, "charge_cooldown_alt", 0.0);
+        if (const Map* A = First("charge_override"))
+        {
+            const Map& O = (*A)["charge_override"];
+            Kind = O["kind"].get<int>();
+            Time = (float)O["time"].get<double>(), Cd = (float)O["cooldown"].get<double>(), CdAlt = (float)O["cooldown_alt"].get<double>();
+        }
+        float TimeScale = 1.0f;
+        for (const Map* A : Atts) TimeScale *= (float)FloatOr(*A, "charge_time_scale", 1.0);
+        if (std::fabs(1.0f - TimeScale) <= 1e-6f) TimeScale = 1.0f;
+        int Charge = 0, Cooldown = 0;
+        if (Kind != 0)
+        {
+            Charge = std::max(0, (int)(TimeScale * Time * (float)FloatOr(T, "charge_fraction", 0.0) * 1000.0f));
+            // (0x45e7300: the wait after a full charge's shot, clamped to 0x3fff ms)
+            Cooldown = std::clamp((int)(1000.0f * (Cd > 0.0f ? Cd : CdAlt)), 0, 0x3fff);
+        }
+        // kinds 4, 5, 6, 8, 9, 10 charge anew for each shot (0x45e9660 clears the charge, 0x45e91a0);
+        // the next charge waits for both the fire time and the wait (0x4609d7c)
+        const bool PerShot = Kind == 4 || Kind == 5 || Kind == 6 || Kind == 8 || Kind == 9 || Kind == 10;
+        // the fire delay comes once per trigger pull (0x45ab436: ps+0x2c bit 22, cleared at 0x45ab752 only with the
+        // trigger released): every shot of a semi-automatic, the first only of an automatic (fire type 0) held down
+        const int DelayPerShot = IntOr(T, "fire_type", 1) == 0 ? 0 : Delay;
+        std::string Interval;
+        if (Fire >= 0) Interval = std::to_string(DelayPerShot + (PerShot ? Charge : 0) + std::max(Fire, Cooldown) + Rech);
+        // (rechamber_ms empty without a bolt action, as in the other games' tables)
+        return { std::to_string(Delay), Bolt && Rechamber >= 0 ? std::to_string(Rech) : "", Kind != 0 ? std::to_string(Charge) : "", Kind != 0 ? std::to_string(Cooldown) : "", Interval };
+    }
+
     // the stats of a weapon with attachments (slot, index) chosen
     // an attachment of the alternate mode slot that is an alternate mode (not a normal attachment)
     bool IsAltMode(const IwWeaponStats::Layout& L, int Slot, const Map& A)
@@ -272,6 +328,7 @@ namespace
         }
         // the fire time (0x463a9b0, no player): the first attachment's override replaces the tunables',
         // then x max(0, 1 + sum(scale - 1)) (within 1e-6 of 1: 1), truncated
+        int FireMs = -1;
         if (L.AttFireTime >= 0)
         {
             std::string Ms, Rpm;
@@ -291,9 +348,12 @@ namespace
                 const int Fire = (int)(S * (float)Base);
                 Ms = std::to_string(Fire);
                 if (Fire > 0) Rpm = Num(60000.0 / Fire, 2);
+                FireMs = Fire;
             }
             Out.push_back(Ms);
             Out.push_back(Rpm);
+            if (HasShotCycle(L))
+                for (auto& V : ShotCycle(L, T, FireMs, Time("rechamber"), Atts)) Out.push_back(std::move(V));
         }
         // the burst delay: the first attachment's override replaces the tunables' (its own scale then
         // left out), the others' scales add their deviation; floor(t x scale + 0.5)
@@ -314,7 +374,7 @@ namespace
                     }
                     S += (float)FloatOr(*A, "burst_delay_scale", 1.0) - 1.0f;
                 }
-                Cell = std::to_string((int)std::floor(Snap(std::max(S, 0.0f)) * Base + 0.5f));
+                Cell = std::to_string(WeaponStatsTable::BurstDelayMs(Snap(std::max(S, 0.0f)) * Base));
             }
             Out.push_back(Cell);
         }
@@ -824,7 +884,9 @@ namespace
                                   (L.Pellets.At >= 0 && L.AttAmmoPellets >= 0 ? "pellets," : "") +
                                   "reload_ms,reload_empty_ms,reload_add_ms,reload_empty_add_ms,sprint_to_fire_ms,"
                                   "super_sprint_to_fire_ms,ads_time_ms,ads_out_time_ms,muzzle_velocity_mps" +
-                                  (L.AttFireTime >= 0 ? ",fire_time_ms,rpm" : "") + (L.BurstDelay.At >= 0 ? ",burst_delay_ms" : "") +
+                                  (L.AttFireTime >= 0 ? ",fire_time_ms,rpm" : "") +
+                                  (L.AttFireTime >= 0 && HasShotCycle(L) ? std::string(",") + ShotCycleColumns : std::string()) +
+                                  (L.BurstDelay.At >= 0 ? ",burst_delay_ms" : "") +
                                   (L.ExplosionDamage.At >= 0 ? ",explosion_inner_damage,explosion_outer_damage" : "") +
                                   (L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f ? ",gravity_mps2" : "") +
                                   (L.AttDamageTable >= 0 ? ",damage_max,range_max_m,damage_mid1,range_mid1_m,damage_mid2,range_mid2_m,"
@@ -1214,6 +1276,14 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
         F32("ads_move_speed_scale", L.AdsMoveSpeedScale);
         I32("reserve_clips", L.ReserveClips);
         I32("pellets", L.Pellets);
+        I32("fire_delay", L.FireDelay);
+        U8("bolt_action", L.BoltAction);
+        U8("bolt_reload_only", L.BoltReloadOnly);
+        U8("charge_kind", L.ChargeKind);
+        F32("charge_time", L.ChargeTime);
+        F32("charge_fraction", L.ChargeFraction);
+        F32("charge_cooldown", L.ChargeCooldown);
+        F32("charge_cooldown_alt", L.ChargeCooldownAlt);
         if (const int64_t P = Base(L.ExplosionDamage); P >= 0) T["explosion_damage"] = Json::array({ At<int32_t>(Img, P), At<int32_t>(Img, P + 4) });
         if (const int64_t P = Base(L.ExplosionRings); P >= 0)
         {
@@ -1232,7 +1302,7 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
     // the end of the package time block the layout reads
     int64_t PkgEnd = 0;
     for (const int64_t O : { L.PkgFirstRaise, L.PkgReloadEmpty, L.PkgReload, L.PkgSprintOut, L.PkgSuperSprintOut, L.PkgRaise, L.PkgDrop,
-                             L.PkgRaiseQuick, L.PkgReloadAdd, L.PkgReloadEmptyAdd, L.PkgReloadStart, L.PkgReloadEnd })
+                             L.PkgRaiseQuick, L.PkgReloadAdd, L.PkgReloadEmptyAdd, L.PkgReloadStart, L.PkgReloadEnd, L.PkgRechamber })
         PkgEnd = std::max(PkgEnd, O + 2);
     for (const auto& I : R.Instances)
     {
@@ -1470,6 +1540,20 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
                 const int64_t B = T >= 0 ? Target(T + L.AttFireTimeScale) : -1;
                 A["fire_time_scale"] = B >= 0 ? (double)At<float>(Img, B + 4) : 1.0;
             }
+            // the shot cycle: the fire delay block and scale, the bolt action block, the charge block and scale
+            if (L.AttFireDelay >= 0 && L.AttFireDelayAt >= 0)
+                if (const int64_t B = Target(P + L.AttFireDelay); B >= 0) A["fire_delay_override"] = At<int32_t>(Img, B + L.AttFireDelayAt);
+            if (L.AttFireDelayScale >= 0)
+                if (const int64_t B = Target(P + L.AttFireDelayScale); B >= 0) A["fire_delay_scale"] = (double)At<float>(Img, B);
+            if (L.AttBolt >= 0 && L.AttBoltAt >= 0)
+                if (const int64_t B = Target(P + L.AttBolt); B >= 0) A["bolt_action_override"] = At<uint8_t>(Img, B + L.AttBoltAt);
+            if (L.AttCharge >= 0 && L.AttChargeKind >= 0)
+                if (const int64_t B = Target(P + L.AttCharge); B >= 0)
+                    A["charge_override"] = Json{ { "kind", At<uint8_t>(Img, B + L.AttChargeKind) },
+                                                 { "time", (double)At<float>(Img, B + L.AttChargeTime) },
+                                                 { "cooldown", (double)At<float>(Img, B + L.AttChargeCooldown) },
+                                                 { "cooldown_alt", (double)At<float>(Img, B + L.AttChargeCooldownAlt) } };
+            if (L.AttChargeScale >= 0) A["charge_time_scale"] = (double)At<float>(Img, P + L.AttChargeScale);
             // the ballistic block that replaces the tunables' (its gravity factor and flag)
             if (L.AttBallistic >= 0)
                 if (const int64_t B = Target(P + L.AttBallistic); B >= 0)
@@ -1608,6 +1692,7 @@ std::string Facts(const Layout& L, const ZoneView& V, const std::string& Zone, c
             U16("reload_empty_add", L.PkgReloadEmptyAdd);
             U16("reload_start", L.PkgReloadStart);
             U16("reload_end", L.PkgReloadEnd);
+            U16("rechamber", L.PkgRechamber);
             // the anim table: {id, xanim} of each sorted id (the xanim's name, its hash when unnamed)
             if (const int64_t A = L.PkgAnims >= 0 ? Target(P + L.PkgAnims) : -1; A >= 0 && L.PkgAnimCount >= 0 && A + L.PkgAnimCount + 8 <= (int64_t)Img.size())
             {
@@ -1761,6 +1846,7 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
         auto It = std::find(Head.begin(), Head.end(), Neighbour) + 1;
         for (const char* C : Columns) It = Head.insert(It, C) + 1;
     };
+    After("rpm", HasShotCycle(L), { "fire_delay_ms", "rechamber_ms", "charge_ms", "charge_cooldown_ms", "shot_interval_ms" });
     After("burst_count", L.BurstDelay.At >= 0, { "burst_delay_ms" });
     After("muzzle_velocity_mps", L.BallisticBlock.At >= 0 && L.BallisticFlag >= 0, { "ballistic" });
     After(L.BallisticFlag >= 0 ? "ballistic" : "muzzle_velocity_mps", L.BallisticBlock.At >= 0 && L.BallisticGravity >= 0 && L.GravityInches > 0.0f,
@@ -1888,7 +1974,14 @@ bool Merge(const Layout& L, const std::string& Dir, size_t& Rows, std::string& E
             std::map<std::string, std::string> Cells;
             for (size_t I = 0; I < BaseHead.size(); I++) Cells[BaseHead[I]] = C[I];
             // the burst delay in whole ms: floor(t + 0.5)
-            if (T.contains("burst_delay")) Cells["burst_delay_ms"] = std::to_string((int)std::floor((float)T["burst_delay"].get<double>() + 0.5f));
+            if (T.contains("burst_delay")) Cells["burst_delay_ms"] = std::to_string(WeaponStatsTable::BurstDelayMs(T["burst_delay"].get<double>()));
+            if (HasShotCycle(L))
+            {
+                const int Rech = Pkg != nullptr && Pkg->contains("rechamber") ? (*Pkg)["rechamber"].get<int>() : -1;
+                const auto Cycle = ShotCycle(L, T, T.contains("fire_time") ? Fire : -1, Rech, {});
+                const char* const Names[] = { "fire_delay_ms", "rechamber_ms", "charge_ms", "charge_cooldown_ms", "shot_interval_ms" };
+                for (size_t I = 0; I < std::size(Names); I++) Cells[Names[I]] = Cycle[I];
+            }
             if (T.contains("ballistic")) Cells["ballistic"] = std::to_string(T["ballistic"].get<int>());
             if (T.contains("gravity") && L.GravityInches > 0.0f) Cells["gravity_mps2"] = Num(L.GravityInches * T["gravity"].get<double>() * 0.0254, 2);
             // the explosion's damages, with its radius: the three rings' when the flag picks them

@@ -3,7 +3,11 @@
 #include "MapCollision.h"
 
 #include "ExportNaming.h"
+#include "MapRadiantWriter.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <set>
 #include <vector>
 
@@ -12,6 +16,8 @@ namespace Maps
 namespace
 {
     using ExportNaming::At;
+
+    constexpr double ModelPrismDepth = 2.0;   // a brush model's triangle as a brush, as the Radiant export makes the world's
 
     class Reader
     {
@@ -266,24 +272,75 @@ bool ReadCollision(Collision& Out, const ClipSource& Src, int64_t ClipMap, const
     const int64_t V = Vertices ? R.Follow(Holder + L.Vertices) : -1, T = Triangles ? R.Follow(Holder + L.Triangles) : -1;
     // each triangle's vertex base, from the partition holding it
     std::vector<uint32_t> Base;
+    struct Partition
+    {
+        uint32_t First, N, Material;   // Material: UINT32_MAX when the partition has none
+    };
+    std::vector<Partition> Partitions;
+    std::vector<uint32_t> Written;   // a stored triangle's number in Out.Triangles (UINT32_MAX: left out)
     if (L.PartitionCount >= 0 && Triangles)
     {
         Base.assign(Triangles, 0);
         const uint32_t Count = At<uint32_t>(Img, Holder + L.PartitionCount);
-        const int64_t Parts = Count ? R.Follow(Holder + L.Partitions) : -1;
+        int64_t Parts = Count ? R.Follow(Holder + L.Partitions) : -1;
+        if (Parts >= 0 && Parts + (int64_t)Count * L.PartitionSize > (int64_t)Img.size()) Parts = -1;
         for (uint32_t P = 0; Parts >= 0 && P < Count; P++)
         {
             const int64_t Rec = Parts + (int64_t)P * L.PartitionSize;
             const uint32_t First = At<uint32_t>(Img, Rec + L.PartitionFirstTri), N = At<uint8_t>(Img, Rec + L.PartitionTris);
             const uint32_t Segment = At<uint8_t>(Img, Rec + L.PartitionSegment) * (uint32_t)L.SegmentVertices;
             for (uint32_t K = First; K < First + N && K < Triangles; K++) Base[K] = Segment;
+            Partitions.push_back({ First, N, L.PartitionMaterial >= 0 ? At<uint32_t>(Img, Rec + L.PartitionMaterial) : UINT32_MAX });
         }
         if (Parts < 0) Counters["collision_partitions_unread"]++;
+    }
+    // the AABB tree (CollisionAabbTree): its leaves name a partition and its material (below)
+    const uint32_t AabbNodes = L.AabbCount >= 0 && Holder >= 0 ? At<uint32_t>(Img, Holder + L.AabbCount) : 0;
+    int64_t Aabbs = AabbNodes ? R.Follow(Holder + L.Aabbs) : -1;
+    if (Aabbs >= 0 && Aabbs + (int64_t)AabbNodes * L.AabbSize > (int64_t)Img.size()) Aabbs = -1;
+    // the triangles a brush model's leaf reaches through its AABB roots (cLeaf_t firstCollAabbIndex,
+    // collAabbCount), in the model's own space: its entity's, not the world's (BO1's mp_nuked's
+    // heli_height_lock, *203: a bowl over the whole map 1505 units below where it stands, written
+    // into the world an invisible hill round the play area). Each stored triangle's model (0: the
+    // world's) and its leaf's material.
+    std::vector<uint32_t> ModelOf, LeafMaterial;
+    if (L.ModelAabbs >= 0 && Models >= 0 && Aabbs >= 0 && !Partitions.empty())
+    {
+        ModelOf.assign(Triangles, 0);
+        LeafMaterial.assign(Triangles, Collision::NoMaterial);
+        for (uint32_t M = 1; M < ModelCount && M < 65536; M++)
+        {
+            const int64_t Rec = Models + (int64_t)M * L.ModelSize;
+            const uint32_t First = At<uint16_t>(Img, Rec + L.ModelAabbs), N = At<uint16_t>(Img, Rec + L.ModelAabbs + 2);
+            std::vector<uint32_t> Stack;
+            for (uint32_t K = 0; K < N; K++) Stack.push_back(First + K);
+            std::set<uint32_t> Seen;
+            while (!Stack.empty())
+            {
+                const uint32_t K = Stack.back();
+                Stack.pop_back();
+                if (K >= AabbNodes || !Seen.insert(K).second) continue;
+                const int64_t Node = Aabbs + (int64_t)K * L.AabbSize;
+                const uint32_t Children = At<uint16_t>(Img, Node + L.AabbChildCount), U = At<uint32_t>(Img, Node + L.AabbPartition);
+                if (Children)
+                {
+                    for (uint32_t C = 0; C < Children; C++) Stack.push_back(U + C);
+                    continue;
+                }
+                if (U >= Partitions.size()) continue;
+                for (uint32_t Stored = Partitions[U].First; Stored < Partitions[U].First + Partitions[U].N && Stored < Triangles; Stored++)
+                {
+                    ModelOf[Stored] = M;
+                    LeafMaterial[Stored] = At<uint16_t>(Img, Node + L.AabbMaterial);
+                }
+            }
+        }
     }
     if (V >= 0 && T >= 0 && V + (int64_t)Vertices * 12 <= (int64_t)Img.size() &&
         T + (int64_t)Triangles * 3 * L.TriangleIndexBytes <= (int64_t)Img.size())
     {
         Out.Vertices.resize((size_t)Vertices * 3);
+        Written.assign(Triangles, UINT32_MAX);
         for (size_t K = 0; K < Out.Vertices.size(); K++) Out.Vertices[K] = At<float>(Img, V + (int64_t)K * 4);
         // stored clockwise seen from outside, as Direct3D draws (every game measured, CoD4 to
         // Black Ops 4: against the drawn surface's normals where one lies on the triangle):
@@ -296,14 +353,121 @@ bool ReadCollision(Collision& Out, const ClipSource& Src, int64_t ClipMap, const
                        (Base.empty() ? 0 : Base[K]);
             if (I[0] >= Vertices || I[1] >= Vertices || I[2] >= Vertices)
             {
+                // that one left out, the others kept (AW's mp_blackbox: one in 1.2 million)
                 Counters["collision_triangles_unread"]++;
-                break;
+                continue;
             }
+            if (!ModelOf.empty() && ModelOf[K] != 0 && ModelOf[K] < Out.Models.size())
+            {
+                // a brush model's: a prism among its brushes, as the world's triangles are written
+                // (the proof: within the model's bounds, cmodel_t mins 0 and maxs 0xc)
+                std::array<double, 3> P[3];
+                for (int J = 0; J < 3; J++)
+                    for (int A = 0; A < 3; A++) P[J][A] = Out.Vertices[(size_t)I[J ? 3 - J : 0] * 3 + A];
+                const int64_t Rec = Models + (int64_t)ModelOf[K] * L.ModelSize;
+                bool Inside = true;
+                for (int J = 0; J < 3; J++)
+                    for (int A = 0; A < 3; A++)
+                        Inside = Inside && P[J][A] >= At<float>(Img, Rec + A * 4) - 1.0 && P[J][A] <= At<float>(Img, Rec + 0xc + A * 4) + 1.0;
+                if (!Inside) Counters["collision_model_triangles_outside_bounds"]++;
+                Brush Br;
+                if (!TrianglePrism(P, ModelPrismDepth, Br))
+                {
+                    Counters["collision_model_triangles_dropped"]++;
+                    continue;
+                }
+                if (const uint32_t Mat = LeafMaterial[K]; Mat < Out.Materials.size())
+                {
+                    Br.Contents = Out.Materials[Mat].second;
+                    for (BrushSide& S : Br.Sides) S.Material = Out.Materials[Mat].first, S.Contents = Br.Contents;
+                }
+                Out.Models[ModelOf[K]].push_back(std::move(Br));
+                Counters["collision_model_triangles"]++;
+                continue;
+            }
+            Written[K] = (uint32_t)(Out.Triangles.size() / 3);
             Out.Triangles.insert(Out.Triangles.end(), { I[0], I[2], I[1] });
         }
     }
     else if (Triangles)
         Counters["collision_triangles_unread"] += Triangles;
+    // each triangle's material: its partition's own (WWII), else the one the AABB tree's leaf naming
+    // its partition (a run of triangles) collides with (a drawn terrain's, solid; a detail mesh's
+    // that stops only bullets, weaponClip)
+    const size_t Read = Out.Triangles.size() / 3;
+    if (L.PartitionMaterial >= 0 && !Partitions.empty() && Read)
+    {
+        Out.TriangleMaterials.assign(Read, Collision::NoMaterial);
+        for (const Partition& P : Partitions)
+        {
+            if (P.Material >= Out.Materials.size())
+            {
+                Counters["collision_partitions_material_unread"]++;
+                continue;
+            }
+            for (uint32_t Stored = P.First; Stored < P.First + P.N && Stored < Written.size(); Stored++)
+                if (Written[Stored] < Read) Out.TriangleMaterials[Written[Stored]] = P.Material;
+        }
+    }
+    if (L.AabbCount >= 0 && (!Partitions.empty() || L.AabbFirstTri >= 0) && Read)
+    {
+        const int64_t Tree = L.AabbInInfo ? Info : Holder;
+        const uint32_t Count = At<uint32_t>(Img, Tree + L.AabbCount);
+        int64_t Nodes = Count ? R.Follow(Tree + L.Aabbs) : -1;
+        if (Nodes >= 0 && Nodes + (int64_t)Count * L.AabbSize > (int64_t)Img.size()) Nodes = -1;
+        if (Nodes >= 0)
+        {
+            const bool FromLeaves = L.PartitionMaterial < 0;
+            if (FromLeaves) Out.TriangleMaterials.assign(Read, Collision::NoMaterial);
+            for (uint32_t K = 0; K < Count; K++)
+            {
+                const int64_t Rec = Nodes + (int64_t)K * L.AabbSize;
+                if (L.AabbChildCount >= 0 &&
+                    (L.AabbChildCountBytes == 1 ? At<uint8_t>(Img, Rec + L.AabbChildCount) : At<uint16_t>(Img, Rec + L.AabbChildCount)) != 0)
+                    continue;
+                if (L.AabbZone >= 0 && At<uint8_t>(Img, Rec + L.AabbZone) != 0)
+                {
+                    Counters["collision_aabb_leaves_other_zone"]++;
+                    continue;
+                }
+                const uint32_t Material = FromLeaves ? At<uint16_t>(Img, Rec + L.AabbMaterial) : 0;
+                const uint32_t P = L.AabbFirstTri >= 0 ? 0 : At<uint32_t>(Img, Rec + L.AabbPartition);
+                if ((L.AabbFirstTri < 0 && P >= Partitions.size()) || Material >= Out.Materials.size())
+                {
+                    Counters["collision_aabb_leaves_unread"]++;
+                    continue;
+                }
+                const Partition Part = L.AabbFirstTri >= 0
+                                         ? Partition{ At<uint32_t>(Img, Rec + L.AabbFirstTri), At<uint8_t>(Img, Rec + L.AabbTriCount), UINT32_MAX }
+                                         : Partitions[P];
+                // the proof of the layout: a leaf's box (centre, half size) holds its triangles
+                float Mid[3], Half[3];
+                for (int A = 0; A < 3; A++)
+                {
+                    const float U = At<float>(Img, Rec + L.AabbOrigin + A * 4), W = At<float>(Img, Rec + L.AabbHalfSize + A * 4);
+                    Mid[A] = L.AabbMinMax ? (U + W) / 2 : U;
+                    Half[A] = L.AabbMinMax ? (W - U) / 2 : W;
+                }
+                bool Holds = true;
+                for (uint32_t Stored = Part.First; Stored < Part.First + Part.N && Stored < Written.size(); Stored++)
+                {
+                    const uint32_t T = Written[Stored];
+                    if (T >= Read) continue;
+                    if (FromLeaves) Out.TriangleMaterials[T] = Material;
+                    for (int J = 0; J < 3; J++)
+                        for (int A = 0; A < 3; A++)
+                            Holds = Holds && std::fabs(Out.Vertices[(size_t)Out.Triangles[(size_t)T * 3 + J] * 3 + A] - Mid[A]) <= Half[A] + 1.0f;
+                }
+                Counters["collision_aabb_leaves"]++;
+                if (!Holds) Counters["collision_aabb_leaves_outside_box"]++;
+            }
+        }
+        else
+            Counters["collision_aabb_unread"]++;
+    }
+    if (!Out.TriangleMaterials.empty())
+        Counters["collision_triangles_without_material"] +=
+            (size_t)std::count(Out.TriangleMaterials.begin(), Out.TriangleMaterials.end(), Collision::NoMaterial);
     return !Out.Empty();
 }
 }

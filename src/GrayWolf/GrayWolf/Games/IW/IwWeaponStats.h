@@ -111,6 +111,14 @@ namespace IwWeaponStats
         // attachment, not an alternate mode's, AttAltMode) and the modifier table block whose f32 +4
         // scales it (1 + the sum of the attachments' scale - 1)
         int64_t AttFireTime = -1, AttFireTimeScale = -1;
+        // the shot cycle beyond the fire time: fire delay (i32 ms; attachment block i32 override, f32 scale
+        // pointer product), bolt action (u8; attachment block u8) with the package's rechamber (u16), a
+        // charge (u8 kind, f32 s time x f32 fraction, f32 s wait after a full charge else the alt wait;
+        // attachment block override, f32 time scale product). Proofs: the game's README columns
+        // (BoltReloadOnly: u8, set = no rechamber between shots)
+        Field FireDelay, BoltAction, BoltReloadOnly, ChargeKind, ChargeTime, ChargeFraction, ChargeCooldown, ChargeCooldownAlt;
+        int64_t AttFireDelay = -1, AttFireDelayAt = -1, AttFireDelayScale = -1, AttBolt = -1, AttBoltAt = -1, AttCharge = -1,
+                AttChargeKind = -1, AttChargeTime = -1, AttChargeCooldown = -1, AttChargeCooldownAlt = -1, AttChargeScale = -1;
         // the order the game gathers a weapon's attachments (slot indexes): "the first attachment holding
         // a field" is the first in this order (empty: the order the attachments are given)
         std::vector<int> SlotOrder;
@@ -177,7 +185,7 @@ namespace IwWeaponStats
         // animation package: its time block's pointer, the u16 times in it
         int64_t PkgBlock = -1, PkgFirstRaise = -1, PkgReloadEmpty = -1, PkgReload = -1, PkgSprintOut = -1, PkgSuperSprintOut = -1,
                 PkgRaise = -1, PkgDrop = -1, PkgRaiseQuick = -1, PkgReloadAdd = -1, PkgReloadEmptyAdd = -1, PkgReloadStart = -1,
-                PkgReloadEnd = -1;
+                PkgReloadEnd = -1, PkgRechamber = -1;
         // a time of 0xffff is none (left out of the facts: Modern Warfare 2019's getter skips it)
         bool PkgFfffIsNone = false;
         // suit: its name hash, the sprint and super sprint multipliers (f32)

@@ -21,6 +21,7 @@
 #include "HalfFloats.h"
 #include "MapLive.h"
 #include "Games/Common/MeshDecode.h"
+#include "Games/Common/HavokTagfile.h"
 #include "Games/Common/StringCipher.h"
 #include "Games/IW/IWZone.h"
 #include "Games/IW/IwBesideZones.h"
@@ -1043,6 +1044,19 @@ namespace
             // attachment's i32 0xbd8 when not 0 (not an alternate mode's: u8 0xd75), then x (1 + sum of the
             // modifier block 0x250->0xe0 +4 - 1)
             L.AttFireTime = 0xbd8, L.AttFireTimeScale = 0xe0;
+            // the shot cycle (RVAs of exe 0x6adb2260): fire delay i32 0x5cd8 (0x4679220; attachment block
+            // 0x5e8 +4, scale f32 *0x5f8), bolt action u8 0x5dfd (0x46932a0; attachment block 0x3d8 +0x35)
+            // and rechamber package u16 0x0c (0x46a12e0, state 0x1c 0x45f4950); charge kind u8 0x5dee
+            // (0x46b33e0), time f32 0x5aac (0x46b2df0, x attachment f32 0xd40), fraction f32 0x5ad0
+            // (0x46b26a0), waits f32 0x5abc / 0x5ab8 (0x46b2d00 / 0x46b2ca0, set by 0x45e7300); attachment
+            // block 0x588 +0xb8 / +0x90 / +0xa0 / +0x9c (the first holding it, 0x46b1990)
+            // u8 0x5dff (0x46a1300; of the bolt weapons, set on the CBRS-3 only, with 0x5dfe): its reload end
+            // chambers at once (0x461b336 -> 0x461b480) and it fires at its fire time (691 rpm = 86 ms), so no
+            // rechamber between shots; how a shot keeps its chamber full is not traced
+            L.FireDelay = 0x5cd8, L.BoltAction = 0x5dfd, L.BoltReloadOnly = 0x5dff, L.PkgRechamber = 0x0c, L.ChargeKind = 0x5dee, L.ChargeTime = 0x5aac,
+            L.ChargeFraction = 0x5ad0, L.ChargeCooldown = 0x5abc, L.ChargeCooldownAlt = 0x5ab8;
+            L.AttFireDelay = 0x5e8, L.AttFireDelayAt = 4, L.AttFireDelayScale = 0x5f8, L.AttBolt = 0x3d8, L.AttBoltAt = 0x35, L.AttCharge = 0x588,
+            L.AttChargeKind = 0xb8, L.AttChargeTime = 0x90, L.AttChargeCooldown = 0xa0, L.AttChargeCooldownAlt = 0x9c, L.AttChargeScale = 0xd40;
             // the order every stat getter gathers the attachments in (0x4653b20 / new 0x4683e70 walks the
             // 17-byte table 0xb43fe10 / 0xb4a4a70): the first holding a field wins
             L.SlotOrder = { 0, 5, 10, 11, 13, 16, 9, 8, 7, 6, 12, 4, 3, 2, 1, 14, 15 };
@@ -1148,6 +1162,21 @@ namespace
                 "  game picks the set whose tags hold the gametype settings' tag (0x460f300); the set tagged 'default'\n"
                 "  is the fallback. t10_br is the tag of the Warzone settings (suit sat_newsuit_wz), t10_zm of Zombies.\n"
                 "- fire_time_ms: tunables 0x5cd4 (weaponfiretime). rpm = 60000 / fire_time_ms.\n"
+                "- The shot cycle (RVAs of exe 0x6adb2260). fire_delay_ms: i32 0x5cd8 (0x4679220; 0x5cdc instead when >= 0\n"
+                "  and f32 0x5a94 >= a player value of 0x478ce80, 0x5ce0 in an alternate state: neither named): the weapon state 0x1a before the shot\n"
+                "  (0x45ab436), once per trigger pull (ps+0x2c bit 22, cleared at 0x45ab752 only with the trigger released):\n"
+                "  shot_interval_ms leaves it out for automatics (fire type 0) held down. rechamber_ms: package u16 0x0c (0x46a12e0) when u8 0x5dfd, bolt action, is set (0x46932a0):\n"
+                "  state 0x1c after the fire time when the chamber is empty (0x45f4950, 0x45bc680), else empty; 0 when u8\n"
+                "  0x5dff is set (the CBRS-3: chambered at the reload's end, 0x461b480; 691 rpm = its 86 ms fire time).\n"
+                "  Not scaled here by the rechamber perks of 0x467c030 (x 0.8 / 0.7 dvars). charge_ms / charge_cooldown_ms, written when the\n"
+                "  charge kind u8 0x5dee is not 0 (0x46b33e0): the charge fills in f32 0x5aac s (0x46b2df0) while the weapon\n"
+                "  state is 0x54 / 0x55 (0x45eabe0) and a shot needs f32 0x5ad0 of it (0x45e9580): charge_ms = 1000 x\n"
+                "  0x5aac x 0x5ad0, as the stats UI adds it (0x4d1d540). After a full charge's shot, 0x45e9660 clears it\n"
+                "  (0x45e91a0) and 0x45e7300 sets the wait ps+0x5e4 = 1000 x f32 0x5abc (else 0x5ab8; max 0x3fff ms); the\n"
+                "  next charge waits for it (0x45e8fb0) and for the fire time (0x4609d7c: the larger). shot_interval_ms =\n"
+                "  fire_delay + charge (kinds 4, 5, 6, 8, 9, 10: a charge per shot) + max(fire_time, charge_cooldown) +\n"
+                "  rechamber: the time between two shots of one magazine (no reload, no trigger release, no burst delay,\n"
+                "  no perk). The A.R.C. M1 (kind 6): 600 + max(100, 2000) = 2600 ms.\n"
                 "- burst_count: 0x5d1c (weaponburstcount). fire_type: u8 0x5dfc (an attachment's +0x318 overrides it):\n"
                 "  0 auto (weaponisauto), 2 burst (weaponburstcount returns the count only for 2), 5 beam (weaponisbeam),\n"
                 "  1, 3, 4 semi-auto (weaponissemiauto). 3 fires two rounds a trigger pull when tunables 0x5d18 <= 0\n"
@@ -1252,6 +1281,12 @@ namespace
                 "  Not applied: the alternate mode's times (tunables 0x5cf0, attachment 0xbdc), the fire-rate ramp of\n"
                 "  tunables 0x5aa4 / 0x5d08 (attachment 0x9b8 / 0x9c0; the stats UI ramps over 0x5d4c shots) and the\n"
                 "  player-state factors (aiming, perks, akimbo halving).\n"
+                "- fire_delay_ms: the first attachment's block 0x5e8 gives it (+4), x the product of each attachment's\n"
+                "  f32 the pointer 0x5f8 leads to (0x4679220). rechamber_ms: the first attachment's block 0x3d8 gives the\n"
+                "  bolt action (u8 +0x35, 0x46932a0); the package as for the reload (the 0x398 +9 variant 0x4690b20 not\n"
+                "  applied). charge_*: the first attachment holding a block 0x588 (0x46b1990) gives the kind (u8 +0xb8),\n"
+                "  the time (f32 +0x90) and the waits (f32 +0xa0, +0x9c); the time x the product of the attachments' f32\n"
+                "  0xd40 (1 within 1e-6). The fraction is the tunables' (0x46b26a0).\n"
                 "- burst_delay_ms = floor(t x max(0, 1 + sum(attachment 0x250->0xe8 +4 - 1)) + 0.5) (0x4637000): t is the\n"
                 "  i32 the first attachment's pointer 0x5e0 leads to (that attachment's own scale then left out), else\n"
                 "  tunables 0x5a50. An attachment with u8 0xd75 = 1 overrides only while it is the weapon's active\n"
@@ -1638,6 +1673,27 @@ namespace
         Scene.MapEnts += IwctxReaders::EntityText(Ents);
         Counter("map_ents") += Strings;
         Counter("map_spawn_points") += Ents.size() - Strings;
+
+        // ---- the collision: Havok shapes (Games/Common/HavokTagfile.h). col_map's shape list gives
+        // the shape tags' content flags; each collisiontile's mesh (the terrain and world) and
+        // compound (the clip volumes, boxes and convex pieces) are placed in the world already
+        if (const int64_t Clip = Root("col_map"); Clip >= 0 && Family.ClipShapeList >= 0)
+        {
+            Havok::LevelSource Src;
+            Src.Locate = [this](uint64_t A, uint64_t N) { return Locate(A, N); };
+            Src.ClipMap = Live().Addr((uint64_t)Clip);
+            Src.ShapeList = Family.ClipShapeList, Src.ShapeListSize = Family.ClipShapeListSize;
+            Src.TileShapes.assign(Family.TileShapes.begin(), Family.TileShapes.end());
+            // the tiles: this zone's, and its transient zones' (Black Ops 7 keeps them there)
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "collisiontile")) Src.Tiles.push_back(Live().Addr((uint64_t)I.Pos));
+            for (const auto& S : this->Beside.All())
+                for (const auto& I : S->R.Instances)
+                    if (I.Owner < S->R.OwnerNames.size() && S->R.OwnerNames[I.Owner] == "collisiontile") Src.Tiles.push_back(S->Base + (uint64_t)I.Pos);
+            std::map<std::string, size_t> Read;
+            Havok::ReadLevel(Scene.Collision, Src, 32.0f, Read);
+            for (const auto& [K, N] : Read) Counter("map_" + K) += N;
+        }
         return true;
     }
 

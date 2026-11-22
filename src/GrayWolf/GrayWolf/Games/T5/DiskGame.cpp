@@ -81,7 +81,8 @@ namespace
         // clipMap_t (0x14c, OAT's T5 struct, the t5 tables' col_map): dmaterial_t 0x48 (char[64],
         // surface, contents); cbrush_t 0x60 (mins, contents 0xc, maxs 0x10, numsides 0x1c, sides
         // 0x20, axial cflags 0x24 and sflags 0x3c); cbrushside_t 0xc (plane, cflags, sflags);
-        // cmodel_t 0x48, its leaf's leafBrushNode at 0x40; cLeafBrushNode_s 0x14
+        // cmodel_t 0x48 (mins 0, maxs 0xc), its leaf 0x1c (u16 firstCollAabbIndex, u16 collAabbCount,
+        // leafBrushNode 0x24); cLeafBrushNode_s 0x14
         Maps::ClipLayout& C = L.Clip;
         C.Info.MaterialCount = 0x18, C.Info.Materials = 0x1c, C.Info.BrushCount = 0x94, C.Info.Brushes = 0x98;
         C.Info.LeafBrushNodeCount = 0x38, C.Info.LeafBrushNodes = 0x3c;
@@ -89,9 +90,11 @@ namespace
         C.BrushSize = 0x60, C.BrushMins = 0, C.BrushContents = 0xc, C.BrushMaxs = 0x10, C.BrushSideCount = 0x1c, C.BrushSides = 0x20;
         C.AxialContents = 0x24, C.AxialSurface = 0x3c;
         C.SideSize = 0xc, C.SidePlane = 0, C.SideContents = 4, C.SideSurface = 8;
-        C.ModelCount = 0x8c, C.Models = 0x90, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40;
+        C.ModelCount = 0x8c, C.Models = 0x90, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40, C.ModelAabbs = 0x1c;
         C.NodeSize = 0x14;
         C.VertexCount = 0x50, C.Vertices = 0x54, C.TriangleCount = 0x68, C.Triangles = 0x6c;   // u16 vertex numbers
+        // the triangles' materials: CollisionPartition 0x14 (u8 triCount, firstTri 4), the AABB tree (0x20)
+        C.PartitionCount = 0x7c, C.Partitions = 0x80, C.PartitionSize = 0x14, C.AabbCount = 0x84, C.Aabbs = 0x88;
         return L;
     }
 

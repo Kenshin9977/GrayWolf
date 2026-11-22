@@ -1,22 +1,8 @@
 #include "stdafx.h"
 #include "Siren.h"
 
-#include <atomic>
 #include <filesystem>
-
-namespace
-{
-    // the library Initialize last made current
-    std::atomic<const wolff::OodleDecompressor*> Current{ nullptr };
-
-    std::string Narrow(const TCHAR* Name)
-    {
-        std::string Out;
-        for (const TCHAR* C = Name; *C != 0; C++)
-            Out += static_cast<char>(*C);   // the DLL names are ASCII
-        return Out;
-    }
-}
+#include <stdexcept>
 
 wolff::OodleDllLoader& Siren::Loader()
 {
@@ -30,22 +16,21 @@ void Siren::AddSearchDir(const std::wstring& Dir)
     Loader().AddSearchDir(std::filesystem::path(Dir));
 }
 
-SirenStatus Siren::Initialize(const TCHAR* DllPath)
+const wolff::OodleDecompressor* Siren::Library(Names Dlls)
 {
-    const std::string Name = DllPath != nullptr ? Narrow(DllPath) : std::string("oo2core_5_win64.dll");
-    const wolff::OodleDecompressor* D = Loader().Find(Name);
+    for (const std::string_view Name : Dlls)
+        if (const wolff::OodleDecompressor* D = Loader().Find(Name)) return D;
+    return nullptr;
+}
+
+uintptr_t Siren::Decompress(Names Dlls, const uint8_t* Buffer, const uintptr_t BufferSize, uint8_t* OutputBuffer, const uintptr_t OutputBufferSize)
+{
+    const wolff::OodleDecompressor* D = Library(Dlls);
     if (D == nullptr)
-        return SirenStatus::MissingDll;
-    Current.store(D);
-    return SirenStatus::Success;
-}
-
-void Siren::Shutdown()
-{
-}
-
-uintptr_t Siren::Decompress(const uint8_t* Buffer, const uintptr_t BufferSize, uint8_t* OutputBuffer, const uintptr_t OutputBufferSize)
-{
-    const wolff::OodleDecompressor* D = Current.load();
-    return D != nullptr ? (uintptr_t)D->Decompress(Buffer, BufferSize, OutputBuffer, OutputBufferSize) : 0;
+    {
+        std::string Listed;
+        for (const std::string_view Name : Dlls) Listed += (Listed.empty() ? "" : " or ") + std::string(Name);
+        throw std::runtime_error(wolff::OodleMissing(Listed, "The game's streamed models, images and sounds"));
+    }
+    return (uintptr_t)D->Decompress(Buffer, BufferSize, OutputBuffer, OutputBufferSize);
 }

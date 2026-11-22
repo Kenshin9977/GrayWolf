@@ -305,6 +305,8 @@ namespace
         C.ModelCount = 0x120, C.Models = 0x128, C.ModelSize = 0x50, C.ModelInfo = 0x20, C.ModelLeafBrushNode = 0x4c;
         C.NodeSize = 0x18;
         C.VertexCount = 0xc8, C.Vertices = 0xd0, C.TriangleCount = 0xd8, C.Triangles = 0xe0;
+        // the triangles' materials: CollisionPartition 0x10 (u8 triCount, firstTri 4), the AABB tree (0x20)
+        C.PartitionCount = 0x100, C.Partitions = 0x108, C.PartitionSize = 0x10, C.AabbCount = 0x110, C.Aabbs = 0x118;
         M.Triggers = 0x18;
         return M;
     }

@@ -111,13 +111,130 @@ namespace
         { "zm_pap3", "zmpap3damagescale", 0, 1 },
     };
 
+    using AttachmentLayout = Treyarch::WeaponStats::AttachmentLayout;
+
+    // the hit location names, by the exe's index (entry 0, none, first): the hit_ columns' suffixes
+    const char* const Locations[] = { "none", "helmet", "head", "neck", "torso_upper", "torso_mid", "torso_lower",
+                                      "right_arm_upper", "left_arm_upper", "right_arm_lower", "left_arm_lower", "right_hand",
+                                      "left_hand", "right_leg_upper", "left_leg_upper", "right_leg_lower", "left_leg_lower",
+                                      "right_foot", "left_foot", "gun", "riotshield" };
+
+    // an asset's name: its hash at 0 (the index's name, else <kind>_<hex>)
+    std::string HashedName(const Gdt::Memory& M, int64_t Pos, const char* Kind)
+    {
+        const uint64_t H = M.At<uint64_t>(Pos) & M.HashMask;
+        if (H == 0) return std::string();
+        if (std::string N = M.HashName(H); !N.empty()) return N;
+        return std::format("{}_{:x}", Kind, H);
+    }
+
+    using CycleLayout = Treyarch::WeaponStats::CycleLayout;
+
+    // a fire type's name by the exe's table, else its number
+    std::string FireTypeName(const CycleLayout& Cy, int Value)
+    {
+        if (Value >= 0 && Value < Cy.FireTypeCount && Cy.FireTypes != nullptr) return Cy.FireTypes[Value];
+        return std::to_string(Value);
+    }
+
+    // a weapon's shot cycle fields, from its tunables by the layout
+    Json CycleValues(const Gdt::Memory& M, int64_t Pos, const CycleLayout& Cy)
+    {
+        Json V = Json::object();
+        const int64_t T = Cy.Tunables >= 0 ? M.Follow(Pos + Cy.Tunables) : -1;
+        if (T < 0) return V;
+        const auto I = [&](const char* Col, int64_t Off) {
+            if (Off >= 0) V[Col] = M.At<int32_t>(T + Off);
+        };
+        const auto B = [&](const char* Col, int64_t Off) {
+            if (Off >= 0) V[Col] = (int)M.At<uint8_t>(T + Off);
+        };
+        I("weapon_type", Cy.WeaponType);
+        I("fire_delay_ms", Cy.FireDelay);
+        B("fire_delay_in_cycle", Cy.DelayInCycle);
+        B("bolt_action", Cy.BoltAction);
+        I("shots_before_rechamber", Cy.ShotsBeforeRechamber);
+        B("no_rechamber_each_shot", Cy.NoRechamberEachShot);
+        I("rechamber_ms", Cy.RechamberTime);
+        I("rechamber_bolt_ms", Cy.RechamberBoltTime);
+        I("burst_delay_ms", Cy.BurstDelay);
+        I("burst_delay_step_ms", Cy.BurstDelayStep);
+        I("burst_delay_min_ms", Cy.BurstDelayMin);
+        I("intro_shots", Cy.IntroLength);
+        I("intro_fire_time_ms", Cy.IntroFireTime);
+        I("charge_hold_ms", Cy.ChargeHold);
+        I("charge_levels", Cy.ChargeLevels);
+        I("charge_time_ms", Cy.ChargeTime);
+        return V;
+    }
+
+    // an attachment's values by the layout (empty for a name-only header: its fire time scale is 0, a
+    // defined attachment's is never)
+    Json AttachmentValues(const Gdt::Memory& M, int64_t A, const AttachmentLayout& L, const CycleLayout* Cy)
+    {
+        Json V = Json::object();
+        if (L.FireTimeScale < 0 || M.At<float>(A + L.FireTimeScale) == 0) return V;
+        const auto F = [&](const char* Col, int64_t Off) {
+            if (Off >= 0) V[Col] = M.At<float>(A + Off);
+        };
+        if (Cy != nullptr)
+        {
+            const auto I = [&](const char* Col, int64_t Off) {
+                if (Off >= 0) V[Col] = M.At<int32_t>(A + Off);
+            };
+            F("rechamber_scale", Cy->AttRechamberScale);
+            F("rechamber_bolt_scale", Cy->AttRechamberBoltScale);
+            F("burst_delay_scale", Cy->AttBurstDelayScale);
+            I("burst_delay_step_set", Cy->AttBurstDelayStep);
+            I("burst_delay_min_set", Cy->AttBurstDelayMin);
+            I("shots_before_rechamber_set", Cy->AttShotsBeforeRechamber);
+            F("intro_shots_scale", Cy->AttIntroLengthScale);
+            F("intro_fire_time_scale", Cy->AttIntroFireTimeScale);
+            I("burst_count_set", Cy->AttBurstCount);
+            // a fire type outside the exe's table is not one (the records some dual-wield weapons point at)
+            if (Cy->AttFireTypeSet >= 0 && Cy->AttFireType >= 0 && M.At<uint8_t>(A + Cy->AttFireTypeSet) != 0)
+                if (const int32_t Ft = M.At<int32_t>(A + Cy->AttFireType); Ft >= 0 && Ft < Cy->FireTypeCount) V["fire_type_set"] = FireTypeName(*Cy, Ft);
+        }
+        F("fire_time_scale", L.FireTimeScale);
+        F("clip_size_scale", L.ClipScale);
+        F("range_scale", L.RangeScale);
+        for (int I = 0; I < 6; I++)
+        {
+            if (L.DamageScales >= 0) V[std::format("damage_scale_{}", I + 1)] = M.At<float>(A + L.DamageScales + 4 * I);
+            if (L.RangeScales >= 0) V[std::format("range_scale_{}", I + 1)] = M.At<float>(A + L.RangeScales + 4 * I);
+        }
+        if (L.ShotCount >= 0) V["shot_count"] = M.At<int32_t>(A + L.ShotCount);
+        if (L.Locations >= 0)
+            for (int I = 1; I < 21; I++) V[std::string("hit_") + Locations[I]] = M.At<float>(A + L.Locations + 4 * I);
+        return V;
+    }
+
+    // an attachment unique's overrides by the layout: its hit location table, damage table, clip
+    Json UniqueValues(const Gdt::Memory& M, int64_t U, const AttachmentLayout& L)
+    {
+        Json V = Json::object();
+        if (L.UniqueLocations >= 0)
+            if (const int64_t T = M.Follow(U + L.UniqueLocations); T >= 0)
+                for (int I = 1; I < 21; I++) V[std::string("hit_") + Locations[I]] = M.At<float>(T + 4 * I);
+        if (L.UniqueDamage >= 0 && M.At<int32_t>(U + L.UniqueDamage) != 0)
+            for (int I = 0; I < 6; I++)
+            {
+                V[std::format("damage_{}", I + 1)] = M.At<int32_t>(U + L.UniqueDamage + 4 * I);
+                if (L.UniqueRanges >= 0) V[std::format("range_{}_m", I + 1)] = M.At<float>(U + L.UniqueRanges + 4 * I) * MetresPerInch;
+            }
+        if (L.UniqueClip >= 0 && M.At<int32_t>(U + L.UniqueClip) > 0) V["clip_size"] = M.At<int32_t>(U + L.UniqueClip);
+        return V;
+    }
+
     // a zone's facts: its weapons' values by column (those Wants names: the run's name filter), its
-    // localized strings
-    std::string Facts(const ZonekitZone& Z, const std::function<bool(const std::string&)>& Wants, size_t& Weapons, std::string& Error)
+    // localized strings; with a layout each weapon's attachment slots and the attachments' values
+    std::string Facts(const ZonekitZone& Z, const std::function<bool(const std::string&)>& Wants, const AttachmentLayout* L,
+                      const CycleLayout* Cy, size_t& Weapons, std::string& Error)
     {
         Json Out;
         Out["zone"] = Z.Name();
         Json List = Json::array();
+        Json Atts = Json::object();   // by name, those this zone defines
         Z.ForEachGdtAsset("weapon", [&](const Gdt::Type& Ty, const Gdt::Memory& M, int64_t Pos) {
             Gdt::Stats S;
             const std::string Name = Ty.Name(M, Pos);
@@ -149,11 +266,45 @@ namespace
             W["display_key"] = Text("szdisplayname");
             W["class"] = Text("weapclass");
             W["fire_type"] = Text("firetype");
+            // guidedMissileType, by the layout's enum names (Cold War's scripts test it, var_5a70fda5)
+            if (const auto* G = Find("guidedmissiletype"); G != nullptr && !G->Texts.empty()) W["guided_missile_type"] = G->Texts[0];
             W["values"] = std::move(Cells);
+            if (Cy != nullptr)
+                if (Json V = CycleValues(M, Pos, *Cy); !V.empty()) W["cycle"] = std::move(V);
+            // its attachment slots: slot i's attachment and attachment unique (the unique's overrides
+            // with it; the attachments' own values once per zone, by name)
+            if (L != nullptr && L->List >= 0)
+            {
+                Json Slots = Json::array();
+                const int64_t Table = M.Follow(Pos + L->List), Uniques = L->Uniques >= 0 ? M.Follow(Pos + L->Uniques) : -1;
+                for (int I = 0; Table >= 0 && I < 64; I++)
+                {
+                    const int64_t A = M.Follow(Table + 8 * I);
+                    const int64_t U = Uniques >= 0 ? M.Follow(Uniques + 8 * I) : -1;
+                    if (A < 0 && U < 0) continue;
+                    Json Slot;
+                    Slot["slot"] = I;
+                    if (A >= 0)
+                    {
+                        const std::string N = HashedName(M, A, "attachment");
+                        Slot["attachment"] = N;
+                        if (!N.empty() && !Atts.contains(N))
+                            if (Json V = AttachmentValues(M, A, *L, Cy); !V.empty()) Atts[N] = std::move(V);
+                    }
+                    if (U >= 0)
+                    {
+                        Slot["unique"] = HashedName(M, U, "attachmentunique");
+                        if (Json V = UniqueValues(M, U, *L); !V.empty()) Slot["unique_values"] = std::move(V);
+                    }
+                    Slots.push_back(std::move(Slot));
+                }
+                if (!Slots.empty()) W["attachment_slots"] = std::move(Slots);
+            }
             List.push_back(std::move(W));
         }, Error);
         Weapons = List.size();
         Out["weapons"] = std::move(List);
+        if (!Atts.empty()) Out["attachments"] = std::move(Atts);
         std::vector<std::pair<std::string, std::string>> Strings;
         Z.Strings(Strings);
         // [key, text] pairs (an ordered object's insert is linear: 80 000 strings would take minutes)
@@ -165,8 +316,200 @@ namespace
         return Out.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
     }
 
+    // the shot cycle columns, in table order (weapon_stats.csv; weapon_attachments.csv with fire_type
+    // and burst_count before them)
+    const char* const CycleColumns[] = { "fire_delay_ms", "fire_delay_in_cycle", "bolt_action", "shots_before_rechamber",
+                                         "no_rechamber_each_shot", "rechamber_ms", "rechamber_bolt_ms", "burst_delay_ms",
+                                         "burst_delay_step_ms", "burst_delay_min_ms", "intro_shots", "intro_fire_time_ms",
+                                         "charge_hold_ms", "charge_levels", "charge_time_ms", "burst_cycle_ms",
+                                         "shot_interval_ms", "shot_rpm" };
+
+    double Get(const Json& J, const std::string& K, double Default)
+    {
+        return J.contains(K) && J[K].is_number() ? J[K].get<double>() : Default;
+    }
+
+    // a weapon's shot cycle with an attachment's values applied (A empty: the weapon alone), by the
+    // exes' getters (README, Shot cycle): fire_type, fire_time_ms, burst_count and the cycle columns.
+    // shot_interval_ms only where the code's timers give it whole: Full Auto and Single Shot (the fire
+    // time, the fire delay when it is part of it, the rechamber when every shot asks for it), Burst and
+    // Auto Burst without bolt action (the burst's fire times and the pause after it, over its shots).
+    Json ApplyCycle(const Json& V, const Json& Cy, const std::string& FireType, const Json& A)
+    {
+        Json O = Json::object();
+        const auto Int = [](double X) { return std::trunc(X); };
+        const std::string Type = A.contains("fire_type_set") ? A["fire_type_set"].get<std::string>() : FireType;
+        O["fire_type"] = Type;
+        const double F = Int(Get(V, "fire_time_ms", 0) * Get(A, "fire_time_scale", 1));
+        O["fire_time_ms"] = F;
+        double N = Get(V, "burst_count", 1);
+        if ((Type == "Burst" || Type == "Auto Burst") && Get(A, "burst_count_set", 0) != 0) N = Get(A, "burst_count_set", 0);
+        O["burst_count"] = N;
+        for (const auto& [K, X] : Cy.items())
+            if (X.is_number()) O[K] = X.get<double>();
+        // scaled when the scale is above 0 (rechamber), by every attachment (burst delay, intro), or set when not 0
+        const auto Scaled = [&](const char* K, const char* S, bool Positive) {
+            if (!O.contains(K)) return;
+            const double Sc = Get(A, S, 1);
+            if (!Positive || Sc > 0) O[K] = Int(O[K].get<double>() * Sc);
+        };
+        Scaled("rechamber_ms", "rechamber_scale", true);
+        Scaled("rechamber_bolt_ms", "rechamber_bolt_scale", true);
+        Scaled("burst_delay_ms", "burst_delay_scale", false);
+        Scaled("intro_shots", "intro_shots_scale", false);
+        Scaled("intro_fire_time_ms", "intro_fire_time_scale", false);
+        const auto Set = [&](const char* K, const char* S) {
+            if (O.contains(K) && Get(A, S, 0) != 0) O[K] = Get(A, S, 0);
+        };
+        Set("burst_delay_step_ms", "burst_delay_step_set");
+        Set("burst_delay_min_ms", "burst_delay_min_set");
+        Set("shots_before_rechamber", "shots_before_rechamber_set");
+        // only what applies to this weapon: the rechamber with bolt action, the pause after a burst with
+        // the fire types that end one, its step when set, the intro when its fire time differs, the
+        // charge with the Charge Shot fire types (the raw fields stay in the facts)
+        const bool Bolt = Get(O, "bolt_action", 0) != 0;
+        const bool Charge = Type.rfind("Charge Shot", 0) == 0;
+        const bool Bursts = Charge || Type == "Burst" || Type == "Auto Burst" || Type == "Stacked Fire" || Type == "Auto Stacked Fire" || Type == "All Locked";
+        const bool Intro = Get(O, "intro_shots", 0) > 0 && Get(O, "intro_fire_time_ms", F) != F;
+        std::vector<const char*> Drop;
+        if (!Bolt) Drop.insert(Drop.end(), { "shots_before_rechamber", "no_rechamber_each_shot", "rechamber_ms", "rechamber_bolt_ms" });
+        if (!Bursts) Drop.push_back("burst_delay_ms");
+        if (!Bursts || Get(O, "burst_delay_step_ms", 0) == 0) Drop.insert(Drop.end(), { "burst_delay_step_ms", "burst_delay_min_ms" });
+        if (!Intro) Drop.insert(Drop.end(), { "intro_shots", "intro_fire_time_ms" });
+        if (!Charge) Drop.insert(Drop.end(), { "charge_hold_ms", "charge_levels", "charge_time_ms" });
+        if (Get(O, "fire_delay_in_cycle", 0) == 0) Drop.push_back("fire_delay_in_cycle");
+        for (const char* K : Drop) O.erase(K);
+        if (!O.contains("fire_delay_ms") || F <= 0) return O;
+        const double Kind = Get(O, "weapon_type", 0);
+        const double D = Get(O, "fire_delay_ms", 0), Rech = Get(O, "rechamber_ms", 0), Burst = Get(O, "burst_delay_ms", 0);
+        const bool InCycle = Get(O, "fire_delay_in_cycle", 0) != 0;
+        const double Shots = Get(O, "shots_before_rechamber", 0);
+        const bool EachShot = Shots == 1 || (Shots == 0 && Get(O, "no_rechamber_each_shot", 0) == 0);
+        // the fire delay runs beside the fire time (both timers count down together) unless it is added
+        // to it; a delay longer than the fire time is left out (its path not traced)
+        const bool DelayOk = InCycle || D <= F;
+        const double Shot = F + (InCycle ? D : 0);
+        double Interval = -1;
+        if (Intro || !DelayOk || Kind == 1 || Kind == 6)
+            ;   // the intro shots' own fire time, a long delay, the grenade path: not given
+        else if (Type == "Full Auto" || Type == "Single Shot")
+        {
+            if (!Bolt) Interval = Shot;
+            else if (EachShot) Interval = Shot + Rech;
+        }
+        else if ((Type == "Burst" || Type == "Auto Burst") && !Bolt && N >= 1)
+        {
+            // after the burst's last fire time the weapon time is the burst delay (1 ms when it is 0)
+            const double Cycle = N * Shot + (Burst > 0 ? Burst : 1);
+            O["burst_cycle_ms"] = Cycle;
+            Interval = std::round(Cycle / N * 100) / 100;
+        }
+        if (Interval > 0)
+        {
+            O["shot_interval_ms"] = Interval;
+            O["shot_rpm"] = std::round(60000.0 / Interval * 100) / 100;
+        }
+        return O;
+    }
+
+    // weapon_attachments.csv: each weapon with the attachment (and attachment unique) of each of its
+    // slots, one at a time, the game's rules applied to the weapon's values (README: the rules). Rows:
+    // its rows.
+    std::string AttachmentTable(const WeaponStatsTable::Weapons& Weapons, const std::map<std::string, Json>& Atts, bool Cycle, size_t& Rows)
+    {
+        std::vector<std::string> Head = { "weapon", "slot", "attachment", "unique", "fire_time_scale", "fire_time_ms", "rpm" };
+        // the shot cycle with the attachment: a cell only where the attachment changes it
+        if (Cycle)
+        {
+            Head.push_back("fire_type");
+            Head.push_back("burst_count");
+            for (const char* K : CycleColumns) Head.push_back(K);
+        }
+        for (const char* K : { "clip_size_scale", "clip_size", "shot_count", "range_scale" }) Head.push_back(K);
+        for (int I = 1; I <= 6; I++) Head.push_back(std::format("damage_scale_{}", I));
+        for (int I = 1; I <= 6; I++) Head.push_back(std::format("range_scale_{}", I));
+        Head.push_back("unique_damage_table");
+        for (int I = 1; I <= 6; I++)
+        {
+            Head.push_back(std::format("damage_{}", I));
+            Head.push_back(std::format("range_{}_m", I));
+        }
+        for (int I = 1; I < 21; I++) Head.push_back(std::string("hit_") + Locations[I]);
+        std::string Csv = WeaponStatsTable::Line(Head);
+        Json Unused = Json::array();
+        const Json None = Json::object();
+        for (const auto& [Name, Entry] : Weapons)
+        {
+            const Json& W = Entry.first;
+            if (!W.contains("attachment_slots")) continue;
+            const Json& V = W["values"];
+            const Json& Slots = W["attachment_slots"];
+            // the default attachment unique (slot 0): a unique's hit location replaces the weapon's where it differs
+            const Json& Default = !Slots.empty() && Slots[0].value("slot", -1) == 0 && Slots[0].contains("unique_values") ? Slots[0]["unique_values"] : None;
+            for (const auto& S : Slots)
+            {
+                const int Index = S.value("slot", -1);
+                const std::string Att = S.value("attachment", std::string());
+                const auto It = Atts.find(Att);
+                const Json& A = It != Atts.end() ? It->second : None;
+                const Json& U = S.contains("unique_values") ? S["unique_values"] : None;
+                if (Index == 0 || (A.empty() && U.empty())) continue;   // slot 0: the weapon alone
+                std::map<std::string, std::string> C;
+                C["weapon"] = Name;
+                C["slot"] = std::to_string(Index);
+                C["attachment"] = Att;
+                C["unique"] = S.value("unique", std::string());
+                for (const auto& [K, X] : A.items())
+                    if (X.is_number() && K.rfind("hit_", 0) != 0) C[K] = Num(X.get<double>());
+                if (const double Fire = Get(V, "fire_time_ms", 0); Fire > 0)
+                {
+                    const double Ms = std::trunc(Fire * Get(A, "fire_time_scale", 1));
+                    C["fire_time_ms"] = Num(Ms);
+                    if (Ms > 0) C["rpm"] = Num(std::round(60000.0 / Ms * 100) / 100);
+                }
+                if (Cycle && W.contains("cycle"))
+                {
+                    const std::string Type = W.value("fire_type", std::string());
+                    const Json Base = ApplyCycle(V, W["cycle"], Type, None), With = ApplyCycle(V, W["cycle"], Type, A);
+                    if (With["fire_type"] != Base["fire_type"]) C["fire_type"] = With["fire_type"].get<std::string>();
+                    if (With["burst_count"] != Base["burst_count"]) C["burst_count"] = Num(With["burst_count"].get<double>());
+                    for (const char* K : CycleColumns)
+                        if (With.contains(K) && (!Base.contains(K) || With[K] != Base[K])) C[K] = Num(With[K].get<double>());
+                }
+                if (U.contains("clip_size")) C["clip_size"] = Num(Get(U, "clip_size", 0));
+                else if (const double Clip = Get(V, "clip_size", 0); Clip > 0)
+                    C["clip_size"] = Num(Clip > 1 ? std::max(1.0, std::round(Clip * Get(A, "clip_size_scale", 1))) : Clip);
+                if (Get(A, "shot_count", 0) <= 0) C.erase("shot_count");
+                // the damage table: the unique's when it sets one, else the weapon's; each stop's damage
+                // (int) x its scale, its range x its scale x the global range scale
+                const bool Own = U.contains("damage_1");
+                C["unique_damage_table"] = Own ? "1" : "0";
+                for (int I = 1; I <= 6; I++)
+                {
+                    const std::string D = std::format("damage_{}", I), R = std::format("range_{}_m", I);
+                    const Json& T = Own ? U : V;
+                    if (T.contains(D)) C[D] = Num(std::trunc(Get(T, D, 0) * Get(A, std::format("damage_scale_{}", I), 1)));
+                    if (T.contains(R))
+                        C[R] = Num(Get(T, R, 0) * Get(A, std::format("range_scale_{}", I), 1) * Get(A, "range_scale", 1));
+                }
+                for (int I = 1; I < 21; I++)
+                {
+                    const std::string H = std::string("hit_") + Locations[I];
+                    if (!V.contains(H)) continue;
+                    double X = Get(V, H, 1);
+                    if (U.contains(H) && Default.contains(H) && Get(U, H, 1) != Get(Default, H, 1)) X = Get(U, H, 1);
+                    if (const double M = Get(A, H, 1); M != 1) X *= M;
+                    C[H] = Num(X);
+                }
+                WeaponStatsTable::AddRow(Head, C, Csv, Unused);
+                Rows++;
+            }
+        }
+        return Csv;
+    }
+
     // every facts file of Dir joined into the table
-    bool Merge(const std::string& Dir, const char* Title, size_t& Rows, std::string& Error)
+    bool Merge(const std::string& Dir, const char* Title, const AttachmentLayout* L, const CycleLayout* Cy, size_t& Rows, std::string& Error)
     {
         std::vector<fs::path> Files;
         std::error_code Ec;
@@ -175,6 +518,7 @@ namespace
         std::sort(Files.begin(), Files.end());
         std::map<std::string, std::string> Strings;
         WeaponStatsTable::Weapons Weapons;   // the first facts
+        std::map<std::string, Json> Attachments;   // by name, the first facts defining it
         std::vector<std::string> Zones;
         for (const auto& F : Files)
         {
@@ -199,6 +543,9 @@ namespace
                 if (Slot.second.empty()) Slot.first = W;
                 Slot.second.push_back(Zone);
             }
+            if (J.contains("attachments"))
+                for (const auto& [N, V] : J["attachments"].items())
+                    if (!Attachments.contains(N)) Attachments[N] = V;
         }
         const auto Display = [&](const std::string& Key) -> std::string {
             if (Key.empty()) return std::string();
@@ -215,7 +562,17 @@ namespace
         };
 
         std::vector<std::string> Head = { "weapon", "display_name", "mode", "upgrade_of", "class", "fire_type", "rpm" };
-        for (const auto& Col : Numbers) Head.push_back(Col.Name);
+        // guidedMissileType, when the game's layout reads it (Cold War)
+        const bool Guided = std::any_of(Weapons.begin(), Weapons.end(), [](const auto& E) { return E.second.first.contains("guided_missile_type"); });
+        if (Guided) Head.push_back("guided_missile_type");
+        // the shot cycle columns after burst_count, when the game's layout reads them
+        const bool Cycle = Cy != nullptr && std::any_of(Weapons.begin(), Weapons.end(), [](const auto& E) { return E.second.first.contains("cycle"); });
+        for (const auto& Col : Numbers)
+        {
+            Head.push_back(Col.Name);
+            if (Cycle && std::string(Col.Name) == "burst_count")
+                for (const char* K : CycleColumns) Head.push_back(K);
+        }
         Head.push_back("zones");
         std::string Csv = WeaponStatsTable::Line(Head);
         Json Out = Json::array();
@@ -230,10 +587,17 @@ namespace
             Cell["upgrade_of"] = WeaponStatsTable::UpgradeOf(Name, Weapons);
             Cell["class"] = W.value("class", std::string());
             Cell["fire_type"] = W.value("fire_type", std::string());
+            Cell["guided_missile_type"] = W.value("guided_missile_type", std::string());
             for (const auto& Col : Numbers)
                 if (V.contains(Col.Name)) Cell[Col.Name] = Num(V[Col.Name].get<double>());
             if (V.contains("fire_time_ms") && V["fire_time_ms"].get<double>() > 0)
                 Cell["rpm"] = Num(std::round(60000.0 / V["fire_time_ms"].get<double>() * 100) / 100);
+            if (Cycle && W.contains("cycle"))
+            {
+                const Json O = ApplyCycle(V, W["cycle"], W.value("fire_type", std::string()), Json::object());
+                for (const char* K : CycleColumns)
+                    if (O.contains(K)) Cell[K] = Num(O[K].get<double>());
+            }
             Cell["zones"] = WeaponStatsTable::ZoneList(Entry.second);
             WeaponStatsTable::AddRow(Head, Cell, Csv, Out);
         }
@@ -333,8 +697,76 @@ namespace
             "- Checked against Black Ops III's values for the weapons both games name alike (40 shared weapons):\n"
             "  firstRaiseTime equals 0xd20 on 16 (8 distinct values, next offset 7), quickRaiseTime 0xfb0 on 34\n"
             "  (next 20), raiseTime 0xda0 on 22 (the empty and special raise offsets 21 each). The same test\n"
-            "  puts fireTime, clipSize, reloadTime and meleeTime first on their proven offsets.\n\n"
-            "Not here (no proven place yet): ADS times, drop times, empty-reload times, attachments.\n"
+            "  puts fireTime, clipSize, reloadTime and meleeTime first on their proven offsets.\n\n";
+        size_t AttRows = 0;
+        const std::string AttCsv = L != nullptr && !Attachments.empty() ? AttachmentTable(Weapons, Attachments, Cycle, AttRows) : std::string();
+        if (Cycle)
+            Readme += "Shot cycle (" + std::string(Title) + ", read in the decrypted executable; Rifling games/<game>.md, Shot cycle)\n"
+                      "The weapon's state machine runs two timers side by side, the weapon time (the state's length) and\n"
+                      "the weapon delay (the time before the shot), both counted down by the frame's milliseconds.\n"
+                      "A cell is written only where its field applies: the rechamber with bolt_action, burst_delay_ms\n"
+                      "with the fire types that end a burst, its step and minimum when the step is set, the intro when\n"
+                      "its fire time differs from fire_time_ms, the charge with the Charge Shot fire types,\n"
+                      "fire_delay_in_cycle when 1 (each weapon's raw fields: facts/<zone>.json, \"cycle\").\n"
+                      "- fire_delay_ms: the weapon delay a shot starts with (fireDelay), at each shot fired (the shot\n"
+                      "  start sets it, the weapon time getting the fire time at the same moment): the shot leaves that\n"
+                      "  long after the start, the next one can start fire_time_ms after it. fire_delay_in_cycle 1: the\n"
+                      "  game adds the delay to that shot's weapon time instead. No attachment changes it (the shot start\n"
+                      "  reads the tunables' field itself; perks and an ADS case can lengthen it at run time).\n"
+                      "- bolt_action, rechamber_ms: a bolt-action weapon's shot asks for a rechamber (every shot when\n"
+                      "  shots_before_rechamber is 0 and no_rechamber_each_shot is 0, else every shots_before_rechamber\n"
+                      "  shots; charged shots count their level), whatever the fire type. Once the fire time is over the\n"
+                      "  weapon goes to the rechamber state for rechamber_ms (attachments: x their scale when above 0);\n"
+                      "  rechamber_bolt_ms is a second timer inside it, not added. Without bolt_action no rechamber runs,\n"
+                      "  whatever rechamber_ms holds. A player state the code tests can hold the rechamber back (not\n"
+                      "  named, not counted).\n"
+                      "- burst_delay_ms: after the last shot of a burst (fire types Burst, Auto Burst, Stacked Fire, All\n"
+                      "  Locked and the three Charge Shot ones) and its fire time, the weapon time is set to it (1 ms when\n"
+                      "  it is 0): the pause between two bursts, Auto Burst holding the trigger as Burst pressing it.\n"
+                      "  burst_delay_step_ms (when not 0) takes that much off per burst fired in a row, down to\n"
+                      "  burst_delay_min_ms; the base value is the first pause. Attachments: x their scale, step and\n"
+                      "  minimum replaced when they set one.\n"
+                      "- intro_shots, intro_fire_time_ms: the first intro_shots shots of a trigger pull fire at\n"
+                      "  intro_fire_time_ms instead of the fire time (the shot count restarts when the weapon was not\n"
+                      "  firing). Attachments: x their scales.\n"
+                      "- charge_hold_ms, charge_levels, charge_time_ms (Charge Shot fire types): holding the trigger adds\n"
+                      "  the frame's milliseconds; past charge_hold_ms the charge begins, its level is held time /\n"
+                      "  (charge_time_ms / charge_levels) + 1, at most charge_levels (and the rounds left). The shot fires\n"
+                      "  that many shots, then burst_delay_ms. The hold before the release is the player's: no interval.\n"
+                      "- shot_interval_ms, shot_rpm: the time between two shots within a magazine, only where those\n"
+                      "  timers give it whole. Full Auto and Single Shot: fire_time_ms (+ fire_delay_ms when\n"
+                      "  fire_delay_in_cycle), + rechamber_ms when the weapon is bolt action and every shot rechambers.\n"
+                      "  Burst and Auto Burst without bolt action: burst_cycle_ms = burst_count x fire time + burst delay,\n"
+                      "  shot_interval_ms = burst_cycle_ms / burst_count. Left empty: intro shots, a fire delay longer\n"
+                      "  than the fire time (its path not traced), rechambers every n > 1 shots, bolt-action bursts,\n"
+                      "  grenades (the shot start's other path, weapon type 1 or 6), Charge Shot, Minigun (spin-up), the\n"
+                      "  other fire types. Single Shot: the fastest the trigger can be\n"
+                      "  pulled again. Not counted: the last round's own fire time and the magazine's reload.\n"
+                      "- weapon_attachments.csv: fire_type, burst_count and these columns with the attachment applied,\n"
+                      "  a cell only where the attachment changes the weapon's value (fire_delay_ms then never).\n" +
+                      std::string(Cy->Notes) + "\n";
+        if (Guided)
+            Readme += "guided_missile_type (Cold War): guidedMissileType, the tunables' int at 0x410 named by the exe's table of\n"
+                      "12 (None, Sidewinder, Hellfire, Javelin, Ballistic, WireGuided, TVGuided, Drone, HeatSeeking, Robotech,\n"
+                      "DynamicImpactPoint, Drunken). The scripts' var_5a70fda5: the exe's script field table row of that hash\n"
+                      "(rdata 0xd6e66a0: tunables, offset 0x410, 4 bytes) reads it through 0x7ff63a7b0a20 -> 0x7ff63a7b2610,\n"
+                      "which returns the name from that table (0x7ff63df88830, BlackOpsColdWar_dump.exe).\n\n";
+        if (!AttCsv.empty())
+            Readme += "weapon_attachments.csv: each weapon with the attachment and attachment unique of each of its slots,\n"
+                      "one at a time (" + std::to_string(AttRows) + " rows; slot 0, the default attachment, is the weapon alone). Slot i\n"
+                      "is the i-th of the weapon's 64 attachment pointers and of its attachment unique pointers (an id packs\n"
+                      "the slots of its attachments, 6 bits each). An attachment defined in another zone (a name-only\n"
+                      "header here) has its values when that zone is in the same --out. Columns: the attachment's own\n"
+                      "scales (fire_time_scale, clip_size_scale, shot_count when it sets the pellets, range_scale the\n"
+                      "global one, damage_scale_<n> / range_scale_<n> per stop), then the weapon's values with them:\n"
+                      "fire_time_ms (int) of fireTime x scale; clip_size the unique's when it sets one, else\n"
+                      "max(1, round(clip x scale)) (the clip dvar taken as 1); damage_<n> (int) of the stop's damage x\n"
+                      "its scale, range_<n>_m the stop's range x its scale x the global scale, from the unique's damage\n"
+                      "table when it sets one (unique_damage_table 1); hit_<location>: the weapon's multiplier, the\n"
+                      "unique's where its table differs from the default unique's (slot 0's), x the attachment's own.\n" +
+                      std::string(L->Notes) + "\n";
+        Readme += "Not here (no proven place yet): ADS times, drop times, empty-reload times" +
+                  std::string(AttCsv.empty() ? ", attachments" : "") + ".\n"
             "- Drop: the function that starts a drop reads 0xcf0 in the plain case (0xfac quick, 0xd00 empty,\n"
             "  0x101c in a special case), but Black Ops III's dropTime lands on 0x101c (32 weapons) - its values\n"
             "  equal Black Ops III's swimDropTime on all 37 weapons - and 0xcf0 ties with other offsets: the\n"
@@ -345,6 +777,7 @@ namespace
         fs::create_directories(Dir, E2);
         const std::string JsonText = Out.dump(1, '\t', false, nlohmann::json::error_handler_t::replace) + "\n";
         const bool Ok = ExportWriters::WriteBytes(fs::path(Dir) / "weapon_stats.csv", (const uint8_t*)Csv.data(), Csv.size()) &&
+                        (AttCsv.empty() || ExportWriters::WriteBytes(fs::path(Dir) / "weapon_attachments.csv", (const uint8_t*)AttCsv.data(), AttCsv.size())) &&
                         ExportWriters::WriteBytes(fs::path(Dir) / "weapon_stats.json", (const uint8_t*)JsonText.data(), JsonText.size()) &&
                         ExportWriters::WriteBytes(fs::path(Dir) / "README.txt", (const uint8_t*)Readme.data(), Readme.size());
         if (!Ok) Error = "write failed in " + Dir;
@@ -353,17 +786,18 @@ namespace
     }
 }
 
-void Treyarch::WeaponStats::Export(const ZonekitZone& Zone, const DiskGame::Context& C, DiskGame::Totals& T, const char* Title)
+void Treyarch::WeaponStats::Export(const ZonekitZone& Zone, const DiskGame::Context& C, DiskGame::Totals& T, const char* Title,
+                                   const AttachmentLayout* Attachments, const CycleLayout* Cycle)
 {
     using DiskGame::Kind;
     auto& Kt = T.Kinds[Kind::WeaponStats];
     size_t Weapons = 0;
     std::string Error;
-    const std::string Facts = ::Facts(Zone, [&C](const std::string& Name) { return C.Wants(Kind::WeaponStats, Name); }, Weapons, Error);
+    const std::string Facts = ::Facts(Zone, [&C](const std::string& Name) { return C.Wants(Kind::WeaponStats, Name); }, Attachments, Cycle, Weapons, Error);
     Kt.Seen += Weapons;
     if (!Error.empty()) T.Fail(Zone.Name(), Kind::WeaponStats, "", Error);
     if (Facts.empty()) return;
-    WeaponStatsTable::WriteFacts(Zone.Name(), Facts, C, T, [Title](const std::string& Dir, size_t& Rows, std::string& Error) {
-        return Merge(Dir, Title, Rows, Error);
+    WeaponStatsTable::WriteFacts(Zone.Name(), Facts, C, T, [Title, Attachments, Cycle](const std::string& Dir, size_t& Rows, std::string& Error) {
+        return Merge(Dir, Title, Attachments, Cycle, Rows, Error);
     });
 }

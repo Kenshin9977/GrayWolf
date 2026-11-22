@@ -206,9 +206,9 @@ void Write(const DiskGame::Context& C, DiskGame::Totals& T, const std::string& Z
                 Cell = Prefix + Cell;
             }
         const fs::path File = fs::path(Tree) / "share" / "raw" / "sound" / "aliases" / ("graywolf_" + ExportNaming::SafeFileName(Zone) + ".csv");
-        if (!ModToolsTree::WriteKept(File, Text(There)))
+        if (std::string Why; !ModToolsTree::WriteKept(File, Text(There), &Why))
         {
-            T.Fail(Zone, DiskGame::Kind::Sound, File.filename().string(), "alias CSV not written in the mod tools tree (nor the one there set aside)");
+            T.Fail(Zone, DiskGame::Kind::Sound, File.filename().string(), "alias CSV not written in the mod tools tree, " + Why);
             return;
         }
     }

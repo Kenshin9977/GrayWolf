@@ -238,6 +238,10 @@ namespace DiskGame
     // bo3_usermap: with the map's Radiant source in a Mod Tools tree, a ZM usermap around it,
     // zm_<map> (ModToolsUsermap.h), then (build) compiled, lit and linked as the launcher does
     extern const Setting Bo3Usermap;
+    // bo3_usermap_debug: an in-game diagnostic in that usermap ("prone": measures and prone attempts
+    // logged to the console, ModToolsUsermap::SetDebug), and the template's room as the
+    // zm_graywolf_ref usermap to compare with; off takes it out again
+    extern const Setting Bo3UsermapDebug;
     // map_collision: also the map's collision as JSON (MapCollisionWriter.h):
     // <map>_collision.json, its clip map's brushes, brush models and triangles
     extern const Setting MapCollision;

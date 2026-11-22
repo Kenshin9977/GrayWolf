@@ -72,7 +72,21 @@ namespace
                 std::string Error, Text;
                 return CipherTable(Error) && ColdWar::DecryptString(Raw, Text) ? Text : Raw;
             };
-            ExportsAssetRefs(Decrypted);
+            // with the materials, models and images, which the other games leave to matlinks
+            ExportsAssetRefs(Decrypted, { "material", "xmodel", "image" });
+            // material (0x158, the t9 table): its image records at 0x30 (0x18 each {image 0, semantic
+            // hash u32 8}, BOCWXMaterialImage), their u8 count at 0x148; an image (BOCWGfxImage) {hash
+            // 0, format u32 0x9c, width u16 0xa0, height 0xa2}; an xmodel's materials: a list of 0x20
+            // per LOD at 0x60 (u16 LOD count 0x70, the table's f1bea7c0_e2), the first one's
+            {
+                MaterialLinkLayout M;
+                M.SlotCount = 0x148, M.Slots = -1, M.Images = 0x30;
+                M.RecordSize = 0x18, M.RecordSemantic = 8, M.RecordImage = 0;
+                M.ImageHash = 0, M.ImageWidth = offsetof(BOCWGfxImage, LoadedMipWidth), M.ImageHeight = offsetof(BOCWGfxImage, LoadedMipHeight);
+                M.ImageFormat = offsetof(BOCWGfxImage, ImageFormat), M.WideFormat = true;
+                M.ModelLods = offsetof(BOCWXModel, MaterialHandlesPtr), M.ModelLodCount = offsetof(BOCWXModel, NumLods), M.ModelLodStride = 0x20;
+                ExportsMaterialLinks(M);
+            }
             // the weapon assets as struct dumps: weapon (WeaponDef 0x1918, its name hash at 0), its tunables
             // (0x1418, a hash at 0x30 distinct on each of mp_common's 100, 0 its bounce pointers), style
             // settings, blueprints, attachments; their fields named by the gdt weapon layouts
@@ -80,7 +94,64 @@ namespace
                                { { "weapon" }, { "weapontunables", -1, {}, 0x30 }, { "weaponstylesettings" }, { "weaponfull" }, { "weaponblueprint" },
                                  { "weaponsecondarymovement" }, { "attachment" }, { "attachmentunique" }, { "attachmenttable" } },
                                Decrypted, "weapon");
-            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops Cold War"); });
+            // the attachments (Rifling games/coldwar.md, BlackOpsColdWar_dump.exe): 0x7ff638fe54b0 takes up to
+            // 8, the slot of each from the weapon id's 6-bit fields (>> 0xa ... 0x34), from the WeaponDef's
+            // table at 0x620; fire time x each one's 0x3f4 (0x7ff638fcfa40), clip x 0x444 (0x7ff63a7a22e0),
+            // pellets 0x440, hit locations x 0x130[loc] (0x7ff638fe75c0); damage / range scales 0xa4 / 0xbc
+            // and the global range 0x94 add their deviations (0x7ff638fce8b0, 0x7ff638fd2660); the unique of
+            // the same slot (0x628): damage 0x594 / 0x5ac, clip 0x974
+            static const Treyarch::WeaponStats::AttachmentLayout Attachments = [] {
+                Treyarch::WeaponStats::AttachmentLayout L;
+                L.List = 0x620, L.Uniques = 0x628;
+                L.RangeScale = 0x94, L.DamageScales = 0xa4, L.RangeScales = 0xbc, L.FireTimeScale = 0x3f4, L.ClipScale = 0x444, L.ShotCount = 0x440;
+                L.Locations = 0x130, L.SumOfDeviations = true;
+                L.UniqueDamage = 0x594, L.UniqueRanges = 0x5ac, L.UniqueClip = 0x974;
+                L.Notes = "Cold War (BlackOpsColdWar_dump.exe, Rifling games/coldwar.md): up to 8 attachments, each's slot from\n"
+                          "the weapon id's 6-bit fields in the table at WeaponDef 0x620 (0x7ff638fe54b0). Fire time x 0x3f4\n"
+                          "(0x7ff638fcfa40), clip x 0x444 and the unique's clip 0x974 (0x7ff63a7a22e0), pellets 0x440, hit\n"
+                          "locations x 0x130 + 4 x location (0x7ff638fe75c0, when not 1): products over the attachments. The\n"
+                          "damage and range scales 0xa4.. / 0xbc.. (0x7ff638fce8b0) and the global range 0x94 (0x7ff638fd2660)\n"
+                          "ADD their deviations: 1 + sum(s - 1), at least 0 (two range attachments at 1.1 give 1.2, not 1.21).\n"
+                          "One attachment a row, both rules give the attachment's own scale. The unique (WeaponDef 0x628, same\n"
+                          "slot): its damage table 0x594 / 0x5ac when set. Zombies' rarity and Pack-a-Punch multipliers: the\n"
+                          "weapon's zm_ columns (weapon_stats.csv), not applied here.\n";
+                return L;
+            }();
+            // the shot cycle (Rifling games/coldwar.md, Shot cycle, BlackOpsColdWar_dump.exe): Black Ops 4's
+            // code, offsets aside. The shot start 0x7ff637c61a90 (fire time, intro 0xf74 / 0xf78 through
+            // 0x7ff638fd1d40 / 0x7ff638fd1d50, fireDelay 0xf3c into ps+0xe70, added when u8 0x1390); bolt
+            // action u8 0x12c8, shotsBeforeRechamber 0x1038 (0x7ff638fe24f0, attachment 0x46c), u8 0x13d9;
+            // the rechamber 0x7ff637c1d8b0 (state 0xa): 0xfcc x 0x3d0 (0x7ff638fe0220), 0xfc8 x 0x3d4
+            // (0x7ff638fe0190); after a burst (0x7ff637c621c0) 0xf00 x 0x3f8 (0x7ff638fce080), step 0xf04
+            // / min 0xf08 (attachments 0x3fc / 0x400); the charge 0x7ff637c0f180: hold 0xf64, levels 0x126c,
+            // time 0x1274; fire type override attachment u8 0x91 / int 0x60 (0x7ff638fcfb10), burst count 0x43c
+            static const char* const FireTypes[] = { "Full Auto", "Single Shot", "Burst", "Auto Burst", "Auto Stacked Fire", "All Locked", "Minigun",
+                                                     "Charge Shot", "Charge Shot Burst", "Charge Shot Auto Burst", "Jetgun", "Melee", "Aim Only",
+                                                     "None", "Legacy Single", "AP Single" };
+            static const Treyarch::WeaponStats::CycleLayout Cycle = [] {
+                Treyarch::WeaponStats::CycleLayout Y;
+                Y.Tunables = 0xa38;
+                Y.WeaponType = 0x5ac, Y.FireDelay = 0xf3c, Y.DelayInCycle = 0x1390, Y.BoltAction = 0x12c8, Y.ShotsBeforeRechamber = 0x1038, Y.NoRechamberEachShot = 0x13d9;
+                Y.RechamberTime = 0xfcc, Y.RechamberBoltTime = 0xfc8, Y.BurstDelay = 0xf00, Y.BurstDelayStep = 0xf04, Y.BurstDelayMin = 0xf08;
+                Y.IntroLength = 0xf74, Y.IntroFireTime = 0xf78, Y.ChargeHold = 0xf64, Y.ChargeLevels = 0x126c, Y.ChargeTime = 0x1274;
+                Y.AttRechamberScale = 0x3d0, Y.AttRechamberBoltScale = 0x3d4, Y.AttBurstDelayScale = 0x3f8, Y.AttBurstDelayStep = 0x3fc,
+                Y.AttBurstDelayMin = 0x400, Y.AttShotsBeforeRechamber = 0x46c, Y.AttIntroLengthScale = 0x3f0, Y.AttIntroFireTimeScale = 0x3ec;
+                Y.AttFireTypeSet = 0x91, Y.AttFireType = 0x60, Y.AttBurstCount = 0x43c;
+                Y.FireTypes = FireTypes, Y.FireTypeCount = 16;
+                Y.Notes = "Cold War (BlackOpsColdWar_dump.exe, tunables = WeaponDef 0xa38; Black Ops 4's code, offsets aside):\n"
+                          "fire_delay_ms 0xf3c (the shot start 0x7ff637c61a90 into the weapon delay ps+0xe70, the weapon frame\n"
+                          "0x7ff637c621c0 counting it down beside the weapon time ps+0xe6c), fire_delay_in_cycle u8 0x1390;\n"
+                          "bolt_action u8 0x12c8, shots_before_rechamber 0x1038 (0x7ff638fe24f0, attachment 0x46c),\n"
+                          "no_rechamber_each_shot u8 0x13d9; the rechamber 0x7ff637c1d8b0 (state 0xa): rechamber_ms 0xfcc x\n"
+                          "attachment 0x3d0 (0x7ff638fe0220), rechamber_bolt_ms 0xfc8 x 0x3d4 (0x7ff638fe0190); burst_delay_ms\n"
+                          "0xf00 x 0x3f8 (0x7ff638fce080), step 0xf04 / min 0xf08 (0x7ff638fce090 / 0x7ff638fce130,\n"
+                          "attachments 0x3fc / 0x400); intro_shots 0xf74 x 0x3f0, intro_fire_time_ms 0xf78 x 0x3ec\n"
+                          "(0x7ff638fd1d40 / 0x7ff638fd1d50); charge hold 0xf64, levels 0x126c, time 0x1274 (0x7ff637c0f180,\n"
+                          "0x7ff637be30f0); an attachment's fire type: u8 0x91 set, int 0x60 (0x7ff638fcfb10, the exe's names\n"
+                          "rdata 0x7ff63df88690), its burst count 0x43c (0x7ff638fcdf40).\n";
+                return Y;
+            }();
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops Cold War", &Attachments, &Cycle); });
             Exports(Kind::MapEnts, [this](const Context& C, Totals& T) { Treyarch::ExportMapEnts(C, T, Name(), EntityString()); });
             // the map tables (each map's settings: maptable, its maptableentry assets) and the AI types
             // (a flat struct, its settings bundle among its pointers) as struct dumps
@@ -772,6 +843,7 @@ namespace
 
         // ---- the entities as the map_ents text, a brush entity naming its brush model ("*N")
         Scene.MapEnts = EntityString();
+        AddVehicleModels(Scene, Models);   // a vehicle kept as a script_model of its model
 
         // ---- the collision (ClipMap.h): the world's brushes and triangles, the brush models'
         if (const int64_t Clip = Root("clip_map"); Clip >= 0)

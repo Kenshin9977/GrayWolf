@@ -148,7 +148,8 @@ int RunXsubIndex(const CliOptions& Options)
     // to tell what the object is (a sound's 288-byte header, ...). Reads only the headers, 4 bytes
     // per block and the first block.
     const bool Probe = Options.Type == "probe";
-    if (Probe) Siren::Initialize(L"oo2core_8_win64.dll");
+    if (Probe) Siren::AddSearchDir(std::filesystem::path(Options.XsubIndex).wstring());   // the install's Oodle
+    static constexpr std::string_view ProbeOodle[] = { "oo2core_8_win64.dll" };
     std::vector<uint8_t> Block, Payload;
     auto ProbeObject = [&](CoDFileHandle& Reader, uint64_t Offset, uint64_t Stored) -> std::string {
         // columns: payload bytes (-1 unknown), blocks, first block flag, first-block words at
@@ -186,7 +187,7 @@ int RunXsubIndex(const CliOptions& Options)
                         Reader.Seek(Pos, SEEK_SET);
                         Reader.Read(Block.data(), Size);
                         Payload.resize(Dec);
-                        const auto N = Siren::Decompress(Block.data() + 4, Size - 4, Payload.data(), Dec);
+                        const auto N = Siren::Decompress(ProbeOodle, Block.data() + 4, Size - 4, Payload.data(), Dec);
                         Payload.resize(N);
                     }
                     Blocks++;
@@ -275,12 +276,25 @@ int RunXsubIndex(const CliOptions& Options)
         Reader.Seek(Header.HashOffset, SEEK_SET);
         std::vector<XSubHashEntry> Table((size_t)Header.HashCount);
         Reader.Read(reinterpret_cast<uint8_t*>(Table.data()), Table.size() * sizeof(XSubHashEntry));
+        // Version 21 (Vanguard): Cold War's entries, version 23's frames; the size column read from
+        // each framed object's block records (XSUBCache::FramedObjectSize), -1 when they do not parse
+        const bool Framed21 = Header.Version >= 21;
         for (const auto& E : Table)
         {
             const uint64_t Offset = (E.PackedInfo >> 32) << 7, Stored = (E.PackedInfo >> 1) & 0x3FFFFFFF;
             Out << Name << '\t' << Header.Type << '\t' << std::hex << E.Key << std::dec << '\t'
                 << Offset << '\t' << Stored << '\t' << (E.PackedInfo & 1);
-            if (Probe) Out << '\t' << ProbeObject(Reader, Offset, Stored);
+            if (Framed21)
+            {
+                uint64_t Size = Stored;
+                const bool Sized = (E.PackedInfo & 1) == 0 ||
+                    XSUBCache::FramedObjectSize([&](uint64_t At, uint8_t* Dst, size_t N) {
+                        Reader.Seek(Offset + At, SEEK_SET);
+                        return Reader.Read(Dst, 0, N) == N;
+                    }, Stored, E.Key, Size);
+                Out << '\t' << (Sized ? (long long)Size : -1ll);
+            }
+            else if (Probe) Out << '\t' << ProbeObject(Reader, Offset, Stored);
             Out << '\n';
         }
         Entries += Table.size();
@@ -292,14 +306,14 @@ int RunXsubIndex(const CliOptions& Options)
     return 0;
 }
 
-// Diagnostic: Cold War .xsub objects by key (a streamkey's at its 8, a mip's, a mesh's), decompressed
+// Diagnostic: .xsub objects (Cold War, Vanguard, the later IW titles) by key (a streamkey's at its 8, a mip's, a mesh's), decompressed
 // as the live readers get them (XSUBCache), each written to <out>/<key>.bin
 int RunXsubExtract(const CliOptions& Options)
 {
     const auto Packages = TreyarchPackages::Open<XSUBCache>(Options.XsubExtract);
     if (Packages == nullptr || Options.Out.empty())
     {
-        CliReport(Options, "result=error\nreason=needs a Cold War install and --out <dir>\n");
+        CliReport(Options, "result=error\nreason=needs an install with .xsub packages and --out <dir>\n");
         return 5;
     }
     std::error_code Ec;
@@ -315,7 +329,16 @@ int RunXsubExtract(const CliOptions& Options)
         if (Text.empty()) continue;
         const uint64_t Key = std::stoull(Text, nullptr, 16);
         uint32_t Size = 0;
-        auto Data = Packages->Exists(Key) ? Packages->ExtractPackageObject(Key, Size) : nullptr;
+        std::unique_ptr<uint8_t[]> Data;
+        try
+        {
+            Data = Packages->Exists(Key) ? Packages->ExtractPackageObject(Key, Size) : nullptr;
+        }
+        catch (const std::exception& E)   // the game's Oodle found nowhere
+        {
+            CliReport(Options, std::format("result=error\nreason={}\n", E.what()));
+            return 5;
+        }
         if (Data == nullptr)
         {
             Missing++;
@@ -399,12 +422,12 @@ void AddCascCommands(CliCommandBuilders& B)
         Sub->add_option("dir", Options.XpakIndex, "CASC storage directory")->required()->check(CLI::ExistingDirectory);
     };
     B["xsub-index"] = [](CLI::App& App, CliOptions& Options) {
-        auto* Sub = App.add_subcommand("xsub-index", "Write every .xsub's hash table (package, type, key, offset, stored size; version 23 adds the size) as TSV to --out");
+        auto* Sub = App.add_subcommand("xsub-index", "Write every .xsub's hash table (package, type, key, offset, stored size; versions 21 and 23 add the size) as TSV to --out");
         Sub->add_option("dir", Options.XsubIndex, "Install: CASC storage or plain folder")->required()->check(CLI::ExistingDirectory);
         Sub->add_option("--casc-pattern", Options.CascPattern, "Packages to read (default: *.xsub); --type probe also reads each object's block headers and first block");
     };
     B["xsub-extract"] = [](CLI::App& App, CliOptions& Options) {
-        auto* Sub = App.add_subcommand("xsub-extract", "Write .xsub objects (Cold War, Modern Warfare III, Black Ops 6 and 7), decompressed, as <out>/<key>.bin (a streamkey's key at its 8)");
+        auto* Sub = App.add_subcommand("xsub-extract", "Write .xsub objects (Cold War, Vanguard, Modern Warfare III, Black Ops 6 and 7), decompressed, as <out>/<key>.bin (a streamkey's key at its 8)");
         Sub->add_option("dir", Options.XsubExtract, "Install (CASC storage or plain folder)")->required()->check(CLI::ExistingDirectory);
         Sub->add_option("--keys", Options.XsubKeys, "Object keys, hex, comma separated")->required();
     };

@@ -64,6 +64,8 @@ namespace
         // and 0x78 (the perks kind, Games/BO7/Perks.h)
         S.PerkAssets = { { "impulsemotion", 0x60 }, { "impulsemotion_2", 0x78 } };
         S.Terrain = &IwTerrain::ModernWarfare4;
+        // col_map (0x2220, 0x2122860): its shape list's size u32 0xe8 (Black Ops 7: 0xd8)
+        S.ClipShapeListSize = 0xe8;
         return S;
     }
 

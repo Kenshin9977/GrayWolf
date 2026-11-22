@@ -122,8 +122,12 @@ namespace
             C.BrushSize = 0x50, C.BrushMins = 0, C.BrushContents = 0xc, C.BrushMaxs = 0x10, C.BrushSideCount = 0x1c, C.BrushSides = 0x20;
             C.AxialMaterial = 0x24;
             C.SideSize = 0xc, C.SidePlane = 0, C.SideMaterial = 4;
-            C.ModelCount = 0x84, C.Models = 0x88, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40;
+            C.ModelCount = 0x84, C.Models = 0x88, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40, C.ModelAabbs = 0x1c;
             C.VertexCount = 0x58, C.Vertices = 0x5c, C.TriangleCount = 0x60, C.Triangles = 0x64;   // u16 vertex numbers
+            // the triangles' materials: CollisionPartition 0xc (u8 triCount, firstTri 4), the AABB tree
+            // (0x20: CoD4 keeps its material number and child count after the half size, 0x18 and 0x1a)
+            C.PartitionCount = 0x74, C.Partitions = 0x78, C.PartitionSize = 0xc, C.AabbCount = 0x7c, C.Aabbs = 0x80;
+            C.AabbMaterial = 0x18, C.AabbChildCount = 0x1a, C.AabbHalfSize = 0xc;
             return C;
         }
 

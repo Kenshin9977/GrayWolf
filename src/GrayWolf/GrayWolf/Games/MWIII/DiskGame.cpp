@@ -6,6 +6,7 @@
 #include "Games/Common/Adm3.h"
 #include "Games/Common/ImpulseResponse.h"
 #include "Games/Common/MeshDecode.h"
+#include "Games/Common/HavokTagfile.h"
 #include "CoDAssets.h"
 #include "DiskGame.h"
 #include "Games/MWIII/TechsetFormat.h"
@@ -1023,6 +1024,25 @@ namespace
             };
             std::map<std::string, size_t> Read;
             IwTerrain::Read(Scene, Src, Live().Addr((uint64_t)Vhm), 0, IwTerrain::ModernWarfare3, IwTerrain::Options(), Read);
+            for (const auto& [K, N] : Read) Counter("map_" + K) += N;
+        }
+
+        // ---- the collision: Havok shapes (Games/Common/HavokTagfile.h, SDK 2021.1): col_map's shape
+        // list (0xc8, size u32 0xc4; 0x2210, 0x3b25c70), each collisiontile's mesh and compound (0x80: 0x50 / u32 0x48, 0x68 / u32 0x60)
+        if (const int64_t Clip = Root("col_map"); Clip >= 0)
+        {
+            Havok::LevelSource Src;
+            Src.Locate = [this](uint64_t A, uint64_t N) -> const uint8_t* {
+                const int64_t P = Off(A);
+                return P >= 0 && (uint64_t)P + N <= Image().size() ? Image().data() + P : nullptr;
+            };
+            Src.ClipMap = Live().Addr((uint64_t)Clip);
+            Src.ShapeList = 0xc8, Src.ShapeListSize = 0xc4;
+            Src.TileShapes = { { 0x50, 0x48 }, { 0x68, 0x60 } };
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "collisiontile")) Src.Tiles.push_back(Live().Addr((uint64_t)I.Pos));
+            std::map<std::string, size_t> Read;
+            Havok::ReadLevel(Scene.Collision, Src, 32.0f, Read);
             for (const auto& [K, N] : Read) Counter("map_" + K) += N;
         }
 

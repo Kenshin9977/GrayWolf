@@ -39,10 +39,10 @@ namespace
     enum class Unit : uint8_t { Int, Ms, Float, Enum, Hits };
     Unit UnitOf(const std::string& Name)
     {
-        if (Name == "weaponType" || Name == "weaponClass" || Name == "fireType") return Unit::Enum;
+        if (Name == "weaponType" || Name == "weaponClass" || Name == "fireType" || Name == "chargeType") return Unit::Enum;
         if (Name == "locationDamageMultipliers") return Unit::Hits;
         if (Name.find("Range") != std::string::npos || Name.ends_with("Scale")) return Unit::Float;
-        if (Name.ends_with("Time") || Name.ends_with("TimeAkimbo")) return Unit::Ms;
+        if (Name.ends_with("Time") || Name.ends_with("TimeAkimbo") || Name == "fireDelay") return Unit::Ms;
         return Unit::Int;
     }
 }
@@ -117,10 +117,11 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
         };
         for (const auto& F : L.Fields)
         {
-            const Unit How = UnitOf(F.Name);
+            const Unit How = F.Real ? Unit::Float : UnitOf(F.Name);
             int64_t A = (F.InDef ? Def : P) + F.At;
             if (const auto It = RangeFrom.find(F.Name); It != RangeFrom.end()) A = It->second;
             if (F.At < 0 || !Fits(A, How == Unit::Hits ? PtrSize : 4) || Unused.count(F.Name)) continue;
+            if (const int64_t B = (F.InDef ? Def : P) + F.If; F.If >= 0 && (!Fits(B, 4) || At<int32_t>(Img, B) == 0)) continue;
             if (F.InDef && How != Unit::Hits) Offsets += std::format("{} 0x{:x};", F.Name, A - Def);
             if (F.Byte)
             {
@@ -142,7 +143,10 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
                 break;
             case Unit::Enum:
             {
-                const auto& Names = F.Name == "weaponType" ? L.Types : F.Name == "weaponClass" ? L.Classes : L.FireTypes;
+                const auto& Names = F.Name == "weaponType"    ? L.Types
+                                    : F.Name == "weaponClass" ? L.Classes
+                                    : F.Name == "chargeType"  ? L.ChargeTypes
+                                                              : L.FireTypes;
                 const int32_t E = At<int32_t>(Img, A);
                 Put(F.Name, E >= 0 && E < (int32_t)Names.size() ? Names[(size_t)E] : std::to_string(E));
                 break;
@@ -188,13 +192,16 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
                 if (!N.empty() && N[0] == ',') N.erase(0, 1);
                 Names += (Names.empty() ? "" : ";") + (N.empty() ? std::string("?") : N);
             }
+            // (the layout's extra attachments after the list's, each once: a weapon with a list)
+            for (const auto& X : Names.empty() ? std::vector<std::string>() : At_.Extra)
+                if ((";" + Names + ";").find(";" + X + ";") == std::string::npos) Names += (Names.empty() ? "" : ";") + X;
             if (!Names.empty()) Put("attachments", Names);
             std::string Defaults;
-            for (int K = 0; K < At_.DefaultCount && Fits(Def + At_.Defaults + K, 1); K++)
+            for (int K = 0; At_.Defaults >= 0 && K < At_.DefaultCount && Fits(Def + At_.Defaults + K, 1); K++)
                 Defaults += (K ? " " : "") + std::to_string(At<uint8_t>(Img, Def + At_.Defaults + K));
             Put("s2.defaults", Defaults);
-            const int Anims = Fits(Def + At_.AnimCount, 1) ? At<uint8_t>(Img, Def + At_.AnimCount) : 0;
-            const uint64_t AnimPtr = Fits(Def + At_.Anims, 8) ? At<uint64_t>(Img, Def + At_.Anims) : 0;
+            const int Anims = At_.Anims >= 0 && Fits(Def + At_.AnimCount, 1) ? At<uint8_t>(Img, Def + At_.AnimCount) : 0;
+            const uint64_t AnimPtr = At_.Anims >= 0 && Fits(Def + At_.Anims, 8) ? At<uint64_t>(Img, Def + At_.Anims) : 0;
             const int64_t Anim = AnimPtr != 0 ? V.Off(AnimPtr) : -1;
             std::string Lines;
             for (int K = 0; Anim >= 0 && K < Anims && Fits(Anim + 32 * K, 32); K++)
@@ -207,6 +214,33 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             }
             Put("s2.animOverrides", Lines);
             Put("s2.offsets", Offsets);
+        }
+        // Infinite Warfare's: the weapon asset's attachment lists, in the layout's order (';' separated)
+        if (!L.Iw7.Lists.empty())
+        {
+            std::string Names, Alt;
+            std::set<std::string> Others;   // (the names of the other lists: an alternate one also there is gathered)
+            for (const auto& [ListAt, CountAt] : L.Iw7.Lists)
+            {
+                if (!Fits(P + ListAt, 8) || !Fits(P + CountAt, 4)) continue;
+                const uint32_t Count = At<uint32_t>(Img, P + CountAt);
+                const uint64_t ListPtr = At<uint64_t>(Img, P + ListAt);
+                const int64_t List = ListPtr != 0 ? V.Off(ListPtr) : -1;
+                for (uint32_t K = 0; List >= 0 && K < Count && K < 1024 && Fits(List + 8 * (int64_t)K, 8); K++)
+                {
+                    const uint64_t A_ = At<uint64_t>(Img, List + 8 * (int64_t)K);
+                    const int64_t A = A_ != 0 ? V.Off(A_) : -1;
+                    std::string N = A >= 0 ? V.Text(A) : std::string();
+                    if (!N.empty() && N[0] == ',') N.erase(0, 1);
+                    if (N.empty()) continue;
+                    Names += (Names.empty() ? "" : ";") + N;
+                    if (ListAt != L.Iw7.AltList) Others.insert(N);
+                    else if (!Others.count(N)) Alt += (Alt.empty() ? "" : ";") + N;
+                }
+            }
+            if (!Names.empty()) Put("attachments", Names);
+            if (!Alt.empty()) Put("iw7.altSlot", Alt);
+            Put("iw7.lists", "1");   // (the list kept in a zone defining no attachment: WeaponFiles)
         }
         // the models and anims (OAT's fields): a model by its asset's name, a name-only header's ',' left out
         const auto Target = [&](int64_t Field) -> int64_t {
@@ -256,12 +290,18 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
         Out.push_back({ Name, Text, {} });
     }
     // WWII's attachment assets, as attachment files: the overrides of the layout's fields (an i32
-    // field set (operation 3) by an i32, every other value an f32)
+    // field set (operation 3) by an i32, every other value an f32; a one-byte flag's by the i32 its
+    // getter tests, whatever the operation: WWII 0x3b63b0, Advanced Warfare 0x164590)
     if (const auto& At_ = L.Attachments; At_.List >= 0)
     {
         std::map<int64_t, Unit> Known;
+        std::set<int64_t> Flags;
         for (const auto& F : L.Fields)
-            if (F.InDef && F.At >= 0 && !F.Byte) Known[F.At] = UnitOf(F.Name);
+            if (F.InDef && F.At >= 0)
+            {
+                Known[F.At] = F.Real ? Unit::Float : UnitOf(F.Name);
+                if (F.Byte) Flags.insert(F.At);
+            }
         for (const auto& I : R.Instances)
         {
             if (I.Owner >= R.OwnerNames.size() || R.OwnerNames[I.Owner] != "attachment") continue;
@@ -270,6 +310,7 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             if (Name.empty() || Name[0] == ',' || !Done.insert("\x02" + Name).second || !Fits(P + At_.AltB, 1)) continue;
             std::string Text = "ATTACHMENTFILE\\s2.format\\1";
             const auto Put = [&](const std::string& K, const std::string& Value) { Text += "\\" + K + "\\" + Clean(Value); };
+            if (At_.Rules != "s2") Put("s2.game", At_.Rules);
             if (const std::string D = V.Text(P + At_.DisplayName); !D.empty()) Put("displayName", D);
             Put("attachmentType", std::to_string(At<int32_t>(Img, P + At_.Type)));
             Put("s2.alt", At<int32_t>(Img, P + At_.AltA) != 0 || At<uint8_t>(Img, P + At_.AltB) != 0 ? "1" : "0");
@@ -284,7 +325,7 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
                 if (It == Known.end()) continue;
                 const uint8_t Op = At<uint8_t>(Img, Ents + 16 * K + 2);
                 const bool Int = It->second != Unit::Float;
-                const std::string Value = Op == 3 && Int ? std::to_string(At<int32_t>(Img, Ents + 16 * K + 8))
+                const std::string Value = (Op == 3 && Int) || Flags.count(Field) ? std::to_string(At<int32_t>(Img, Ents + 16 * K + 8))
                                                          : std::format("{}", At<float>(Img, Ents + 16 * K + 8));
                 Lines += std::format("0x{:x} {} {};", Field, Op, Value);
             }
@@ -292,6 +333,76 @@ std::vector<WeaponFiles::Weapon> Weapons(const Layout& L, const IwWeaponStats::Z
             Out.push_back({ Name, Text, {} });
         }
     }
+    // Infinite Warfare's attachment assets, as attachment files: the blocks and scales its accessors read
+    if (const auto& A7 = L.Iw7; !A7.Lists.empty())
+        for (const auto& I : R.Instances)
+        {
+            if (I.Owner >= R.OwnerNames.size() || R.OwnerNames[I.Owner] != "attachment") continue;
+            const int64_t P = I.Pos;
+            const std::string Name = V.Text(P);
+            if (Name.empty() || Name[0] == ',' || !Done.insert("\x02" + Name).second || !Fits(P + A7.AmmoPerShot, 4)) continue;
+            std::string Text = "ATTACHMENTFILE\\iw7.format\\1";
+            const auto Put = [&](const std::string& K, const std::string& Value) { Text += "\\" + K + "\\" + Clean(Value); };
+            if (const std::string D = V.Text(P + A7.DisplayName); !D.empty()) Put("displayName", D);
+            Put("iw7.kind", std::to_string(At<int32_t>(Img, P + A7.Kind)));
+            const auto Block = [&](int64_t Field, int64_t Size) -> int64_t {
+                const uint64_t Ptr = At<uint64_t>(Img, P + Field);
+                const int64_t B = Ptr != 0 ? V.Off(Ptr) : -1;
+                return B >= 0 && Fits(B, Size) ? B : -1;
+            };
+            if (const int64_t B = Block(A7.Damage, 0x28); B >= 0)
+                Put("iw7.damage", std::format("{} {} {} {} {} {} {} {} {}", At<int32_t>(Img, B), At<int32_t>(Img, B + 4), At<int32_t>(Img, B + 8),
+                                              At<int32_t>(Img, B + 0xc), At<int32_t>(Img, B + 0x10), At<float>(Img, B + 0x18),
+                                              At<float>(Img, B + 0x1c), At<float>(Img, B + 0x20), At<float>(Img, B + 0x24)));
+            if (const int64_t B = Block(A7.Hits, 4 * (int64_t)L.HitLocations.size()); B >= 0)
+            {
+                std::string Hits;
+                for (size_t K = 1; K < L.HitLocations.size(); K++)
+                    Hits += std::format("{}{} {}", Hits.empty() ? "" : ";", LocField(L.HitLocations[K]), At<float>(Img, B + 4 * (int64_t)K));
+                Put("iw7.hits", Hits);
+            }
+            // the weapon type it gives (0: the weapon's kept) and its projectile block (explosion radius,
+            // inner and outer damage, projectile speed: the weapon file's names, as the weapon's)
+            if (const int32_t Type = At<int32_t>(Img, P + A7.WeaponType); Type != 0)
+                Put("iw7.weaponType", Type > 0 && Type < (int32_t)L.Types.size() ? L.Types[(size_t)Type] : std::to_string(Type));
+            // its charge block: the type (named by ChargeTypes: iw7.chargeType) and gain, cost per shot, loss when
+            // idle, empty cooldown (iw7.charge)
+            if (const int64_t B = Block(A7.Charge, 0x14); B >= 0)
+            {
+                const int32_t Type = At<int32_t>(Img, B);
+                Put("iw7.chargeType", Type >= 0 && Type < (int32_t)L.ChargeTypes.size() ? L.ChargeTypes[(size_t)Type] : std::to_string(Type));
+                Put("iw7.charge", std::format("{} {} {} {}", At<float>(Img, B + 4), At<float>(Img, B + 8), At<float>(Img, B + 0xc),
+                                              At<float>(Img, B + 0x10)));
+            }
+            if (const int32_t Class = At<int32_t>(Img, P + A7.Class); Class >= 0 && Class < (int32_t)L.Classes.size())
+                Put("iw7.class", L.Classes[(size_t)Class]);
+            if (const int64_t B = Block(A7.Projectile, 0x18); B >= 0)
+                Put("iw7.projectile", std::format("{} {} {} {}", At<int32_t>(Img, B), At<int32_t>(Img, B + 8), At<int32_t>(Img, B + 0xc),
+                                                  At<int32_t>(Img, B + 0x14)));
+            if (const int64_t B = Block(A7.Ammo, 0xc); B >= 0)
+                Put("iw7.ammo", std::format("{} {} {}", At<int32_t>(Img, B), At<int32_t>(Img, B + 4), At<int32_t>(Img, B + 8)));
+            Put("iw7.ammoScale", std::format("{}", At<float>(Img, P + A7.AmmoScale)));
+            Put("iw7.rangeScale", std::format("{}", At<float>(Img, P + A7.RangeScale)));
+            Put("iw7.fireTime", std::to_string(At<int32_t>(Img, P + A7.FireTime)));
+            Put("iw7.fireTimeScale", std::format("{}", At<float>(Img, P + A7.FireTimeScale)));
+            // the fire type its ammo general block gives (i32 0xc: iw7.fireType), its general block's bolt
+            // action (u8 0: iw7.boltAction), its burst block's cooldown (i32 ms 0: iw7.burst) and its burst
+            // cooldown scale (iw7.burstScale)
+            if (const int64_t B = Block(A7.AmmoGeneral, 0x14); B >= 0)
+            {
+                const int32_t Type = At<int32_t>(Img, B + 0xc);
+                Put("iw7.fireType", Type >= 0 && Type < (int32_t)L.FireTypes.size() ? L.FireTypes[(size_t)Type] : std::to_string(Type));
+            }
+            if (const int64_t B = Block(A7.General, 1); B >= 0) Put("iw7.boltAction", std::to_string(At<uint8_t>(Img, B)));
+            if (const int64_t B = Block(A7.Burst, 8); B >= 0) Put("iw7.burst", std::to_string(At<int32_t>(Img, B)));
+            Put("iw7.burstScale", std::format("{}", At<float>(Img, P + A7.BurstScale)));
+            // the ammo a shot uses (i32 0x1f0, getter 0x737530: the first attachment's above 0; written when
+            // not 0: iw7.ammoPerShot) and its ammo block's requireAmmoUsedPerShot (u8 0x18, getter 0x74dd10:
+            // iw7.requireAmmoPerShot)
+            if (const int32_t N = At<int32_t>(Img, P + A7.AmmoPerShot); N != 0) Put("iw7.ammoPerShot", std::to_string(N));
+            if (const int64_t B = Block(A7.Ammo, 0x19); B >= 0) Put("iw7.requireAmmoPerShot", std::to_string(At<uint8_t>(Img, B + 0x18)));
+            Out.push_back({ Name, Text, {} });
+        }
     // the animation packages the zone defines, as package files (ANIMPACKAGE\<field>\<value>...)
     if (!L.AnimPkgType.empty())
         for (const auto& I : R.Instances)
@@ -376,7 +487,7 @@ std::map<std::string, ZonekitZone::DumpField> DumpFields(const Layout& L)
     {
         if (Fd.At < 0 || Fd.Byte) continue;   // (a dump names whole dwords: a one-byte flag is not one)
         const std::string P = (Fd.InDef ? Def : std::string()) + Key(Fd.At);
-        const Unit How = UnitOf(Fd.Name);
+        const Unit How = Fd.Real ? Unit::Float : UnitOf(Fd.Name);
         if (How == Unit::Hits && L.HitsInline)
         {
             // the array itself: each hit location's f32

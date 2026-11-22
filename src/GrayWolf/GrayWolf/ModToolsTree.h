@@ -33,8 +33,9 @@ namespace ModToolsTree
 
     // Writes Bytes as File in the tree, a file a user edits in the mod tools: one already there with
     // other bytes renamed <file>.bak first (the first free of .bak, .bak2, ...); false when it
-    // cannot be set aside or the file is not written
-    bool WriteKept(const std::filesystem::path& File, const std::string& Bytes);
+    // cannot be set aside or the file is not written, with Why: the step and Windows' reason (a file
+    // another program holds open, access denied, a full disk), in words a user can act on
+    bool WriteKept(const std::filesystem::path& File, const std::string& Bytes, std::string* Why = nullptr);
     // A file the export wrote, hard-linked (else copied) as To in the tree, replacing what is there
     bool Place(const std::filesystem::path& From, const std::filesystem::path& To);
     // The asset names (lower case) the GDTs already in the tree define (source_data/, texture_assets/,

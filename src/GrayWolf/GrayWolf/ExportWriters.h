@@ -43,6 +43,7 @@ namespace ExportWriters
     {
         size_t Written = 0, Failed = 0, Linked = 0;
         std::vector<std::string> FailedFiles;   // the files of Failed, in no set order
+        std::vector<std::string> FailedWhy;     // beside FailedFiles: what its build threw, "" the writer failed
     };
 
     // Where the image sinks' time went, for the whole process, in microseconds: the run log reads

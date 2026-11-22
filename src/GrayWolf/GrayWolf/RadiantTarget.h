@@ -93,6 +93,12 @@ namespace Maps
         // the keys a model of the world's (a tile of it, its origin the world's) takes besides its
         // model and placement, as (key, value) pairs
         virtual std::vector<std::pair<std::string, std::string>> WorldModelKeys() const { return {}; }
+        // whether the world's floors (drawn triangles facing up, as steep as a player walks at most)
+        // go to patches, the level's lightmapped geometry, when the rest of the drawn world goes to
+        // its models (MapRadiantWriter.cpp)
+        virtual bool FloorsAsPatches() const { return false; }
+        // with FloorsAsPatches, the tool an occluder under those floors is written with ("": none)
+        virtual std::string FloorOccluder() const { return ""; }
         // a material of the map's by its GDT entry's name (MaterialGdt::PrefixedName)
         std::string MaterialName(const std::string& Material) const;
         // Whether the target's tools define the source's asset Name as an entry of Gdf ("xmodel.gdf",

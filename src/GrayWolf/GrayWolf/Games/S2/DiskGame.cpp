@@ -266,24 +266,72 @@ namespace
                          { "adsTransInTime", 0x9d8 }, { "adsTransOutTime", 0x9e0 },
                          // the akimbo state's timer set (0x3bbf40, 0x3c1510, 0x3c0ce0, 0x3c0ad0), for the attachment table
                          { "fireTimeAkimbo", 0x77c }, { "reloadTimeAkimbo", 0x7ac }, { "reloadEmptyTimeAkimbo", 0x7c8 },
-                         { "reloadAddTimeAkimbo", 0x7cc } };
+                         { "reloadAddTimeAkimbo", 0x7cc },
+                         // the explosion (0x565417, a projectile's: radius 0x3ba540, inner and outer 0x3bbdc0, into the
+                         // radius damage 0x552350) and the projectile's speed (0x6d56d0, the launch velocity 0x6d4484)
+                         { "explosionRadius", 0xab8 }, { "explosionInnerDamage", 0xac0 }, { "explosionOuterDamage", 0xac4 },
+                         { "projectileSpeed", 0xae0 },
+                         // the shot cycle (the README says the RVAs): the delay before the shot (0x3bbf40, the first
+                         // timer), the rechamber and its bolt time (0x3c0a30, 0x3c09d0), the pause after a burst (f32,
+                         // 0x3bba10), the bolt action flag (0x3be620) and the rounds a shot takes (0x3bb280)
+                         { "fireDelay", 0x628 }, { "rechamberTime", 0x644 }, { "rechamberBoltTime", 0x64c },
+                         { "burstFireCooldown", 0x500, true, -1, false, true }, { "boltAction", 0xf84, true, -1, true },
+                         { "ammoUsedPerShot", 0xf34 } };
             L.ZeroRangeExtends = true;
             // the attachments (WeaponFiles' s2 rules; the README says the RVAs): the list at 0x48 (u8 count
             // 0x4d0), the defaults 0x50-0x54, the animation overrides at 0x60 (u8 count 0x4d1; reload 0x16,
-            // reload empty 0x17), the class editor's pair table (code_post_gfx_mp)
+            // reload empty 0x17, rechamber 6), the class editor's pair table (code_post_gfx_mp)
             L.Attachments.List = 0x48, L.Attachments.Count = 0x4d0, L.Attachments.Defaults = 0x50, L.Attachments.DefaultCount = 5;
-            L.Attachments.Anims = 0x60, L.Attachments.AnimCount = 0x4d1, L.Attachments.AnimStates = { 0x16, 0x17 };
+            L.Attachments.Anims = 0x60, L.Attachments.AnimCount = 0x4d1, L.Attachments.AnimStates = { 0x16, 0x17, 6 };
             L.Attachments.ComboTable = "mp/attachmentcombos_mtx12.csv";
             L.Notes = IwWeaponDefs::GameNotes("WWII", "french/fra_code_post_gfx_mp", "common_mp", "the WeaponDef (the weapon asset itself)", "");
             L.Notes.Extra = { { "linear_falloff_1", "linearFalloff1", WeaponFiles::Unit::Count },
                               { "linear_falloff_2", "linearFalloff2", WeaponFiles::Unit::Count } };
+            L.Notes.ShotCycle = true;
             L.Notes.ExtraNotes =
                 "- linear_falloff_1, linear_falloff_2 (WWII): the damage code's two flags (bytes 0xdf0, 0xdf1; GrayWolf's\n"
                 "  names). 1 in linear_falloff_1: from range_1_m to range_2_m the damage goes linearly from damage_1 to\n"
                 "  damage_2 instead of being damage_2 (when the weapon has a middle range: else, either flag makes the\n"
                 "  whole fall-off linear, damage_1 at range_1_m down to the last damage at range_2_m). 1 in\n"
                 "  linear_falloff_2: from range_2_m to range_3_m, linearly from damage_2 to the last damage instead of\n"
-                "  damage_3. 0, 0: steps. In common_mp only shotguns set one (Winchester 1897, Blunderbuss, Walther).\n";
+                "  damage_3. 0, 0: steps. In common_mp only shotguns set one (Winchester 1897, Blunderbuss, Walther).\n"
+                "- The shot cycle (s2_mp64_flat RVAs; player state per hand, stride 0x24: weapon time 0x3ec, weapon\n"
+                "  delay 0x3f0, weapon state 0x3f8, shots in the pull 0x404). A shot starts at 0x3b1910 (from the fire\n"
+                "  function 0x3ae330): weapon time = fire time, weapon delay = fireDelay (0x3bbf40: WeaponDef 0x628, the\n"
+                "  timer block's first, akimbo 0x768), state 6 (7 with the player flag 0x400000); the shot itself (its\n"
+                "  events 0x33-0x37, 0x3ae788) waits while the delay is not 0 (0x3ae4f9). The weapon frame 0x3b1fa0 counts\n"
+                "  both down by the same msec. fire_delay_ms: that delay, at each shot (not in the cycle while it is\n"
+                "  shorter than the fire time); 0 on every gun of common_mp (grenades 10-300).\n"
+                "- bolt_action (boltAction, byte 0xf84, the flag getter 0x3be620): each shot of such a weapon, whatever\n"
+                "  its fire type, marks it as needing a rechamber (0x3c5160, called by 0x3b1910). rechamber_ms\n"
+                "  (rechamberTime 0x644, 0x3c0a30): the rechamber 0x3ab040 (called first by 0x3a9350 each frame) starts\n"
+                "  once the weapon time and delay are 0 in state 0, 6, 7 or 0x11, a round left in the clip (else the\n"
+                "  mark is cleared, 0x3c4250, and the reload follows): state 8, weapon time = rechamber_ms (an animation\n"
+                "  override for state 6, 0x3f when aimed, replaces it: 0x3c5a80). rechamber_bolt_ms (rechamberBoltTime\n"
+                "  0x64c, 0x3c09d0) is the weapon delay inside it (1 when 0 or not below the rechamber): not added.\n"
+                "  State 9 (time 0x640, 0x3c38f0) is the rechamber with an attachment whose byte 0x83 is set (0x3a4f60):\n"
+                "  not exported. Both empty without bolt_action.\n"
+                "- burst_delay_ms (burstFireCooldown, f32 0x500, 0x3bba10): when the fire time of a 2- to 5-Round Burst\n"
+                "  weapon ends and the burst is over (0x3a5c20: shots in the pull 0x404 reached the count, 0x3a5650), the\n"
+                "  weapon time becomes (int)floor(it + 0.5) and the state 0 (0x3b2103-0x3b215b); empty for other fire\n"
+                "  types. A press during it is kept (0x3a8730: player state 0x408) and fires when it ends.\n"
+                "- ammo_per_shot (WeaponDef i32 0xf34, 0x3bb280): the rounds a shot takes from the clip (the fire\n"
+                "  function, 0x3ae5a6: at most the clip's, taken at 0x3b4c90).\n"
+                "- shot_interval_ms, shot_rpm: the time between two shots of a magazine the code above gives: Full Auto\n"
+                "  and Single Shot: fire_time_ms + rechamber_ms with bolt_action (no gap: the rechamber starts in the frame\n"
+                "  the fire time ends); 2- to 5-Round Burst (not bolt action): (n x fire_time_ms + burst_delay_ms) / n.\n"
+                "  Empty: a weapon that is not bullet or projectile, a fire delay above 0, a clip of one shot, Double\n"
+                "  Barrel, a ramp of the fire time (f32 0xf24, i32 0xf28 shots, mode 0xf2c: 0x3bbf40; 0 on every weapon\n"
+                "  of common_mp). Not in them: the last shot of a clip's own time (0xa98, 0x3bbe90), frame rounding.\n"
+                "- Not in the columns, the rate of fire perks (an engine rule, no weapon field): 0x3b3030, called by the\n"
+                "  weapon pmove 0x3b1fa1 with the frame's msec, divides the msec the weapon's timers count in weapon\n"
+                "  states 6 to 9 (firing and rechambering: the test it also makes on 0x12-0x14 can never pass) by a dvar,\n"
+                "  rounded half up: specialty_rof (Double Tap: perk 2, playerState 0x2088 bit 2) by dvar 2292 (0x8a99888,\n"
+                "  registered at 0x38fd02: 0.75, range 0-1), specialty_rof_faster (perk 112, 0x2094 bit 16) by dvar 6010\n"
+                "  (0x8a99870, 0x38fc86: 0.65), both when both are held; a dvar of 0 ends the timer at once. So the fire\n"
+                "  time, the fire delay and the rechamber (and its bolt time) x 0.75 (x 0.65), the burst pause (state 0)\n"
+                "  not: shot_rpm x 1.333 (x 1.538) but a burst weapon's less, unless the game sets the dvars; not for a\n"
+                "  gas weapon (type 4) in the modes the global 0xd8af894 is 2 or 6 (0xb8cb0).\n";
             L.Notes.Source =
                 "WWII keeps no weapon field table in its exe and no community layout exists: each field is read off\n"
                 "the exe's code (s2_mp64_flat.exe RVAs) or found by its values on common_mp's weapons, under the\n"
@@ -306,10 +354,15 @@ namespace
                 "(STG-44 4 x 30 = 120). ads_time_ms, ads_out_time_ms: 0x9d8, 0x9e0, the in and out times the ADS\n"
                 "function (0x3badf0) turns into its rates (1 / time; STG-44 220, MP-40 190, M1919 550 / 350; the Fast\n"
                 "ADS attachments scale both; 0x9dc replaces the in time under a player state flag, 0x5f4 & 0x80000, not\n"
-                "identified). weaponType, weaponClass and fireType are named by the exe's own name\n"
-                "tables. Times are milliseconds in the asset, distances inches. The other columns (raise, drop, sprint\n"
-                "times, explosions...) stay empty: no code reading them as weapon fields was found (the field getter's\n"
-                "call sites never take those offsets; the times of Advanced Warfare's slots read as nothing here).\n";
+                "identified). The explosion (a projectile's, 0x565417): explosionRadius 0xab8 (i32, its getter\n"
+                "0x3ba540), explosionInnerDamage 0xac0 and explosionOuterDamage 0xac4 (i32, the pair getter 0x3bbdc0,\n"
+                "Advanced Warfare's 0x16a0c0 at 0xa68 / 0xa6c), passed as floats to the radius damage 0x552350, which\n"
+                "deals outer + (inner - outer) x (1 - distance / radius) (0x55265c-0x5526ac). projectileSpeed 0xae0\n"
+                "(i32 in/s, 0x6d56d0 for the launch velocity, 0x6d4484). weaponType, weaponClass and fireType are named\n"
+                "by the exe's own name tables. Times are milliseconds in the asset, distances inches. The other columns\n"
+                "(raise, drop, sprint times, explosion_radius_min...) stay empty: no code reading them as weapon fields\n"
+                "was found (the field getter's call sites never take those offsets; the times of Advanced Warfare's\n"
+                "slots read as nothing here).\n";
             return L;
         }();
         return L;
@@ -841,6 +894,14 @@ namespace
         C.NodeSize = 0x20, C.NodeCount = 4, C.NodeCountBytes = 4, C.NodeBrushes = 0x10, C.NodeBrushBytes = 4, C.NodeChildren = 0x18;
         C.VertexCount = 0x38, C.Vertices = 0x40, C.TriangleCount = 0x48, C.Triangles = 0x50;
         C.PartitionCount = 0x70, C.Partitions = 0x78, C.PartitionSize = 0x10, C.SegmentVertices = 4096;
+        // the triangles' materials, from the game's trace (s2 0x14063eed0, 0x14063edc0): the
+        // ClipInfo's AABB tree (0x40/0x48, 0x20 each): a node's child count u8 0xc (none: a leaf),
+        // its trzone u8 0xd (the ClipInfo's pointer at 0x228 + 8n), its first child or, a leaf's,
+        // its partition (i32 0x1c); the partition its material (i32 0xc: the ClipInfo's materials,
+        // 0x18 each, contents at 0x10 tested against the trace's mask) and its vertices from verts
+        // 0x40 + (segment * 3) << 14 bytes (4096 a segment, s2 0x14063ee5c)
+        C.PartitionMaterial = 0xc;
+        C.AabbInInfo = true, C.AabbCount = 0x40, C.Aabbs = 0x48, C.AabbZone = 0xd, C.AabbChildCount = 0xc, C.AabbChildCountBytes = 1;
         return C;
     }
 

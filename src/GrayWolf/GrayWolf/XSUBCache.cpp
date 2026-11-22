@@ -67,7 +67,13 @@ static_assert(sizeof(XSub23Block) == 21, "a block record is 21 bytes");
 namespace
 {
     constexpr uint16_t FrameMagic = 0xF01D;
+    // Version 21 (Vanguard): Cold War's 16-byte entries, but objects framed as version 23's (the
+    // frames, block records and compressions below, checked on 200 objects of core-00000.xsub);
+    // the object's size is not indexed, its frames give it (XSUBCache::FramedObjectSize)
+    constexpr uint16_t FirstFramedVersion = 21;
     constexpr uint16_t FirstSizedVersion = 23;
+    // The games' own Oodle (Cold War, Modern Warfare III, Black Ops 6 and 7 ship oo2core_8)
+    constexpr std::string_view OodleDlls[] = { "oo2core_8_win64.dll" };
 
     // A version-23 object's stored bytes (Stored) to its Size bytes; false on any inconsistency
     bool DecodeXSub23(ByteView Stored, uint64_t Key, std::vector<uint8_t>& Object)
@@ -98,7 +104,7 @@ namespace
                 else if (B.Compression == 3)
                     Done = Compression::DecompressLZ4Block((const int8_t*)Src, (int8_t*)Dst, B.CompressedSize, B.Size) == (int32_t)B.Size;
                 else if (B.Compression == 6)
-                    Done = Siren::Decompress(Src, B.CompressedSize, Dst, B.Size) == B.Size;
+                    Done = Siren::Decompress(OodleDlls, Src, B.CompressedSize, Dst, B.Size) == B.Size;
                 if (!Done)
                     return false;
                 Filled += B.Size;
@@ -110,15 +116,49 @@ namespace
     }
 }
 
-XSUBCache::XSUBCache()
+bool XSUBCache::FramedObjectSize(const std::function<bool(uint64_t, uint8_t*, size_t)>& ReadAt, uint64_t Stored,
+                                 uint64_t Key, uint64_t& Size)
 {
-    Siren::Initialize(L"oo2core_8_win64.dll");
+    Size = 0;
+    uint64_t Filled = 0;
+    std::vector<uint8_t> Records;
+    for (uint64_t Frame = 0; Frame + 0x17 <= Stored;)
+    {
+        uint8_t Head[0x17];
+        if (!ReadAt(Frame, Head, sizeof(Head)))
+            return false;
+        uint16_t Magic = 0;
+        uint64_t FrameKey = 0;
+        std::memcpy(&Magic, Head, 2);
+        std::memcpy(&FrameKey, Head + 2, 8);
+        if (Magic != FrameMagic || FrameKey != Key)
+            return false;
+        const uint8_t Count = Head[0x16];
+        if (Frame + 0x17 + Count * sizeof(XSub23Block) > Stored)
+            return false;
+        Records.resize(Count * sizeof(XSub23Block));
+        if (Count != 0 && !ReadAt(Frame + 0x17, Records.data(), Records.size()))
+            return false;
+        uint64_t End = Frame + 0x17 + Records.size();
+        for (uint8_t i = 0; i < Count; i++)
+        {
+            XSub23Block B;
+            std::memcpy(&B, Records.data() + i * sizeof(XSub23Block), sizeof(B));
+            if (Frame + B.Offset + B.CompressedSize > Stored)
+                return false;
+            Size = std::max<uint64_t>(Size, (uint64_t)B.ObjectOffset + B.Size);
+            Filled += B.Size;
+            End = std::max<uint64_t>(End, Frame + B.Offset + B.CompressedSize);
+        }
+        Frame = (End + 0x7F) & ~(uint64_t)0x7F;
+    }
+    // the blocks tile the object: no gap, no overlap
+    return Filled == Size;
 }
 
-XSUBCache::~XSUBCache()
-{
-    Siren::Shutdown();
-}
+XSUBCache::XSUBCache() = default;
+
+XSUBCache::~XSUBCache() = default;
 
 void XSUBCache::LoadPackageCache(const std::string& BasePath)
 {
@@ -261,7 +301,8 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
     if (PackageCacheObject CacheInfo; Find(CacheID, CacheInfo))
     {
         auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
-        if (PackageVersions[CacheInfo.PackageFileIndex] >= FirstSizedVersion)
+        const uint16_t Version = PackageVersions[CacheInfo.PackageFileIndex];
+        if (Version >= FirstFramedVersion)
         {
             ResultSize = 0;
             constexpr uint64_t MaxObject = 1ull << 30;
@@ -276,22 +317,36 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
                 if (Reader.Read(Stored.data(), 0, Stored.size()) != Stored.size())
                     return nullptr;
             }
-            auto Result = std::make_unique<uint8_t[]>((size_t)std::max<uint64_t>(CacheInfo.UncompressedSize, 1));
+            // version 21 does not index the size: an unframed object is its stored bytes, a framed
+            // one as big as its blocks make it
+            uint64_t Size = CacheInfo.UncompressedSize;
+            if (Version < FirstSizedVersion)
+            {
+                if (CacheInfo.Flags == 0)
+                    Size = Stored.size();
+                else if (!FramedObjectSize([&](uint64_t At, uint8_t* Dst, size_t N) {
+                                               if (At + N > Stored.size()) return false;
+                                               std::memcpy(Dst, Stored.data() + At, N);
+                                               return true;
+                                           }, Stored.size(), CacheID, Size) || Size > MaxObject)
+                    return nullptr;
+            }
+            auto Result = std::make_unique<uint8_t[]>((size_t)std::max<uint64_t>(Size, 1));
             if (CacheInfo.Flags == 0)
             {
                 // stored as is
-                if (Stored.size() < CacheInfo.UncompressedSize)
+                if (Stored.size() < Size)
                     return nullptr;
-                std::memcpy(Result.get(), Stored.data(), (size_t)CacheInfo.UncompressedSize);
+                std::memcpy(Result.get(), Stored.data(), (size_t)Size);
             }
             else
             {
-                std::vector<uint8_t> Object((size_t)CacheInfo.UncompressedSize);
+                std::vector<uint8_t> Object((size_t)Size);
                 if (!DecodeXSub23(Stored, CacheID, Object))
                     return nullptr;
                 if (!Object.empty()) std::memcpy(Result.get(), Object.data(), Object.size());
             }
-            ResultSize = (uint32_t)CacheInfo.UncompressedSize;
+            ResultSize = (uint32_t)Size;
             return Result;
         }
 
@@ -370,7 +425,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
                         // Read oodle decompressed size
                         uint32_t DecompressedSize = *(uint32_t*)(DataBlock.get());
                         if (!Room(DecompressedSize)) return ResultSize = 0, nullptr;
-                        auto Result = Siren::Decompress((const uint8_t*)DataBlock.get() + 4, (uint32_t)BlockSize - 4, (uint8_t*)Data.data() + TotalDataSize, DecompressedSize);
+                        auto Result = Siren::Decompress(OodleDlls, (const uint8_t*)DataBlock.get() + 4, (uint32_t)BlockSize - 4, (uint8_t*)Data.data() + TotalDataSize, DecompressedSize);
                         TotalDataSize += Result;
                     }
                 }
@@ -384,7 +439,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
                     if (DataBlock != nullptr)
                     {
                         if (!Room(RawBlockSize)) return ResultSize = 0, nullptr;
-                        Siren::Decompress((const uint8_t*)DataBlock.get(), (uint32_t)BlockSize, (uint8_t*)Data.data() + TotalDataSize, RawBlockSize);
+                        Siren::Decompress(OodleDlls, (const uint8_t*)DataBlock.get(), (uint32_t)BlockSize, (uint8_t*)Data.data() + TotalDataSize, RawBlockSize);
                         TotalDataSize += RawBlockSize;
                     }
                 }

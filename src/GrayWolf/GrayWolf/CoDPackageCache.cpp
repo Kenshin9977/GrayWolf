@@ -6,6 +6,7 @@
 #include "WinFileSystem.h"
 #include "CascFileSystem.h"
 #include "ExportNaming.h"
+#include "Siren.h"
 
 #include <algorithm>
 #include <cstring>
@@ -42,6 +43,8 @@ void CoDPackageCache::LoadPackageCache(const std::string& BasePath)
 #endif
 
     CacheLoading = true;
+    // the game's own Oodle is in its install: looked for there before any block asks for it
+    Siren::AddSearchDir(std::filesystem::path(BasePath).wstring());
 
     // Open the file system, check for build info, if build info exists
     // we'll use Casc, otherwise use raw directory.
@@ -67,7 +70,11 @@ void CoDPackageCache::LoadPackageCache(const std::string& BasePath)
 
 bool CoDPackageCache::LoadPackage(const std::string& FilePath)
 {
-    // Nothing, default, but ensure status is loading
+    // a loose package's folder (a zone folder of the install, up to three folders above it
+    // searched); a name inside a CASC storage is no folder (its cache added the install)
+    if (const auto Dir = std::filesystem::path(FilePath).parent_path(); Dir.is_absolute())
+        Siren::AddSearchDir(Dir.wstring());
+    // Nothing more, default, but ensure status is loading
     CacheLoading = true;
     HasLoaded = false;
     return true;

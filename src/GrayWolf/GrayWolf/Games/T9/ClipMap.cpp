@@ -219,6 +219,8 @@ namespace
                     if (World)
                     {
                         Out.Triangles.insert(Out.Triangles.end(), { Base + Tri[0], Base + Tri[2], Base + Tri[1] });
+                        // the chunk's material (its flags: what the triangle stops)
+                        Out.TriangleMaterials.push_back(M < Mats.size() ? M : Maps::Collision::NoMaterial);
                         continue;
                     }
                     std::array<double, 3> Pt[3];

@@ -775,6 +775,29 @@ namespace
                 std::replace(V.begin(), V.end(), '\\', '/');   // the weapon file's separator
                 Text += "\\" + K + "\\" + V;
             }
+            // its attachments: the 64-entry table the weapon points at (0x38; the exe's scale getters
+            // take up to 8 of them by 6-bit index, Rifling games/bo3.md), by name, space separated
+            std::string List;
+            const int64_t Table = M.Follow(Pos + 0x38);
+            for (int I = 0; Table >= 0 && I < 64; I++)
+                if (std::string A = M.AssetField(Table + 8 * I); !A.empty() && A.find_first_of(" \\") == std::string::npos)
+                    List += (List.empty() ? "" : " ") + A;
+            if (!List.empty()) Text += "\\attachments\\" + List;
+            Weapons.push_back({ Nm, std::move(Text), {} });
+        }, Error);
+        // the attachments those weapons point at (attachment.gdf), each once, as attachment files
+        std::set<std::string> Attachments;
+        ForEachGdtAsset("attachment", [&](const Gdt::Type& Ty, const Gdt::Memory& M, int64_t Pos) {
+            const std::string Nm = Ty.Name(M, Pos);
+            if (Nm.empty() || Nm[0] == ',' || !Attachments.insert(Nm).second) return;
+            Gdt::Stats S;
+            std::string Text = "ATTACHMENTFILE";
+            for (auto [K, V] : Ty.Fields(M, Pos, S))
+            {
+                std::replace(V.begin(), V.end(), '\\', '/');
+                // (attachment.gdf spells it attachmenttype; the attachment files' field is attachmentType)
+                Text += "\\" + (K == "attachmenttype" ? std::string("attachmentType") : K) + "\\" + V;
+            }
             Weapons.push_back({ Nm, std::move(Text), {} });
         }, Error);
         if (!Error.empty()) T.Fail(Name(), Kind::WeaponStats, "", Error);
@@ -811,7 +834,15 @@ namespace
             "- multishot_damage_<n> at multishot_range_<n>_m: multishotBaseDamage1-6, multishotBaseDamageRange1-6, a\n"
             "  shotgun's damage table for its pellets (inches x 0.0254).\n"
             "- ammo_count_clip_relative: in Black Ops III proven by the Mod Tools' own help (max_ammo and start_ammo\n"
-            "  in magazines when it is 1, Rifling games/bo3.md).\n" };
+            "  in magazines when it is 1, Rifling games/bo3.md).\n"
+            "- weapon_attachments.csv (Black Ops III): a weapon's attachments are the 64-entry table it points at\n"
+            "  (WeaponVariantDef 0x38; the exe's scale getters take up to 8 of them by 6-bit index, FUN_7ff791bca020 in\n"
+            "  Rifling games/bo3.md), each an attachment asset (attachment.gdf, --type gdt). Black Ops III multiplies\n"
+            "  the scales of every attachment (proven there): fire time x fireTimeScale (+0x188), clip x clipSizeScale\n"
+            "  (+0x1c0, rounded), reloads x reload*TimeScale (+0x190..), each stop's range x damageRangeScale (+0x3c)\n"
+            "  x damageRangeScale<n> (+0x58..), each stop's damage (int) x damageScale<n> (+0x40..): damage_<n>,\n"
+            "  damage_scale_<n>, range_scale_<n>. One attachment a row. Not applied: an attachment unique's own\n"
+            "  damage or hit location table (attachmentunique.gdf, --type gdt), a stackfire attachment's clipSize.\n" };
         WeaponFiles::ExportStats(Weapons, Texts, Name(), C, T, N);
     }
 
@@ -936,6 +967,8 @@ namespace
             C.ModelCount = 0x120, C.Models = 0x128, C.ModelSize = 0x60, C.ModelInfo = 0x20, C.ModelLeafBrushNode = 0x50;
             C.NodeSize = 0x18;
             C.VertexCount = 0xd8, C.Vertices = 0xe0, C.TriangleCount = 0xe8, C.Triangles = 0xf0, C.TriangleIndexBytes = 4;
+            // the triangles' materials: CollisionPartition 0x10 (u8 triCount, firstTri 4), the AABB tree (0x20)
+            C.PartitionCount = 0x100, C.Partitions = 0x108, C.PartitionSize = 0x10, C.AabbCount = 0x110, C.Aabbs = 0x118;
             AddCollision(Scene, { "col_map" }, C);
             AddTriggers(Scene, 0x18);   // MapEnts' MapTriggers
             const int64_t Clip = Root("col_map");

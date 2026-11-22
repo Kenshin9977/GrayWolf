@@ -71,6 +71,9 @@ namespace Maps
         // brush models: count (u32) and array in clipMap_t, a model's size, its ClipInfo pointer
         // (-1: none) and its leaf's leafBrushNode (i32, -1: none)
         int64_t ModelCount = -1, Models = -1, ModelSize = 0, ModelInfo = -1, ModelLeafBrushNode = -1;
+        // its leaf's AABB roots (cLeaf_t: u16 firstCollAabbIndex, u16 collAabbCount after it), -1:
+        // not read (the triangles they reach, in the model's space, then taken for the world's)
+        int64_t ModelAabbs = -1;
         // a model whose ClipInfo pointer is null has no brush (WWII's addon lists every model
         // number, the world's left empty)
         bool ModelNeedsInfo = false;
@@ -94,6 +97,28 @@ namespace Maps
         // -1: the numbers are the vertices'
         int64_t PartitionCount = -1, Partitions = -1, PartitionSize = 0, PartitionTris = 0, PartitionSegment = 2,
                 PartitionFirstTri = 4, SegmentVertices = 0;
+        // the partition's own material number (i32, into the clip map's materials; WWII), which
+        // then gives its triangles theirs; -1: from the AABB tree's leaves
+        int64_t PartitionMaterial = -1;
+        // the collision AABB tree (CollisionAabbTree, 0x20 each), which gives the triangles their
+        // material: count (u32) and array where the triangles are; a node's material number (u16,
+        // into the clip map's materials), child count (u16) and, a leaf's (no child), its partition
+        // (u32). -1: not read (the triangles' material unknown). Needs the partitions (above).
+        int64_t AabbCount = -1, Aabbs = -1, AabbSize = 0x20, AabbMaterial = 0xc, AabbChildCount = 0xe, AabbPartition = 0x1c;
+        // the tree kept in the ClipInfo (Info) rather than beside the triangles (WWII); a leaf's
+        // triangle zone number (u8, the ClipInfo's col_map_trzone pointer it reads; -1: one zone),
+        // the leaves of another zone left out of the proof
+        bool AabbInInfo = false;
+        int64_t AabbZone = -1;
+        int AabbChildCountBytes = 2;   // the child count's width (WWII: u8, its material in the partition)
+        // a leaf naming its run of triangles itself (Black Ops 4: first u32, count u8), no
+        // partitions; AabbChildCount -1: every record a leaf (a flat list); AabbMinMax: the box
+        // kept as mins, maxs rather than centre, half size
+        int64_t AabbFirstTri = -1, AabbTriCount = -1;
+        bool AabbMinMax = false;
+        // its box (vec3 centre, vec3 half size), which must hold its leaf's triangles: the
+        // counters collision_aabb_leaves and collision_aabb_leaves_outside_box prove a layout
+        int64_t AabbOrigin = 0, AabbHalfSize = 0x10;
     };
 
     // The served zone a layout is read in: its bytes, its pointer width, and where a relocated

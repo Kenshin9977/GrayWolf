@@ -299,12 +299,28 @@ bool Zones(const std::string& Input, CoDPackageCache* Packages, const std::strin
     }
     else if (fs::path(Input).extension() == ".txt")
     {
+        // a list: one zone, folder or casc:<pattern> per line, each read as its own input (a casc:
+        // line pulled from the packages, as on the command line)
         std::ifstream F(Input);
         std::string Line;
         while (std::getline(F, Line))
         {
             while (!Line.empty() && (Line.back() == '\r' || Line.back() == ' ')) Line.pop_back();
-            if (!Line.empty()) Out.push_back(Line);
+            if (Line.empty()) continue;
+            if (Lower(fs::path(Line).extension().string()) == ".txt")
+            {
+                Error = "a list inside a list: " + Line;
+                return false;
+            }
+            std::vector<std::string> One;
+            size_t SkippedOne = 0;
+            std::string LineError;
+            if (!Zones(Line, Packages, CacheDir, "all", One, SkippedOne, LineError))
+            {
+                Error = Line + ": " + LineError;
+                return false;
+            }
+            Out.insert(Out.end(), One.begin(), One.end());
         }
     }
     else

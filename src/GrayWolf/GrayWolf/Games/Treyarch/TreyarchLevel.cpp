@@ -113,6 +113,9 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
     AddMapEnts(Scene);
     if (L.Clip.BrushSize) AddCollision(Scene, { "col_map_mp", "col_map_sp" }, L.Clip);
 
+    // ---- the vehicles the entity string places (BO2's zm_transit bus): their models
+    AddVehicleModels(Scene, Models);
+
     // ---- the sky: a model the world names (skyBoxModel) when the zone holds it, else its image
     const std::string SkyModel = L.SkyModel >= 0 ? StringAt(PointerAt(World + L.SkyModel)) : std::string();
     if (!SkyModel.empty())

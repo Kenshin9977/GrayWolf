@@ -16,6 +16,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <tuple>
 
 namespace fs = std::filesystem;
@@ -107,11 +108,26 @@ namespace
     std::string Cell(const Json& F, const char* Field, Unit How, bool TruncateMs = false)
     {
         if (!F.contains(Field)) return std::string();
+        if (How == Unit::Text) return F[Field].get<std::string>();
         double V = 0;
         if (!Number(F[Field].get<std::string>(), V)) return std::string();
         switch (How)
         {
+        case Unit::Text: break;
+        case Unit::ChargeShots:
+        {
+            const double Cost = std::min(std::trunc((double)((float)V * 4095.0f)), 4095.0);
+            return Cost > 0 ? Num(std::floor(4095 / Cost), 0) : std::string();
+        }
         case Unit::Count: return Num(V, 0);
+        // (Infinite Warfare's ammo per shot, 0x737530: max(1, the i32))
+        case Unit::PerShot: return Num(V > 1 ? std::trunc(V) : 1, 0);
+        // (Infinite Warfare's burst pause, 0x730169: (int)floor(ms + 0.5), a Burst weapon's only)
+        case Unit::BurstMs:
+            return F.contains("fireType") && F["fireType"].get<std::string>() == "Burst" ? Num(WeaponStatsTable::BurstDelayMs(V), 0) : std::string();
+        case Unit::BoltMs:
+            if (!F.contains("boltAction") || F["boltAction"].get<std::string>() != "1") return std::string();
+            return Num(std::round(V * 1000), 0);
         // the weapon file writes the ms field in seconds (ms / 1000); a game parsing it as (int)(s x 1000)
         // truncates
         case Unit::Ms: return Num(TruncateMs ? std::trunc(V * 1000) : std::round(V * 1000), 0);
@@ -129,7 +145,12 @@ namespace
     const char* const WeaponAttachmentList = "attachments";
     const char* const AttachmentFields[] = { "displayName",         "attachmentType",       "clipSizeScale",      "fireTimeScale",
                                              "reloadTimeScale",     "reloadEmptyTimeScale", "reloadAddTimeScale", "adsTransInTimeScale",
-                                             "adsTransOutTimeScale", "damageRangeScale",    "adsMoveSpeedScale" };
+                                             "adsTransOutTimeScale", "damageRangeScale",    "adsMoveSpeedScale",
+                                             // Black Ops III's (its attachment.gdf): the six stops' own damage and
+                                             // range scales, the burst delay's
+                                             "damageScale1", "damageScale2", "damageScale3", "damageScale4", "damageScale5",
+                                             "damageScale6", "damageRangeScale1", "damageRangeScale2", "damageRangeScale3",
+                                             "damageRangeScale4", "damageRangeScale5", "damageRangeScale6", "burstDelayTimeScale" };
 
     // A game's attachment rules, applied to a weapon with a set of attachments in its primary mode:
     // the values the game's own code reads (the RVAs in the README). The weapon file's fields (F), the
@@ -330,6 +351,68 @@ namespace
         }
     }
 
+    // WWII's and Advanced Warfare's shot cycle (Notes::ShotCycle; the games' ExtraNotes say the code): the
+    // fields a shot's timing reads, the columns they make
+    const char* const CycleColumns[] = { "fire_delay_ms", "bolt_action",   "rechamber_ms",     "rechamber_bolt_ms",
+                                         "burst_delay_ms", "ammo_per_shot", "shot_interval_ms", "shot_rpm" };
+    // the fire types by value (both exes' name tables): an attachment sets one by its value
+    const char* const IwFireTypes[] = { "Full Auto", "Single Shot", "2-Round Burst", "3-Round Burst", "4-Round Burst", "5-Round Burst", "Double Barrel" };
+    struct CycleIn
+    {
+        std::string WeaponType, FireType;
+        double Fire = -1, Delay = -1, Rechamber = -1, RechamberBolt = -1, Burst = -1, Ammo = -1, Clip = -1;   // -1: not read
+        int Bolt = -1;
+        bool Akimbo = false;   // the second timer set: its delay and rechamber are not read
+    };
+    void ShotCycle(const CycleIn& In, std::map<std::string, std::string>& C)
+    {
+        int Rounds = 0;   // a 2- to 5-Round Burst's
+        for (int K = 2; K <= 5; K++)
+            if (In.FireType == IwFireTypes[K]) Rounds = K;
+        if (In.Akimbo) return;
+        if (In.Delay >= 0) C["fire_delay_ms"] = Num(In.Delay, 0);
+        if (In.Bolt >= 0) C["bolt_action"] = In.Bolt ? "1" : "0";
+        const bool Bolt = In.Bolt == 1;
+        if (Bolt && In.Rechamber >= 0) C["rechamber_ms"] = Num(In.Rechamber, 0);
+        if (Bolt && In.RechamberBolt >= 0) C["rechamber_bolt_ms"] = Num(In.RechamberBolt, 0);
+        // (int)floor(cooldown + 0.5): the weapon time the burst's end sets
+        const double Pause = Rounds && In.Burst >= 0 ? WeaponStatsTable::BurstDelayMs(In.Burst) : -1;
+        if (Pause >= 0) C["burst_delay_ms"] = Num(Pause, 0);
+        if (In.Ammo >= 0) C["ammo_per_shot"] = Num(In.Ammo, 0);
+        // the interval within a magazine: only where the code traced gives it whole
+        if (In.Fire <= 0 || In.Delay != 0 || (In.WeaponType != "bullet" && In.WeaponType != "projectile")) return;
+        if (In.Clip >= 0 && In.Clip <= std::max(In.Ammo, 1.0)) return;   // one shot a magazine: a reload between shots
+        double Interval = -1;
+        if (In.FireType == "Full Auto" || In.FireType == "Single Shot")
+        {
+            if (Bolt && In.Rechamber < 0) return;
+            Interval = In.Fire + (Bolt ? In.Rechamber : 0);
+        }
+        else if (Rounds && !Bolt && Pause >= 0)
+            Interval = (Rounds * In.Fire + Pause) / Rounds;
+        if (Interval <= 0) return;
+        C["shot_interval_ms"] = Num(Interval, 2);
+        C["shot_rpm"] = Num(std::round(60000.0 / Interval * 100) / 100, 2);
+    }
+    // the inputs from a weapon file's own fields (weapon_stats.csv: no attachment)
+    CycleIn CycleOf(const Json& F, bool TruncateMs)
+    {
+        CycleIn In;
+        const auto Field = [&](const char* Name, WeaponFiles::Unit How, double& Out) {
+            if (double V = 0; Number(Cell(F, Name, How, TruncateMs), V)) Out = V;
+        };
+        In.WeaponType = Text(F, "weaponType"), In.FireType = Text(F, "fireType");
+        Field("fireTime", Unit::Ms, In.Fire);
+        Field("fireDelay", Unit::Ms, In.Delay);
+        Field("rechamberTime", Unit::Ms, In.Rechamber);
+        Field("rechamberBoltTime", Unit::Ms, In.RechamberBolt);
+        Field("ammoUsedPerShot", Unit::Count, In.Ammo);
+        Field("clipSize", Unit::Count, In.Clip);
+        if (double V = 0; Get(F, "burstFireCooldown", V)) In.Burst = V;
+        if (double V = 0; Get(F, "boltAction", V)) In.Bolt = V != 0 ? 1 : 0;
+        return In;
+    }
+
     // WWII's attachments (the s2. fields IwWeaponDefs writes from the zone's attachment assets): each a
     // list of field overrides (s2.overrides: offset, operation, value), the weapon's fields at those
     // offsets (s2.offsets), its default attachments and its reload animation overrides
@@ -443,6 +526,50 @@ namespace
             Stop++;
             if (Value(Range, false, false, V)) C[std::format("range_{}_m", Stop)] = Num(V * MetresPerInch, 2);
         }
+        // the shot cycle (the weapons with its fields: the games' ExtraNotes say the code)
+        if (!F.contains("boltAction")) return;
+        const bool S1 = !Use.empty() && Text(Atts[Use.front()], "s2.game") == "s1";
+        // the first override of a field's offset among the attachments held (Use's order): its line's words
+        const auto FirstOverride = [&](const std::string& Field, bool SetOnly, bool TypeFourGoesOn) {
+            std::vector<std::string> Found;
+            const auto It = Offsets.find(Field);
+            if (It == Offsets.end()) return Found;
+            for (const auto& N : Use)
+                for (const auto& L : Lines(Text(Atts[N], "s2.overrides")))
+                {
+                    const auto W = Words(L);
+                    if (W.size() != 3 || W[0] != It->second || (SetOnly && W[1] != "3")) continue;
+                    Found = W;
+                    // (Advanced Warfare's flag getter 0x164590: a type 4 attachment's does not stop the search)
+                    if (!TypeFourGoesOn || Or(Atts[N], "attachmentType", -1) != 4) return Found;
+                    break;
+                }
+            return Found;
+        };
+        CycleIn In;
+        In.WeaponType = Text(F, "weaponType"), In.Akimbo = Akimbo;
+        // (0x3bdbe0 / 0x16cae0, the i32 getter) the fire type: the first attachment setting it
+        In.FireType = Text(F, "fireType");
+        if (const auto W = FirstOverride("fireType", true, false); !W.empty())
+            if (const int T = std::atoi(W[2].c_str()); T >= 0 && T < (int)std::size(IwFireTypes)) In.FireType = IwFireTypes[T];
+        if (Value("fireTime", true, true, V)) In.Fire = V;
+        if (Value("fireDelay", true, true, V)) In.Delay = V;
+        // (0x3be620 / 0x16d550, the flag getter: the first attachment holding an override of the offset gives
+        // its i32 != 0)
+        if (double B = 0; Get(F, "boltAction", B))
+        {
+            In.Bolt = B != 0 ? 1 : 0;
+            if (const auto W = FirstOverride("boltAction", false, S1); !W.empty()) In.Bolt = std::atoi(W[2].c_str()) != 0 ? 1 : 0;
+        }
+        // (0x3c0a30 / 0x16f520) the rechamber: the animation override for state 6, else the field
+        if (Anim(6, V) || Value("rechamberTime", true, true, V)) In.Rechamber = V;
+        if (Value("rechamberBoltTime", true, true, V)) In.RechamberBolt = V;
+        if (Value("burstFireCooldown", false, false, V)) In.Burst = V;
+        // (0x3bb280, the i32 getter; Advanced Warfare's 0x1696b0 reads the WeaponDef's as is)
+        if (S1 || Use.empty() ? Get(F, "ammoUsedPerShot", V) : Value("ammoUsedPerShot", false, true, V)) In.Ammo = V;
+        if (double Clip = 0; Number(C["clip_size"], Clip)) In.Clip = Clip;
+        C["fire_type"] = In.FireType;
+        ShotCycle(In, C);
     }
 
     // Call of Duty Online's attachments (the codol. fields Games/CODOL writes from the zone's
@@ -510,6 +637,229 @@ namespace
             Stop++;
             if (Value(Range, false, V)) C[std::format("range_{}_m", Stop)] = Num(V * MetresPerInch, 2);
         }
+    }
+
+    // Infinite Warfare's attachments (the iw7. fields IwWeaponDefs writes from the zone's attachment
+    // assets): blocks that replace the weapon's (the first attachment holding one) and scales multiplied
+    // over the attachments, as the exe's accessors read them (iw7_flat VAs, the README)
+    const char* const Iw7Format = "iw7.format";
+    // a hit location field's column: locTorsoUpper -> hit_torso_upper
+    std::string HitColumn(const std::string& Field)
+    {
+        std::string C = "hit";
+        for (size_t I = 3; I < Field.size(); I++)
+        {
+            if (std::isupper((unsigned char)Field[I])) C += '_';
+            C += (char)std::tolower((unsigned char)Field[I]);
+        }
+        return C;
+    }
+    // weapon_stats.csv's explosion and projectile columns (After): those an Infinite Warfare attachment's
+    // projectile block replaces
+    bool ProjectileColumn(const Column& Col)
+    {
+        const std::string_view N = Col.Name;
+        return N.starts_with("explosion_") || N.starts_with("projectile_");
+    }
+    // the columns the iw7 rules add to weapon_attachments.csv (the hit locations: the weapon file's)
+    std::vector<std::string> Iw7Columns()
+    {
+        std::vector<std::string> Out;
+        for (size_t I = 1; I <= std::size(Stops); I++) Out.push_back(std::format("damage_{}", I));
+        Out.push_back("start_ammo");
+        Out.push_back("max_ammo");
+        for (const auto& [Field, Column] : HitLocations)
+            if (std::string(Column) != "hit_torso_mid") Out.push_back(Column);
+        for (const char* C : { "hit_shield", "hit_armor", "hit_soft" }) Out.push_back(C);
+        Out.push_back("weapon_type");
+        Out.push_back("fire_type");
+        for (const auto& Col : After)
+            if (ProjectileColumn(Col)) Out.push_back(Col.Name);
+        for (const auto& Col : WeaponFiles::Iw7ChargeColumns()) Out.push_back(Col.Name);
+        for (const auto& Col : WeaponFiles::Iw7BurstBoltColumns()) Out.push_back(Col.Name);
+        for (const auto& Col : WeaponFiles::Iw7AmmoColumns()) Out.push_back(Col.Name);
+        return Out;
+    }
+    void Iw7Values(const Json& F, const Json& Atts, const std::vector<std::string>& Chosen, std::map<std::string, std::string>& C,
+                   std::vector<std::string>& Order)
+    {
+        Order = Chosen;
+        // (0x743cf0) the gather: the alternate mode's attachment (the weapon asset's list 0x58: iw7.altSlot) left
+        // out of the primary mode unless its class (attachment 0x20) is none (14)
+        const std::vector<std::string> Alt = Lines(Text(F, "iw7.altSlot"));
+        std::vector<const Json*> Use;
+        for (const auto& N : Chosen)
+            if (Atts.contains(N) && (std::find(Alt.begin(), Alt.end(), N) == Alt.end() || Text(Atts[N], "iw7.class") == "none"))
+                Use.push_back(&Atts[N]);
+        // the first attachment holding a field's block
+        const auto First = [&](const char* Field) -> const Json* {
+            for (const Json* A : Use)
+                if (A->contains(Field)) return A;
+            return nullptr;
+        };
+        // (0x73d0f0) fire time: the weapon's fireTime, replaced by the first attachment's i32 0x1a8 that is not
+        // 0 (not from one of kind 1, the alternate mode's), x every other attachment's f32 0x1b0, truncated
+        if (double Base = 0; Ms(F, "fireTime", Base))
+        {
+            double Override = 0;
+            float Scale = 1;
+            for (const Json* A : Use)
+            {
+                const double O = Or(*A, "iw7.fireTime", 0);
+                if (Override == 0 && O != 0 && Or(*A, "iw7.kind", 0) != 1)
+                {
+                    Override = O;
+                    continue;
+                }
+                Scale *= (float)Or(*A, "iw7.fireTimeScale", 1);
+            }
+            const double T = std::trunc((float)(Override != 0 ? Override : Base) * Scale);
+            if (T > 0) Fire(C, T);
+        }
+        // (0x73c620 clip, 0x74efa0 start, 0x74a890 max) the first attachment's ammo block (i32 max 0, start
+        // 4, clip 8) replacing the weapon's, x every attachment's f32 0x198 (0: none), truncated
+        {
+            float Scale = 1;
+            for (const Json* A : Use)
+                if (const double S = Or(*A, "iw7.ammoScale", 0); S != 0) Scale *= (float)S;
+            const Json* B = First("iw7.ammo");
+            const std::vector<std::string> W = B ? Words(Text(*B, "iw7.ammo")) : std::vector<std::string>();
+            const auto Ammo = [&](const char* Col, const char* Field, size_t K) {
+                double V = 0;
+                if (W.size() == 3) V = std::atof(W[K].c_str());
+                else if (!Get(F, Field, V)) return;
+                C[Col] = Num(std::trunc((float)V * Scale), 0);
+            };
+            Ammo("max_ammo", "maxAmmo", 0);
+            Ammo("start_ammo", "startAmmo", 1);
+            Ammo("clip_size", "clipSize", 2);
+        }
+        // (0x746af6 damage, 0x742570 ranges) the first attachment's damage table (5 damages, 4 ranges)
+        // replacing the weapon's, the ranges x every attachment's f32 0x19c (0: none); the stops as the
+        // damage code takes them: damage_1 up to range_1, each next stop whose range is above 0, the last
+        // damage beyond
+        {
+            float Scale = 1;
+            for (const Json* A : Use)
+                if (const double S = Or(*A, "iw7.rangeScale", 0); S != 0) Scale *= (float)S;
+            double D[5] = {}, R[4] = {};
+            const Json* B = First("iw7.damage");
+            const std::vector<std::string> W = B ? Words(Text(*B, "iw7.damage")) : std::vector<std::string>();
+            if (W.size() == 9)
+            {
+                for (int K = 0; K < 5; K++) D[K] = std::atof(W[(size_t)K].c_str());
+                for (int K = 0; K < 4; K++) R[K] = std::atof(W[(size_t)K + 5].c_str());
+            }
+            else
+            {
+                const char* Damages[] = { "damage", "damage2", "damage3", "damage4", "minDamage" };
+                const char* Ranges[] = { "maxDamageRange", "damageRange2", "damageRange3", "damageRange4" };
+                for (int K = 0; K < 5; K++) D[K] = Or(F, Damages[K], 0);
+                for (int K = 0; K < 4; K++) R[K] = Or(F, Ranges[K], 0);
+            }
+            size_t Stop = 0;
+            for (int K = 0; K < 4; K++)
+            {
+                const double Range = (float)R[K] * Scale;
+                if (K > 0 && !(Range > 0)) continue;
+                Stop++;
+                C[std::format("damage_{}", Stop)] = Num(D[K], 0);
+                C[std::format("range_{}_m", Stop)] = Num(Range * MetresPerInch, 2);
+            }
+            C[std::format("damage_{}", Stop + 1)] = Num(D[4], 0);
+        }
+        // (0x744ec0) the weapon type: the first attachment's i32 0x1c that is not 0 replacing weaponType; (0x73aa30
+        // radius, 0x73cba0 inner and outer damage, 0x741800 speed) the first attachment's projectile block (pointer
+        // 0x160: i32 0, 8, 0xc, 0x14) replacing explosionRadius, explosionInnerDamage, explosionOuterDamage,
+        // projectileSpeed (explosionRadiusMin: no attachment field). The weapon's fields with those replaced, read
+        // as weapon_stats.csv reads them (Cell); an attachment row's column written only when it changes the
+        // value (the weapon alone: its own)
+        {
+            Json G = F;
+            if (const Json* B = First("iw7.weaponType")) G["weaponType"] = Text(*B, "iw7.weaponType");
+            if (const Json* B = First("iw7.projectile"))
+                if (const auto W = Words(Text(*B, "iw7.projectile")); W.size() == 4)
+                {
+                    const char* Fields[] = { "explosionRadius", "explosionInnerDamage", "explosionOuterDamage", "projectileSpeed" };
+                    for (size_t K = 0; K < 4; K++) G[Fields[K]] = W[K];
+                }
+            // (0x751b80, the first attachment whose charge block (pointer 0x168) is not null, for each getter:
+            // 0x752620 type, 0x7521c0 gain, 0x752010 cost per shot, 0x7522e0 loss when idle, 0x7520a0 empty
+            // cooldown) its block replacing chargeType 0xd08, chargeGain 0xd0c, chargeCostPerShot 0xd10,
+            // chargeLossWhenIdle 0xd14, chargeEmptyCooldown 0xd18
+            if (const Json* B = First("iw7.charge"))
+                if (const auto W = Words(Text(*B, "iw7.charge")); W.size() == 4)
+                {
+                    G["chargeType"] = Text(*B, "iw7.chargeType");
+                    const char* Fields[] = { "chargeGain", "chargeCostPerShot", "chargeLossWhenIdle", "chargeEmptyCooldown" };
+                    for (size_t K = 0; K < 4; K++) G[Fields[K]] = W[K];
+                }
+            // (0x744770) the fire type: the first attachment whose ammo general block (pointer 0x88) is not null,
+            // its i32 0xc replacing fireType 0x244; (0x7475f0) the bolt action: the first attachment whose general
+            // block (pointer 0xc8) is not null, its u8 0 replacing boltAction 0xb83
+            if (const Json* B = First("iw7.fireType")) G["fireType"] = Text(*B, "iw7.fireType");
+            if (const Json* B = First("iw7.boltAction")) G["boltAction"] = Text(*B, "iw7.boltAction");
+            // (0x73c1e0) the burst cooldown: the weapon's f32 0x33c, replaced by the first attachment's burst
+            // block (pointer 0x188: i32 0) not of kind 1 (attachment i32 0x18) unless it is the weapon's
+            // alternate slot's, x every other attachment's f32 0x1b4 (a 0 not skipped)
+            if (double Base = 0; Get(F, "burstFireCooldown", Base))
+            {
+                float Value = (float)Base, Scale = 1;
+                bool Replaced = false;
+                for (const Json* A : Use)
+                {
+                    const bool Slot = std::any_of(Alt.begin(), Alt.end(), [&](const std::string& N) { return Atts.contains(N) && &Atts[N] == A; });
+                    if (!Replaced && A->contains("iw7.burst") && (Or(*A, "iw7.kind", 0) != 1 || Slot))
+                    {
+                        Value = (float)Or(*A, "iw7.burst", 0);
+                        Replaced = true;
+                        continue;
+                    }
+                    Scale *= (float)Or(*A, "iw7.burstScale", 1);
+                }
+                G["burstFireCooldown"] = std::format("{}", Value * Scale);
+            }
+            // (0x737530) the ammo a shot takes from the clip: the first attachment's i32 0x1f0 above 0, else the
+            // weapon's ammoUsedPerShot 0x4c0 (below 1: 1)
+            for (const Json* A : Use)
+                if (Or(*A, "iw7.ammoPerShot", 0) > 0)
+                {
+                    G["ammoUsedPerShot"] = Text(*A, "iw7.ammoPerShot");
+                    break;
+                }
+            const auto Put = [&](const char* Col, const std::string& Base, const std::string& With) {
+                if (Chosen.empty() || With != Base) C[Col] = With;
+            };
+            Put("weapon_type", Text(F, "weaponType"), Text(G, "weaponType"));
+            Put("fire_type", Text(F, "fireType"), Text(G, "fireType"));
+            for (const auto& Col : After)
+                if (ProjectileColumn(Col)) Put(Col.Name, Cell(F, Col.Field, Col.How), Cell(G, Col.Field, Col.How));
+            for (const auto& Col : WeaponFiles::Iw7ChargeColumns()) Put(Col.Name, Cell(F, Col.Field, Col.How), Cell(G, Col.Field, Col.How));
+            // (the rechamber times: the animation package's, which no attachment block changes; the package
+            // overrides an attachment may select (WeaponDef 0xe20) not applied, as for the reload times)
+            for (const auto& Col : WeaponFiles::Iw7BurstBoltColumns()) Put(Col.Name, Cell(F, Col.Field, Col.How), Cell(G, Col.Field, Col.How));
+            for (const auto& Col : WeaponFiles::Iw7AmmoColumns()) Put(Col.Name, Cell(F, Col.Field, Col.How), Cell(G, Col.Field, Col.How));
+        }
+        // (0x740120) the hit location table: the first attachment's replacing the weapon's
+        if (const Json* B = First("iw7.hits"))
+            for (const auto& L : Lines(Text(*B, "iw7.hits")))
+            {
+                if (const auto W = Words(L); W.size() == 2) C[HitColumn(W[0])] = Num(std::atof(W[1].c_str()), 4);
+            }
+        else
+            for (const auto& Col : Iw7Columns())
+                if (Col.rfind("hit_", 0) == 0)
+                {
+                    std::string Field = "loc";
+                    bool Up = true;
+                    for (size_t I = 4; I < Col.size(); I++)
+                    {
+                        if (Col[I] == '_') { Up = true; continue; }
+                        Field += Up ? (char)std::toupper((unsigned char)Col[I]) : Col[I];
+                        Up = false;
+                    }
+                    if (double V = 0; Get(F, Field, V)) C[Col] = Num(V, 4);
+                }
     }
 
     // The combinations a game's class builder makes, as lists of attachments (Notes say whose rules)
@@ -624,6 +974,29 @@ namespace
         for (const char* S : { "clip_size_scale", "fire_time_scale", "reload_time_scale", "reload_empty_time_scale", "reload_add_time_scale",
                                "ads_time_scale", "ads_out_time_scale", "damage_range_scale", "ads_move_speed_scale" })
             Head.push_back(S);
+        // Infinite Warfare's attachments change the damages, the ammo and the hit locations too
+        const bool Iw7 = std::any_of(Attachments.begin(), Attachments.end(), [](const Json& A) { return A.contains(Iw7Format); });
+        if (Iw7)
+            for (const auto& Col : Iw7Columns()) Head.push_back(Col);
+        // Black Ops III's attachments scale each stop's damage and range on their own (damageScale1-6,
+        // damageRangeScale1-6): the stops' damages and those scales, only when an attachment has them
+        const bool PerStop = std::any_of(Attachments.begin(), Attachments.end(), [](const Json& A) { return A.contains("damageScale1"); });
+        if (PerStop)
+        {
+            if (!Iw7)   // Infinite Warfare's columns hold the stops' damages already
+                for (size_t I = 1; I <= std::size(Stops); I++) Head.push_back(std::format("damage_{}", I));
+            for (size_t I = 1; I <= std::size(Stops); I++) Head.push_back(std::format("damage_scale_{}", I));
+            for (size_t I = 1; I <= std::size(Stops); I++) Head.push_back(std::format("range_scale_{}", I));
+            Head.push_back("burst_delay_time_scale");
+        }
+        // WWII's and Advanced Warfare's shot cycle, with the attachment applied: a cell only where the
+        // attachment changes the weapon's value (its "(none)" row gives them all)
+        const bool Cycle = std::any_of(Attachments.begin(), Attachments.end(), [](const Json& A) { return A.contains(S2Format); });
+        if (Cycle)
+        {
+            Head.push_back("fire_type");
+            Head.insert(Head.end(), std::begin(CycleColumns), std::end(CycleColumns));
+        }
         std::string Csv;
         for (size_t I = 0; I < Head.size(); I++) Csv += (I ? "," : "") + Head[I];
         Csv += "\n";
@@ -631,7 +1004,11 @@ namespace
             return F.contains(Field) && Number(F[Field].get<std::string>(), V);
         };
         const auto Format = [&](const Json* A) {
-            return A && A->contains(Iw5Format) ? 5 : A && A->contains(S2Format) ? 2 : A && A->contains(CodolFormat) ? 3 : 0;
+            return A && A->contains(Iw5Format)     ? 5
+                   : A && A->contains(S2Format)    ? 2
+                   : A && A->contains(CodolFormat) ? 3
+                   : A && A->contains(Iw7Format)   ? 7
+                                                   : 0;
         };
         // the games' combination tables, when a zone read holds one
         const auto TableOf = [&](const char* Name) {
@@ -691,9 +1068,29 @@ namespace
                         if (double S = 0; Get(*A, Field, S)) C[Col] = Num(S, 4);
                 }
                 else if (Game == 2 && (A == nullptr || Format(A) == 2))
+                {
                     S2Values(F, Attachments, A ? std::vector<std::string>{ Att } : std::vector<std::string>{}, C, Order);
+                    // the shot cycle's cells the attachment leaves as the "(none)" row has them: empty
+                    if (A)
+                    {
+                        std::map<std::string, std::string> Base;
+                        std::vector<std::string> BaseOrder;
+                        S2Values(F, Attachments, {}, Base, BaseOrder);
+                        for (const char* Col : CycleColumns)
+                            if (C[Col] == Base[Col]) C.erase(Col);
+                        if (C["fire_type"] == Base["fire_type"]) C.erase("fire_type");
+                    }
+                }
                 else if (Game == 3 && (A == nullptr || Format(A) == 3))
                     CodolValues(F, Attachments, A ? std::vector<std::string>{ Att } : std::vector<std::string>{}, C, Order);
+                else if (Game == 7 && (A == nullptr || Format(A) == 7))
+                {
+                    Iw7Values(F, Attachments, A ? std::vector<std::string>{ Att } : std::vector<std::string>{}, C, Order);
+                    if (A)
+                        for (const auto& [Col, Field] : std::initializer_list<std::pair<const char*, const char*>>{
+                                 { "clip_size_scale", "iw7.ammoScale" }, { "fire_time_scale", "iw7.fireTimeScale" }, { "damage_range_scale", "iw7.rangeScale" } })
+                            if (double S = 0; Get(*A, Field, S)) C[Col] = Num(S, 4);
+                }
                 else
                 {
                     double V = 0;
@@ -709,12 +1106,22 @@ namespace
                     Time("ads_out_time_ms", "adsTransOutTime", "adsTransOutTimeScale");
                     if (double Ms = 0; Number(C["fire_time_ms"], Ms) && Ms > 0) C["rpm"] = Num(std::round(60000.0 / Ms * 100) / 100, 2);
                     size_t Stop = 0;
-                    for (const auto& [Damage, Range] : Stops)
+                    for (size_t I = 0; I < std::size(Stops); I++)
                     {
+                        const auto& [Damage, Range] = Stops[I];
                         if (!F.contains(Damage)) continue;
                         Stop++;
-                        if (double R = 0; Value(F, Range, R)) C[std::format("range_{}_m", Stop)] = Num(R * Scale("damageRangeScale") * MetresPerInch, 2);
+                        // the stop's own scales (Black Ops III: by its place among the six; 1 elsewhere)
+                        const std::string DamageScale = std::format("damageScale{}", I + 1), RangeScale = std::format("damageRangeScale{}", I + 1);
+                        if (double R = 0; Value(F, Range, R))
+                            C[std::format("range_{}_m", Stop)] = Num(R * Scale("damageRangeScale") * Scale(RangeScale.c_str()) * MetresPerInch, 2);
+                        if (!PerStop) continue;
+                        // (int) of damage x scale, as BO3's damage function truncates each stop
+                        if (double D = 0; Value(F, Damage, D)) C[std::format("damage_{}", Stop)] = Num(std::trunc(D * Scale(DamageScale.c_str())), 0);
+                        if (A && A->contains(DamageScale)) C[std::format("damage_scale_{}", I + 1)] = Num(Scale(DamageScale.c_str()), 4);
+                        if (A && A->contains(RangeScale)) C[std::format("range_scale_{}", I + 1)] = Num(Scale(RangeScale.c_str()), 4);
                     }
+                    if (PerStop && A && A->contains("burstDelayTimeScale")) C["burst_delay_time_scale"] = Num(Scale("burstDelayTimeScale"), 4);
                 }
                 for (size_t I = 0; I < Head.size(); I++) Csv += (I ? "," : "") + CsvField(C[Head[I]]);
                 Csv += "\n";
@@ -852,6 +1259,7 @@ namespace
         for (const auto& Col : After) Head.push_back(Col.Name);
         for (const auto& [Field, Name] : HitLocations) Head.push_back(Name);
         for (const auto& Col : N.Extra) Head.push_back(Col.Name);
+        if (N.ShotCycle) Head.insert(Head.end(), std::begin(CycleColumns), std::end(CycleColumns));
         Head.push_back("zones");
 
         std::string Csv = WeaponStatsTable::Line(Head);
@@ -882,6 +1290,7 @@ namespace
             for (const auto& Col : After) C[Col.Name] = Cell(F, Col.Field, Col.How, N.TruncateMs);
             for (const auto& [Field, Column] : HitLocations) C[Column] = Cell(F, Field, Unit::Scale);
             for (const auto& Col : N.Extra) C[Col.Name] = Cell(F, Col.Field, Col.How, N.TruncateMs);
+            if (N.ShotCycle) ShotCycle(CycleOf(F, N.TruncateMs), C);
             C["zones"] = WeaponStatsTable::ZoneList(Entry.second);
             WeaponStatsTable::AddRow(Head, C, Csv, Out);
         }
@@ -987,8 +1396,41 @@ namespace
                                  "says \"no\" for it (the names as the script's validateAttachment gives them: reflexsmg is reflex), or\n"
                                  "the Weapon cannot hold it (two scopes, two underbarrels); a sniper rifle gets its own scope\n"
                                  "(<weapon>scope) as a third attachment when neither is a scope nor zoomscope (with a single one too)");
+        else if (Has(S2Format) && std::any_of(Attachments.begin(), Attachments.end(), [](const Json& A) { return Text(A, "s2.game") == "s1"; }))
+            Readme += "Not here: recoil, spread, every other field (in the weapon files).\n\n"
+                      "weapon_attachments.csv: each weapon whose asset lists attachments, first alone (attachment \"(none)\"),\n"
+                      "then with each attachment of its list, one at a time (" + std::to_string(AttRows) + " rows; " + std::to_string(AttMissing) +
+                      " listed attachments no zone read\ngives: export common_mp into the same --out, it defines the shared ones). A weapon's list:\n"
+                      "WeaponDef 0x60, its u8 count 0x524 (s1_mp64_flat RVAs: 0x133e67, 0x163fa0), then the Exo Zombies level\n"
+                      "attachments the scripts give by name when the list does not name them (maps/mp/zombies/_wall_buys.gsc,\n"
+                      "getattachment1forweaponlevel above level 3, 2 above 6, 3 above 9: an optic or the laser sight, then\n"
+                      "lasersight, stock, quickdraw, firerate or xmags, then stock, quickdraw or xmags, by weapon). An\n"
+                      "attachment is the zone's attachment asset: its type (attachment_type, i32 0x10), its display name (the\n"
+                      "string at 8) and its list of field overrides: WeaponDef offsets (u16 at 0x48, sorted), each with a\n"
+                      "16-byte entry (0x50: byte 2 the operation, the value at 8; count i32 at 0x58), the lookup 0x133c50\n"
+                      "taking an offset's first entry. Advanced Warfare's rules, for the weapon in its primary mode:\n"
+                      "- The attachments it holds (0x164320): the Weapon's set (a table entry of five attachments, by the\n"
+                      "  weapon's bits 23-30), type 4 ones first, then the others, a last underbarrel (type 1) with an\n"
+                      "  alternate mode (0x18 or byte 0x6f set) only in that mode.\n"
+                      "- A field (0x1649d0 i32, 0x164760 f32, each taking the field's WeaponDef offset): the weapon's value,\n"
+                      "  replaced by the first attachment that sets it (operation 3), multiplied by every other one's value\n"
+                      "  (Rapid Fire fireTime x 0.8), truncated for an i32 (a type 4 attachment's product is applied at once\n"
+                      "  and its set does not stop a later one: the same for one attachment).\n"
+                      "- clip_size: clipSize (0x638). fire_time_ms: fireTime (0x668); rpm from it. reload_ms, reload_empty_ms,\n"
+                      "  reload_add_ms: 0x68c, 0x694, 0x698. ads_time_ms, ads_out_time_ms: 0x988, 0x990. range_<n>_m: the\n"
+                      "  damage ranges (0xc90, 0xc94). Each by the same rule. A set of attachments (a weapon level's two or\n"
+                      "  three) is computed the same way: this file lists them one at a time.\n"
+                      "- fire_type and the shot cycle columns (weapon_stats.csv's, their code in the columns above), each a\n"
+                      "  cell only where the attachment changes the weapon's \"(none)\" value: fire_type (0x16cae0, i32 0x544:\n"
+                      "  the first attachment setting it), fire_delay_ms (0x658), rechamber_ms (0x66c, or the weapon's animation\n"
+                      "  override for state 6 matching the attachments, 0x172a00), rechamber_bolt_ms (0x674), burst_delay_ms\n"
+                      "  (f32 0x550) by the same rule; bolt_action (0x164590: the first attachment holding an override of byte\n"
+                      "  0xd7b gives its i32 != 0, a type 4 one not stopping the search); ammo_per_shot read as is (0xd54);\n"
+                      "  shot_interval_ms, shot_rpm from them.\n"
+                      "- Not applied: akimbo, the damages (no column here), perks and the scripts' level damage.\n"
+                      "weapon_attachment_combos.csv: not written (no combination table read).\n";
         else if (Has(S2Format))
-            Readme += "Not here: fireDelay, recoil, spread, every other field (in the weapon files).\n\n"
+            Readme += "Not here: recoil, spread, every other field (in the weapon files).\n\n"
                       "weapon_attachments.csv: each weapon whose asset lists attachments, first alone (attachment \"(none)\":\n"
                       "its default attachments only), then with each attachment of its list, one at a time (" + std::to_string(AttRows) +
                       " rows). An\nattachment is the zone's attachment asset: its type (attachment_type: 0 sights, 1 underbarrel (bayonet,\n"
@@ -1016,6 +1458,14 @@ namespace
                       "  (0x5c5446; player state 0x628), and the getters then read the second timer set: fire 0x77c, reload\n"
                       "  0x7ac, reload empty 0x7c8, reload add 0x7cc (fireTimeAkimbo... in the weapon facts), by the same\n"
                       "  override rule (akimbo_fullauto's overrides are on the first set's offsets, which akimbo does not read).\n"
+                      "  The shot cycle columns stay empty on an akimbo row (the second set's delay and rechamber not read).\n"
+                      "- fire_type and the shot cycle columns (weapon_stats.csv's, their code in the columns above), each a\n"
+                      "  cell only where the attachment changes the weapon's \"(none)\" value: fire_type (0x3bdbe0, i32 0x4f4:\n"
+                      "  the first attachment setting it: Dragon's Breath, m30_rifle, the grenade launchers set Single Shot),\n"
+                      "  fire_delay_ms (0x628), rechamber_ms (0x644, or the weapon's animation override for state 6, as the\n"
+                      "  reload's), rechamber_bolt_ms (0x64c), burst_delay_ms (f32 0x500), ammo_per_shot (0xf34: Tribolt DP28\n"
+                      "  3) by the same rule; bolt_action (0x3b63b0: the first attachment holding an override of byte 0xf84\n"
+                      "  gives its i32 != 0); shot_interval_ms, shot_rpm from them.\n"
                       "- Not applied: the hit location overrides (Head Damage, its multipliers), the attachments a weapon\n"
                       "  variant adds (0x3b5b30, special_grip), perks and divisions.\n" +
                       CombosNote("mp/attachmentCombos_mtx12.csv", "code_post_gfx_mp",
@@ -1049,6 +1499,61 @@ namespace
                       "  akimbo (the dual wield times reloadTimeAkimbo..., named in the weapons kind's dumps: which attachment sets\n"
                       "  the dual wield state is not read), the marketplace's buffs and perks.\n"
                       "weapon_attachment_combos.csv: not written (no combination table: an item takes a slot of the weapon).\n";
+        else if (Has(Iw7Format))
+            Readme += "Not here: fireDelay, recoil, spread, every other field (in the weapon files).\n\n"
+                      "weapon_attachments.csv: each weapon whose asset lists attachments, first alone (attachment \"(none)\"),\n"
+                      "then with each attachment of its lists, one at a time (" + std::to_string(AttRows) + " rows; " + std::to_string(AttMissing) +
+                      " listed attachments no zone\nread gives). A weapon's attachments: the weapon asset's lists (a pointer to attachment pointers,\n"
+                      "its u32 count: 0x48 / 0x28, 0x50 / 0x2c, 0x60 / 0x34, 0x70 / 0x3c, then 0x58 / 0x30), the ones the\n"
+                      "gather (0x743cf0) takes for the Weapon's slot bytes 0xd, 3, 5, the others' bits (u16 6) and slot 4\n"
+                      "(last outside its alternate mode); the cosmetics' list (0x68 / 0x38, slot 0xc: cos_*) is left out. The\n"
+                      "Zombies Pack-a-Punch levels are attachments of the first list (<weapon>pap1, <weapon>pap2: the script's\n"
+                      "return_pap_attachment), Bang Bangs one of the others (doubletap). Infinite Warfare's rules, read in\n"
+                      "iw7_flat.exe (VAs), for the weapon in its primary mode, each accessor taking the gathered attachments:\n"
+                      "- The gather leaves the alternate mode's attachment (list 0x58, slot 4: the underbarrel launchers,\n"
+                      "  glsmoke...) out of the primary mode unless its class (attachment i32 0x20) is none (14): such a row\n"
+                      "  is the weapon's own.\n"
+                      "- fire_time_ms (0x73d0f0): fireTime (WeaponDef 0x1dc), replaced by the first attachment whose i32\n"
+                      "  0x1a8 is not 0 (not one of kind 1, attachment 0x18: the alternate mode's), x every other attachment's\n"
+                      "  f32 0x1b0, truncated (Bang Bangs 0.67: rpm x 1.49); rpm from it. Not applied: the spin-up (WeaponDef\n"
+                      "  0xcfc, 0xd04: 0 on the guns read) and the two further scales (0x73b380: WeaponDef 0x628, 0 on every\n"
+                      "  gun, or an attachment's 0x100 / 0x108 block; 0x73d580).\n"
+                      "- clip_size, start_ammo, max_ammo (0x73c620, 0x74efa0, 0x74a890): the first attachment's ammo block\n"
+                      "  (pointer 0xe8: i32 max 0, start 4, clip 8) replacing the weapon's (clipSize 0xbc in the weapon asset,\n"
+                      "  startAmmo 0x48c, maxAmmo 0x4a4), x every attachment's f32 0x198 (0 none), truncated (NV4 Pack-a-Punch:\n"
+                      "  40 then 50 rounds).\n"
+                      "- damage_<n>, range_<n>_m (0x746af6, 0x742570): the first attachment's damage table (pointer 0xf0: i32\n"
+                      "  damages 0-0x10, f32 ranges 0x18-0x24) replacing the weapon's five damages and four ranges, the ranges\n"
+                      "  x every attachment's f32 0x19c (0 none; not applied: the further scale 0x73b1b0); the stops as the\n"
+                      "  damage code takes them (a step, no fall-off): damage_1 up to range_1_m, each next stop whose range is\n"
+                      "  above 0, the last damage beyond (NV4 zm 130 / 50, pap1 220 / 120, pap2 300 / 220, at 25.4 m). The\n"
+                      "  second table (player_damage_<n>, the block's 0x2c-0x3c) is not a column here.\n"
+                      "- hit_<location> (0x740120): the first attachment's hit location table (pointer 0x190, 22 f32)\n"
+                      "  replacing the weapon's (pap1 head x 4, body x 1.25; pap2 head x 5, body x 2).\n"
+                      "- weapon_type (0x744ec0): weaponType (WeaponDef 0x22c), replaced by the first attachment whose i32 0x1c\n"
+                      "  is not 0 (named by the same table). explosion_radius_m (0x73aa30), explosion_inner_damage,\n"
+                      "  explosion_outer_damage (0x73cba0), projectile_speed_mps (0x741800): explosionRadius 0x670,\n"
+                      "  explosionInnerDamage 0x67c, explosionOuterDamage 0x680, projectileSpeed 0x690, replaced by the first\n"
+                      "  attachment's projectile block (pointer 0x160: i32 radius 0, inner 8, outer 0xc, speed 0x14), in\n"
+                      "  weapon_stats.csv's units. An attachment's cell is written only when it changes the value (empty: the\n"
+                      "  weapon's, given in its \"(none)\" row); explosion_radius_min_m (0x674) has no attachment field: the\n"
+                      "  weapon's always (the starting pistol's Pack-a-Punch levels, g18pap1 / g18pap2, make it a projectile).\n"
+                      "- fire_type (0x744770): fireType (WeaponDef 0x244), replaced by the first attachment's ammo general block\n"
+                      "  (pointer 0x88: i32 0xc; m8pap1 and m8pap2 make the Burst iw7_m8_zml_charge Full Auto, firetypeauto\n"
+                      "  the pistol).\n"
+                      "  burst_delay_ms (0x73c1e0): burstFireCooldown (WeaponDef f32 0x33c), replaced by the first\n"
+                      "  attachment's burst block (pointer 0x188: i32 0; not of kind 1 unless it is the weapon's alternate\n"
+                      "  slot's), x every other attachment's f32 0x1b4 (0.8 mod_burst_cooldown, 0.66 the arkpink stones),\n"
+                      "  empty unless fire_type (with the attachment) is Burst. bolt_action (0x7475f0): boltAction (WeaponDef\n"
+                      "  u8 0xb83), replaced by the first attachment's general block (pointer 0xc8: u8 0); the rechamber_*\n"
+                      "  times are the weapon's animation package's (no attachment block changes them), empty unless\n"
+                      "  bolt_action is 1. The charge_* columns: the first attachment's charge block (pointer 0x168).\n"
+                      "- ammo_per_shot (0x737530): the first attachment's i32 0x1f0 above 0, else ammoUsedPerShot (WeaponDef\n"
+                      "  0x4c0), 1 when below 1 (doubletap makes the VPR, iw7_crdb, 2 a shot, take 1).\n"
+                      "- The scale columns: the attachment's own 0x198 (clip_size_scale), 0x1b0 (fire_time_scale), 0x19c\n"
+                      "  (damage_range_scale). Not applied: the reload and other anim time scales (0x1d4-0x1dc, Bang Bangs\n"
+                      "  1.25 / 1.25 / 1.2), akimbo (0x1ac, the akimbo fire time), perks.\n"
+                      "weapon_attachment_combos.csv: not written (a set of attachments is computed by the same rules).\n";
         else
             Readme += "Not here: fireDelay, recoil, spread, every other field (in the weapon files).\n\n"
                       "weapon_attachments.csv: each weapon whose file lists attachments (its attachments field), first alone\n"
@@ -1110,6 +1615,30 @@ namespace WeaponFiles
     bool IsAttachmentFile(const std::string& Text) { return Text.rfind("ATTACHMENTFILE", 0) == 0; }
     const char* const AnimPackageField = "animPackage";
     bool IsAnimPackageFile(const std::string& Text) { return Text.rfind("ANIMPACKAGE", 0) == 0; }
+    const std::vector<Column>& Iw7ChargeColumns()
+    {
+        static const std::vector<Column> Cols = { { "charge_type", "chargeType", Unit::Text },
+                                                  { "charge_time_ms", "chargeGain", Unit::Ms },
+                                                  { "charge_cost_per_shot", "chargeCostPerShot", Unit::Scale },
+                                                  { "charge_shots", "chargeCostPerShot", Unit::ChargeShots },
+                                                  { "charge_drain_ms", "chargeLossWhenIdle", Unit::Ms },
+                                                  { "charge_empty_cooldown_ms", "chargeEmptyCooldown", Unit::Ms } };
+        return Cols;
+    }
+    const std::vector<Column>& Iw7BurstBoltColumns()
+    {
+        static const std::vector<Column> Cols = { { "burst_delay_ms", "burstFireCooldown", Unit::BurstMs },
+                                                  { "bolt_action", "boltAction", Unit::Count },
+                                                  { "rechamber_ms", "rechamberTime", Unit::BoltMs },
+                                                  { "rechamber_one_handed_ms", "rechamberTimeOneHanded", Unit::BoltMs },
+                                                  { "rechamber_bolt_ms", "rechamberBoltTime", Unit::BoltMs } };
+        return Cols;
+    }
+    const std::vector<Column>& Iw7AmmoColumns()
+    {
+        static const std::vector<Column> Cols = { { "ammo_per_shot", "ammoUsedPerShot", Unit::PerShot } };
+        return Cols;
+    }
 
     void ExportStats(const std::vector<Weapon>& Weapons, const std::vector<std::pair<std::string, std::string>>& Strings,
                      const std::string& Zone, const DiskGame::Context& C, DiskGame::Totals& T, const Notes& N,
@@ -1123,9 +1652,16 @@ namespace WeaponFiles
         for (const auto& [D, R] : Stops) Kept.insert(D), Kept.insert(R);
         for (const auto& [F, Name] : HitLocations) Kept.insert(F);
         for (const auto& Col : N.Extra) Kept.insert(Col.Field);
+        if (N.ShotCycle)
+            for (const char* Field : { "fireDelay", "boltAction", "rechamberTime", "rechamberBoltTime", "burstFireCooldown", "ammoUsedPerShot" })
+                Kept.insert(Field);
         // a weapon's attachment list only beside the attachment files it names (Black Ops II: both in
         // the zone); MW3's weapon files hold the field with no attachment file to join
-        if (std::any_of(Weapons.begin(), Weapons.end(), [](const Weapon& W) { return IsAttachmentFile(W.Text); }))
+        // (Advanced Warfare's, WWII's and Infinite Warfare's lists: the weapon asset's own, kept in any zone,
+        // the attachments another zone may define)
+        if (std::any_of(Weapons.begin(), Weapons.end(), [](const Weapon& W) {
+                return IsAttachmentFile(W.Text) || W.Text.find("\\s2.offsets\\") != std::string::npos || W.Text.find("\\iw7.lists\\") != std::string::npos;
+            }))
             Kept.insert(WeaponAttachmentList);
         // MW3's: the weapon file's animation overrides too (their times for an attachment)
         if (std::any_of(Weapons.begin(), Weapons.end(), [](const Weapon& W) { return IsAttachmentFile(W.Text) && W.Text.find(Iw5Format) != std::string::npos; }))
@@ -1154,7 +1690,9 @@ namespace WeaponFiles
             {
                 Json Fields = Json::object();
                 for (auto& [K, V] : Parse(W.Text))
-                    if (AttachmentKept.count(K) || K.rfind("iw5.", 0) == 0 || K.rfind("s2.", 0) == 0 || K.rfind("codol.", 0) == 0) Fields[K] = V;
+                    if (AttachmentKept.count(K) || K.rfind("iw5.", 0) == 0 || K.rfind("s2.", 0) == 0 || K.rfind("codol.", 0) == 0 ||
+                        K.rfind("iw7.", 0) == 0)
+                        Fields[K] = V;
                 Attachments.push_back(Json{ { "name", W.Name }, { "fields", std::move(Fields) } });
                 continue;
             }
@@ -1162,7 +1700,7 @@ namespace WeaponFiles
             Json Fields = Json::object();
             for (auto& [K, V] : Parse(W.Text))
                 // (Call of Duty Online's codol. fields: the offsets its attachment rules address)
-                if (Kept.count(K) || (Rules && K.rfind("s2.", 0) == 0) || K.rfind("codol.", 0) == 0) Fields[K] = V;
+                if (Kept.count(K) || (Rules && K.rfind("s2.", 0) == 0) || K.rfind("codol.", 0) == 0 || K == "iw7.altSlot") Fields[K] = V;
             Json Entry{ { "name", W.Name } };
             if (!W.Mode.empty()) Entry["mode"] = W.Mode;
             Entry["fields"] = std::move(Fields);

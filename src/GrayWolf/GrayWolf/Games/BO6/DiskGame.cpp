@@ -7,6 +7,7 @@
 // stream.keyed_refs), names are 63-bit hashes unless the zone carries the string.
 
 #include "Games/Common/MeshDecode.h"
+#include "Games/Common/HavokTagfile.h"
 #include "DiskGame.h"
 #include "FileSystems.h"
 #include "Games/BO6/TechsetFormat.h"
@@ -1054,6 +1055,24 @@ namespace
                     Counter(std::format("map_lights_type{}", Kind))++;
                 }
             }
+        // ---- the collision: Havok shapes (Games/Common/HavokTagfile.h, SDK 2021.1): col_map's shape
+        // list (0x18, size u32 0x94; 0x21c0, 0x288df60), each collisiontile's mesh and compound (0x90: 0x28 / u32 0x5c, 0x38 / u32 0x60)
+        if (const int64_t Clip = Root("col_map"); Clip >= 0)
+        {
+            Havok::LevelSource Src;
+            Src.Locate = [this](uint64_t A, uint64_t N) -> const uint8_t* {
+                if (Live().Contains(A) && A - Live().Origin() + N <= Image().size()) return Image().data() + (A - Live().Origin());
+                return Beside.Locate(A, N);
+            };
+            Src.ClipMap = Live().Addr((uint64_t)Clip);
+            Src.ShapeList = 0x18, Src.ShapeListSize = 0x94;
+            Src.TileShapes = { { 0x28, 0x5c }, { 0x38, 0x60 } };
+            for (const auto& I : Walk().Instances)
+                if (OwnerIs(I, "collisiontile")) Src.Tiles.push_back(Live().Addr((uint64_t)I.Pos));
+            std::map<std::string, size_t> Read;
+            Havok::ReadLevel(Scene.Collision, Src, 32.0f, Read);
+            for (const auto& [K, N] : Read) Counter("map_" + K) += N;
+        }
         return true;
     }
 

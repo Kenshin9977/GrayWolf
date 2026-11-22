@@ -1,12 +1,13 @@
 #pragma once
 #include "CoDAssets.h"
+#include <functional>
 #include <shared_mutex>
 
 class XSUBCache : public CoDPackageCache
 {
 private:
     std::shared_mutex ReadMutex;
-    // Each package's KAPI version (16 Cold War; 23 Modern Warfare III, Black Ops 6 and 7)
+    // Each package's KAPI version (16 Cold War; 21 Vanguard; 23 Modern Warfare III, Black Ops 6 and 7)
     std::vector<uint16_t> PackageVersions;
 public:
     XSUBCache();
@@ -21,4 +22,11 @@ public:
     {
         return ExtractPackageObject(CacheID, ResultSize);
     }
+
+    // A framed object's size, from its frames' block records (read through ReadAt(offset in the
+    // object's Stored bytes, destination, count), true when read): what a version-21 package
+    // (Vanguard) does not index, its entries holding only the stored size. False when the frames
+    // do not parse.
+    static bool FramedObjectSize(const std::function<bool(uint64_t, uint8_t*, size_t)>& ReadAt, uint64_t Stored,
+                                 uint64_t Key, uint64_t& Size);
 };

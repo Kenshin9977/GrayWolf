@@ -51,6 +51,7 @@ namespace
         { "sound_aliases", "--sound-aliases", &CliOptions::SoundAliases },
         { "mod_tools", "--mod-tools", &CliOptions::ModTools },
         { "bo3_usermap", "--bo3-usermap", &CliOptions::Bo3Usermap },
+        { "bo3_usermap_debug", "--bo3-usermap-debug", &CliOptions::Bo3UsermapDebug },
         { "map_collision", "--map-collision", &CliOptions::MapCollision },
         { "map_content", "--map-content", &CliOptions::MapContent },
         { "language", "--language", &CliOptions::Language },
@@ -75,6 +76,7 @@ namespace
         // the GUI's default: a script or the regress never touches an install
         O.Settings["mod_tools"] = "off";
         O.Settings["bo3_usermap"] = "off";
+        O.Settings["bo3_usermap_debug"] = "off";
         O.OatModelFormat = Cli.OatModelFmt;
         O.OatImageFormat = Cli.OatImageFmt;
         O.OatGdt = Cli.OatGdt;

@@ -954,6 +954,7 @@ namespace
         L.Color = 32, L.Dir = 44, L.Origin = 68, L.Radius = 80, L.CosHalfFov = 108, L.Def = 0x98;
         AddPrimaryLights(Scene, L);
         AddMapEnts(Scene);
+        AddVehicleModels(Scene, Models);   // a vehicle kept as a script_model of its model
         for (const auto& [Number, Key] : IW8Keys::EntityKeys) Scene.EntityKeys[std::to_string(Number)] = Key;
         return true;
     }

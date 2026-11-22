@@ -120,6 +120,9 @@ namespace
             L.Classes = { "rifle", "sniper", "mg", "smg", "spread", "pistol", "grenade", "rocketlauncher",
                           "turret", "throwingknife", "non-player", "item", "beam", "ball", "none" };
             L.FireTypes = { "Full Auto", "Single Shot", "Burst", "Double Barrel", "Beam" };
+            // the charge types (the exe's table 0x141ba8738, entries 0-6)
+            L.ChargeTypes = { "No Charging", "Hold Fire Button", "Charge When Idle", "Charge In ADS", "Fire on Release",
+                              "Fire on Release at Max", "Auto Charge Fire on Tap" };
             L.Fields = { { "adsTransInTime", 0xb4, false }, { "adsTransOutTime", 0xb8, false }, { "clipSize", 0xbc, false },
                          { "fireTime", 0x1dc }, { "weaponType", 0x22c }, { "weaponClass", 0x234 }, { "fireType", 0x244 },
                          { "startAmmo", 0x48c }, { "maxAmmo", 0x4a4 }, { "shotCount", 0x4a8 },
@@ -130,7 +133,21 @@ namespace
                          { "explosionOuterDamage", 0x680 }, { "projectileSpeed", 0x690 }, { "locationDamageMultipliers", 0x940 },
                          { "burstCount", 0x248 }, { "moveSpeedScale", 0x508 }, { "adsMoveSpeedScale", 0x50c },
                          { "playerDamage", 0x4d4 }, { "mid1PlayerDamage", 0x8fc }, { "mid2PlayerDamage", 0x900 },
-                         { "mid3PlayerDamage", 0x904 }, { "minPlayerDamage", 0x8ec } };
+                         { "mid3PlayerDamage", 0x904 }, { "minPlayerDamage", 0x8ec },
+                         // the charged fire (their getters: 0x752620, 0x7521c0, 0x752010, 0x7522e0, 0x7520a0), only
+                         // with a charge type
+                         { "chargeType", 0xd08, true, -1, false, false, 0xd08 }, { "chargeGain", 0xd0c, true, -1, false, true, 0xd08 },
+                         { "chargeCostPerShot", 0xd10, true, -1, false, true, 0xd08 },
+                         { "chargeLossWhenIdle", 0xd14, true, -1, false, true, 0xd08 },
+                         { "chargeEmptyCooldown", 0xd18, true, -1, false, true, 0xd08 },
+                         // the pause after a burst (f32 ms, getter 0x73c1e0, set as the weapon's time at 0x730169
+                         // when a Burst weapon's firing state ends) and the bolt action flag (u8, getter 0x7475f0,
+                         // which lets the rechamber state start: 0x7238a8)
+                         { "burstFireCooldown", 0x33c, true, -1, false, true }, { "boltAction", 0xb83, true, -1, true },
+                         // the rounds a shot takes from the clip (i32, getter 0x737530: below 1 read as 1; taken at
+                         // 0x726e8a) and whether a shot needs them all in the clip (u8, getter 0x74dd10, through
+                         // 0x74de00 at 0x72167c)
+                         { "ammoUsedPerShot", 0x4c0 }, { "requireAmmoUsedPerShot", 0x4c4, true, -1, true } };
             // the animation package (WeaponDef 0x1c0, an anim_package asset) and its u16 timers at 0x10:
             // 0x744380 reads the time at the byte offset its callers pass (from 0x1d0 under a flag, the
             // package overrides of 0xe20 not applied); the offsets are x64-zt's WeaponAnimPackageStateTimers
@@ -138,11 +155,13 @@ namespace
             // reloadEmpty 0x2c (0x74cce0, 0x2e), reloadAdd 0x30 (0x74c790, 0x32), reloadEmptyAdd 0x34
             // (0x74cb40, 0x36), reloadStart 0x38 (0x74d860), reloadEnd 0x42 (0x74ce30, 0x44), drop 0x46
             // (0x73a6e0), raise 0x48 (0x74c620), quickDrop 0x50 (0x74c5e0), quickRaise 0x52 (0x74c600),
-            // sprintOut 0x5e (0x74ee80)
+            // sprintOut 0x5e (0x74ee80), rechamber 0xe (0x74c660), rechamberOneHanded 0x10 (0x74c680),
+            // rechamberBolt 0x12 (0x74c640): the three read where the rechamber state starts (0x723b5b)
             L.AnimPkg = 0x1c0, L.AnimTimers = 0x10, L.AnimPkgType = "anim_package";
             L.AnimTimes = { { "firstRaiseTime", 0x6 }, { "reloadTime", 0x26 }, { "reloadEmptyTime", 0x2c }, { "reloadAddTime", 0x30 },
                             { "reloadEmptyAddTime", 0x34 }, { "reloadStartTime", 0x38 }, { "reloadEndTime", 0x42 }, { "dropTime", 0x46 },
-                            { "raiseTime", 0x48 }, { "quickRaiseTime", 0x52 }, { "sprintOutTime", 0x5e } };
+                            { "raiseTime", 0x48 }, { "quickRaiseTime", 0x52 }, { "sprintOutTime", 0x5e }, { "rechamberTime", 0xe },
+                            { "rechamberTimeOneHanded", 0x10 }, { "rechamberBoltTime", 0x12 } };
             L.Notes = IwWeaponDefs::GameNotes("Infinite Warfare", "french/fra_code_post_gfx", "global_core_mp",
                                               "the WeaponCompleteDef (the weapon asset: ADS times, clipSize) and its WeaponDef\n"
                                               "(behind 8), at the offsets of x64-zt's IW7 structs.hpp",
@@ -160,6 +179,10 @@ namespace
                               "package's name: export both into the same --out.\n"
                               "meleeDamage (0x4d8, 50 for every gun) is left out, not checked.\n";
             L.Notes.AnimPackages = true;
+            // the attachments (WeaponFiles' iw7 rules; the README says the RVAs): the weapon asset's lists, in
+            // the gather's order (0x743cf0: the Weapon's slot bytes 0xd, 3, 5, the others' bits 6 into 0x70,
+            // the slot 4 last outside its alternate mode), the cosmetics' list (0x68, slot 0xc: cos_*) left out
+            L.Iw7.Lists = { { 0x48, 0x28 }, { 0x50, 0x2c }, { 0x60, 0x34 }, { 0x70, 0x3c }, { 0x58, 0x30 } };
             // the second damage table (x64-zt's names): the same step function reads it when its 7th
             // argument is 0 (iw7_flat 0x140742860, called at 0x140ae5e0e when the victim's +0x170 is set
             // and a global's byte +8 is on; else 0x140742520, the first table), over the same ranges
@@ -168,6 +191,9 @@ namespace
                               { "player_damage_3", "mid2PlayerDamage", WeaponFiles::Unit::Count },
                               { "player_damage_4", "mid3PlayerDamage", WeaponFiles::Unit::Count },
                               { "player_damage_5", "minPlayerDamage", WeaponFiles::Unit::Count } };
+            for (const auto& Col : WeaponFiles::Iw7ChargeColumns()) L.Notes.Extra.push_back(Col);
+            for (const auto& Col : WeaponFiles::Iw7BurstBoltColumns()) L.Notes.Extra.push_back(Col);
+            for (const auto& Col : WeaponFiles::Iw7AmmoColumns()) L.Notes.Extra.push_back(Col);
             L.Notes.ExtraNotes =
                 "- player_damage_1..5: a second damage table, x64-zt's playerDamage, mid1-3PlayerDamage, minPlayerDamage\n"
                 "  (WeaponDef 0x4d4, 0x8fc, 0x900, 0x904, 0x8ec), read by the same step function as damage_<n>\n"
@@ -181,7 +207,39 @@ namespace
                 "  its own too), checked on global_core_mp's values, not read in the exe. burst_count is set on the 27\n"
                 "  Burst weapons only, their names' counts with it (iw7_gauss_mp_burst2 2, _burst3 3, iw7_rvn_mpl_burst6\n"
                 "  6). moveSpeedScale is 1 on all 169 weapons; adsMoveSpeedScale goes by class (smg 2.015, pistol\n"
-                "  2.115, rifle 1.066, mg 1.09, sniper 1.0535): what base speed it scales is not read (a scale, x 1).\n";
+                "  2.115, rifle 1.066, mg 1.09, sniper 1.0535): what base speed it scales is not read (a scale, x 1).\n"
+                "- charge_*: the charged fire (the P-LAW, iw7_chargeshot), empty for a weapon whose chargeType (WeaponDef\n"
+                "  0xd08, getter 0x752620) is 0, No Charging. charge_type: its name (the exe's table 0x141ba8738: No\n"
+                "  Charging, Hold Fire Button, Charge When Idle, Charge In ADS, Fire on Release, Fire on Release at Max,\n"
+                "  Auto Charge Fire on Tap). The weapon's charge is a meter of 4095 (the update 0x140721125): it fills by\n"
+                "  frame time / chargeGain x 4095 (0xd0c, getter 0x7521c0; 0x72132f): charge_time_ms, the time to fill\n"
+                "  it; it drains by frame time / chargeLossWhenIdle x 4095 (0xd14, 0x7522e0; 0x7212d4) when not\n"
+                "  charging: charge_drain_ms. A shot needs and takes (int)(chargeCostPerShot x 4095) (0xd10, 0x752010;\n"
+                "  0x720478-0x7204e3): charge_cost_per_shot, the meter's share a shot takes, charge_shots the shots a full\n"
+                "  meter fires (4095 / that, rounded down; the time a shot charges: charge_time_ms x the cost). A shot\n"
+                "  that empties the meter starts the cooldown, chargeEmptyCooldown x 1000 ms (0xd18, 0x7520a0;\n"
+                "  0x720510): charge_empty_cooldown_ms. Fire time and reload are the other columns'.\n"
+                "- burst_delay_ms: the pause after a burst, burstFireCooldown (WeaponDef f32 0x33c, milliseconds;\n"
+                "  getter 0x14073c1e0), empty unless fire_type is Burst. The weapon's firing state (0x14072ff70, each\n"
+                "  frame): when the time a shot set (fire_time_ms) runs out and the fire type (0x140744770) is Burst,\n"
+                "  the burst goes on while it has rounds left (0x14071f490); after its last shot the weapon's time is\n"
+                "  set to (int)floor(cooldown + 0.5) ms (0x140730169-0x1407301a4) before it can fire again: a burst\n"
+                "  cycle is burst_count x fire_time_ms + burst_delay_ms. Every weapon holds the field (200 by\n"
+                "  default): only a Burst weapon's is written.\n"
+                "- bolt_action: boltAction (WeaponDef u8 0xb83, getter 0x1407475f0), 1 for a bolt or pump weapon. Only\n"
+                "  with it does the rechamber state start (0x1407238a8; else 0x7237e0 returns at once).\n"
+                "- rechamber_ms, rechamber_one_handed_ms, rechamber_bolt_ms: the animation package's timers 0xe, 0x10,\n"
+                "  0x12 (getters 0x14074c660, 0x14074c680, 0x14074c640, x64-zt's iRechamberTime,\n"
+                "  rechamberTimeOneHanded, iRechamberBoltTime), empty unless bolt_action is 1. The rechamber state\n"
+                "  (0x140723b5b-0x140723bc8, state 11) sets the weapon's time to rechamber_ms (rechamber_one_handed_ms\n"
+                "  when the player state's +0x8bc is 1, not named) and its second timer to rechamber_bolt_ms when that\n"
+                "  is above 0 and below the first (else 1 ms). The package overrides (WeaponDef 0xe20) are not applied.\n"
+                "- ammo_per_shot: the rounds a shot takes from the clip, ammoUsedPerShot (WeaponDef i32 0x4c0, getter\n"
+                "  0x140737530: below 1 read as 1). The fire function (0x140726a70) takes them at 0x140726e8a (0x1407330e0:\n"
+                "  the clip less that, not below 0), unless the player's ps +0x158 flags say infinite ammo (0x1405d2e30).\n"
+                "  A shot is refused when the clip holds less than it needs (0x140721570): ammo_per_shot when\n"
+                "  requireAmmoUsedPerShot (u8 0x4c4, getter 0x14074dd10) is 1, else 1 (0x14074de00). A charged shot\n"
+                "  takes the same rounds; its meter cost is apart (charge_cost_per_shot).\n";
             return L;
         }();
         return L;
@@ -722,6 +780,9 @@ namespace
         };
         Maps::Collision& C = Scene.Collision;
         std::vector<IW7Havok::Shape> World, Entities;
+        // each triangle's material: one per content flags its shape tag gives (Collision::Materials)
+        std::map<uint32_t, uint32_t> MaterialOf;
+        bool AllContents = true;
         if (const int64_t Clip = Root("clipmap"); Clip >= 0 && Shapes(Clip, 0xf8, 0x100, World))
             for (IW7Havok::Shape& S : World)
             {
@@ -730,7 +791,15 @@ namespace
                 const uint32_t First = (uint32_t)(C.Vertices.size() / 3);
                 C.Vertices.insert(C.Vertices.end(), S.Vertices.begin(), S.Vertices.end());
                 for (const uint32_t V : S.Triangles) C.Triangles.push_back(First + V);
+                AllContents = AllContents && S.TriangleContents.size() * 3 == S.Triangles.size();
+                for (const uint32_t Flags : S.TriangleContents)
+                {
+                    const auto [It, New] = MaterialOf.try_emplace(Flags, (uint32_t)C.Materials.size());
+                    if (New) C.Materials.emplace_back("", Flags);
+                    C.TriangleMaterials.push_back(It->second);
+                }
             }
+        if (!AllContents) C.TriangleMaterials.clear();
         const int64_t Ents = Root("map_ents");
         if (Ents >= 0 && Shapes(Ents, 0x150, 0x158, Entities))
         {

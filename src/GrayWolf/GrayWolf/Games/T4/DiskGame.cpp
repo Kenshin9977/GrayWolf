@@ -126,8 +126,10 @@ namespace
             C.BrushSize = 0x50, C.BrushMins = 0, C.BrushContents = 0xc, C.BrushMaxs = 0x10, C.BrushSideCount = 0x1c, C.BrushSides = 0x20;
             C.AxialMaterial = 0x24;
             C.SideSize = 0xc, C.SidePlane = 0, C.SideMaterial = 4;
-            C.ModelCount = 0x94, C.Models = 0x98, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40;
+            C.ModelCount = 0x94, C.Models = 0x98, C.ModelSize = 0x48, C.ModelLeafBrushNode = 0x40, C.ModelAabbs = 0x1c;
             C.VertexCount = 0x58, C.Vertices = 0x5c, C.TriangleCount = 0x70, C.Triangles = 0x74;   // u16 vertex numbers
+            // the triangles' materials: CollisionPartition 0x14 (u8 triCount, firstTri 4), the AABB tree (0x20)
+            C.PartitionCount = 0x84, C.Partitions = 0x88, C.PartitionSize = 0x14, C.AabbCount = 0x8c, C.Aabbs = 0x90;
             return C;
         }
 

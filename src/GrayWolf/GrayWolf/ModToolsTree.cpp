@@ -106,7 +106,36 @@ std::string RootOf(const DiskGame::Context& C)
     return C.Setting("mod_tools_root");
 }
 
-bool WriteKept(const fs::path& File, const std::string& Bytes)
+namespace
+{
+    // Windows' error as a reason a user can act on (the mod tools' programs keep their files open)
+    std::string Reason(DWORD Code)
+    {
+        switch (Code)
+        {
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_LOCK_VIOLATION:
+            return "the file is open in another program (Radiant, APE or the Mod Tools launcher): close it and export again";
+        case ERROR_ACCESS_DENIED:
+            return "access denied (a read-only file or folder, or Windows Security's Controlled folder access blocking GrayWolf)";
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL:
+            return "the disk is full";
+        case ERROR_PATH_NOT_FOUND:
+            return "its folder could not be made";
+        default:
+            break;
+        }
+        return std::system_category().message((int)Code) + " (Windows error " + std::to_string(Code) + ")";
+    }
+    bool Fail(std::string* Why, const std::string& Step, DWORD Code)
+    {
+        if (Why) *Why = Step + ": " + Reason(Code);
+        return false;
+    }
+}
+
+bool WriteKept(const fs::path& File, const std::string& Bytes, std::string* Why)
 {
     std::error_code Ec;
     fs::create_directories(File.parent_path(), Ec);
@@ -128,16 +157,33 @@ bool WriteKept(const fs::path& File, const std::string& Bytes)
                 break;
             }
         }
-        if (Aside.empty()) return false;
-        fs::rename(File, Aside, Ec);
-        if (Ec) return false;
+        if (Aside.empty())
+        {
+            if (Why) *Why = "setting the earlier file aside: .bak to .bak999 are all taken";
+            return false;
+        }
+        if (!MoveFileExW(File.c_str(), Aside.c_str(), 0)) return Fail(Why, "setting the earlier file aside", GetLastError());
         std::lock_guard<std::mutex> L(Lock);
         Run.Kept.emplace_back(Slashed(File), Slashed(Aside));
     }
     {
-        std::ofstream Out(File, std::ios::binary | std::ios::trunc);
-        Out.write(Bytes.data(), (std::streamsize)Bytes.size());
-        if (!Out.good()) return false;
+        const HANDLE H = CreateFileW(File.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (H == INVALID_HANDLE_VALUE) return Fail(Why, "making the file", GetLastError());
+        size_t Done = 0;
+        DWORD Code = 0;
+        while (Done < Bytes.size())
+        {
+            const DWORD Chunk = (DWORD)std::min<size_t>(Bytes.size() - Done, 1u << 30);
+            DWORD Wrote = 0;
+            if (!WriteFile(H, Bytes.data() + Done, Chunk, &Wrote, nullptr) || Wrote == 0)
+            {
+                Code = GetLastError();
+                break;
+            }
+            Done += Wrote;
+        }
+        CloseHandle(H);
+        if (Done < Bytes.size()) return Fail(Why, "writing the file", Code);
     }
     Opened(File);
     return true;

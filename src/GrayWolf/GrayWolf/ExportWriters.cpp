@@ -410,7 +410,7 @@ void ImageSink::Write(std::unique_ptr<XImageDDS> Dds, const std::string& Path)
         Times().Converted++;
         std::lock_guard<std::mutex> G(S->StatsLock);
         if (Ok) S->Stats.Written++;
-        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path);
+        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path), S->Stats.FailedWhy.emplace_back();
     });
 }
 
@@ -420,15 +420,16 @@ void ImageSink::Write(std::function<std::unique_ptr<XImageDDS>()> Build, const s
     St->Pool.Post([S = St.get(), F = Fmt, B = std::move(Build), Path]() {
         const auto Start = std::chrono::steady_clock::now();
         std::unique_ptr<XImageDDS> D;
+        std::string Threw;
         try { D = B(); }
-        catch (const std::exception&) {}
-        if (!D) return;
-        const bool Ok = Put(*D, Path, F);
+        catch (const std::exception& E) { Threw = E.what(); }   // the game's Oodle found nowhere, ...
+        if (!D && Threw.empty()) return;
+        const bool Ok = D && Put(*D, Path, F);
         Times().ConvertUs += Micros(Start);
         Times().Converted++;
         std::lock_guard<std::mutex> G(S->StatsLock);
         if (Ok) S->Stats.Written++;
-        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path);
+        else S->Stats.Failed++, S->Stats.FailedFiles.push_back(Path), S->Stats.FailedWhy.push_back(Threw);
     });
 }
 
@@ -461,7 +462,7 @@ ImageSinkStats ImageSink::Finish(const std::function<std::unique_ptr<XImageDDS>(
             if (const uint64_t Key = KeyOf ? KeyOf(Tag) : 0) Written()[Key] = LinkPath;
         }
         else
-            St->Stats.Failed++, St->Stats.FailedFiles.push_back(LinkPath);
+            St->Stats.Failed++, St->Stats.FailedFiles.push_back(LinkPath), St->Stats.FailedWhy.emplace_back();
     }
     St->Links.clear();
     Times().LinkUs += Micros(Linking);

@@ -254,6 +254,7 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
             }
 
     AddMapEnts(Scene);
+    AddVehicleModels(Scene, Models);   // a vehicle kept as a script_model of its model
     for (const auto& [Number, Key] : M.EntityKeys) Scene.EntityKeys[std::to_string(Number)] = Key;
     if (M.ClipBrushes.BrushSize) AddCollision(Scene, { M.Clip ? M.Clip : "col_map_sp", "col_map_mp" }, M.ClipBrushes);
     if (M.Triggers >= 0) AddTriggers(Scene, M.Triggers, "map_ents", M.TriggerShapes);
@@ -264,7 +265,7 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
 // ClipMaterial 0x10 at 0x10/0x18 (a name, surface 8, contents 0xc); leaf brush nodes 0x20/0x28,
 // 0x18 each; brush sides 0x60/0x68, 8 bytes, the plane a u32 number, a u16 material number at 4;
 // brushes u16 0x80, records 0x88 (0x30: u16 numsides, sides 8, axial material numbers 0x18),
-// Bounds 0x90, contents 0x98; triangles 0xa0/0xa8 and u16 0xb0/0xb8); brush models
+// Bounds 0x90, contents 0x98; vertices 0xa0/0xa8, u16 triangles 0xb0/0xb8); brush models
 // 0x130/0x138, cmodel_t 0x58 (a ClipInfo pointer at 0x20: the world's; leafBrushNode at 0x50).
 // MapEnts' MapTriggers at 0x18
 Maps::ClipLayout IWZone::AwClipBrushes()
@@ -280,6 +281,14 @@ Maps::ClipLayout IWZone::AwClipBrushes()
     C.ModelCount = 0x130, C.Models = 0x138, C.ModelSize = 0x58, C.ModelInfo = 0x20, C.ModelLeafBrushNode = 0x50;
     C.NodeSize = 0x18;
     C.VertexCount = 0x10 + 0xa0, C.Vertices = 0x10 + 0xa8, C.TriangleCount = 0x10 + 0xb0, C.Triangles = 0x10 + 0xb8;
+    // the triangles' materials: the ClipInfo's partitions 0xd8/0xe0 (0x10 each: u8 triCount 0, u8
+    // vertex segment 2, firstTri i32 4) and its AABB tree 0x40/0x48 (0x20 each, a leaf's partition
+    // at 0x1c). A partition's vertices start at its segment times 1024: the game's trace (s1
+    // 0x1403a3170: verts 0xa8 + (seg << 10) * 12; h1 0x1404ce3ef: (seg * 3) << 12 bytes). On AW's
+    // mp_blackbox (207 913 vertices, segments 0..140) every index lands in range and each of the
+    // 46 055 leaves holds its triangles; with no base 35 024 do not
+    C.PartitionCount = 0x10 + 0xd8, C.Partitions = 0x10 + 0xe0, C.PartitionSize = 0x10, C.SegmentVertices = 1024;
+    C.AabbCount = 0x10 + 0x40, C.Aabbs = 0x10 + 0x48;
     return C;
 }
 

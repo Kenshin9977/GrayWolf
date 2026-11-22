@@ -69,6 +69,7 @@ namespace Iw64
                     C.Info.BrushBounds = 0x38, C.Info.BrushContents = 0x3c, C.Info.LeafBrushNodeCount = 0x20, C.Info.LeafBrushNodes = 0x24;
                     C.ModelCount = 0x90, C.Models = 0x94, C.ModelSize = 0x48, C.ModelInfo = 0x1c, C.ModelLeafBrushNode = 0x20 + 0x24;
                     C.VertexCount = 0x64, C.Vertices = 0x68, C.TriangleCount = 0x6c, C.Triangles = 0x70;
+                    C.PartitionCount = 0x80, C.Partitions = 0x84, C.AabbCount = 0x88, C.Aabbs = 0x8c;
                 }
                 else
                 {
@@ -79,6 +80,7 @@ namespace Iw64
                     C.Info.BrushBounds = 0x94, C.Info.BrushContents = 0x98, C.Info.LeafBrushNodeCount = 0x40, C.Info.LeafBrushNodes = 0x44;
                     C.ModelCount = 0x84, C.Models = 0x88, C.ModelSize = 0x44, C.ModelLeafBrushNode = 0x1c + 0x24;
                     C.VertexCount = 0x58, C.Vertices = 0x5c, C.TriangleCount = 0x60, C.Triangles = 0x64;
+                    C.PartitionCount = 0x74, C.Partitions = 0x78, C.AabbCount = 0x7c, C.Aabbs = 0x80;
                 }
                 // both: ClipMaterial 0xc (name, surface 4, contents 8), cbrush_t 0x24 (u16 numsides,
                 // sides 4, axial material numbers 0xc), cbrushside_t 8 (plane, u16 material number 4),
@@ -87,6 +89,8 @@ namespace Iw64
                 C.BrushSize = 0x24, C.BrushSideCount = 0, C.BrushSideCountBytes = 2, C.BrushSides = 4, C.AxialMaterial = 0xc;
                 C.SideSize = 8, C.SidePlane = 0, C.SideMaterial = 4, C.SideMaterialBytes = 2;
                 C.NodeSize = 0x14;
+                // the triangles' materials: CollisionPartition 0xc (u8 triCount, firstTri 4), the AABB tree (0x20)
+                C.PartitionSize = 0xc;
                 return C;
             }
             if (&G == &Mw3)
@@ -96,6 +100,8 @@ namespace Iw64
                 C.Info.BrushBounds = 0x70, C.Info.BrushContents = 0x78, C.Info.LeafBrushNodeCount = 0x40, C.Info.LeafBrushNodes = 0x48;
                 C.ModelCount = 0x120, C.Models = 0x128, C.ModelSize = 0x50, C.ModelInfo = 0x20, C.ModelLeafBrushNode = 0x28 + 0x24;
                 C.VertexCount = 0xc8, C.Vertices = 0xd0, C.TriangleCount = 0xd8, C.Triangles = 0xe0;
+                // the triangles' materials: CollisionPartition 0x10 (u8 triCount, firstTri 4), the AABB tree (0x20)
+                C.PartitionCount = 0x100, C.Partitions = 0x108, C.PartitionSize = 0x10, C.AabbCount = 0x110, C.Aabbs = 0x118;
             }
             else
             {
@@ -103,6 +109,8 @@ namespace Iw64
                 C.Info.BrushBounds = 0x120, C.Info.BrushContents = 0x128, C.Info.LeafBrushNodeCount = 0x78, C.Info.LeafBrushNodes = 0x80;
                 C.ModelCount = 0x100, C.Models = 0x108, C.ModelSize = 0x44, C.ModelLeafBrushNode = 0x1c + 0x24;
                 C.VertexCount = 0xa8, C.Vertices = 0xb0, C.TriangleCount = 0xb8, C.Triangles = 0xc0;
+                // the triangles' materials: CollisionPartition 0x10 (u8 triCount, firstTri 4), the AABB tree (0x20)
+                C.PartitionCount = 0xe0, C.Partitions = 0xe8, C.PartitionSize = 0x10, C.AabbCount = 0xf0, C.Aabbs = 0xf8;
             }
             C.MaterialSize = 0x10, C.MaterialName = 0, C.MaterialSurface = 8, C.MaterialContents = 0xc;
             C.BrushSize = 0x30, C.BrushSideCount = 0, C.BrushSideCountBytes = 2, C.BrushSides = 8, C.AxialMaterial = 0x18;

@@ -34,8 +34,13 @@ namespace WeaponFiles
         std::string Mode;   // mp, sp... when the game says it apart from the name (CoD1's weapons/sp/)
     };
 
-    // how a field's text becomes the column's number
-    enum class Unit { Count, Ms, Inches, InchesPerSecond, Scale };
+    // how a field's text becomes the column's number: Text, the text itself; ChargeShots, the shots a full
+    // charge meter pays for, the field a cost per shot (Infinite Warfare's: a meter of 4095, the cost
+    // (int)(cost x 4095), a shot fired while the meter holds the cost: 4095 / cost shots, rounded down);
+    // BurstMs, a time in milliseconds (an f32 the game rounds: (int)floor(x + 0.5)) written only when the
+    // weapon's fireType is Burst; BoltMs, an Ms time written only when the weapon's boltAction is 1;
+    // PerShot, a count read as 1 when it is below 1 (Infinite Warfare's ammo used per shot, 0x737530)
+    enum class Unit { Count, Ms, Inches, InchesPerSecond, Scale, Text, ChargeShots, BurstMs, BoltMs, PerShot };
 
     // a number column: the weapon file's field, its unit
     struct Column
@@ -61,8 +66,19 @@ namespace WeaponFiles
         // the game's parser truncates a time's seconds x 1000 to its milliseconds (CoD1's, (int) of
         // atof x 1000); else they are rounded
         bool TruncateMs = false;
+        // WWII's and Advanced Warfare's shot cycle columns (fire_delay_ms, bolt_action, rechamber_ms,
+        // rechamber_bolt_ms, burst_delay_ms, ammo_per_shot, shot_interval_ms, shot_rpm) after Extra, from the
+        // weapon file's fireDelay, boltAction, rechamberTime, rechamberBoltTime, burstFireCooldown and
+        // ammoUsedPerShot; the game's ExtraNotes say them
+        bool ShotCycle = false;
     };
     extern const char* const AnimPackageField;
+    // Infinite Warfare's charged fire columns (its weapon_stats.csv extras and weapon_attachments.csv's)
+    const std::vector<Column>& Iw7ChargeColumns();
+    // Infinite Warfare's burst pause and bolt action columns (the same two tables)
+    const std::vector<Column>& Iw7BurstBoltColumns();
+    // Infinite Warfare's ammo per shot column (the same two tables)
+    const std::vector<Column>& Iw7AmmoColumns();
     bool IsAnimPackageFile(const std::string& Text);
 
     // The weaponstats kind: this zone's weapons (those Context::Wants), attachment files and strings

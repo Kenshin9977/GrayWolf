@@ -301,6 +301,8 @@ namespace
             C.SideSize = 8, C.SidePlane = 0, C.SideMaterial = 4, C.SideMaterialBytes = 2;
             C.ModelCount = 0x90, C.Models = 0x94, C.ModelSize = 0x48, C.ModelInfo = 0x1c, C.ModelLeafBrushNode = 0x44;
             C.VertexCount = 0x64, C.Vertices = 0x68, C.TriangleCount = 0x6c, C.Triangles = 0x70;   // u16 vertex numbers
+            // the triangles' materials: CollisionPartition 0xc (u8 triCount, firstTri 4), the AABB tree (0x20)
+            C.PartitionCount = 0x80, C.Partitions = 0x84, C.PartitionSize = 0xc, C.AabbCount = 0x88, C.Aabbs = 0x8c;
             return C;
         }
         void DefinesAt(std::vector<std::pair<DiskGame::AssetId, int64_t>>& Out) const override

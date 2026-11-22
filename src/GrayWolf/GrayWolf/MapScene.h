@@ -174,7 +174,18 @@ namespace Maps
         // (b - a) x (c - a) points (a game storing them the other way round is turned by its reader)
         std::vector<float> Vertices;
         std::vector<uint32_t> Triangles;
+        // each triangle's material, a number into Materials (its content flags: a patch the
+        // player stood on, one only bullets stopped at), when the game's reader gives them (else
+        // empty; NoMaterial for a triangle no leaf of the clip map's AABB tree names)
+        static constexpr uint32_t NoMaterial = 0xffffffffu;
+        std::vector<uint32_t> TriangleMaterials;
         bool Empty() const { return Brushes.empty() && Models.empty() && Triggers.empty(); }
+        // whether content flags (the lineage's bits) stop anything: water 0x20, foliage 0x2,
+        // nonColliding 0x4 alone stop nothing (ToolNames would make them clip, a player wall)
+        static bool Stops(uint32_t Contents)
+        {
+            return (Contents & (0x1 | 0x10 | 0x40 | 0x80 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x10000 | 0x20000 | 0x1000000)) != 0;
+        }
     };
 
     struct MapScene

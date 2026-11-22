@@ -79,6 +79,10 @@ namespace BO7Family
         // scriptable: its size, its models' u32 count and xmodel pointer list
         int64_t ScriptableSize = 0xd8, ScriptableModelCount = 0xb4, ScriptableModels = 0xb8;
         const IwTerrain::Layout* Terrain = &IwTerrain::BlackOps7;          // nullptr: no terrain read
+        // the collision (Games/Common/HavokTagfile.h): col_map's shape list tagfile (pointer, u32
+        // size), each collisiontile's tagfiles (pointer, u32 size: the mesh, the compound)
+        int64_t ClipShapeList = 0x18, ClipShapeListSize = 0xd8;
+        std::array<std::pair<int64_t, int64_t>, 2> TileShapes = { { { 0x28, 0x4c }, { 0x30, 0x50 } } };
     };
 
     // A title on this engine: its zones opened by the family's zone class with its Spec

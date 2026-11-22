@@ -172,7 +172,7 @@ per asset under its zone.
 
 | `--type` | What | CoD | CoD 2 | CoD4 | WaW | MW2 | Black Ops | MW3 | Black Ops II | Ghosts | AW | CoD Online | Black Ops III | MWR | IW | WWII | MW2019 | MWIII | Black Ops 4 | Cold War | Black Ops 6 | Black Ops 7 |
 |---|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `matlinks` | the images each material names, the materials of each model (CSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | – | ✓ | ✓ |
+| `matlinks` | the images each material names, the materials of each model (CSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `sndlinks` | the sound files each sound alias plays (TSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | – | ✓ | ✓ |
 | `refs` | what each asset of a zone references: hashes, pointers, strings (CSV) | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ✓ | ✓ | ✓ | – | ✓ |
 | `techsets` | techsets, their shaders (bytecode and reflection), the materials' bindings | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | – | ~ | – | – | ~ | ✓ |

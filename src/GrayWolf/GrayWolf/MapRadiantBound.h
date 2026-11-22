@@ -52,6 +52,7 @@ namespace Maps
         std::vector<Mesh> Objects;
         std::vector<float> CollisionVertices;
         std::vector<uint32_t> CollisionTriangles;
+        std::vector<uint32_t> CollisionMaterials;   // a triangle's, as Collision::TriangleMaterials (empty when it is)
         std::vector<Instance> StaticInstances, DynamicInstances, SplinedInstances;
         size_t TrianglesCut = 0, TrianglesClipped = 0;     // drawn
         size_t CollisionCut = 0, CollisionClipped = 0;     // collision

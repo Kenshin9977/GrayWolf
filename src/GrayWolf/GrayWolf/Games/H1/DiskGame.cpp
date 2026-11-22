@@ -365,7 +365,9 @@ namespace
         M.Lights.Size = 0x90, M.Lights.Color = 8, M.Lights.Dir = 20, M.Lights.Origin = 44, M.Lights.Radius = 80, M.Lights.CosHalfFov = 84;
         M.ImageNameAt = ImageNameAt;
         M.EntityKeys = H1Keys::EntityKeys;
-        M.ClipBrushes = IWZone::AwClipBrushes(), M.Triggers = 0x18;   // Advanced Warfare's shapes; MapEnts' MapTriggers at 0x18
+        // Advanced Warfare's shapes, its partitions and AABB tree too (h1 f377c40 and f377e90, the
+        // ClipInfo's readers); MapEnts' MapTriggers at 0x18
+        M.ClipBrushes = IWZone::AwClipBrushes(), M.Triggers = 0x18;
         return M;
     }
 

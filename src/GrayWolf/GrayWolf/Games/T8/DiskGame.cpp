@@ -125,16 +125,67 @@ namespace
             // their fields named by the gdt weapon layouts
             ExportsStructDumps(Kind::Weapons, { { "weapon" }, { "weapon_tunables", -1, {}, 0x40 }, { "attachment" }, { "attachment_unique" } },
                                nullptr, "weapon");
-            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops 4"); });
+            // the attachments (Rifling games/bo4.md, BlackOps4_dump.exe): the fire time getter 0x7ff7916d8640
+            // takes up to 7 attachments, the slot of each from the weapon id's 6-bit fields (>> 0xa, 0x10,
+            // 0x16 ...; slot 0 none), from the WeaponDef's table at 0xa40, and multiplies fireTime by each
+            // one's 0x310; the others alike: damage / range scales 0x78 / 0x90 (0x7ff7916d7860), the global
+            // range 0x68 (0x7ff7916e0e00), clip 0x358 (0x7ff7916cce00), pellets 0x354 (0x7ff7916cd350); the
+            // unique of the same slot (0xa48): hit locations 0x500 (0x7ff7916e16c0), damage 0x508 / 0x520
+            // (0x7ff7916e0bc0), clip 0x914
+            static const Treyarch::WeaponStats::AttachmentLayout Attachments = [] {
+                Treyarch::WeaponStats::AttachmentLayout L;
+                L.List = 0xa40, L.Uniques = 0xa48;
+                L.RangeScale = 0x68, L.DamageScales = 0x78, L.RangeScales = 0x90, L.FireTimeScale = 0x310, L.ClipScale = 0x358, L.ShotCount = 0x354;
+                L.UniqueLocations = 0x500, L.UniqueDamage = 0x508, L.UniqueRanges = 0x520, L.UniqueClip = 0x914;
+                L.Notes = "Black Ops 4 (BlackOps4_dump.exe, Rifling games/bo4.md): every scale is a product over the weapon's up\n"
+                          "to 7 attachments, so one at a time each row is exact; a set of attachments multiplies their scales.\n"
+                          "The fire time getter 0x7ff7916d8640 takes each attachment's slot from the weapon id's 6-bit fields (slot\n"
+                          "0 none) in the table at WeaponDef 0xa40 and multiplies by 0x310. Damage / range scales 0x78 / 0x90\n"
+                          "(0x7ff7916d7860), global range 0x68 (0x7ff7916e0e00), clip 0x358 and the unique's clip 0x914\n"
+                          "(0x7ff7916cce00), pellets 0x354 (0x7ff7916cd350); the unique (WeaponDef 0xa48, same slot): hit\n"
+                          "locations 0x500 (0x7ff7916e16c0), damage table 0x508 / 0x520 (GetDamage 0x7ff7916e0bc0).\n"
+                          "Zombies scripts add their own (FMJ x 1.1 against bosses, zm_ai_utility.gsc): not here.\n";
+                return L;
+            }();
+            // the shot cycle (Rifling games/bo4.md, Shot cycle, BlackOps4_dump.exe): fire delay, bolt-action
+            // rechamber, the pause after a burst, intro shots, charge; each offset's function in Notes
+            static const char* const FireTypes[] = { "Full Auto", "Single Shot", "Burst", "Auto Burst", "Stacked Fire", "All Locked", "Minigun",
+                                                     "Charge Shot", "Charge Shot Burst", "Charge Shot Auto Burst", "Jetgun", "Melee", "Aim Only",
+                                                     "None", "Legacy Single", "AP Single" };
+            static const Treyarch::WeaponStats::CycleLayout Cycle = [] {
+                Treyarch::WeaponStats::CycleLayout Y;
+                Y.Tunables = 0xa58;
+                Y.WeaponType = 0x5c0, Y.FireDelay = 0xd08, Y.DelayInCycle = 0x11a4, Y.BoltAction = 0x10db, Y.ShotsBeforeRechamber = 0xe30, Y.NoRechamberEachShot = 0x11e0;
+                Y.RechamberTime = 0xdb4, Y.RechamberBoltTime = 0xdb0, Y.BurstDelay = 0xcb0, Y.BurstDelayStep = 0xcb4, Y.BurstDelayMin = 0xcb8;
+                Y.IntroLength = 0xd3c, Y.IntroFireTime = 0xd40, Y.ChargeHold = 0xd2c, Y.ChargeLevels = 0x1084, Y.ChargeTime = 0x108c;
+                Y.AttRechamberScale = 0x2ec, Y.AttRechamberBoltScale = 0x2f0, Y.AttBurstDelayScale = 0x314, Y.AttBurstDelayStep = 0x318,
+                Y.AttBurstDelayMin = 0x31c, Y.AttShotsBeforeRechamber = 0x37c, Y.AttIntroLengthScale = 0x30c, Y.AttIntroFireTimeScale = 0x308;
+                Y.AttFireTypeSet = 0x66, Y.AttFireType = 0x44, Y.AttBurstCount = 0x350;
+                Y.FireTypes = FireTypes, Y.FireTypeCount = 16;
+                Y.Notes = "Black Ops 4 (BlackOps4_dump.exe, tunables = WeaponDef 0xa58): fire_delay_ms 0xd08 (the shot start\n"
+                          "0x7ff7916ca430 through 0x7ff7916a5d00 into the weapon delay ps+0xe4c, the weapon frame 0x7ff7916caa30\n"
+                          "counting it down beside the weapon time ps+0xe48), fire_delay_in_cycle u8 0x11a4; bolt_action u8\n"
+                          "0x10db, shots_before_rechamber 0xe30 (0x7ff7916deba0, attachment 0x37c), no_rechamber_each_shot u8\n"
+                          "0x11e0; the rechamber 0x7ff7916bef60 (state 0xa): rechamber_ms 0xdb4 x attachment 0x2ec\n"
+                          "(0x7ff7916dd840), rechamber_bolt_ms 0xdb0 x 0x2f0 (0x7ff7916dd7b0); burst_delay_ms 0xcb0 x 0x314\n"
+                          "(0x7ff7916d71a0), step 0xcb4 / min 0xcb8 (attachments 0x318 / 0x31c); intro_shots 0xd3c x 0x30c,\n"
+                          "intro_fire_time_ms 0xd40 x 0x308 (0x7ff7916d9ee0 / 0x7ff7916d9ef0); charge hold 0xd2c, levels\n"
+                          "0x1084, time 0x108c (0x7ff7916b66f8); an attachment's fire type: u8 0x66 set, int 0x44\n"
+                          "(0x7ff7916d87d0, the exe's names rdata 0x7ff792325730), its burst count 0x350 (0x7ff7916d7080).\n";
+                return Y;
+            }();
+            Exports(Kind::WeaponStats, [this](const Context& C, Totals& T) { Treyarch::WeaponStats::Export(*this, C, T, "Black Ops 4", &Attachments, &Cycle); });
             Exports(Kind::MapEnts, [this](const Context& C, Totals& T) { Treyarch::ExportMapEnts(C, T, Name(), EntityString()); });
             // material (BO4XMaterial): its image records at 0x38 (0x20 each {image 0, semantic hash u32
             // 8}, BO4XMaterialImage), their u8 count at 0x130; an image {hash 0x20, format u32 0x64, width
-            // u16 0x68, height 0x6a} (Bo4DiskExport::DescribeZone)
+            // u16 0x68, height 0x6a} (Bo4DiskExport::DescribeZone); an xmodel's materials: a list of
+            // 0x18 per LOD at 0xb8 (u32 LOD count 0xc8, the bo4 table's xmodel_e3)
             {
                 MaterialLinkLayout M;
                 M.SlotCount = 0x130, M.Slots = -1, M.Images = 0x38;
                 M.RecordSize = 0x20, M.RecordSemantic = 8, M.RecordImage = 0;
                 M.ImageHash = 0x20, M.ImageWidth = 0x68, M.ImageHeight = 0x6a, M.ImageFormat = 0x64, M.WideFormat = true;
+                M.ModelLods = offsetof(BO4XModel, MaterialHandlesPtr), M.ModelLodCount = offsetof(BO4XModel, NumLods), M.ModelLodStride = 0x18;
                 ExportsMaterialLinks(M);
             }
             // sound (SndBank 0x130, acts' bo4 sound): aliases at 0x38 (u32 count 0x30) of 0x28 {name hash
@@ -530,6 +581,13 @@ namespace
         C.ModelCount = 0xb0, C.Models = 0xb8, C.ModelSize = 88, C.ModelLeafBrushNode = 0x48;
         C.NodeSize = 0x20, C.NodeCount = 4, C.NodeBrushes = 0x10, C.NodeChildren = 0x18, C.NodeWide = true;
         C.VertexCount = 0x70, C.Vertices = 0x78, C.TriangleCount = 0x80, C.Triangles = 0x88, C.TriangleIndexBytes = 4;
+        // the triangles' materials: the collision leaves at 0x90/0x98 (0x24 each, a flat list the
+        // two trees at 0xa0/0xa8 index): mins 0, maxs 0xc, first triangle u32 0x18, triangle count
+        // u8 0x20, material u16 0x22 (the brush table's materials: the loader remaps it with the
+        // brushes' at rva 0x287618b, the traces test its contents, the second word, at 0x28766a0
+        // and 0x287cb15)
+        C.AabbCount = 0x90, C.Aabbs = 0x98, C.AabbSize = 0x24, C.AabbChildCount = -1, C.AabbMinMax = true;
+        C.AabbOrigin = 0, C.AabbHalfSize = 0xc, C.AabbFirstTri = 0x18, C.AabbTriCount = 0x20, C.AabbMaterial = 0x22;
         return C;
     }
 
@@ -653,6 +711,7 @@ namespace
         // entities, trigger_hurt's two the sky-sized last; the radius and box triggers after them
         // have none)
         Scene.MapEnts = EntityString();
+        AddVehicleModels(Scene, Models);   // a vehicle kept as a script_model of its model
         if (Root("trigger_list") >= 0) AddTriggers(Scene, TriggerModelCount, "trigger_list");
 
         // ---- the clip map's brushes, brush models and collision triangles (Maps::ClipLayout)

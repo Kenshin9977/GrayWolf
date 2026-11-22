@@ -16,6 +16,7 @@ std::unique_ptr<XImageDDS> CoDRawImageTranslator::TranslateBC(const std::unique_
     {
     case 2: ImageDataFormat = ImageFormat::DDS_Standard_R32G32B32A32_FLOAT; break;
     case 10: ImageDataFormat = ImageFormat::DDS_Standard_R16G16B16A16_FLOAT; break;
+    case 11: ImageDataFormat = ImageFormat::DDS_Standard_R16G16B16A16_UNORM; break;   // Vanguard's grading CLUTs (32^3 volumes)
     case 24: ImageDataFormat = ImageFormat::DDS_Standard_R10G10B10A2_UNORM; break;
     case 26: ImageDataFormat = ImageFormat::DDS_Standard_R11G11B10_FLOAT; break;   // MW4's small HDR ramps (128x12)
     case 28: ImageDataFormat = ImageFormat::DDS_Standard_A8R8G8B8; break;

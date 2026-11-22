@@ -104,8 +104,9 @@ namespace
     }
 
     // Where the source puts players: its info_player_start (MW3's Spec Ops maps: info_player_start_so
-    // and _soPlayer2), then a multiplayer map's spawn points (mp_<mode>_spawn..., mp_spawn_point); Most at most
-    std::vector<std::array<double, 3>> SpawnsOf(const std::string& Text, size_t Most)
+    // and _soPlayer2), then a multiplayer map's spawn points (mp_<mode>_spawn..., mp_spawn_point); Most at most,
+    // each one's class into Classes when given
+    std::vector<std::array<double, 3>> SpawnsOf(const std::string& Text, size_t Most, std::vector<std::string>* Classes = nullptr)
     {
         std::vector<std::array<double, 3>> Out;
         // a plain scan: the text is tens of megabytes. Each entity whose class starts with Start
@@ -121,7 +122,9 @@ namespace
                 if (O == std::string::npos || O > End) continue;
                 std::istringstream Values(Text.substr(O + Origin.size(), 96));
                 double V[3];
-                if (Values >> V[0] >> V[1] >> V[2]) Out.push_back({ V[0], V[1], V[2] });
+                if (!(Values >> V[0] >> V[1] >> V[2])) continue;
+                Out.push_back({ V[0], V[1], V[2] });
+                if (Classes) Classes->push_back(Start + Name);
             }
         };
         Scan("info_player_start", "");
@@ -366,6 +369,233 @@ namespace
         std::ofstream(Out, std::ios::binary) << "{\r\n" << M << "\r\n" << X << "\r\n" << S << "\r\n}\r\n";
         return Ssi;
     }
+
+    // usermaps/<name>: the template's files, "template" renamed in their paths and their text
+    void CopyTemplateFiles(const fs::path& Template, const fs::path& Usermap, const std::string& Name)
+    {
+        std::error_code Ec;
+        const fs::path Files = Template / "usermaps" / "template";
+        for (const auto& E : fs::recursive_directory_iterator(Files, Ec))
+        {
+            if (!E.is_regular_file()) continue;
+            const fs::path Out = Usermap / fs::path(ReplaceAll(fs::relative(E.path(), Files).generic_string(), "template", Name));
+            fs::create_directories(Out.parent_path(), Ec);
+            const std::string Ext = ExportNaming::Lower(E.path().extension().string());
+            if (Ext == ".gsc" || Ext == ".csc" || Ext == ".szc" || Ext == ".zone")
+                std::ofstream(Out, std::ios::binary) << ReplaceAll(ReadAll(E.path()), "template", Name);
+            else
+                fs::copy_file(E.path(), Out, fs::copy_options::overwrite_existing, Ec);
+        }
+    }
+
+    // Text without its lines holding Marker, then (when Add is not empty) Add's lines after the
+    // first line starting After (at the end when none does), each ending as Text's lines end
+    std::string MarkedLines(const std::string& Text, const std::string& Marker, const std::string& After, const std::vector<std::string>& Add)
+    {
+        const std::string Eol = Text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+        std::vector<std::string> Lines;
+        {
+            std::istringstream In(Text);
+            for (std::string L; std::getline(In, L);)
+            {
+                if (!L.empty() && L.back() == '\r') L.pop_back();
+                if (L.find(Marker) == std::string::npos) Lines.push_back(L);
+            }
+        }
+        if (!Add.empty())
+        {
+            size_t At = Lines.size();
+            for (size_t I = 0; I < Lines.size() && !After.empty(); I++)
+                if (Lines[I].rfind(After, 0) == 0)
+                {
+                    At = I + 1;
+                    break;
+                }
+            Lines.insert(Lines.begin() + At, Add.begin(), Add.end());
+        }
+        std::string Out;
+        for (const std::string& L : Lines) Out += L + Eol;
+        return Out;
+    }
+
+    // File's text made Text; true when it changed
+    bool WriteIfChanged(const fs::path& File, const std::string& Text)
+    {
+        std::error_code Ec;
+        if (fs::exists(File, Ec) && ReadAll(File) == Text) return false;
+        fs::create_directories(File.parent_path(), Ec);
+        std::ofstream(File, std::ios::binary) << Text;
+        return true;
+    }
+
+    // The points the diagnostic's automatic run tests: the source's spawn points, as GSC
+    std::string PointsScript(const std::string& Source, const std::string& Prefab)
+    {
+        std::vector<std::string> Classes;
+        const auto Spawns = SpawnsOf(Source, 2048, &Classes);
+        std::string Get = "function get()\r\n{\r\n\ta = [];\r\n", Kinds = "function kinds()\r\n{\r\n\ta = [];\r\n";
+        for (size_t I = 0; I < Spawns.size(); I++)
+        {
+            Get += "\ta[ a.size ] = ( " + Num(Spawns[I][0], 2) + ", " + Num(Spawns[I][1], 2) + ", " + Num(Spawns[I][2], 2) + " );\r\n";
+            Kinds += "\ta[ a.size ] = \"" + Classes[I] + "\";\r\n";
+        }
+        return "// The spawn points of map_source/" + Prefab + " (" + std::to_string(Spawns.size()) +
+               "), for graywolf_prone_debug: written by GrayWolf\r\n#namespace graywolf_prone_points;\r\n\r\n" + Get +
+               "\treturn a;\r\n}\r\n\r\n" + Kinds + "\treturn a;\r\n}\r\n";
+    }
+
+    // The placed models (misc_model) of a .map's text but the world's tiles and brush models: model,
+    // origin, angles, scale, as GSC for graywolf_cull_debug (the same text for the server and the client):
+    // load() fills level.gwm_names, gwm_origins, gwm_angles, gwm_scales once, 400 a function
+    std::string ModelsScript(const std::string& Source, const std::string& Prefab)
+    {
+        struct Placed
+        {
+            std::string Model, Origin = "0 0 0", Angles = "0 0 0", Scale = "1";
+        };
+        std::vector<Placed> All;
+        {
+            std::istringstream In(Source);
+            int Depth = 0;
+            Placed Cur;
+            bool Misc = false;
+            static const std::regex Kv("^\"([^\"]*)\" \"([^\"]*)\"$");
+            for (std::string L; std::getline(In, L);)
+            {
+                if (!L.empty() && L.back() == '\r') L.pop_back();
+                const std::string T = Strings::Trim(L);
+                if (T == "{")
+                {
+                    if (++Depth == 1) Cur = Placed(), Misc = false;
+                    continue;
+                }
+                if (T == "}")
+                {
+                    if (--Depth == 0 && Misc && !Cur.Model.empty() && Cur.Model.find("_world_") == std::string::npos &&
+                        Cur.Model.find("_brushmodel_") == std::string::npos)
+                        All.push_back(Cur);
+                    continue;
+                }
+                std::smatch M;
+                if (Depth != 1 || !std::regex_match(T, M, Kv)) continue;
+                const std::string K = M[1].str(), V = M[2].str();
+                if (K == "classname") Misc = V == "misc_model";
+                else if (K == "model") Cur.Model = V;
+                else if (K == "origin") Cur.Origin = V;
+                else if (K == "angles") Cur.Angles = V;
+                else if (K == "modelscale") Cur.Scale = V;
+            }
+        }
+        const auto Vec = [](const std::string& S) {
+            std::istringstream In(S);
+            double V[3] = { 0, 0, 0 };
+            In >> V[0] >> V[1] >> V[2];
+            return "( " + Num(V[0], 2) + ", " + Num(V[1], 2) + ", " + Num(V[2], 2) + " )";
+        };
+        std::string Out = "// The placed models of map_source/" + Prefab + " (" + std::to_string(All.size()) +
+                          "), for graywolf_cull_debug: written by GrayWolf\r\n#namespace graywolf_cull_models;\r\n\r\n";
+        constexpr size_t Chunk = 400;
+        const size_t Chunks = (All.size() + Chunk - 1) / Chunk;
+        Out += "function load()\r\n{\r\n\tif ( IsDefined( level.gwm_names ) )\r\n\t{\r\n\t\treturn;\r\n\t}\r\n\tlevel.gwm_names = [];\r\n"
+               "\tlevel.gwm_origins = [];\r\n\tlevel.gwm_angles = [];\r\n\tlevel.gwm_scales = [];\r\n";
+        for (size_t C = 0; C < Chunks; C++) Out += "\tc" + std::to_string(C) + "();\r\n";
+        Out += "}\r\n\r\nfunction count()\r\n{\r\n\tload();\r\n\treturn level.gwm_names.size;\r\n}\r\n";
+        for (size_t C = 0; C < Chunks; C++)
+        {
+            Out += "\r\nfunction c" + std::to_string(C) + "()\r\n{\r\n";
+            for (size_t I = C * Chunk; I < All.size() && I < (C + 1) * Chunk; I++)
+            {
+                const Placed& P = All[I];
+                std::istringstream S(P.Scale);
+                double Scale = 1;
+                S >> Scale;
+                Out += "\tlevel.gwm_names[ level.gwm_names.size ] = \"" + P.Model + "\";\r\n\tlevel.gwm_origins[ level.gwm_origins.size ] = " +
+                       Vec(P.Origin) + ";\r\n\tlevel.gwm_angles[ level.gwm_angles.size ] = " + Vec(P.Angles) +
+                       ";\r\n\tlevel.gwm_scales[ level.gwm_scales.size ] = " + Num(Scale, 3) + ";\r\n";
+            }
+            Out += "}\r\n";
+        }
+        return Out;
+    }
+}
+
+std::string ProneDebugScript();         // ModToolsUsermapDebug.cpp
+std::string CullDebugScript();          // ModToolsUsermapCull.cpp
+std::string CullDebugClientScript();    // ModToolsUsermapCull.cpp
+
+bool SetDebug(const fs::path& Root, const std::string& Name, const std::string& Prefab, const std::string& Mode, std::string& Error)
+{
+    const fs::path Usermap = Root / "usermaps" / Name, Scripts = Usermap / "scripts" / "zm";
+    const fs::path Gsc = Scripts / (Name + ".gsc"), Zone = Usermap / "zone_source" / (Name + ".zone");
+    std::error_code Ec;
+    if (!fs::exists(Gsc, Ec) || !fs::exists(Zone, Ec))
+    {
+        Error = "no " + Gsc.string() + " or " + Zone.string();
+        return false;
+    }
+    // "prone", "cull" or "both"; each diagnostic's lines (the level scripts' #using, the zone's
+    // scriptparsetree lines) found again by their name, a file without them left as it is when they go
+    const fs::path Csc = Scripts / (Name + ".csc");
+    const auto Edit = [&](bool On, const std::string& Marker, const fs::path& File, const std::string& After, const std::vector<std::string>& Add) {
+        const std::string Text = ReadAll(File);
+        return (On || Text.find(Marker) != std::string::npos) && WriteIfChanged(File, MarkedLines(Text, Marker, After, On ? Add : std::vector<std::string>{}));
+    };
+    const bool Prone = Mode == "prone" || Mode == "both", Cull = Mode == "cull" || Mode == "both";
+    const std::string Source = ReadAll(Root / "map_source" / fs::path(Prefab));
+    bool Changed = Edit(Prone, "graywolf_prone_", Gsc, "#using scripts\\zm\\zm_usermap;", { "#using scripts\\zm\\graywolf_prone_debug;" });
+    Changed |= Edit(Prone, "graywolf_prone_", Zone, "scriptparsetree,scripts/zm/" + Name + ".csc",
+                    { "scriptparsetree,scripts/zm/graywolf_prone_debug.gsc", "scriptparsetree,scripts/zm/graywolf_prone_points.gsc" });
+    for (const char* F : { "graywolf_prone_debug.gsc", "graywolf_prone_points.gsc" })
+        if (!Prone && fs::remove(Scripts / F, Ec)) Changed = true;
+    if (Prone)
+    {
+        Changed |= WriteIfChanged(Scripts / "graywolf_prone_debug.gsc", ProneDebugScript());
+        Changed |= WriteIfChanged(Scripts / "graywolf_prone_points.gsc", PointsScript(Source, Prefab));
+    }
+    Changed |= Edit(Cull, "graywolf_cull_", Gsc, "#using scripts\\zm\\zm_usermap;", { "#using scripts\\zm\\graywolf_cull_debug;" });
+    if (fs::exists(Csc, Ec)) Changed |= Edit(Cull, "graywolf_cull_", Csc, "#using scripts\\zm\\zm_usermap;", { "#using scripts\\zm\\graywolf_cull_debug;" });
+    Changed |= Edit(Cull, "graywolf_cull_", Zone, "scriptparsetree,scripts/zm/" + Name + ".csc",
+                    { "scriptparsetree,scripts/zm/graywolf_cull_debug.gsc", "scriptparsetree,scripts/zm/graywolf_cull_models.gsc",
+                      "scriptparsetree,scripts/zm/graywolf_cull_debug.csc", "scriptparsetree,scripts/zm/graywolf_cull_models.csc" });
+    for (const char* F : { "graywolf_cull_debug.gsc", "graywolf_cull_models.gsc", "graywolf_cull_debug.csc", "graywolf_cull_models.csc" })
+        if (!Cull && fs::remove(Scripts / F, Ec)) Changed = true;
+    if (Cull)
+    {
+        const std::string Models = ModelsScript(Source, Prefab);
+        Changed |= WriteIfChanged(Scripts / "graywolf_cull_debug.gsc", CullDebugScript());
+        Changed |= WriteIfChanged(Scripts / "graywolf_cull_debug.csc", CullDebugClientScript());
+        Changed |= WriteIfChanged(Scripts / "graywolf_cull_models.gsc", Models);
+        Changed |= WriteIfChanged(Scripts / "graywolf_cull_models.csc", Models);
+    }
+    return Changed;
+}
+
+Made Reference(const fs::path& Root)
+{
+    Made R;
+    R.Name = ReferenceName;
+    const fs::path Template = Root / "rex" / "templates" / "ZM Mod Level";
+    const fs::path Usermap = Root / "usermaps" / R.Name, Level_ = Root / "map_source" / "zm" / (R.Name + ".map");
+    std::error_code Ec;
+    if (!fs::exists(Template / "map_source" / "zm" / "template.map", Ec))
+    {
+        R.Error = "no ZM Mod Level template in " + (Root / "rex" / "templates").string();
+        return R;
+    }
+    if (!fs::exists(Usermap, Ec))
+    {
+        CopyTemplateFiles(Template, Usermap, R.Name);
+        WriteWorkshop(Usermap, R.Name, "ZM Mod Level template");
+        R.Created = true;
+    }
+    if (!fs::exists(Level_, Ec))
+    {
+        fs::create_directories(Level_.parent_path(), Ec);
+        fs::copy_file(Template / "map_source" / "zm" / "template.map", Level_, Ec);
+        if (Ec) R.Error = "cannot write " + Level_.string() + ": " + Ec.message();
+        R.Created = R.Error.empty();
+    }
+    return R;
 }
 
 Made Create(const fs::path& Root, const std::string& Map, const std::string& Prefab)
@@ -379,6 +609,10 @@ Made Create(const fs::path& Root, const std::string& Map, const std::string& Pre
     // A half left (its folder or its level deleted): the missing half made again
     const bool HasUsermap = fs::exists(Usermap, Ec), HasLevel = fs::exists(Level_, Ec);
     if (HasUsermap) WriteWorkshop(Usermap, R.Name, Map);
+    // a level kept: the light bake's sky its sun volume names (ssi1) made again when its GDT is
+    // gone, else Radiant's lighting finds no sun ("No lighting data to export. Map may be missing
+    // a sun volume") and the usermap does not link
+    if (HasLevel && ReadAll(Level_).find("\"" + R.Name + "_bake_ssi\"") != std::string::npos) BakeSky(Root, R.Name);
     if (HasUsermap && HasLevel) return R;
     if (!fs::exists(Template / "map_source" / "zm" / "template.map", Ec))
     {
@@ -387,19 +621,7 @@ Made Create(const fs::path& Root, const std::string& Map, const std::string& Pre
     }
     if (!HasUsermap)
     {
-        // usermaps/<name>: the template's files, "template" renamed in their paths and their text
-        const fs::path Files = Template / "usermaps" / "template";
-        for (const auto& E : fs::recursive_directory_iterator(Files, Ec))
-        {
-            if (!E.is_regular_file()) continue;
-            const fs::path Out = Usermap / fs::path(ReplaceAll(fs::relative(E.path(), Files).generic_string(), "template", R.Name));
-            fs::create_directories(Out.parent_path(), Ec);
-            const std::string Ext = ExportNaming::Lower(E.path().extension().string());
-            if (Ext == ".gsc" || Ext == ".csc" || Ext == ".szc" || Ext == ".zone")
-                std::ofstream(Out, std::ios::binary) << ReplaceAll(ReadAll(E.path()), "template", R.Name);
-            else
-                fs::copy_file(E.path(), Out, fs::copy_options::overwrite_existing, Ec);
-        }
+        CopyTemplateFiles(Template, Usermap, R.Name);
         WriteWorkshop(Usermap, R.Name, Map);
         R.Created = true;
     }

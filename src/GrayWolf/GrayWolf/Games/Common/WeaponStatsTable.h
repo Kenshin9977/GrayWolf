@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <functional>
 #include <initializer_list>
 #include <map>
@@ -29,6 +30,9 @@ namespace WeaponStatsTable
     std::string UpgradeOf(const std::string& Name, const Weapons& All);
     // the zones holding a weapon, space-separated
     std::string ZoneList(const std::vector<std::string>& Zones);
+    // burst_delay_ms: the weapon time a burst's end sets from the f32 milliseconds (burstFireCooldown),
+    // as the IW engine games round it: (int)floor(x + 0.5)
+    inline int BurstDelayMs(double Ms) { return (int)std::floor((float)Ms + 0.5f); }
 
     // a CSV line: the cells (ExportWriters::CsvField), comma-separated
     std::string Line(const std::vector<std::string>& Cells);

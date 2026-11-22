@@ -27,6 +27,20 @@ namespace ModToolsUsermap
     // The usermap of Root's map_source/<Prefab> (graywolf/<map>.map) for Map
     Made Create(const std::filesystem::path& Root, const std::string& Map, const std::string& Prefab);
 
+    // The in-game diagnostic Mode (the bo3_usermap_debug setting) in usermap Name, or taken out of it
+    // ("off"). "prone": scripts/zm/graywolf_prone_debug.gsc (measures and prone attempts, logged as
+    // "GWP key=value" console lines) and graywolf_prone_points.gsc (the spawn points of
+    // map_source/<Prefab>); "cull": graywolf_cull_debug.gsc/.csc (what hides the placed models, "GWC"
+    // lines) and graywolf_cull_models.gsc/.csc (Prefab's misc_models); "both". In the level's zone and
+    // #using'd by its level scripts. True when a file
+    // changed (the usermap then needs building again); Error when the usermap lacks its script or zone.
+    bool SetDebug(const std::filesystem::path& Root, const std::string& Name, const std::string& Prefab, const std::string& Mode, std::string& Error);
+
+    // The level a diagnostic compares with: the ZM Mod Level template as it is (its room), usermap
+    // ReferenceName and map_source/zm/<ReferenceName>.map; one already there kept
+    inline constexpr const char* ReferenceName = "zm_graywolf_ref";
+    Made Reference(const std::filesystem::path& Root);
+
     struct Step
     {
         std::string Label;         // "compile"

@@ -84,10 +84,57 @@ namespace
                          { "adsTransInTime", 0x988 }, { "adsTransOutTime", 0x990 },
                          { "explosionRadius", 0xa60 }, { "explosionRadiusMin", 0xa64 }, { "explosionInnerDamage", 0xa68 },
                          { "explosionOuterDamage", 0xa6c }, { "projectileSpeed", 0xa7c },
-                         { "maxDamageRange", 0xc90 }, { "damage2", 0xc80 }, { "damageRange2", 0xc94 }, { "minDamage", 0xc84 }, { "locationDamageMultipliers", 0x460 } };
+                         { "maxDamageRange", 0xc90 }, { "damage2", 0xc80 }, { "damageRange2", 0xc94 }, { "minDamage", 0xc84 }, { "locationDamageMultipliers", 0x460 },
+                         // the shot cycle (the README says the RVAs): the delay before the shot (0x16a380), the
+                         // rechamber and its bolt time (0x16f520, 0x16f500), the pause after a burst (f32, 0x169c00),
+                         // the bolt action flag (0x16d550) and the rounds a shot takes (0x1696b0, read as is)
+                         { "fireDelay", Timers + 0 }, { "rechamberTime", Timers + 0x14 }, { "rechamberBoltTime", Timers + 0x1c },
+                         { "burstFireCooldown", 0x550, true, -1, false, true }, { "boltAction", 0xd7b, true, -1, true },
+                         { "ammoUsedPerShot", 0xd54 } };
             L.Notes = IwWeaponDefs::GameNotes("Advanced Warfare", "french/fra_code_post_gfx_mp", "common_mp",
                                               "the WeaponDef (the weapon asset itself) at the offsets of x64-zt's S1 structs.hpp",
                                               "Bal-27 706 rpm, 32 rounds; AK-12 750 rpm, 30 rounds; KF5 870 rpm, 40 rounds; MORS bolt action");
+            L.Notes.ShotCycle = true;
+            L.Notes.ExtraNotes =
+                "- The shot cycle (s1_mp64_flat RVAs; player state per hand, stride 0x1c: weapon time 0x368, weapon\n"
+                "  delay 0x36c, weapon state 0x374, shots in the pull 0x37c): WWII's code, function for function. A shot\n"
+                "  starts in 0x15f640 (from the fire function 0x15bf65): weapon time = fire time, weapon delay = fireDelay\n"
+                "  (0x16a380: WeaponDef 0x658, the timer block's first, akimbo 0x784); the shot waits while the delay is\n"
+                "  not 0 (0x15c01a). fire_delay_ms: that delay, at each shot (not in the cycle while it is shorter than\n"
+                "  the fire time).\n"
+                "- bolt_action (byte 0xd7b, the flag getter 0x16d550 through 0x164590): each shot of such a weapon, whatever\n"
+                "  its fire type, marks it as needing a rechamber (0x1725f0: player state 0x3d8 + 0x20 x the held\n"
+                "  weapon's slot + 4 + hand, called at 0x15f88a). rechamber_ms (rechamberTime 0x66c, 0x16f520): the\n"
+                "  rechamber 0x15a110 starts once the weapon time and delay are 0, from the ready or firing states: state\n"
+                "  8 (0x2a-0x2c, 0x40-0x42 in the player states of 0x1ebc bit 15), weapon time = rechamber_ms (an animation\n"
+                "  override for state 6 replaces it: 0x172a00, WeaponDef 0x70, u8 count 0x525). rechamber_bolt_ms\n"
+                "  (rechamberBoltTime 0x674, 0x16f500): the weapon delay inside it (1 when 0 or not below the rechamber):\n"
+                "  not added. Both empty without bolt_action.\n"
+                "- burst_delay_ms (burstFireCooldown, f32 0x550, 0x169c00): when the fire time of a 2- to 5-Round Burst\n"
+                "  weapon ends and the burst is over (0x153de0), the weapon time becomes (int)floor(it + 0.5) and the\n"
+                "  state a ready one (0x15fbf0-0x15fd86); empty for other fire types.\n"
+                "- ammo_per_shot (WeaponDef i32 0xd54, read as is by 0x1696b0: no attachment override): the rounds a shot\n"
+                "  takes from the clip (0x15c11a, at most the clip's, taken at 0x15c145). An attachment with a block at\n"
+                "  0x38 takes its own count (0x169cb0, 0x152850): not read.\n"
+                "- shot_interval_ms, shot_rpm: as WWII's (its README): Full Auto and Single Shot: fire_time_ms +\n"
+                "  rechamber_ms with bolt_action; 2- to 5-Round Burst (not bolt action): (n x fire_time_ms +\n"
+                "  burst_delay_ms) / n. Empty: not bullet or projectile, a fire delay above 0, a clip of one shot, Double\n"
+                "  Barrel, a ramp of the fire time (f32 0xd44, i32 0xd48 shots, mode 0xd4c: 0x16a380).\n"
+                "- Not in the columns: the rate of fire perk (0x161450, the weapon frame 0x15fad0's msec: player state\n"
+                "  0x1eb8 bit 2 divides it by a dvar in the states 6-8, 0x2a-0x2f, 0x3d-0x42, firing and rechambering).\n";
+            // the attachments (WeaponFiles' s2 rules, s2.game s1; the README says the RVAs): the WeaponDef's list
+            // at 0x60 (u8 count 0x524: 0x133e67, 0x163fa0); an attachment's type 0x10, its alternate mode (0x18,
+            // byte 0x6f: the gather 0x164320), its override offsets (u16 list 0x48), entries (16 bytes, 0x50) and
+            // count (i32 0x58: 0x133c50); no defaults; of the animation overrides (WeaponDef 0x70, u8 count 0x525,
+            // 32-byte entries as WWII's: 0x172a00) the rechamber's (state 6) only. The Exo Zombies level
+            // attachments the scripts add by name (maps/mp/zombies/_wall_buys.gsc getattachment1-3forweaponlevel,
+            // above levels 3, 6 and 9), rows for every weapon whose list does not name them
+            L.Attachments.List = 0x60, L.Attachments.Count = 0x524, L.Attachments.Rules = "s1";
+            L.Attachments.Anims = 0x70, L.Attachments.AnimCount = 0x525, L.Attachments.AnimStates = { 6 };
+            L.Attachments.Type = 0x10, L.Attachments.AltA = 0x18, L.Attachments.AltB = 0x6f;
+            L.Attachments.Offsets = 0x48, L.Attachments.Entries = 0x50, L.Attachments.EntryCount = 0x58;
+            L.Attachments.Extra = { "opticseotech", "variablereddot", "opticsreddot", "opticsthermalar", "opticsthermal", "opticstargetenhancer",
+                                    "opticsacog2", "lasersight", "quickdraw", "stock", "firerate", "xmags", "xmagslinegun" };
             L.Notes.Source += "The damage is three steps, no fall-off (s1_mp64_flat 0x169ab0, through the getter 0x1649d0 and\n"
                               "0x164760 that take a field's offset): damage (0x648) up to maxDamageRange (0xc90), then damage_2\n"
                               "(0xc80, x64-zt's minDamage) up to range_2_m (0xc94, its minDamageRange), then the last one (0xc84,\n"

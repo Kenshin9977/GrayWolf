@@ -46,7 +46,7 @@ namespace Maps
         size_t Brushes = 0, BrushesDropped = 0, BrushesUnsound = 0, Faces = 0, Entities = 0, BrushEntities = 0, BrushEntitiesEmpty = 0;
         size_t Placements = 0, WorldModels = 0, ModelFiles = 0, ModelsElsewhere = 0, Triangles = 0, TrianglesDropped = 0, TriggerBrushes = 0;
         // the collision triangles' terrain patches (grids of them) and brushes (those left, merged plane by plane)
-        size_t TrianglesDuplicate = 0, TerrainPatches = 0, TriangleBrushes = 0;
+        size_t TrianglesDuplicate = 0, TerrainPatches = 0, TriangleBrushes = 0, FloorOccluderBrushes = 0;
         // the portal brushes left out (the source's visibility cells; Black Ops III's compiler
         // ignores them, warning) and the outer sky box's brushes (what seals the level for it)
         size_t PortalBrushes = 0, SkyboxBrushes = 0;
@@ -55,6 +55,8 @@ namespace Maps
         // written as script_structs, the models entities or placements named that no file of the
         // export holds
         size_t EntitiesLeftOut = 0, OriginsAsStructs = 0, ModelsLeftOut = 0;
+        // its vehicles kept as script_models (their shape, not their driving: BO3 has no such vehicle)
+        size_t VehiclesAsModels = 0;
         // the drawn triangles and placements beyond the target's world (RadiantTarget.h), left out
         size_t BeyondWorld = 0;
         // drawn triangles another of the same sort key covers exactly (CoveredTriangles), left out
@@ -65,6 +67,8 @@ namespace Maps
         size_t BeyondSkyBox = 0, ClippedToSkyBox = 0, BeyondSkyBoxPlacements = 0, BeyondSkyBoxEntities = 0, SkyBoxReach = 0, SkyBoxSize = 0;
         // the drawn triangles too large for the world's models (RadiantTarget.h), patches instead
         size_t OversizePatches = 0;
+        // the world's floors as patches while the rest of it goes to models (IRadiantTarget::FloorsAsPatches)
+        size_t FloorPatches = 0;
         // the placements scaled below the target's least (RadiantTarget.h), left out
         size_t ScaledToNothing = 0;
         // the collision triangles written as patches of one triangle, past the target's budget of
@@ -93,6 +97,11 @@ namespace Maps
         // placements left out past the static models' room, exploders and brush entities let go
         size_t BrushesAsPatches = 0, BrushesFlat = 0, StructuralSides = 0, CollisionFitted = 0, PlacementsFitted = 0;
         size_t ExplodersDropped = 0, BrushEntitiesDropped = 0, PlaneSlotsPlanned = 0;
+        // the collision triangles whose material (the clip map's) collides with nothing, left out, and
+        // those written with a tool that does not stop the player (clip_weapon: what stopped only bullets)
+        size_t CollisionNonColliding = 0, CollisionNotPlayer = 0;
+        // collision triangles left out of a plane holding too many of one tool (cod2map's concave windings)
+        size_t CollisionCoplanarLeftOut = 0;
         // brush models whose drawn triangles were in their own space, written where their entity stands
         size_t BrushModelsPlaced = 0;
         // what the caller should tell (written, but past what the target's tools take): the limits

@@ -574,10 +574,25 @@ namespace
         return S.Material.empty() ? Fate::Model : Fate::Patch;
     }
 
+    // Whether drawn triangle K (indices 3K..3K+2) of S is a floor: its corners' normals (the side it
+    // is drawn on) up, no steeper than a player walks (the pmove's 0.7)
+    bool Floor(const Surface& S, size_t K)
+    {
+        V3 N{};
+        for (int J = 0; J < 3; J++)
+        {
+            const uint32_t I = S.Indices[K * 3 + J];
+            if (I >= S.Vertices.size()) return false;
+            N = Add(N, V3{ S.Vertices[I].Normal[0], S.Vertices[I].Normal[1], S.Vertices[I].Normal[2] });
+        }
+        const double L = Length(N);
+        return std::isfinite(L) && L > 1e-6 && N[2] / L >= 0.7;
+    }
+
     // The drawn triangles of Owner's meshes (DrawnWorld::Owner) no brush side draws, each a patch:
     // a 2x2 mesh whose fourth vertex repeats the second, one triangle whichever way Radiant splits
-    // the cell, facing as the game's (a compiled mesh's triangles face against (row 1 - row 0) x
-    // (column 1 - column 0)); nonColliding (the clip map's brushes collide); each vertex its
+    // the cell, facing as the game's (a compiled mesh's triangles face along (row 1 - row 0) x
+    // (column 1 - column 0), against the drawn triangle's own (1 - 0) x (2 - 0)); nonColliding (the clip map's brushes collide); each vertex its
     // position, colour ("c", left out when white; white for layer weights: Weights), UV ("t": UV x 1024) and lightmap coordinates
     // (the plane's texture axes, a texel per 16 units, as "2 2 16 8" says)
     // Drawn triangle K of S (a Fate::Patch one) as patch Number, its material Name. With Over, the
@@ -795,9 +810,11 @@ namespace
     }
 
     // Owner's drawn triangles no brush side draws as patches, then the blend layers over all its
-    // drawn triangles (those a brush side draws too)
+    // drawn triangles (those a brush side draws too); FloorsOnly: its floors' only (Floor), each also
+    // added to Floors (where it stands, facing up) when given
     void WritePatches(std::string& Out, const MapScene& Scene, const DrawnWorld& Drawn, uint32_t Owner, RadiantGdt* Gdt, RadiantStats& Stats,
-                      size_t& Number, Overlaying& Ov, const CoveredTriangles& Cover, const float* Place = nullptr)
+                      size_t& Number, Overlaying& Ov, const CoveredTriangles& Cover, const float* Place = nullptr, bool FloorsOnly = false,
+                      std::vector<std::array<V3, 3>>* Floors = nullptr)
     {
         for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
         {
@@ -812,9 +829,27 @@ namespace
                 for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
                 {
                     if (Drawn.Removed(Oi, Si, K / 3) || Cover.Covered(Oi, Si, K / 3)) continue;
+                    if (FloorsOnly && !Floor(S, K / 3)) continue;
                     const Fate F = FateOf(S, K / 3);
                     if (F == Fate::None) Stats.TrianglesDegenerate++;
                     if (F != Fate::Patch) continue;
+                    if (FloorsOnly) Stats.FloorPatches++;
+                    if (FloorsOnly && Floors)
+                    {
+                        std::array<V3, 3> T;
+                        for (int J = 0; J < 3; J++)
+                        {
+                            const auto& P = S.Vertices[S.Indices[K + J]].Pos;
+                            T[J] = { P[0], P[1], P[2] };
+                            if (Place)
+                            {
+                                const V3 L = T[J];
+                                for (int A = 0; A < 3; A++) T[J][A] = L[0] * Place[3 + A] + L[1] * Place[6 + A] + L[2] * Place[9 + A] + Place[A];
+                            }
+                        }
+                        if (Cross(Sub(T[1], T[0]), Sub(T[2], T[0]))[2] < 0) std::swap(T[1], T[2]);
+                        Floors->push_back(T);
+                    }
                     if (const int L = TexelLayer(Texels, S, K); L >= 0)
                     {
                         Stats.TexelLayerTriangles++;
@@ -826,7 +861,8 @@ namespace
                 }
                 if (Ov.Layers && !Ov.Layers->Of(S.Material).empty())
                     for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
-                        if (FateOf(S, K / 3) == Fate::Patch && !Cover.Covered(Oi, Si, K / 3)) WriteOverlayPatches(Out, S, K, Ov, Gdt, Stats, Number, Place);
+                        if (FateOf(S, K / 3) == Fate::Patch && !Cover.Covered(Oi, Si, K / 3) && (!FloorsOnly || Floor(S, K / 3)))
+                            WriteOverlayPatches(Out, S, K, Ov, Gdt, Stats, Number, Place);
             }
         }
     }
@@ -1139,6 +1175,7 @@ namespace
                                 { "map_radiant_entities_left_out", Stats.EntitiesLeftOut },
                                 { "map_radiant_origins_as_structs", Stats.OriginsAsStructs },
                                 { "map_radiant_models_left_out", Stats.ModelsLeftOut },
+                                { "map_radiant_vehicles_as_models", Stats.VehiclesAsModels },
                                 { "map_radiant_beyond_world", Stats.BeyondWorld },
                                 { "map_radiant_triangles_covered", Stats.TrianglesCovered },
                                 { "map_radiant_beyond_sky_box", Stats.BeyondSkyBox },
@@ -1148,6 +1185,8 @@ namespace
                                 { "map_radiant_sky_box_reach", Stats.SkyBoxReach },
                                 { "map_radiant_sky_box_size", Stats.SkyBoxSize },
                                 { "map_radiant_oversize_patches", Stats.OversizePatches },
+                                { "map_radiant_floor_patches", Stats.FloorPatches },
+                                { "map_radiant_floor_occluder_brushes", Stats.FloorOccluderBrushes },
                                 { "map_radiant_scaled_to_nothing", Stats.ScaledToNothing },
                                 { "map_radiant_collision_patches", Stats.CollisionPatches },
                                 { "map_radiant_brushes_over_budget", Stats.BrushesOverBudget },
@@ -1169,6 +1208,9 @@ namespace
                                 { "map_radiant_brushes_flat", Stats.BrushesFlat },
                                 { "map_radiant_structural_sides", Stats.StructuralSides },
                                 { "map_radiant_collision_fitted", Stats.CollisionFitted },
+                                { "map_radiant_collision_noncolliding", Stats.CollisionNonColliding },
+                                { "map_radiant_collision_not_player", Stats.CollisionNotPlayer },
+                                { "map_radiant_collision_coplanar_left_out", Stats.CollisionCoplanarLeftOut },
                                 { "map_radiant_placements_fitted", Stats.PlacementsFitted },
                                 { "map_radiant_exploders_dropped", Stats.ExplodersDropped },
                                 { "map_radiant_brush_entities_dropped", Stats.BrushEntitiesDropped },
@@ -1311,8 +1353,14 @@ namespace
                 for (const auto& [K, N] : B.Counters()) Counters[K] += N;
                 fs::create_directories(G.GdtFile.parent_path(), Ec);
                 if (G.InTree) Counters["material_gdt_already_in_tree"] += ModToolsTree::LeaveOutDefined(G.GdtFile, Entries);
-                if (G.InTree) ModToolsTree::WriteKept(G.GdtFile, Gdt::Document(Entries, "\n"));
-                else std::ofstream(G.GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
+                if (std::string Why; G.InTree && !ModToolsTree::WriteKept(G.GdtFile, Gdt::Document(Entries, "\n"), &Why))
+                {
+                    // the map's models and materials are in this GDT: without it Radiant shows none
+                    Counters["material_gdt_not_written"]++;
+                    ModToolsTree::Warn("The map's GDT " + G.GdtFile.string() + " was not written (" + Why +
+                                       "): its models and materials will be missing in Radiant and the linker");
+                }
+                else if (!G.InTree) std::ofstream(G.GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
                 std::ofstream(fs::path(G.GdtFile).replace_extension(".names.json"), std::ios::binary) << B.NamesJson();
             };
         }
@@ -1578,8 +1626,9 @@ namespace
     // Collision triangles as terrain patches: paired into quads across their longest edge (facing
     // the same way), the quads grown into grids (a cell's right and top neighbours sharing its edges
     // and one another's), MaxCells by MaxCells cells at most. A grid's Ctrl[x][y] (x across its
-    // rows, y along them, as the .map writes them: the triangles face against (Ctrl[x + 1][y] -
-    // Ctrl[x][y]) x (Ctrl[x][y + 1] - Ctrl[x][y]), as the game's) and Turned[x][y], the cell from
+    // rows, y along them, as the .map writes them: a patch's triangles face along (Ctrl[x + 1][y] -
+    // Ctrl[x][y]) x (Ctrl[x][y + 1] - Ctrl[x][y]), as the collision triangles do: the stock
+    // prefabs' terrain and clip patches, Black Ops III's traces) and Turned[x][y], the cell from
     // Ctrl[x][y] split from it to Ctrl[x + 1][y + 1] ("f 1") rather than across: each cell the
     // game's two triangles. The triangles no quad takes are left in Rest, a sliver (Sliver, below
     // MinArea) among them.
@@ -1727,11 +1776,14 @@ namespace
                 }
                 if (Taken.size() > BestCells) BestCells = Taken.size(), Best = std::move(Rows);
             }
-            // rows of cells (j, across) of cells (i, along): Ctrl[j][i] the bottom-left corner of cell (i, j)
+            // cells (i, along) of rows of cells (j, across), the .map's rows along i: Ctrl[i][j] the
+            // bottom-left corner of cell (i, j). (row 1 - row 0) x (column 1 - column 0) is then
+            // (Br - Bl) x (Tl - Bl), the way the triangles face (Ctrl[j][i], rows across, wrote
+            // every collision patch facing down: traces from above went through mp_nuked's ground)
             const size_t Width = Best[0].size(), Height = Best.size();
             TerrainGrid G;
-            G.Ctrl.assign(Height + 1, std::vector<V3>(Width + 1));
-            G.Turned.assign(Height + 1, std::vector<char>(Width + 1, 0));
+            G.Ctrl.assign(Width + 1, std::vector<V3>(Height + 1));
+            G.Turned.assign(Width + 1, std::vector<char>(Height + 1, 0));
             for (size_t J = 0; J < Height; J++)
                 for (size_t I = 0; I < Width; I++)
                 {
@@ -1742,11 +1794,11 @@ namespace
                     const Key& Br = L[(K + 1) % 4];
                     const Key& Tr = L[(K + 2) % 4];
                     const Key& Tl = L[(K + 3) % 4];
-                    G.Ctrl[J][I] = Points[Bl];
-                    G.Ctrl[J][I + 1] = Points[Br];
-                    G.Ctrl[J + 1][I] = Points[Tl];
-                    G.Ctrl[J + 1][I + 1] = Points[Tr];
-                    G.Turned[J][I] = Diagonals[Q] == EdgeOf(Bl, Tr);
+                    G.Ctrl[I][J] = Points[Bl];
+                    G.Ctrl[I + 1][J] = Points[Br];
+                    G.Ctrl[I][J + 1] = Points[Tl];
+                    G.Ctrl[I + 1][J + 1] = Points[Tr];
+                    G.Turned[I][J] = Diagonals[Q] == EdgeOf(Bl, Tr);
                 }
             Out.push_back(std::move(G));
         }
@@ -1972,6 +2024,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             std::swap(S.Objects, W.Objects);
             std::swap(S.Collision.Vertices, W.CollisionVertices);
             std::swap(S.Collision.Triangles, W.CollisionTriangles);
+            std::swap(S.Collision.TriangleMaterials, W.CollisionMaterials);
             std::swap(S.StaticInstances, W.StaticInstances);
             std::swap(S.DynamicInstances, W.DynamicInstances);
             std::swap(S.SplinedInstances, W.SplinedInstances);
@@ -2464,14 +2517,62 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         // a wall written as one turns into a lid at its top (a ring of walls round shipment's yard
         // roofed it at 272): the steep triangles go straight to the prisms.
         constexpr double Steep = 0.5;   // |normal z| below this (60 degrees from up): a wall
-        std::vector<std::array<V3, 3>> All, Rest;
         // the triangles (the converted brushes' faces after the collision's), within Room of
         // cod2map's collision triangles (its indices, three a triangle: 0xc0000) and vertices
         // (0x40000): past it, those farthest from play left out (no player reaches them)
+        // Each triangle's tool: what Black Ops III's tools give its material's content flags, as a
+        // brush's (ToolNames), when the game's reader names the triangles' materials (the clip
+        // map's AABB tree). A surface the player stood on (solid) clip_full; one that only stopped
+        // bullets (weaponClip, 0x2080: BO2's drawn terrain, railings, rubble and trims, the player
+        // standing on the clip brushes under them) clip_weapon: written clip_full, it laid a bumpy
+        // player clip over every floor, invisible walls on every detail, and no room to go prone.
+        // Those colliding with nothing left out. clip_full when unknown (the drawn world as
+        // collision, MW4; the games whose AABB tree is not read).
+        const auto& Tm = Scene.Collision.TriangleMaterials;
+        const bool HasMaterials = !Tm.empty() && Tm.size() * 3 == Tris.size();
+        std::vector<std::string> ToolList = { "clip_full" };
+        std::map<uint32_t, int> OfMaterial;   // material number -> tool (ToolList), -1 left out
+        const auto ToolOf = [&](size_t T) {
+            if (!HasMaterials || Tm[T] >= Scene.Collision.Materials.size()) return 0;
+            const auto [It, New] = OfMaterial.try_emplace(Tm[T], 0);
+            if (New)
+            {
+                // by its flags alone: BO2 names drawn materials and even tools ("caulk", "grass_clip")
+                // for leaves its flags make weaponClip (0x2080), and the flags are what the game used
+                Brush B;
+                B.Contents = Scene.Collision.Materials[Tm[T]].second;
+                std::string N = Tools.Of(B, BrushSide());
+                // a triangle no bit of which stops anything (Ghosts' water sheets and grass cards)
+                // collides with nothing
+                if (!Collision::Stops(B.Contents)) N = "nodraw_notsolid";
+                if (N == "nodraw_notsolid" || N == "trigger" || N == "hint" || N == "portal" || N == "portal_nodraw")
+                    It->second = -1;
+                else
+                {
+                    if (N == "caulk" || N == "sky") N = "clip_full";   // solid, as the drawn terrain's
+                    const auto Found = std::find(ToolList.begin(), ToolList.end(), N);
+                    It->second = (int)(Found - ToolList.begin());
+                    if (Found == ToolList.end()) ToolList.push_back(N);
+                }
+            }
+            return It->second;
+        };
         std::vector<std::array<V3, 3>> Tris3;
+        std::vector<int> Tool3;   // Tris3's tools
         for (size_t T = 0; T < Kept.size(); T++)
-            if (Kept[T]) Tris3.push_back({ Corner(T, 0), Corner(T, 1), Corner(T, 2) });
+        {
+            if (!Kept[T]) continue;
+            const int Tool = ToolOf(T);
+            if (Tool < 0)
+            {
+                Stats.CollisionNonColliding++;
+                continue;
+            }
+            Tris3.push_back({ Corner(T, 0), Corner(T, 1), Corner(T, 2) });
+            Tool3.push_back(Tool);
+        }
         Tris3.insert(Tris3.end(), BrushCollision.begin(), BrushCollision.end());
+        Tool3.resize(Tris3.size(), 0);
         {
             const double MostTris = Room * (std::min)((double)Lim.CollisionTriangles, 0xc0000 / 3.0), MostCorners = Room * Lim.CollisionVertices;
             std::set<std::array<int64_t, 3>> Corners;
@@ -2488,6 +2589,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                 }
                 std::stable_sort(Order.begin(), Order.end());
                 std::vector<std::array<V3, 3>> Fit;
+                std::vector<int> FitTool;
                 Corners.clear();
                 for (const auto& [D, I] : Order)
                 {
@@ -2496,7 +2598,9 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                     if ((double)Fit.size() + 1 > MostTris || (double)(Corners.size() + New) > MostCorners) break;
                     for (const V3& P : Tris3[I]) Corners.insert(Key(P));
                     Fit.push_back(Tris3[I]);
+                    FitTool.push_back(Tool3[I]);
                 }
+                Tool3 = std::move(FitTool);
                 Stats.CollisionFitted = Tris3.size() - Fit.size();
                 Stats.CollisionOutsidePlay = Stats.CollisionFitted;
                 Stats.Warnings.push_back("collision fitted to Black Ops III's cod2map: " + std::to_string(Tris3.size()) + " triangles -> " +
@@ -2505,20 +2609,76 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                 Tris3 = std::move(Fit);
             }
         }
-        for (const auto& Tri : Tris3)
+        // the triangles of one plane and one tool: cod2map merges them into concave windings as a
+        // group of at most 32768 (MAX_WINDINGS_PER_CONCAVE_GROUP, "Try -blocksize 0", its fragments
+        // counted), the compile ending past it. A level's flat ground in one mesh crosses it (MW4
+        // shipment's Havok ground at z 0: 26000 patches over 6700 by 6700 units): past half of it,
+        // those farthest from play left out.
+        if (Fitting)
         {
+            constexpr size_t MostCoplanar = 16384;
+            using PlaneKey = std::tuple<int, int64_t, int64_t, int64_t, int64_t>;   // tool, normal, distance
+            std::map<PlaneKey, std::vector<size_t>> OnPlane;
+            for (size_t I = 0; I < Tris3.size(); I++)
+            {
+                const auto& T = Tris3[I];
+                V3 N = Cross(Sub(T[1], T[0]), Sub(T[2], T[0]));
+                const double L = Length(N);
+                if (!(L > 0)) continue;
+                N = Mul(N, 1.0 / L);
+                // a plane either way round: the same plane to cod2map
+                if (N[2] < 0 || (N[2] == 0 && (N[1] < 0 || (N[1] == 0 && N[0] < 0)))) N = Mul(N, -1.0);
+                OnPlane[{ Tool3[I], std::llround(N[0] * 100.0), std::llround(N[1] * 100.0), std::llround(N[2] * 100.0), std::llround(Dot(N, T[0])) }]
+                    .push_back(I);
+            }
+            std::vector<char> Drop(Tris3.size(), 0);
+            size_t Dropped = 0;
+            for (auto& [Key, Of] : OnPlane)
+            {
+                if (Of.size() <= MostCoplanar) continue;
+                std::vector<std::pair<double, size_t>> Order;
+                for (const size_t I : Of) Order.push_back({ (std::min)({ Far(Tris3[I][0]), Far(Tris3[I][1]), Far(Tris3[I][2]) }), I });
+                std::stable_sort(Order.begin(), Order.end());
+                for (size_t K = MostCoplanar; K < Order.size(); K++) Drop[Order[K].second] = 1, Dropped++;
+            }
+            if (Dropped)
+            {
+                std::vector<std::array<V3, 3>> Kept;
+                std::vector<int> KeptTool;
+                for (size_t I = 0; I < Tris3.size(); I++)
+                    if (!Drop[I]) Kept.push_back(Tris3[I]), KeptTool.push_back(Tool3[I]);
+                Stats.CollisionCoplanarLeftOut = Dropped;
+                Stats.Warnings.push_back("collision fitted to Black Ops III's cod2map: " + std::to_string(Dropped) + " triangles left out of planes holding over " +
+                                         std::to_string(MostCoplanar) + " of one tool (those farthest from play; its concave windings stop at 32768 a plane)");
+                Tris3 = std::move(Kept);
+                Tool3 = std::move(KeptTool);
+            }
+        }
+        // a tool's triangles apart from another's: a grid or a polygon of one tool
+        const auto Blocks = [](const std::string& Tool) {
+            return Tool == "clip_full" || Tool == "clip" || Tool == "clip_player" || Tool == "clip_player_vehicle" || Tool == "clip_nosight";
+        };
+        std::vector<std::vector<std::array<V3, 3>>> AllOf(ToolList.size()), RestOf(ToolList.size());
+        for (size_t I = 0; I < Tris3.size(); I++)
+        {
+            const auto& Tri = Tris3[I];
             const V3 N = Cross(Sub(Tri[1], Tri[0]), Sub(Tri[2], Tri[0]));
             const double L = Length(N);
-            (L > 0 && std::abs(N[2]) / L < Steep ? Rest : All).push_back(Tri);
+            (L > 0 && std::abs(N[2]) / L < Steep ? RestOf : AllOf)[(size_t)Tool3[I]].push_back(Tri);
+            if (!Blocks(ToolList[(size_t)Tool3[I]])) Stats.CollisionNotPlayer++;
         }
         if (!Stage("collision: terrain patches"))
         {
             Stopped = true;
             return;
         }
-        for (const TerrainGrid& G : TerrainGrids(All, Rest, Target->MinPatchTriangleArea()))
+        std::vector<std::pair<std::vector<TerrainGrid>, size_t>> Grids;   // a tool's grids, the tool
+        for (size_t K = 0; K < ToolList.size(); K++)
+            if (!AllOf[K].empty()) Grids.emplace_back(TerrainGrids(AllOf[K], RestOf[K], Target->MinPatchTriangleArea()), K);
+        for (const auto& [Of, K] : Grids)
+        for (const TerrainGrid& G : Of)
         {
-            Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n   clip_full\n   lightmap_gray\n   " + std::to_string(G.Ctrl.size()) + " " +
+            Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n   " + ToolList[K] + "\n   lightmap_gray\n   " + std::to_string(G.Ctrl.size()) + " " +
                    std::to_string(G.Ctrl[0].size()) + " 16 8\n";
             for (size_t X = 0; X < G.Ctrl.size(); X++)
             {
@@ -2543,7 +2703,15 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             return;
         }
         const IRadiantTarget::Merge M = Target->CollisionMerge();
-        const std::vector<Polygon> Polygons = CoplanarPolygons(Rest, Stats.TrianglesDropped, M.Distance, M.MinDot);
+        std::vector<Polygon> Polygons;
+        std::vector<size_t> PolygonTool;
+        for (size_t K = 0; K < ToolList.size(); K++)
+        {
+            if (RestOf[K].empty()) continue;
+            std::vector<Polygon> Of = CoplanarPolygons(RestOf[K], Stats.TrianglesDropped, M.Distance, M.MinDot);
+            PolygonTool.insert(PolygonTool.end(), Of.size(), K);
+            Polygons.insert(Polygons.end(), std::make_move_iterator(Of.begin()), std::make_move_iterator(Of.end()));
+        }
         // Past the target's budget of plane slots (the prisms' with the clip map's brushes', as
         // cod2map makes them: MapRadiantPlanes.h), the polygons as patches instead, a triangle
         // each (a fan of the polygon), which take no plane: cod2map ends at MAX_MAP_PLANES (131072)
@@ -2577,9 +2745,10 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         }
         if (AsPatches)
         {
-            std::vector<std::array<const V3*, 3>> Fan;
-            for (const Polygon& G : Polygons)
+            std::vector<std::pair<std::array<const V3*, 3>, size_t>> Fan;   // a triangle, its tool
+            for (size_t Gi = 0; Gi < Polygons.size(); Gi++)
             {
+                const Polygon& G = Polygons[Gi];
                 for (size_t J = 1; J + 1 < G.Loop.size(); J++)
                 {
                     const std::array<const V3*, 3> C = { &G.Loop[0], &G.Loop[J], &G.Loop[J + 1] };
@@ -2588,17 +2757,18 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                         Stats.TrianglesDropped++;
                         continue;
                     }
-                    Fan.push_back(C);
+                    Fan.emplace_back(C, PolygonTool[Gi]);
                 }
                 Stats.Triangles += G.Triangles;
             }
             const auto V = [&](const V3& P) { return "\tv " + Num(P[0]) + " " + Num(P[1]) + " " + Num(P[2]) + " t 0 0 0 0\n"; };
-            for (const auto& C : Fan)
+            for (const auto& [C, K] : Fan)
             {
-                // faces as the game's: the grid's triangle faces against (row 1 - row 0) x
-                // (column 1 - column 0), the fourth corner repeating the second
-                Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n   clip_full\n   lightmap_gray\n   2 2 16 8\n   (\n" + V(*C[0]) +
-                       V(*C[1]) + "   )\n   (\n" + V(*C[2]) + V(*C[1]) + "   )\n  }\n }\n";
+                // faces as the game's: the grid's triangle faces along (row 1 - row 0) x
+                // (column 1 - column 0) = (C[1] - C[0]) x (C[2] - C[0]), the polygon's facing (rows
+                // C[0], C[1] then C[2], C[1] wrote it facing back), the fourth corner repeating the second
+                Out += "// brush " + std::to_string(Number++) + "\n {\n  mesh\n  {\n   " + ToolList[K] + "\n   lightmap_gray\n   2 2 16 8\n   (\n" +
+                       V(*C[0]) + V(*C[2]) + "   )\n   (\n" + V(*C[1]) + V(*C[2]) + "   )\n  }\n }\n";
                 Stats.CollisionPatches++;
                 Stats.PatchCollisionTriangles++;
                 for (const V3* P : C) Corner3(*P);
@@ -2617,7 +2787,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             PolygonPrism(G.Loop, G.N, G.D, Thick, B);
             // counted as triangles, not as the clip map's brushes
             const size_t Dropped = Stats.BrushesDropped, Unsound = Stats.BrushesUnsound;
-            if (WriteBrush(Out, B, Number, nullptr, nullptr, Tools, "clip_full", Stats, { Tex.Drawn, ForGdt, 0, &Stats.PrismTextures, &Hidden, Fitting }))
+            if (WriteBrush(Out, B, Number, nullptr, nullptr, Tools, ToolList[PolygonTool[Gi]], Stats,
+                           { Tex.Drawn, ForGdt, 0, &Stats.PrismTextures, &Hidden, Fitting }))
             {
                 Number++;
                 Stats.Brushes--, Stats.Triangles += G.Triangles, Stats.TriangleBrushes++;
@@ -2810,19 +2981,45 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     }
 
     // with Patches, the world's drawn triangles no brush side draws, and those of brush models no
-    // entity holds, as patches; else they go to the world's models below
-    if (Patches)
+    // entity holds, as patches; else they go to the world's models below, but for their floors
+    // where the target takes those as patches (IRadiantTarget::FloorsAsPatches)
+    const bool FloorPatches = !Patches && Target->FloorsAsPatches();
+    if (Patches || FloorPatches)
     {
         if (!Stage("the world's patches")) return false;
         std::string Group;
         size_t Number = 0;
-        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number, Ov, Cover);
+        std::vector<std::array<V3, 3>> Floors;
+        const std::string Under = FloorPatches ? Target->FloorOccluder() : std::string();
+        std::vector<std::array<V3, 3>>* Into = Under.empty() ? nullptr : &Floors;
+        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number, Ov, Cover, nullptr, FloorPatches, Into);
         for (const uint32_t O : Owners)
             if (!Patched.count(O))
             {
                 const auto L = Local.find(O);
-                WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number, Ov, Cover, L == Local.end() ? nullptr : L->second.Place);
+                WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number, Ov, Cover, L == Local.end() ? nullptr : L->second.Place, FloorPatches, Into);
             }
+        // under the floors (patches: cod2map makes a patch an Umbra target, never an occluder, a
+        // caulk patch included) the target's occluder as brushes, a prism a unit below each plane's
+        // merged floor polygon: without it Umbra had no ground where the floors were patches, and
+        // a camera near it fell in view cells that culled everything
+        if (!Floors.empty())
+        {
+            for (auto& T : Floors)
+                for (V3& P : T) P[2] -= 1.0;
+            const IRadiantTarget::Merge M = Target->CollisionMerge();
+            size_t Dropped = 0;
+            for (const Polygon& G : CoplanarPolygons(Floors, Dropped, M.Distance, M.MinDot))
+            {
+                Brush B;
+                PolygonPrism(G.Loop, G.N, G.D, 2.0, B);
+                if (WriteBrush(Group, B, Number, nullptr, nullptr, Tools, Under, Stats))
+                {
+                    Number++;
+                    Stats.Brushes--, Stats.FloorOccluderBrushes++;   // not the clip map's
+                }
+            }
+        }
         if (!Group.empty())
         {
             Begin(nullptr, "func_group");
@@ -3092,6 +3289,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                 if (Gone && Over.empty()) continue;
                 const Fate F = FateOf(S, K / 3);
                 if (F != Fate::Model && !(F == Fate::Patch && Merged)) continue;
+                if (F == Fate::Patch && FloorPatches && Floor(S, K / 3)) continue;   // a floor: a patch, with its overlays (above)
                 const uint32_t Tri[3] = { S.Indices[K], S.Indices[K + 1], S.Indices[K + 2] };
                 if (Tri[0] >= S.Vertices.size() || Tri[1] >= S.Vertices.size() || Tri[2] >= S.Vertices.size()) continue;
                 if (!Within(S.Vertices[Tri[0]].Pos) || !Within(S.Vertices[Tri[1]].Pos) || !Within(S.Vertices[Tri[2]].Pos))
@@ -3295,9 +3493,9 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     bool Ok = true;
     if (InTree)
     {
-        if (!ModToolsTree::WriteKept(Path, Out))
+        if (std::string Why; !ModToolsTree::WriteKept(Path, Out, &Why))
         {
-            Error = "cannot write " + Path.string() + " (nor set the one there aside)";
+            Error = "cannot write " + Path.string() + ": " + Why;
             return false;
         }
         const fs::path LimitsFile = fs::path(Path).replace_extension(".limits.txt");
@@ -3331,8 +3529,12 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     }
     fs::create_directories(GdtFile.parent_path(), Ec);
     if (InTree) ModToolsTree::LeaveOutDefined(GdtFile, Entries);
-    if (InTree) Ok = ModToolsTree::WriteKept(GdtFile, Gdt::Document(Entries, "\n")) && Ok;
-    else std::ofstream(GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
+    if (std::string Why; InTree && !ModToolsTree::WriteKept(GdtFile, Gdt::Document(Entries, "\n"), &Why))
+    {
+        Error = "cannot write " + GdtFile.string() + ": " + Why;
+        Ok = false;
+    }
+    else if (!InTree) std::ofstream(GdtFile, std::ios::binary) << Gdt::Document(Entries, "\n");
     return Ok;
 }
 

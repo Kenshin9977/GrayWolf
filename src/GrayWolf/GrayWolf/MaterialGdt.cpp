@@ -1086,9 +1086,9 @@ void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T)
     if (!Tree.empty())
     {
         for (const std::string& R : Named) ModToolsTree::Place(Out / fs::path(R), fs::path(Tree) / Root / fs::path(R));
-        if (!ModToolsTree::WriteKept(File, Text))
+        if (std::string Why; !ModToolsTree::WriteKept(File, Text, &Why))
         {
-            T.Fail("", DiskGame::Kind::Model, File.filename().string(), "not written in the mod tools tree (nor the one there set aside)");
+            T.Fail("", DiskGame::Kind::Model, File.filename().string(), "not written in the mod tools tree, " + Why);
             return;
         }
         if (!ExportWriters::WriteBytes(fs::path(File).replace_extension(".names.json"), reinterpret_cast<const uint8_t*>(Names.data()), Names.size()))
