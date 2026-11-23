@@ -77,6 +77,19 @@ namespace
         O.Settings["mod_tools"] = "off";
         O.Settings["bo3_usermap"] = "off";
         O.Settings["bo3_usermap_debug"] = "off";
+        // --target: its settings, then the options given beside it (below) over them
+        if (!Cli.ExportTarget.empty())
+        {
+            const Target* T = FindTarget(Cli.ExportTarget);
+            if (T == nullptr)
+            {
+                std::string Names;
+                for (const Target& Each : Targets()) Names += std::string(Names.empty() ? "" : ", ") + Each.Name + " (" + Each.Label + ")";
+                Error = "unknown --target " + Cli.ExportTarget + ": " + Names;
+                return false;
+            }
+            for (const auto& [Key, Value] : TargetValues(*T, Game)) O.Settings[Key] = Value;
+        }
         O.OatModelFormat = Cli.OatModelFmt;
         O.OatImageFormat = Cli.OatImageFmt;
         O.OatGdt = Cli.OatGdt;

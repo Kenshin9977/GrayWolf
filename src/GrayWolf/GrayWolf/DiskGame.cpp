@@ -130,7 +130,7 @@ const Setting SoundAliases{ "sound_aliases", "Sound aliases", { { "off", "None" 
 const Setting ModToolsOutput{ "mod_tools", "Mod tools files", { { "off", "In the export folder" }, { "on", "Into the BO3 Mod Tools" } },
                               "on", { Kind::Model, Kind::Map, Kind::Sound } };
 const Setting Bo3Usermap{ "bo3_usermap", "BO3 usermap", { { "off", "None" }, { "create", "Create zm_<map>" }, { "build", "Create, compile, light, link" } },
-                          "create", { Kind::Map } };
+                          "off", { Kind::Map } };
 const Setting Bo3UsermapDebug{ "bo3_usermap_debug", "BO3 usermap diagnostic", { { "off", "None" }, { "prone", "Prone test (+ zm_graywolf_ref)" },
                                                                                  { "cull", "Culling test (+ zm_graywolf_ref)" }, { "both", "Prone and culling tests" } },
                                "off", { Kind::Map } };
@@ -168,6 +168,94 @@ bool Setting::Parse(const std::string& Text, std::string& Value) const
             return true;
         }
     return false;
+}
+
+const std::vector<Target>& Targets()
+{
+    static const std::vector<Target> All = {
+        { "blender", "Blender / glTF", "The map as a .glb with its Blender import script (and the settings' Cast, PNG copies)",
+          { { &MapRadiant, "off" }, { &GdtMaterials, "off" }, { &ModToolsOutput, "off" }, { &Bo3Usermap, "off" } } },
+        { "radiant", "Radiant (.map + GDT)", "Also the map as a Radiant source with its material GDT, in the export folder",
+          { { &MapRadiant, "on" }, { &GdtMaterials, "on" }, { &ModToolsOutput, "off" }, { &Bo3Usermap, "off" } } },
+        { "bo3-modtools", "Black Ops III Mod Tools",
+          "The Radiant source, its GDT and the sound aliases written into the Black Ops III Mod Tools (map_source\\graywolf...)",
+          { { &MapRadiant, "on" }, { &GdtMaterials, "on" }, { &ModToolsOutput, "on" }, { &Bo3Usermap, "off" } }, true },
+        { "bo3-usermap", "Black Ops III usermap (build)",
+          "As Mod Tools, then a zombies usermap zm_<map> around the map, compiled, lit and linked (minutes)",
+          { { &MapRadiant, "on" }, { &GdtMaterials, "on" }, { &ModToolsOutput, "on" }, { &Bo3Usermap, "build" } }, true },
+    };
+    return All;
+}
+
+const Target* FindTarget(const std::string& Text)
+{
+    const std::string Want = ExportNaming::Lower(Text);
+    for (const Target& T : Targets())
+        if (Want == T.Name || Want == ExportNaming::Lower(T.Label)) return &T;
+    return nullptr;
+}
+
+std::vector<std::pair<std::string, std::string>> TargetValues(const Target& T, const IDiskGame& Game)
+{
+    const std::vector<const Setting*> Taken = Game.AllSettings();
+    // by key: AllSettings lists CommonSettings' copies
+    const auto Takes = [&](const Setting& S) {
+        return std::any_of(Taken.begin(), Taken.end(), [&](const Setting* Each) { return std::string(Each->Key) == S.Key; });
+    };
+    std::vector<std::pair<std::string, std::string>> Out;
+    for (const auto& [S, V] : T.Values)
+        if (Takes(*S)) Out.emplace_back(S->Key, V);
+    if (T.SoundAliases && Takes(SoundAliases)) Out.emplace_back(SoundAliases.Key, "on");
+    return Out;
+}
+
+namespace
+{
+    // Values as they take effect, for the settings a target drives
+    std::map<std::string, std::string> Effective(const std::map<std::string, std::string>& Values)
+    {
+        std::map<std::string, std::string> E;
+        for (const Setting* S : { &MapRadiant, &GdtMaterials, &ModToolsOutput, &Bo3Usermap }) E[S->Key] = S->Of(Values);
+        if (E[MapRadiant.Key] == "off") E[Bo3Usermap.Key] = "off";
+        if (E[MapRadiant.Key] == "off" && E[GdtMaterials.Key] == "off" && SoundAliases.Of(Values) == "off") E[ModToolsOutput.Key] = "off";
+        return E;
+    }
+}
+
+const Target* TargetOf(const std::map<std::string, std::string>& Values)
+{
+    const std::map<std::string, std::string> E = Effective(Values);
+    for (const Target& T : Targets())
+    {
+        bool Match = true;
+        for (const auto& [S, V] : T.Values) Match = Match && E.at(S->Key) == V;
+        if (Match) return &T;
+    }
+    return nullptr;
+}
+
+bool Advanced(const Setting& S)
+{
+    for (const Setting* A : { &MapSurfaces, &MapProps, &MapFit, &MapContent, &MapCollision, &MapRadiant, &GdtMaterials, &ModToolsOutput, &Bo3Usermap })
+        if (std::string(A->Key) == S.Key) return true;   // by key: AllSettings lists CommonSettings' copies
+    return false;
+}
+
+bool Hidden(const Setting& S)
+{
+    return std::string(S.Key) == Bo3UsermapDebug.Key;
+}
+
+std::string Inconsistent(const std::map<std::string, std::string>& Values)
+{
+    const std::string Usermap = Bo3Usermap.Of(Values);
+    if (Usermap == "off") return std::string();
+    std::string Off;
+    if (MapRadiant.Of(Values) != "on") Off = "map_radiant";
+    if (ModToolsOutput.Of(Values) != "on") Off += (Off.empty() ? "" : " and ") + std::string("mod_tools");
+    if (Off.empty()) return std::string();
+    return "bo3_usermap " + Usermap + " asked with " + Off + " off: no usermap is made (it needs the map's Radiant source in a "
+           "Black Ops III Mod Tools tree; --target bo3-usermap, or \"Export for: Black Ops III usermap\", sets them together)";
 }
 
 bool IDiskZone::Export(Kind K, const Context& C, Totals& T) const
@@ -1191,6 +1279,10 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
             Mon.Log("mod tools files into " + Tree);
         }
     }
+    // a usermap asked of a map the run does not put in a Mod Tools tree: said, not mended (turning
+    // on map_radiant or mod_tools would write what was not asked, into a game install)
+    if (C.Kinds.count(Kind::Map))
+        if (const std::string Why = Inconsistent(Run.Settings); !Why.empty()) T.Warnings.push_back(Why);   // logged with the others at the end
     ModToolsTree::Begin(ModToolsTree::RootOf(Run));
     const bool MaterialGdts = GdtMaterials.Of(Run.Settings) == "on";
     const MaterialGdt::AssetNamesInModelFiles ModToolsNames(MaterialGdts);

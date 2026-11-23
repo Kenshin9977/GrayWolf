@@ -141,7 +141,19 @@ namespace
     // game over on appearing), the sun volume over SunArea (the level's sun, its global probe and
     // its baked light: the template's left most of firing range unlit, its floors black), baking
     // with Light's sky (its runtime one the template's), auto exposure on within Light's range,
-    // Light's reflection probes added; then Prefab as a misc_prefab
+    // Light's reflection probes added, its shadows' split distance SplitDistance; then Prefab as a
+    // misc_prefab
+    //
+    // The sun volume's shadowSplitDistance is the reach of the dynamic split shadows and the scale of
+    // the static sun shadows Radiant bakes (the SST: every static surface takes its sun shadow from
+    // it, patches and brushes as static models; the .led holds no lightmap, a patch's lightmap
+    // scale changes nothing there): its texel is the distance / 570 (read
+    // back from the .led, lightState.sst.inchesPerTexel). The template's 2000 baked 3.51 inches a
+    // texel, the shadows of mp_nuked's stairs blocky and stepped; The Giant's 900 bakes 1.58
+    // (mp_sector's 1200: 2.20). mp_nuked's port at 900: its .led 4 % larger (165.7 to 172.2 MB),
+    // the light step as long (140 s).
+    constexpr const char* SplitDistance = "900";
+    std::string SplitLine(const char* Distance) { return std::string("\"shadowSplitDistance\" \"") + Distance + "\""; }
     struct Lighting
     {
         std::string BakeSsi;                          // the sun volume's ssi1, the template's its runtime override; empty: as it is
@@ -151,7 +163,7 @@ namespace
     std::string Level(const std::string& Template, const std::array<double, 3>& By, const std::vector<std::array<double, 3>>& Spawns,
                       const std::array<double, 6>& Area, const std::array<double, 6>& SunArea, const Lighting& Light, const std::string& Prefab)
     {
-        static const std::regex Ssi1("^\"ssi1\" \"([^\"]*)\"$");
+        static const std::regex Ssi1("^\"ssi1\" \"([^\"]*)\"$"), Split("^\"shadowSplitDistance\" \"[^\"]*\"$");
         size_t NextSpawn = 0;
         std::vector<std::string> Lines;
         {
@@ -241,7 +253,8 @@ namespace
                     continue;
                 }
                 std::smatch M;
-                if (Fit == &SunArea && !Light.BakeSsi.empty() && std::regex_match(L, M, Ssi1))
+                if (Fit == &SunArea && std::regex_match(L, M, Split)) Out += SplitLine(SplitDistance) + "\n";
+                else if (Fit == &SunArea && !Light.BakeSsi.empty() && std::regex_match(L, M, Ssi1))
                 {
                     // SunSky_Light_SetUp: ssi1 bakes the GI, ssi1_runtime_override shows in game
                     Out += "\"ssi1\" \"" + Light.BakeSsi + "\"\n\"ssi1_runtime_override\" \"" + M[1].str() + "\"\n";
@@ -280,6 +293,22 @@ namespace
         }
         Out += "// entity " + std::to_string(Entity) + "\n{\n\"classname\" \"misc_prefab\"\n\"model\" \"" + Prefab + "\"\n\"origin\" \"0 0 0\"\n}\n";
         return Out;
+    }
+
+    // A kept level's text, its sun volume's shadowSplitDistance SplitDistance where it is still the
+    // template's 2000 (made before SplitDistance; a distance the user set is left alone)
+    std::string WithSplitDistance(std::string Text)
+    {
+        const size_t Sun = Text.find("\"classname\" \"volume_sun\"");
+        if (Sun == std::string::npos) return Text;
+        const size_t Open = Text.rfind("\n{", Sun), Brush = Text.find("\n{", Sun), Close = Text.find("\n}", Sun);
+        const size_t End = std::min(Brush, Close);   // its keys: up to its first brush or its end
+        const std::string Was = "\n" + SplitLine("2000");
+        const size_t At = Text.find(Was, Open == std::string::npos ? 0 : Open);
+        if (At == std::string::npos || At > End) return Text;
+        const char After = At + Was.size() < Text.size() ? Text[At + Was.size()] : '\n';
+        if (After == '\r' || After == '\n') Text.replace(At + 1, Was.size() - 1, SplitLine(SplitDistance));
+        return Text;
     }
 
     size_t ErrorLines(const std::string& Log)
@@ -613,6 +642,8 @@ Made Create(const fs::path& Root, const std::string& Map, const std::string& Pre
     // gone, else Radiant's lighting finds no sun ("No lighting data to export. Map may be missing
     // a sun volume") and the usermap does not link
     if (HasLevel && ReadAll(Level_).find("\"" + R.Name + "_bake_ssi\"") != std::string::npos) BakeSky(Root, R.Name);
+    // and its sun shadows' split distance SplitDistance where it is still the template's
+    if (HasLevel) WriteIfChanged(Level_, WithSplitDistance(ReadAll(Level_)));
     if (HasUsermap && HasLevel) return R;
     if (!fs::exists(Template / "map_source" / "zm" / "template.map", Ec))
     {

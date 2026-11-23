@@ -282,6 +282,8 @@ namespace
     {
         IWZone::MapLayout M;
         M.VertexCount = 0xf4, M.Vertices = 0xf8, M.IndexCount = 0x120, M.Indices = 0x128;
+        // the layer block (Maps::NamedLayerUvs): mp_prisonbreak's 544 ranges end its 1 201 556 bytes
+        M.LayerDataSize = 0x108, M.LayerData = 0x110;
         M.BrushCount = 0x758, M.Brushes = 0x760, M.BrushSize = 0x3c, M.BrushFirstSurface = 52, M.BrushSurfaceCount = 56;
         M.SModelCount = 0x8a0, M.Surfaces = 0x968, M.SModels = 0x978, M.SModelSize = 0xb0;
         M.SurfaceTris = 14, M.SurfaceBaseIndex = 16;

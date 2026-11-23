@@ -106,11 +106,14 @@ namespace
         // 0x168/0x16c (0x38: u32 surface count at 48, first surface at 52), GfxWorldDpvsStatic at
         // 0x25c (surfaces 0x2a8, 0x34 each, material at 0x14; static models 0x2b0, 0x5c each);
         // clipMap_t (0x14c) dynamic entities u16 0x106/0x108, lists 0x110/0x114, 0x54 each;
-        // ComPrimaryLight 0x48, colour at 8
+        // ComPrimaryLight 0x48, colour at 8; the layer block vertexLayerDataSize 0x40, vld.data 0x44
+        // (nazi_zombie_prototype: its 95 composites' ranges end the 147 916 bytes exactly)
         MapLayout Map() const override
         {
-            return { 0x10, 0x14, 0x18, 0x28, 0x30, 0x34, 0x38, 0x168, 0x16c, 0x38, 48, 52, 4,
-                     0x25c, 0x2a8, 0x34, 0x14, 0x2b0, 0x5c, 0x106, 0x110, 0x54, 0x48, 8 };
+            MapLayout M{ 0x10, 0x14, 0x18, 0x28, 0x30, 0x34, 0x38, 0x168, 0x16c, 0x38, 48, 52, 4,
+                         0x25c, 0x2a8, 0x34, 0x14, 0x2b0, 0x5c, 0x106, 0x110, 0x54, 0x48, 8 };
+            M.LayerDataSize = 0x40, M.LayerData = 0x44;
+            return M;
         }
         XMaterial_t Material(uint64_t Address) const override { return GameWorldAtWar::ReadXMaterial(Address); }
         // clipMap_t (OAT's T4 struct, the t4 tables' col_map): dmaterial_t 0x48 (char[64], surface,

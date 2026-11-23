@@ -34,6 +34,7 @@
 #include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -261,8 +262,12 @@ namespace
     // GDT, which then lists it)
     // A material's GDT asset name, recorded in Gdt: a stock one (RadiantGdt::Stock) as it is, the
     // others the GDT defines
-    std::string GdtMaterialName(RadiantGdt& Gdt, const std::string& Material)
+    std::string GdtMaterialName(RadiantGdt& Gdt, const std::string& Given)
     {
+        const std::string* Shared = nullptr;
+        if (Gdt.Same)
+            if (const auto It = Gdt.Same->find(Given); It != Gdt.Same->end()) Shared = &It->second;
+        const std::string& Material = Shared ? *Shared : Given;
         if (Gdt.Stock && MaterialGdt::AssetName(Material) == Material && Gdt.Stock->count(Material))
         {
             Gdt.StockNamed.insert(Material);
@@ -491,6 +496,15 @@ namespace
         return R;
     }
 
+    // the draw surfaces cod2map makes of what is written so far: one a brush side and one a patch
+    // (MAX_MAP_DRAW_SURFS; measured on MW4's mp_rex_rm_shipment: 275098 patches with 16000 floor
+    // boxes past it, 13500 not, a box's sides all counting whatever their tool)
+    size_t DrawSurfaces(const RadiantStats& Stats)
+    {
+        return Stats.Patches + Stats.OverlayPatches[0] + Stats.OverlayPatches[1] + Stats.OverlayPatches[2] + Stats.TerrainPatches +
+               Stats.CollisionPatches + Stats.Faces;
+    }
+
     // A prepared brush written as brush Number, counted in Stats; false when it is not written
     bool CommitBrush(std::string& Out, const PreparedBrush& R, size_t Number, RadiantStats& Stats, const Texturing& Tex)
     {
@@ -525,7 +539,10 @@ namespace
                        " 0 lightmap_gray 16384 16384 0 0 0 0\n";
             }
             else
+            {
                 Out += Names[K] + " 64 64 0 0 0 0 lightmap_gray 16384 16384 0 0 0 0\n";
+                if (Names[K] == "caulk") Stats.CaulkVertices += Faces[K].Points.size();
+            }
         }
         Out += "}\n";
         Stats.Brushes++;
@@ -809,12 +826,16 @@ namespace
         }
     }
 
+    // a drawn triangle (object, surface, triangle) as a key of FloorsInModels
+    uint64_t TriangleKey(size_t Oi, size_t Si, size_t T) { return ((uint64_t)Oi << 44) | ((uint64_t)Si << 28) | (uint64_t)T; }
+
     // Owner's drawn triangles no brush side draws as patches, then the blend layers over all its
-    // drawn triangles (those a brush side draws too); FloorsOnly: its floors' only (Floor), each also
-    // added to Floors (where it stands, facing up) when given
+    // drawn triangles (those a brush side draws too); FloorsOnly: its floors' only (Floor) but those
+    // in InModels (TriangleKey: left to the world's models), each also added to Floors (where it
+    // stands, facing up) when given
     void WritePatches(std::string& Out, const MapScene& Scene, const DrawnWorld& Drawn, uint32_t Owner, RadiantGdt* Gdt, RadiantStats& Stats,
                       size_t& Number, Overlaying& Ov, const CoveredTriangles& Cover, const float* Place = nullptr, bool FloorsOnly = false,
-                      std::vector<std::array<V3, 3>>* Floors = nullptr)
+                      std::vector<std::array<V3, 3>>* Floors = nullptr, const std::unordered_set<uint64_t>* InModels = nullptr)
     {
         for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
         {
@@ -829,7 +850,7 @@ namespace
                 for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
                 {
                     if (Drawn.Removed(Oi, Si, K / 3) || Cover.Covered(Oi, Si, K / 3)) continue;
-                    if (FloorsOnly && !Floor(S, K / 3)) continue;
+                    if (FloorsOnly && (!Floor(S, K / 3) || (InModels && InModels->count(TriangleKey(Oi, Si, K / 3))))) continue;
                     const Fate F = FateOf(S, K / 3);
                     if (F == Fate::None) Stats.TrianglesDegenerate++;
                     if (F != Fate::Patch) continue;
@@ -861,7 +882,7 @@ namespace
                 }
                 if (Ov.Layers && !Ov.Layers->Of(S.Material).empty())
                     for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
-                        if (FateOf(S, K / 3) == Fate::Patch && !Cover.Covered(Oi, Si, K / 3) && (!FloorsOnly || Floor(S, K / 3)))
+                        if (FateOf(S, K / 3) == Fate::Patch && !Cover.Covered(Oi, Si, K / 3) && (!FloorsOnly || (Floor(S, K / 3) && !(InModels && InModels->count(TriangleKey(Oi, Si, K / 3))))))
                             WriteOverlayPatches(Out, S, K, Ov, Gdt, Stats, Number, Place);
             }
         }
@@ -927,16 +948,17 @@ namespace
         Model.AssetName = Name;
         WraithBone& Bone = Model.AddBone();
         Bone.TagName = "tag_origin";
-        std::map<std::string, int32_t> MaterialIndex;
+        std::map<std::string, int32_t> MaterialIndex;   // by the name the file gives (materials may share one)
         for (const Surface* S : Surfaces)
         {
             if (S->Indices.size() < 3) continue;
-            auto [It, New] = MaterialIndex.emplace(S->Material, (int32_t)Model.Materials.size());
+            std::string Named = S->Material.empty() ? "default" : ExportNaming::SafeFileName(S->Material);
+            if (ForGdt && !S->Material.empty()) Named = GdtMaterialName(*ForGdt, S->Material);
+            auto [It, New] = MaterialIndex.emplace(Named, (int32_t)Model.Materials.size());
             if (New)
             {
                 WraithMaterial M;
-                M.MaterialName = S->Material.empty() ? "default" : ExportNaming::SafeFileName(S->Material);
-                if (ForGdt && !S->Material.empty()) M.MaterialName = GdtMaterialName(*ForGdt, S->Material);
+                M.MaterialName = Named;
                 if (const auto Mat = Scene.Materials.find(S->Material); Mat != Scene.Materials.end() && !Mat->second.ColorMap.empty())
                     M.DiffuseMapName = Mat->second.ColorMap;   // the image's name, as model exports give it
                 Model.AddMaterial(M);
@@ -1057,7 +1079,7 @@ namespace
         struct None {};
         const bool Whole = ParallelFor<None>(Jobs.size(), 1, [&](size_t I, None&) {
             RadiantGdt Own;
-            if (ForGdt) Own.Prefix = ForGdt->Prefix, Own.Stock = ForGdt->Stock;
+            if (ForGdt) Own.Prefix = ForGdt->Prefix, Own.Stock = ForGdt->Stock, Own.Same = ForGdt->Same;
             Written[I] = WriteXmodel(Jobs[I].Surfaces, Scene, Jobs[I].Name, Jobs[I].Path, ForGdt ? &Own : nullptr);
             Materials[I] = std::move(Own.Materials);
             Stock[I] = std::move(Own.StockNamed);
@@ -1153,6 +1175,8 @@ namespace
                 Error = "radiant map: " + Error;
                 return false;
             }
+            // layered materials named as another whose GDT entry theirs is (SharedFirstLayers)
+            const size_t Shared = G.Same ? G.Same->size() : 0;
             if (WithMaterials)
             {
                 if (!Tell(Progress, "describing the materials"))
@@ -1187,6 +1211,11 @@ namespace
                                 { "map_radiant_oversize_patches", Stats.OversizePatches },
                                 { "map_radiant_floor_patches", Stats.FloorPatches },
                                 { "map_radiant_floor_occluder_brushes", Stats.FloorOccluderBrushes },
+                                { "map_radiant_floor_occluder_cell", Stats.FloorOccluderCell },
+                                { "map_radiant_floors_in_models", Stats.FloorsInModels },
+                                { "map_radiant_draw_surfaces", DrawSurfaces(Stats) },
+                                { "map_radiant_caulk_vertices", Stats.CaulkVertices },
+                                { "map_radiant_floor_occluder_left_out", Stats.FloorOccluderLeftOut },
                                 { "map_radiant_scaled_to_nothing", Stats.ScaledToNothing },
                                 { "map_radiant_collision_patches", Stats.CollisionPatches },
                                 { "map_radiant_brushes_over_budget", Stats.BrushesOverBudget },
@@ -1236,6 +1265,7 @@ namespace
                                                             { "map_radiant_layers_no_colour", Stats.LayersNoColour },
                                                             { "map_radiant_layers_undrawn", Stats.LayersUndrawn },
                                                             { "map_radiant_layers_no_gdt", Stats.LayersNoGdt },
+                                                            { "map_radiant_layered_shared", Shared },
                                                             { "map_radiant_overlay_materials", Stats.OverlayMaterials },
                                                             { "map_radiant_overlay_patches_layer2", Stats.OverlayPatches[0] },
                                                             { "map_radiant_overlay_patches_layer3", Stats.OverlayPatches[1] },
@@ -1805,6 +1835,156 @@ namespace
         return Out;
     }
 
+    // Boxes under floor triangles: the plane split in square cells, the triangles clipped to each;
+    // per cell and layer of floor a box two units deep, its top a unit under the layer's lowest point
+    // (a whole unit, so that flat floors give equal tops), equal tops merged into rectangles along
+    // x then y. Cells of Finest units, twice as wide until at most Most boxes; still too many at
+    // Coarsest, those farthest from play (Far) left out.
+    struct FloorBoxing
+    {
+        static constexpr double Finest = 16.0, Coarsest = 4096.0;
+        double Cell = Finest;
+        std::vector<std::array<double, 6>> Boxes;   // low corner, high corner
+        size_t LeftOut = 0;
+    };
+    FloorBoxing FloorBoxes(const std::vector<std::array<V3, 3>>& Tris, double Most, const std::function<double(const V3&)>& Far, const V3& Mid)
+    {
+        FloorBoxing R;
+        for (R.Cell = FloorBoxing::Finest;; R.Cell *= 2)
+        {
+            const double C = R.Cell;
+            std::map<std::pair<int64_t, int64_t>, std::vector<std::array<double, 3>>> Parts;   // cell -> the triangles' parts in it: lowest z, highest z, area
+            for (const auto& T : Tris)
+            {
+                double Lo[3] = { 1e300, 1e300, 1e300 }, Hi[2] = { -1e300, -1e300 };
+                for (const V3& P : T)
+                {
+                    for (int A = 0; A < 3; A++) Lo[A] = (std::min)(Lo[A], P[A]);
+                    for (int A = 0; A < 2; A++) Hi[A] = (std::max)(Hi[A], P[A]);
+                }
+                // the cells the triangle itself covers (clipped to each, xy), each its part's lowest z
+                for (int64_t X = (int64_t)std::floor(Lo[0] / C); X <= (int64_t)std::floor(Hi[0] / C); X++)
+                    for (int64_t Y = (int64_t)std::floor(Lo[1] / C); Y <= (int64_t)std::floor(Hi[1] / C); Y++)
+                    {
+                        std::vector<V3> Poly(T.begin(), T.end());
+                        const double Bound[4] = { X * C, (X + 1) * C, Y * C, (Y + 1) * C };
+                        for (int E = 0; E < 4 && Poly.size() >= 3; E++)
+                        {
+                            const int A = E / 2;
+                            const double Edge = Bound[E], Sign = E % 2 ? -1.0 : 1.0;   // keep Sign * (p[A] - Edge) >= 0
+                            std::vector<V3> Next;
+                            for (size_t I = 0; I < Poly.size(); I++)
+                            {
+                                const V3& P = Poly[I];
+                                const V3& Q = Poly[(I + 1) % Poly.size()];
+                                const double Dp = Sign * (P[A] - Edge), Dq = Sign * (Q[A] - Edge);
+                                if (Dp >= 0) Next.push_back(P);
+                                if ((Dp >= 0) != (Dq >= 0)) Next.push_back(Add(P, Mul(Sub(Q, P), Dp / (Dp - Dq))));
+                            }
+                            Poly = std::move(Next);
+                        }
+                        if (Poly.size() < 3) continue;
+                        double Area = 0, Z = 1e300, Zh = -1e300;
+                        for (size_t I = 0; I < Poly.size(); I++)
+                        {
+                            const V3& P = Poly[I];
+                            const V3& Q = Poly[(I + 1) % Poly.size()];
+                            Area += P[0] * Q[1] - Q[0] * P[1];
+                            Z = (std::min)(Z, P[2]), Zh = (std::max)(Zh, P[2]);
+                        }
+                        if (std::abs(Area) < 1e-3) continue;
+                        Parts[{ X, Y }].push_back({ Z, Zh, std::abs(Area) / 2 });
+                    }
+            }
+            // by top, then row (y), then x: runs along x, then runs stacked along y
+            std::map<int64_t, std::map<int64_t, std::vector<int64_t>>> ByTop;
+            // a cell's parts in layers (one starting more than Gap over the highest of the one under it):
+            // the lowest layer a box, a higher one only when its parts fill the cell (a box over the
+            // open edge of a raised floor would lid the floor under it)
+            constexpr double Gap = 8.0;
+            for (auto& [Cell, Of] : Parts)
+            {
+                std::sort(Of.begin(), Of.end());
+                double Low = Of[0][0], High = Of[0][1], Area = 0;
+                bool Lowest = true;
+                const auto Flush = [&]() {
+                    if (Lowest || Area >= 0.98 * C * C) ByTop[(int64_t)std::floor(Low) - 1][Cell.second].push_back(Cell.first);
+                    Lowest = false;
+                };
+                for (const auto& P : Of)
+                {
+                    if (P[0] > High + Gap)
+                    {
+                        Flush();
+                        Low = P[0], High = P[1], Area = 0;
+                    }
+                    High = (std::max)(High, P[1]);
+                    Area += P[2];
+                }
+                Flush();
+            }
+            R.Boxes.clear();
+            for (auto& [Top, Rows] : ByTop)
+            {
+                struct Run { int64_t X0, X1, Y0, Y1; };
+                std::vector<Run> Open, Done;
+                int64_t LastY = 0;
+                bool First = true;
+                for (auto& [Y, Xs] : Rows)
+                {
+                    std::sort(Xs.begin(), Xs.end());
+                    std::vector<std::pair<int64_t, int64_t>> Runs;
+                    for (const int64_t X : Xs)
+                        if (!Runs.empty() && Runs.back().second + 1 == X) Runs.back().second = X;
+                        else Runs.push_back({ X, X });
+                    std::vector<Run> Next;
+                    for (const auto& [X0, X1] : Runs)
+                    {
+                        bool Grown = false;
+                        if (!First && LastY + 1 == Y)
+                            for (auto& O : Open)
+                                if (O.X0 == X0 && O.X1 == X1 && O.Y1 == LastY)
+                                {
+                                    Next.push_back({ X0, X1, O.Y0, Y });
+                                    O.Y1 = INT64_MIN;   // taken
+                                    Grown = true;
+                                    break;
+                                }
+                        if (!Grown) Next.push_back({ X0, X1, Y, Y });
+                    }
+                    for (const Run& O : Open)
+                        if (O.Y1 != INT64_MIN) Done.push_back(O);
+                    Open = std::move(Next);
+                    LastY = Y;
+                    First = false;
+                }
+                Done.insert(Done.end(), Open.begin(), Open.end());
+                for (const Run& B : Done)
+                    R.Boxes.push_back({ B.X0 * C, B.Y0 * C, (double)Top - 2, (B.X1 + 1) * C, (B.Y1 + 1) * C, (double)Top });
+            }
+            size_t InPlay = 0;
+            for (const auto& B : R.Boxes) InPlay += Far(V3{ (B[0] + B[3]) / 2, (B[1] + B[4]) / 2, B[5] }) <= 0;
+            if ((double)InPlay <= Most || R.Cell >= FloorBoxing::Coarsest) break;
+        }
+        if ((double)R.Boxes.size() > Most)
+        {
+            const size_t Keep = Most > 0 ? (size_t)Most : 0;
+            std::vector<std::tuple<double, double, size_t>> Order;
+            for (size_t I = 0; I < R.Boxes.size(); I++)
+            {
+                const auto& B = R.Boxes[I];
+                const V3 C = { (B[0] + B[3]) / 2, (B[1] + B[4]) / 2, B[5] };
+                Order.push_back({ Far(C), Length(Sub(C, Mid)), I });
+            }
+            std::stable_sort(Order.begin(), Order.end());
+            std::vector<std::array<double, 6>> Kept;
+            for (size_t I = 0; I < Keep && I < Order.size(); I++) Kept.push_back(R.Boxes[std::get<2>(Order[I])]);
+            R.LeftOut = R.Boxes.size() - Kept.size();
+            R.Boxes = std::move(Kept);
+        }
+        return R;
+    }
+
     // The entity string as Radiant reads it: a key numbered 0 is no script string, its name
     // follows quoted (MWR: 0 "materiallayering" "1")
     std::string EntityText(const std::string& Ents)
@@ -1939,6 +2119,8 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     {
         ForGdt->Prefix = Target->NamePrefix();
         if (!StockMaterials->empty()) ForGdt->Stock = StockMaterials;
+        auto Same = std::make_shared<const std::map<std::string, std::string>>(SharedFirstLayers(Scene));
+        if (!Same->empty()) ForGdt->Same = std::move(Same);
     }
     // a model the map's export writes, by the name its GDT entry has
     // a model's (its part's, ModelParts) GDT entry: the target's name for one the export writes
@@ -2984,6 +3166,38 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
     // entity holds, as patches; else they go to the world's models below, but for their floors
     // where the target takes those as patches (IRadiantTarget::FloorsAsPatches)
     const bool FloorPatches = !Patches && Target->FloorsAsPatches();
+    // the floors as patches MostPatches at most, nearest play first (MW4's mp_rex_rm_shipment has
+    // 2.15 million floor triangles: a .map Radiant cannot hold); the others stay in the world's models
+    std::unordered_set<uint64_t> FloorsInModels;
+    if (FloorPatches)
+    {
+        std::vector<std::pair<double, uint64_t>> All;
+        for (size_t Oi = 0; Oi < Scene.Objects.size(); Oi++)
+            for (size_t Si = 0; Si < Scene.Objects[Oi].Surfaces.size(); Si++)
+            {
+                const Surface& S = Scene.Objects[Oi].Surfaces[Si];
+                if (NoSurface(Scene, S.Material)) continue;
+                for (size_t K = 0; K + 2 < S.Indices.size(); K += 3)
+                {
+                    if (Drawn.Removed(Oi, Si, K / 3) || Cover.Covered(Oi, Si, K / 3) || !Floor(S, K / 3) || FateOf(S, K / 3) != Fate::Patch) continue;
+                    V3 C = { 0, 0, 0 };
+                    for (int J = 0; J < 3; J++)
+                        for (int A = 0; A < 3; A++) C[A] += S.Vertices[S.Indices[K + J]].Pos[A] / 3.0;
+                    All.push_back({ Far(C), TriangleKey(Oi, Si, K / 3) });
+                }
+            }
+        // and, fitted, half the draw surfaces at most (cod2map's MAX_MAP_DRAW_SURFS), the other half
+        // left to the brushes and the floors' occluder (a prism or a box under them, DrawSurfaces)
+        const size_t Most = Fitting ? (std::min)(MostPatches, (size_t)(Room * Lim.DrawSurfaces / 2)) : MostPatches;
+        if (All.size() > Most)
+        {
+            std::nth_element(All.begin(), All.begin() + Most, All.end());
+            for (size_t I = Most; I < All.size(); I++) FloorsInModels.insert(All[I].second);
+            Stats.FloorsInModels = FloorsInModels.size();
+            Stats.Warnings.push_back("floors as patches fitted: " + std::to_string(All.size()) + " floor triangles, the " + std::to_string(Most) +
+                                     " nearest play as patches, " + std::to_string(FloorsInModels.size()) + " left in the world's models");
+        }
+    }
     if (Patches || FloorPatches)
     {
         if (!Stage("the world's patches")) return false;
@@ -2992,25 +3206,39 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         std::vector<std::array<V3, 3>> Floors;
         const std::string Under = FloorPatches ? Target->FloorOccluder() : std::string();
         std::vector<std::array<V3, 3>>* Into = Under.empty() ? nullptr : &Floors;
-        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number, Ov, Cover, nullptr, FloorPatches, Into);
+        WritePatches(Group, Scene, Drawn, 0, ForGdt, Stats, Number, Ov, Cover, nullptr, FloorPatches, Into, &FloorsInModels);
         for (const uint32_t O : Owners)
             if (!Patched.count(O))
             {
                 const auto L = Local.find(O);
-                WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number, Ov, Cover, L == Local.end() ? nullptr : L->second.Place, FloorPatches, Into);
+                WritePatches(Group, Scene, Drawn, O, ForGdt, Stats, Number, Ov, Cover, L == Local.end() ? nullptr : L->second.Place, FloorPatches, Into, &FloorsInModels);
             }
         // under the floors (patches: cod2map makes a patch an Umbra target, never an occluder, a
-        // caulk patch included) the target's occluder as brushes, a prism a unit below each plane's
-        // merged floor polygon: without it Umbra had no ground where the floors were patches, and
-        // a camera near it fell in view cells that culled everything
+        // caulk patch included) the target's occluder as brushes: without it Umbra had no ground
+        // where the floors were patches, and a camera near it fell in view cells that culled
+        // everything (BO1's mp_nuked). The floor's own planes, a unit lower, merged plane by plane,
+        // each polygon a caulk prism two units thick (exact: what fixed mp_nuked in game), when the
+        // map has room for them; else a heightfield of boxes (FloorBoxes), a unit under the lowest
+        // floor of each cell, as fine as the brushes left to the map allow
+        bool Prisms = false;
+        // the share of cod2map's caulk corners ("layered geometry") our caulk may take: on MW4's
+        // mp_rex_rm_shipment it counted some 170000 to 200000 more than the caulk we write
+        constexpr double CaulkShare = 0.7;
         if (!Floors.empty())
         {
-            for (auto& T : Floors)
+            std::vector<std::array<V3, 3>> Lowered = Floors;
+            for (auto& T : Lowered)
                 for (V3& P : T) P[2] -= 1.0;
             const IRadiantTarget::Merge M = Target->CollisionMerge();
             size_t Dropped = 0;
-            for (const Polygon& G : CoplanarPolygons(Floors, Dropped, M.Distance, M.MinDot))
-            {
+            const std::vector<Polygon> Polygons = CoplanarPolygons(Lowered, Dropped, M.Distance, M.MinDot);
+            // a prism of n corners: n + 2 sides (draw surfaces), 6n caulk corners
+            double Sides = 0, Corners = 0;
+            for (const Polygon& G : Polygons) Sides += (double)G.Loop.size() + 2, Corners += 6.0 * (double)G.Loop.size();
+            Prisms = !Fitting || ((double)Polygons.size() <= Room * Lim.Brushes - (double)Stats.Brushes - 64.0 &&
+                                  Sides <= Room * Lim.BrushSides - (double)Stats.Faces && Sides <= Room * Lim.DrawSurfaces - (double)DrawSurfaces(Stats) &&
+                                  Corners <= CaulkShare * Room * Lim.CaulkVertices - (double)Stats.CaulkVertices);
+            const auto Write = [&](const Polygon& G) {
                 Brush B;
                 PolygonPrism(G.Loop, G.N, G.D, 2.0, B);
                 if (WriteBrush(Group, B, Number, nullptr, nullptr, Tools, Under, Stats))
@@ -3018,7 +3246,79 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                     Number++;
                     Stats.Brushes--, Stats.FloorOccluderBrushes++;   // not the clip map's
                 }
+            };
+            if (Prisms)
+                for (const Polygon& G : Polygons) Write(G);
+            else if (Fitting)
+            {
+                // too many: the largest polygons in play as prisms within a third of what is left
+                // (a raised floor's edges, which the heightfield's cells leave open), the boxes after
+                std::vector<std::pair<double, size_t>> InPlay;
+                for (size_t I = 0; I < Polygons.size(); I++)
+                {
+                    const Polygon& G = Polygons[I];
+                    V3 C = { 0, 0, 0 };
+                    double Area = 0;
+                    for (size_t K = 0; K < G.Loop.size(); K++)
+                    {
+                        C = Add(C, Mul(G.Loop[K], 1.0 / (double)G.Loop.size()));
+                        if (K >= 2) Area += Length(Cross(Sub(G.Loop[K - 1], G.Loop[0]), Sub(G.Loop[K], G.Loop[0]))) / 2;
+                    }
+                    if (Far(C) <= 0 && Area >= 1024.0) InPlay.push_back({ -Area, I });
+                }
+                std::sort(InPlay.begin(), InPlay.end());
+                const double Third = 1.0 / 3.0;
+                const double MostBrushes = Third * (Room * Lim.Brushes - (double)Stats.Brushes - 64.0),
+                             MostSides = Third * (std::min)(Room * Lim.BrushSides - (double)Stats.Faces, Room * Lim.DrawSurfaces - (double)DrawSurfaces(Stats)),
+                             MostCorners = Third * (CaulkShare * Room * Lim.CaulkVertices - (double)Stats.CaulkVertices);
+                double Brushes = 0, Taken = 0, Caulk = 0;
+                for (const auto& [Area, I] : InPlay)
+                {
+                    const double N = (double)Polygons[I].Loop.size();
+                    if (Brushes + 1 > MostBrushes || Taken + N + 2 > MostSides || Caulk + 6 * N > MostCorners) break;
+                    Brushes += 1, Taken += N + 2, Caulk += 6 * N;
+                    Write(Polygons[I]);
+                }
             }
+        }
+        if (!Floors.empty() && !Prisms)
+        {
+            // a box: one brush, six sides, six draw surfaces (cod2map makes one of every brush side
+            // and patch: MAX_MAP_DRAW_SURFS), 24 caulk corners (all caulk: with clip_full sides, its
+            // caulk top never reached Umbra's scene)
+            const double MostBoxes =
+                Fitting ? (std::min)({ Room * Lim.Brushes - (double)Stats.Brushes - 64.0, (Room * Lim.BrushSides - (double)Stats.Faces) / 6.0,
+                                       (Room * Lim.DrawSurfaces - (double)DrawSurfaces(Stats)) / 6.0,
+                                       (CaulkShare * Room * Lim.CaulkVertices - (double)Stats.CaulkVertices) / 24.0 })
+                        : std::numeric_limits<double>::infinity();
+            const V3 Mid = PlayArea.Found ? V3{ (PlayArea.Lo[0] + PlayArea.Hi[0]) / 2, (PlayArea.Lo[1] + PlayArea.Hi[1]) / 2, (PlayArea.Lo[2] + PlayArea.Hi[2]) / 2 } : Middle;
+            const FloorBoxing Boxes = FloorBoxes(Floors, MostBoxes, Far, Mid);
+            Stats.FloorOccluderCell = (size_t)Boxes.Cell;
+            Stats.FloorOccluderLeftOut = Boxes.LeftOut;
+            for (const auto& Box : Boxes.Boxes)
+            {
+                Brush B;
+                for (int A = 0; A < 3; A++)
+                    for (int Sign = -1; Sign <= 1; Sign += 2)
+                    {
+                        BrushSide S;
+                        S.Normal[0] = S.Normal[1] = S.Normal[2] = 0;
+                        S.Normal[A] = (float)Sign;
+                        S.Dist = (float)(Sign > 0 ? Box[A + 3] : -Box[A]);
+                        S.Material = Under;
+                        B.Sides.push_back(S);
+                    }
+                if (WriteBrush(Group, B, Number, nullptr, nullptr, Tools, "", Stats))
+                {
+                    Number++;
+                    Stats.Brushes--, Stats.FloorOccluderBrushes++;   // not the clip map's
+                }
+            }
+            if (Boxes.Cell > FloorBoxing::Finest || Boxes.LeftOut)
+                Stats.Warnings.push_back("floor occluder fitted to Black Ops III's cod2map: cells of " + std::to_string((int)Boxes.Cell) + " units, " +
+                                         std::to_string(Boxes.Boxes.size()) + " boxes" +
+                                         (Boxes.LeftOut ? ", " + std::to_string(Boxes.LeftOut) + " farthest from play left out" : std::string()) +
+                                         " (" + std::to_string((size_t)(std::max)(0.0, MostBoxes)) + " brushes left)");
         }
         if (!Group.empty())
         {
@@ -3289,7 +3589,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                 if (Gone && Over.empty()) continue;
                 const Fate F = FateOf(S, K / 3);
                 if (F != Fate::Model && !(F == Fate::Patch && Merged)) continue;
-                if (F == Fate::Patch && FloorPatches && Floor(S, K / 3)) continue;   // a floor: a patch, with its overlays (above)
+                if (F == Fate::Patch && FloorPatches && Floor(S, K / 3) && !FloorsInModels.count(TriangleKey(Oi, Si, K / 3))) continue;   // a floor: a patch, with its overlays (above)
                 const uint32_t Tri[3] = { S.Indices[K], S.Indices[K + 1], S.Indices[K + 2] };
                 if (Tri[0] >= S.Vertices.size() || Tri[1] >= S.Vertices.size() || Tri[2] >= S.Vertices.size()) continue;
                 if (!Within(S.Vertices[Tri[0]].Pos) || !Within(S.Vertices[Tri[1]].Pos) || !Within(S.Vertices[Tri[2]].Pos))
@@ -3476,6 +3776,10 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
         // the linker's fast file: its xmodels, materials and their images (three a material, about)
         if (const size_t Assets = Stats.ModelFiles + Stats.WorldModels + 4 * Named; Hard.Assets && Assets > Hard.Assets)
             Over.push_back(std::to_string(Assets) + " assets, about (the linker's \"More than " + std::to_string(Hard.Assets) + " assets in fast file\")");
+        if (Hard.DrawSurfaces && DrawSurfaces(Stats) > Hard.DrawSurfaces)
+            Over.push_back(std::to_string(DrawSurfaces(Stats)) + " draw surfaces, about: a patch or a brush side each (cod2map's MAX_MAP_DRAW_SURFS: " + std::to_string(Hard.DrawSurfaces) + ")");
+        if (Hard.CaulkVertices && Stats.CaulkVertices > Hard.CaulkVertices)
+            Over.push_back(std::to_string(Stats.CaulkVertices) + " corners of caulk sides (cod2map's \"Temp vertex limit (" + std::to_string(Hard.CaulkVertices) + ") exceeded for layered geometry\")");
         if (Hard.WorldTriangles && Drawn > Hard.WorldTriangles)
             Over.push_back(std::to_string(Drawn) + " patches (cod2map's MAX_MAP_TRIANGLES: " + std::to_string(Hard.WorldTriangles) + " drawn triangles)");
     }

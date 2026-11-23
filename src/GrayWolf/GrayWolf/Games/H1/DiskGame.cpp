@@ -358,6 +358,8 @@ namespace
     {
         IWZone::MapLayout M;
         M.VertexCount = 0x130, M.Vertices = 0x138, M.IndexCount = 0x170, M.Indices = 0x178;
+        // the layer block (Maps::NamedLayerUvs): mp_shipment's 324 ranges end its 2 296 820 bytes
+        M.LayerDataSize = 0x150, M.LayerData = 0x158;
         M.BrushCount = 0x5e8, M.Brushes = 0x5f0, M.BrushSize = 96, M.BrushFirstSurface = 84, M.BrushSurfaceCount = 88;
         M.SModelCount = 0x748, M.Surfaces = 0x9e0, M.SModels = 0x9f0, M.SModelSize = 0x50;
         M.SurfaceTris = 18, M.SurfaceBaseIndex = 20;

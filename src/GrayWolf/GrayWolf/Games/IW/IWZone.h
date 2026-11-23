@@ -121,6 +121,9 @@ public:
         int64_t SurfaceTransient = -1, TransientNumber = 0;
         // a surface's vertices' other UV sets (WorldLayout::MoreUvs; WWII's blended surfaces)
         std::function<uint32_t(int64_t Surface, uint32_t Local, float* Out, uint32_t Max)> MoreUvs;
+        // else the layer block (vertexLayerDataSize u32, vld.data; -1: not read) in the asset holding
+        // the vertices: the layered materials' later layers' UVs (Maps::NamedLayerUvs), a level in one zone
+        int64_t LayerDataSize = -1, LayerData = -1;
         const char* Clip = nullptr;
         int64_t DynCounts = 0x188, DynLists = 0x190;   // clipMap_t's two u16 counts and two pointers
         int64_t DynSize = 0, DynDestroyed = -1;

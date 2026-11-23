@@ -739,6 +739,8 @@ namespace
         IWZone::MapLayout M;
         M.World = "gfxworld", M.Com = "comworld";
         M.VertexAsset = "gfxworld_transient_zone", M.VertexCount = 0xc, M.Vertices = 0x10;
+        // its layer block (Maps::NamedLayerUvs): mp_flip's 45 ranges end its 164 524 bytes
+        M.LayerDataSize = 0x20, M.LayerData = 0x28;
         M.SurfaceTransient = 0x2c, M.TransientNumber = 8;
         M.IndexCount = 0xa8 + 0x1f0, M.Indices = 0xa8 + 0x1f8;
         M.BrushCount = 0x9f8, M.Brushes = 0xa00, M.BrushSize = 60, M.BrushFirstSurface = 52, M.BrushSurfaceCount = 56;

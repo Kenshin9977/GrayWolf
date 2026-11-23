@@ -85,6 +85,8 @@ namespace Maps
             // exploders (Radiant: "This map will fail to link" past 256); brush models (cod2map's
             // 1024 are the non-dynamic ones', counted as if every one were)
             size_t Exploders = 0, BrushModels = 0;
+            // cod2map's draw surfaces (a patch or a brush side each) and the corners of caulk sides it takes
+            size_t DrawSurfaces = 0, CaulkVertices = 0;
         };
         virtual Limits HardLimits() const = 0;
         // whether the writer fits the map under HardLimits (MapRadiantWriter.cpp: what a player misses

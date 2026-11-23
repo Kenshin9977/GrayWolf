@@ -53,4 +53,14 @@ namespace Maps
     void LayerUv(const Surface& S, uint32_t I, int Layer, float Uv[2]);
     // Layer's Black Ops III decal layer (layerSortDecal, decalLayerSort): each above the one before
     const char* LayerSort(int Layer);
+
+    // The layered materials whose GDT entry (their first layer, MaterialGdt's Layered) another
+    // material's is: each to that one. The map compiler makes a composite per base and the
+    // decals over it (BO2's mp_hijacked: "*139n_134(<teak trim>:<bloodpool>)", "*139n_38(<teak
+    // trim>:<fillet>)", ten of them over one teak trim), each written alone the same entry ten times.
+    // The same first layer: its images (the later layers' left out), the base's op in the
+    // technique set ("r0", "t0"...: its alpha) and the sort key. Its material: a plain material of
+    // the scene with exactly those (the base the composites were made from), else the first
+    // composite by name.
+    std::map<std::string, std::string> SharedFirstLayers(const MapScene& Scene);
 }

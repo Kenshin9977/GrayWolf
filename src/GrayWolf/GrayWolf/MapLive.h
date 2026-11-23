@@ -118,4 +118,20 @@ namespace Maps
     // Adds one world mesh per brush model with triangles; the triangles left out (a vertex not read).
     size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch& Read,
                     const std::function<std::string(uint64_t Material)>& MaterialOf);
+
+    // The layers' own UVs of a compiled layered material's vertices in the IW lineage (World at
+    // War, Ghosts, MWR, Infinite Warfare): the world's layer block (GfxWorldDraw's vld: Data,
+    // Size bytes), a surface's byte offset into it a u32 at the surface's start, its material (a
+    // pointer at Material, PointerSize bytes) named "*<a>_<b>..." (",*" on MWR and IW), an id per
+    // layer with letters after its number. Per vertex: the UV (two floats) of each layer after
+    // the first, then 4 bytes per later layer normal mapped ("n") while the vertex's own tangent
+    // is taken (by a normal mapped base or an earlier layer), 4 per layer marked "d" or "z", and
+    // past four later layers 4 more (a second colour of weights: mwr's ",*130n_39n_239n_131_132n",
+    // 48 bytes, ends with bytes where the floats are tiny). Measured on each sample's ranges
+    // against their vertex counts (nazi_zombie_prototype 95, mp_prisonbreak 544, mwr mp_shipment
+    // 324, mp_flip 45; the last range ends the block exactly).
+    // NameOf: a material's name by its address. Unset when Data < 0 or Size is 0.
+    std::function<uint32_t(int64_t Surface, uint32_t Local, float* Out, uint32_t Max)> NamedLayerUvs(
+        const ByteView& Image, int64_t Data, uint64_t Size, int64_t Material, int PointerSize,
+        std::function<std::string(uint64_t Address)> NameOf);
 }

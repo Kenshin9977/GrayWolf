@@ -103,11 +103,15 @@ namespace
         // image 0x28, vertices 0x30/0x34 (44 bytes), brush models 0x150/0x154 (0x38: u16 surface
         // count at 48, first surface at 50), GfxWorldDpvsStatic at 0x244 (surfaces 0x294, 0x30
         // each, material at 0x10; static models 0x29c, 0x4c each); clipMap_t (0x11c) dynamic
-        // entities u16 0xf4/0xf6, lists 0xf8/0xfc, 0x60 each; ComPrimaryLight 0x44, colour at 4
+        // entities u16 0xf4/0xf6, lists 0xf8/0xfc, 0x60 each; ComPrimaryLight 0x44, colour at 4; the
+        // layer block vertexLayerDataSize 0x3c, vld.data 0x40 (CoD4 as World at War, mp_shipment
+        // holds 4 bytes and no composite)
         MapLayout Map() const override
         {
-            return { 0x10, 0x14, 0x18, 0x28, -1, 0x30, 0x34, 0x150, 0x154, 0x38, 48, 50, 2,
-                     0x244, 0x294, 0x30, 0x10, 0x29c, 0x4c, 0xf4, 0xf8, 0x60, 0x44, 4 };
+            MapLayout M{ 0x10, 0x14, 0x18, 0x28, -1, 0x30, 0x34, 0x150, 0x154, 0x38, 48, 50, 2,
+                         0x244, 0x294, 0x30, 0x10, 0x29c, 0x4c, 0xf4, 0xf8, 0x60, 0x44, 4 };
+            M.LayerDataSize = 0x3c, M.LayerData = 0x40;
+            return M;
         }
         XMaterial_t Material(uint64_t Address) const override { return GameModernWarfare::ReadXMaterial(Address); }
         // clipMap_t (OAT's IW3 struct, the iw3 tables' col_map): World at War's records (dmaterial_t

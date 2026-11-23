@@ -113,6 +113,13 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
                    "keys and console dvar gwc_cmd), logged as \"GWC key=value\" lines. Also zm_graywolf_ref, the ZM template's "
                    "room with the same scripts, to compare with. off (the default) takes the scripts out again")
         ->group("Shared options");
+    App.add_option("--target", Options.ExportTarget,
+                   "blender|radiant|bo3-modtools|bo3-usermap: what a map is exported for, the settings it needs set "
+                   "together (an option among them given too wins). blender: --map-radiant off --material-gdt off "
+                   "--mod-tools off --bo3-usermap off (the defaults); radiant: --map-radiant on --material-gdt on (the "
+                   "Radiant source and its GDT under --out); bo3-modtools: as radiant, --mod-tools on and --sound-aliases on "
+                   "(into the Black Ops III Mod Tools tree); bo3-usermap: as bo3-modtools, --bo3-usermap build")
+        ->group("Shared options");
     App.add_option("--map-collision", Options.MapCollision,
                    "on|off: also write the map's collision as <map>_collision.json (the clip map's brushes, brush "
                    "models, triggers and triangles), for navigation and top-down tools")

@@ -79,6 +79,9 @@ bool Iw32LevelZone::ReadMap(Maps::MapScene& Scene, std::map<std::string, uint64_
     L.Material = M.SurfaceMaterial;
     L.BrushSize = M.BrushSize, L.FirstSurface = M.BrushFirstSurface, L.SurfaceCountAt = M.BrushSurfaceCount;
     L.PointerSize = 4, L.BrushFieldBytes = M.BrushField;
+    if (M.LayerData >= 0 && M.LayerDataSize >= 0)
+        L.MoreUvs = Maps::NamedLayerUvs(Img, Off(At<uint32_t>(Img, World + M.LayerData)), At<uint32_t>(Img, World + M.LayerDataSize), M.SurfaceMaterial, 4,
+                                        [&](uint64_t A) { return Off(A) < 0 ? std::string() : StringAt(At<uint32_t>(Img, Off(A))); });
     // a shadow caster's surfaces (drawn into shadow maps only) and a sky's (the sky image, drawn
     // by view direction) are left out of the world: the game does not draw them as textured geometry
     std::set<std::string> Hidden;

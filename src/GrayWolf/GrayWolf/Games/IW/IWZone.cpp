@@ -230,6 +230,9 @@ bool IWZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& M
     L.Material = M.SurfaceMaterial;
     L.BrushSize = M.BrushSize, L.FirstSurface = M.BrushFirstSurface, L.SurfaceCountAt = M.BrushSurfaceCount;
     L.MoreUvs = M.MoreUvs;
+    if (!L.MoreUvs && M.LayerData >= 0 && M.LayerDataSize >= 0 && Spans.empty() && !Streams)
+        L.MoreUvs = Maps::NamedLayerUvs(Img, Off(At<uint64_t>(Img, Holder + M.LayerData)), At<uint32_t>(Img, Holder + M.LayerDataSize), M.SurfaceMaterial, 8,
+                                        [&](uint64_t A) { return Off(A) < 0 ? std::string() : StringAt(At<uint64_t>(Img, Off(A))); });
     if (!Spans.empty())
         L.VertexBase = [&](int64_t Surface) {
             const auto It = SpanOf.find(At<int32_t>(Img, Surface + M.SurfaceTransient));

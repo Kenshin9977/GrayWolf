@@ -31,6 +31,8 @@ namespace
         L.PlaneSlots = 0xa0000, L.Brushes = 0xffff, L.BrushSides = 0xa0000, L.Assets = 0x10000;
         L.CollisionTriangles = 0x80000, L.CollisionVertices = 0x40000;
         L.Exploders = 0x100, L.BrushModels = 0x400;
+        // MAX_MAP_DRAW_SURFS; "Temp vertex limit (524288) exceeded for layered geometry", its caulk
+        L.DrawSurfaces = 0x60000, L.CaulkVertices = 0x80000;
         return L;
     }
     // the game's map as it has it (a .map beside the export, for Black Ops III's Radiant or an older

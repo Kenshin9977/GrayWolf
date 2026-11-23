@@ -87,6 +87,7 @@ struct CliOptions
     std::string MapFit;      // --map-fit: fit|strict|off, a mod tools level fitted to BO3's tools' limits (fit)
     std::string Bo3Usermap;  // --bo3-usermap: off|create|build, a ZM usermap around the map in the Mod Tools tree (off)
     std::string Bo3UsermapDebug; // --bo3-usermap-debug: off|prone, an in-game diagnostic in that usermap (off)
+    std::string ExportTarget;    // --target: blender|radiant|bo3-modtools|bo3-usermap, the settings a destination needs (DiskGame::Targets)
     std::string Decompile;   // --decompile[=on|off]: compiled scripts also decompiled (off)
     std::string WithHeads;   // --with-heads[=first|all|off]: also each character's body with its head joined (off)
     std::string MapTextures; // --map-textures: full|2k|1k, map textures above it copied smaller (full)

@@ -2736,7 +2736,8 @@ namespace
             float Uv[2] = {0, 0};
             T6::Common::Vec2UnpackTexCoords(Tc, Uv);
             Out.uv[0] = Uv[0]; Out.uv[1] = Uv[1];
-            T6::PackedUnitVec Nrm; std::memcpy(&Nrm.packed, P + 28, sizeof(Nrm.packed));
+            // the normal at 24, the tangent at 28 (TreyarchLevel.h, VertexFormat::Packed)
+            T6::PackedUnitVec Nrm; std::memcpy(&Nrm.packed, P + 24, sizeof(Nrm.packed));
             float N[3] = {0, 0, 1};
             T6::Common::Vec3UnpackUnitVec(Nrm, N);
             // Defensive: unaddressed vertex-block slots decode to non-physical values (magnitude

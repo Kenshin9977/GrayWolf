@@ -6,7 +6,54 @@
 #include "HuskyMath.h"
 #include "MapLive.h"
 
+#include <algorithm>
 #include <cstring>
+
+namespace
+{
+    // A layered material's vertex record in Level32Layout::LayerData: its size, each later layer's
+    // UV within it
+    struct LayerRecord
+    {
+        uint32_t Size = 0;
+        uint32_t Uv[3] = {};
+        int Layers = 0;
+    };
+
+    // The record a technique set lays out ("lit_sm_r0c0n0x0_b1c1n1s1_b2c2": a token per layer, its
+    // op then the layer's number, then its maps each with the number): the UVs (UvBytes each) of the
+    // layers after the first, then a tangent for each such layer normal mapped while the vertex's
+    // own tangent is another's
+    LayerRecord LayersOf(const std::string& Techset, uint32_t UvBytes)
+    {
+        bool Has[4] = {}, Normal[4] = {};
+        for (size_t At = 0; At < Techset.size();)
+        {
+            const size_t End = (std::min)(Techset.find('_', At), Techset.size());
+            const std::string T = Techset.substr(At, End - At);
+            At = End + 1;
+            if (T.size() < 2 || T[0] < 'a' || T[0] > 'z' || T[1] < '0' || T[1] > '3') continue;
+            if (T.size() > 2 && (T[2] < 'a' || T[2] > 'z')) continue;
+            const int K = T[1] - '0';
+            Has[K] = true;
+            if (T.find(std::string("n") + T[1], 2) != std::string::npos) Normal[K] = true;
+        }
+        LayerRecord R;
+        bool TangentTaken = Normal[0];
+        for (int K = 1; K <= 3 && Has[K]; K++)
+        {
+            R.Uv[R.Layers++] = R.Size;
+            R.Size += UvBytes;
+        }
+        for (int K = 1; K <= R.Layers; K++)
+        {
+            if (!Normal[K]) continue;
+            if (TangentTaken) R.Size += 4;
+            TangentTaken = true;
+        }
+        return R;
+    }
+}
 
 bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, uint64_t>& Models, const Level32Layout& L,
                                   const std::function<XMaterial_t(uint64_t)>& Material)
@@ -57,8 +104,9 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
         }
         Out.Uv[0] = HuskyMath::HalfToFloat(At<uint16_t>(Img, V + 20));
         Out.Uv[1] = HuskyMath::HalfToFloat(At<uint16_t>(Img, V + 22));
-        // each 10-bit field as the low bits of the float 3.0's pattern, sign-folded, less 3
-        const uint32_t N = At<uint32_t>(Img, V + 28);
+        // each 10-bit field as the low bits of the float 3.0's pattern, sign-folded, less 3 (the
+        // normal at 24; 28 is the tangent, which read as the normal lay along the surface)
+        const uint32_t N = At<uint32_t>(Img, V + 24);
         for (int K = 0; K < 3; K++)
         {
             const uint32_t B = (N >> (10 * K)) & 0x3ff;
@@ -72,7 +120,12 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
     // A world surface's material may be a composite the map compiler merged from layered patches,
     // "*<ids>(<path>:<path>...)": its name kept whole (the file part of the last path would name
     // different composites alike), and its vertices' colours are its layers' weights, not a
-    // colour (mp_village, mp_nuked: G the second layer's, B the third's, A the fourth's)
+    // colour (mp_village, mp_nuked: G the second layer's, B the third's, A the fourth's); its
+    // layers' UVs (Level32Layout::LayerData) by its material, as its technique set lays them out
+    const int64_t LayerData = L.LayerData >= 0 && L.SurfaceLayerData >= 0 ? Off(PointerAt(World + L.LayerData)) : -1;
+    const uint64_t LayerBytes = L.LayerDataSize >= 0 ? At<uint32_t>(Img, World + L.LayerDataSize) : 0;
+    const uint32_t UvBytes = Packed ? 4 : 8;   // two halves, two floats
+    std::map<uint64_t, LayerRecord> Records;
     const auto MaterialOf = [&](uint64_t Address) {
         if (Off(Address) < 0) return std::string();
         XMaterial_t X = Material(Address);
@@ -80,10 +133,31 @@ bool TreyarchLevelZone::ReadLevel(Maps::MapScene& Scene, std::map<std::string, u
         const bool Layered = !Raw.empty() && Raw[0] == '*';
         if (Layered) X.MaterialName = ExportNaming::SafeFileName(Raw);
         const std::string Name = Maps::AddMaterial(Scene, X);
-        if (Layered) Scene.Materials[Name].Colors = Maps::VertexColors::LayerWeights;
+        if (Layered)
+        {
+            Scene.Materials[Name].Colors = Maps::VertexColors::LayerWeights;
+            if (const LayerRecord R = LayersOf(X.TechsetName, UvBytes); R.Layers && LayerData >= 0) Records.emplace(Address, R);
+        }
         return Name;
     };
+    if (LayerData >= 0)
+        W.MoreUvs = [&](int64_t Sf, uint32_t Local, float* Out, uint32_t Max) -> uint32_t {
+            const auto It = Records.find(At<uint32_t>(Img, Sf + L.SurfaceMaterial));
+            if (It == Records.end()) return 0;
+            const LayerRecord& R = It->second;
+            const uint64_t At0 = (uint64_t)At<uint32_t>(Img, Sf + L.SurfaceLayerData) + (uint64_t)Local * R.Size;
+            if (At0 + R.Size > LayerBytes || LayerData + (int64_t)(At0 + R.Size) > (int64_t)Img.size()) return 0;
+            const uint32_t N = (std::min)((uint32_t)R.Layers, Max);
+            for (uint32_t K = 0; K < N; K++)
+                for (int J = 0; J < 2; J++)
+                {
+                    const int64_t P = LayerData + (int64_t)(At0 + R.Uv[K]) + J * (UvBytes / 2);
+                    Out[K * 2 + J] = Packed ? HuskyMath::HalfToFloat(At<uint16_t>(Img, P)) : At<float>(Img, P);
+                }
+            return N;
+        };
     if (const size_t Bad = Maps::AddWorld(Scene, W, Read, MaterialOf)) Counter("map_triangles_unread") += Bad;
+    if (!Records.empty()) Counter("map_layer_uv_materials") += Records.size();
     AddStaticModels(Scene, Models, Off(PointerAt(World + L.SModels)), At<uint32_t>(Img, World + L.SModelCount), L.SModelSize,
                     L.SModelModel, L.SModelPlacement);
 

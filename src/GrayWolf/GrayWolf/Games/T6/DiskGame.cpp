@@ -217,13 +217,15 @@ namespace
     // byte offset into vd0, triCount u16 0x2a, baseIndex 0x2c; the material 0x30), smodelDrawInsts
     // +0x5c (0x98 each: cullDist, the placement 4, the model 0x38)). ComWorld (0x10):
     // primaryLightCount 8, primaryLights 0xc (0xc4 each). vd0's vertices: the T6 packed-vertex format
-    // (OatInProcess.cpp, ExportMapGlbT6).
+    // (OatInProcess.cpp, ExportMapGlbT6). The layered materials' layer UVs: vertexDataSize1 draw +0x2c,
+    // vd1.data +0x30, srfTriangles_t's vertexDataOffset1 0x1c (TreyarchLevel.h, Level32Layout::LayerData).
     TreyarchLevelZone::Level32Layout Level()
     {
         constexpr int64_t Draw = 0x18c, Dpvs = 0x310;
         TreyarchLevelZone::Level32Layout L;
         L.BaseName = 4, L.SurfaceCount = 0x10, L.SkyModel = 0x24;
         L.VertexCount = Draw + 0x1c, L.VertexBytes = Draw + 0x20, L.Vertices = Draw + 0x24;
+        L.LayerDataSize = Draw + 0x2c, L.LayerData = Draw + 0x30, L.SurfaceLayerData = 0x1c;
         L.IndexCount = Draw + 0x38, L.Indices = Draw + 0x3c;
         L.Format = TreyarchLevelZone::VertexFormat::Packed;
         L.BrushCount = 0x218, L.Brushes = 0x21c, L.BrushSize = 64, L.BrushSurfaceCount = 56, L.BrushFirstSurface = 60;

@@ -30,18 +30,23 @@ namespace LoadGameUi
         return N;
     }
 
+    inline std::string SettingKey(const DiskGame::IDiskGame& Game, const std::string& Key)
+    {
+        return std::string("disk_") + Game.Id() + "_" + Key;
+    }
     inline std::string SettingKey(const DiskGame::IDiskGame& Game, const DiskGame::Setting& S)
     {
-        return std::string("disk_") + Game.Id() + "_" + S.Key;
+        return SettingKey(Game, std::string(S.Key));
     }
 
-    // What the game's hooks read: the install and the game's saved settings, the rest at its default.
+    // What the game's hooks read: the install and the game's saved settings, the rest at its default
+    // (a setting the panel does not show, DiskGame::Hidden, too: a value saved before is not applied unseen).
     inline DiskGame::ExportOptions DiskOptions(const DiskGame::IDiskGame& Game, const std::string& Install)
     {
         DiskGame::ExportOptions O;
         O.Install = Install;
         for (const DiskGame::Setting* S : Game.AllSettings())
-            O.Settings[S->Key] = SettingsManager::GetSetting(SettingKey(Game, *S), S->Default);
+            O.Settings[S->Key] = DiskGame::Hidden(*S) ? S->Default : SettingsManager::GetSetting(SettingKey(Game, *S), S->Default);
         // the languages exported, for every game: the install's by default
         O.Languages = SettingsManager::GetSetting(Languages::SettingKey, Languages::GuiDefault);
         return O;

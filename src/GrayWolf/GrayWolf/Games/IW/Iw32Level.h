@@ -37,6 +37,9 @@ protected:
         int64_t SModelPlacement = 4, SModelModel = 0x38;   // CoD4 and World at War's draw records
         // the sky image in GfxWorld's skies (CODOL, MW2's GfxSky): the sky array, its image (-1: none)
         int64_t Skies = -1, SkyImageInSky = 0;
+        // GfxWorld's layer block (vertexLayerDataSize, vld.data; -1: not read): the layered
+        // materials' later layers' UVs (Maps::NamedLayerUvs)
+        int64_t LayerDataSize = -1, LayerData = -1;
     };
     virtual MapLayout Map() const = 0;
     // clipMap_t's brushes (MapCollision.h); none by default

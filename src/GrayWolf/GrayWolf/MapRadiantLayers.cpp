@@ -4,8 +4,11 @@
 
 #include "MaterialGdt.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <set>
 #include <tuple>
+#include <unordered_set>
 
 namespace Maps
 {
@@ -129,5 +132,60 @@ const char* LayerSort(int Layer)
 {
     // material.awi's decal layers run top first: Mud above Dirt above Grunge
     return Layer >= 4 ? "Mud" : Layer == 3 ? "Dirt" : "Grunge";
+}
+
+std::map<std::string, std::string> SharedFirstLayers(const MapScene& Scene)
+{
+    // a material's first layer: its images but the later layers', its base's op, its sort key. A
+    // later layer's image is one under colorMap1..3 (normalMap, specularMap, revealMap), or under a
+    // semantic no plain material of the scene has: past four layers MWR's composites have
+    // colorMap4.. and a layer's own occlusion and BRDF maps (",*130n_39n_131_237n_132n": 0xB60D1855,
+    // 0x60411F65, 0x7D3CDFB6), which kept would tell apart composites over one base
+    // or one of a numbered family (semantics alike but in their last four bits: "<map>1", "<map>2"...,
+    // IW's 0x4AB0FD05..07, the layers' packed maps, of which a plain decal has the first)
+    std::unordered_set<uint32_t> PlainSemantics, Numbered;
+    std::set<uint32_t> Composed;
+    for (const auto& [Name, M] : Scene.Materials)
+        for (const Texture& T : M.Textures)
+        {
+            if (M.Colors == VertexColors::LayerWeights) Composed.insert(T.Semantic);
+            else PlainSemantics.insert(T.Semantic);
+        }
+    for (auto It = Composed.begin(); It != Composed.end(); ++It)
+        if (const auto Next = std::next(It); Next != Composed.end() && (*It >> 4) == (*Next >> 4)) Numbered.insert(*It), Numbered.insert(*Next);
+    for (const uint32_t S : Numbered) PlainSemantics.erase(S);
+    using Key = std::tuple<std::vector<std::pair<uint32_t, std::string>>, char, int>;
+    const auto FirstLayer = [&](const Material& M) {
+        const bool Layered = M.Colors == VertexColors::LayerWeights;
+        std::vector<std::pair<uint32_t, std::string>> Images;
+        for (const Texture& T : M.Textures)
+        {
+            bool Later = Layered && !PlainSemantics.count(T.Semantic);
+            for (int K = 0; K < 3; K++)
+                Later = Later || T.Semantic == LayerColor[K] || T.Semantic == LayerNormal[K] || T.Semantic == LayerSpecular[K] ||
+                        T.Semantic == LayerReveal[K];
+            if (!Later && !T.Image.empty()) Images.emplace_back(T.Semantic, T.Image);
+        }
+        std::sort(Images.begin(), Images.end());
+        Images.erase(std::unique(Images.begin(), Images.end()), Images.end());
+        return Key(std::move(Images), LayerOp(M.Techset, 1), M.SortKey);
+    };
+    std::map<Key, std::vector<std::string>> Composites;   // by name (Scene.Materials is ordered)
+    for (const auto& [Name, M] : Scene.Materials)
+        if (M.Colors == VertexColors::LayerWeights) Composites[FirstLayer(M)].push_back(Name);
+    std::map<Key, std::string> Plain;
+    for (const auto& [Name, M] : Scene.Materials)
+        if (M.Colors != VertexColors::LayerWeights)
+            if (Key K = FirstLayer(M); Composites.count(K)) Plain.emplace(std::move(K), Name);
+    std::map<std::string, std::string> Out;
+    for (const auto& [K, Names] : Composites)
+    {
+        if (std::get<0>(K).empty()) continue;   // no image to tell them by
+        const auto P = Plain.find(K);
+        const std::string& To = P != Plain.end() ? P->second : Names.front();
+        for (const std::string& N : Names)
+            if (N != To) Out.emplace(N, To);
+    }
+    return Out;
 }
 }

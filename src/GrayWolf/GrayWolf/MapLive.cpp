@@ -397,8 +397,11 @@ size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch
     int64_t Current = -1;
     uint32_t CurrentBase = 0;
     WorldBuilder::FetchUvs MoreUvs;
-    if (L.MoreUvs && L.VertexBytes == 0)
-        MoreUvs = [&](uint32_t I, float* Out, uint32_t Max) { return I >= CurrentBase ? L.MoreUvs(Current, I - CurrentBase, Out, Max) : 0u; };
+    // (a byte offset into a block of VertexBytes-byte vertices: its number in the surface by that size)
+    if (L.MoreUvs)
+        MoreUvs = [&](uint32_t I, float* Out, uint32_t Max) {
+            return I >= CurrentBase ? L.MoreUvs(Current, (I - CurrentBase) / (std::max)(L.VertexBytes, 1u), Out, Max) : 0u;
+        };
     BuildWorld(Scene, L.BrushCount, L.SurfaceCount, Range, Read, [&](uint32_t S, WorldBuilder& Mesh) {
         if (L.Skip && L.Skip->count(S)) return;
         const int64_t Sf = L.Surfaces + (int64_t)S * L.SurfaceSize;
@@ -422,5 +425,63 @@ size_t AddWorld(MapScene& Scene, const WorldLayout& L, const WorldBuilder::Fetch
         }
     }, MoreUvs);
     return Bad;
+}
+
+std::function<uint32_t(int64_t, uint32_t, float*, uint32_t)> NamedLayerUvs(const ByteView& Image, int64_t Data, uint64_t Size, int64_t Material,
+                                                                            int PointerSize, std::function<std::string(uint64_t)> NameOf)
+{
+    if (Data < 0 || Size == 0 || (uint64_t)Data + Size > Image.size()) return {};
+    struct Record
+    {
+        uint32_t Size = 0, Layers = 0;   // its bytes a vertex, the layers after the first (0: not layered)
+        uint32_t Uv[8] = {};             // each such layer's UV in it
+    };
+    // a record by its material's name: the ids after "*" (",*"), up to "(" (Black Ops' paths)
+    const auto Of = [](const std::string& Name) {
+        Record R;
+        size_t I = 0;
+        while (I < Name.size() && (Name[I] == ',' || Name[I] == '*')) I++;
+        if (I == 0 || I >= Name.size() || !std::isdigit((unsigned char)Name[I])) return R;
+        const std::string Ids = Name.substr(I, Name.find('(', I) - I);
+        uint32_t Marked = 0;
+        bool Taken = false, Tangent[8] = {};
+        for (size_t At = 0, K = 0; At <= Ids.size(); K++)
+        {
+            const size_t End = (std::min)(Ids.find('_', At), Ids.size());
+            const std::string Id = Ids.substr(At, End - At);
+            At = End + 1;
+            size_t L = 0;
+            while (L < Id.size() && std::isdigit((unsigned char)Id[L])) L++;
+            if (L == 0) return Record();   // not an id: not a composite
+            const std::string Letters = Id.substr(L);
+            for (const char C : Letters)
+                if (C != 'n' && C != 'd' && C != 'z') return Record();   // a mark not measured
+            if (Letters.find('d') != std::string::npos || Letters.find('z') != std::string::npos) Marked++;
+            const bool Normal = Letters.find('n') != std::string::npos;
+            if (K > 0 && R.Layers < 7) Tangent[R.Layers++] = Normal && Taken;
+            Taken = Taken || Normal;
+        }
+        for (uint32_t K = 0; K < R.Layers; K++) R.Uv[K] = R.Size, R.Size += 8;
+        for (uint32_t K = 0; K < R.Layers; K++) R.Size += Tangent[K] ? 4 : 0;
+        // the marks' 4 bytes each, and past four layers 4 more (a second colour: the weights of
+        // the layers the vertex's own colour has no room for)
+        R.Size += Marked * 4 + (R.Layers >= 4 ? 4 : 0);
+        return R;
+    };
+    auto Records = std::make_shared<std::unordered_map<uint64_t, Record>>();
+    return [&Image, Data, Size, Material, PointerSize, NameOf = std::move(NameOf), Records, Of](int64_t Surface, uint32_t Local, float* Out,
+                                                                                                uint32_t Max) -> uint32_t {
+        const uint64_t Address = PointerSize == 4 ? ExportNaming::At<uint32_t>(Image, Surface + Material) : ExportNaming::At<uint64_t>(Image, Surface + Material);
+        auto It = Records->find(Address);
+        if (It == Records->end()) It = Records->emplace(Address, Of(NameOf(Address))).first;
+        const Record& R = It->second;
+        if (R.Layers == 0) return 0;
+        const uint64_t At0 = (uint64_t)ExportNaming::At<uint32_t>(Image, Surface) + (uint64_t)Local * R.Size;
+        if (At0 + R.Size > Size) return 0;
+        const uint32_t N = (std::min)(R.Layers, Max);
+        for (uint32_t K = 0; K < N; K++)
+            for (uint32_t J = 0; J < 2; J++) Out[K * 2 + J] = ExportNaming::At<float>(Image, Data + (int64_t)(At0 + R.Uv[K] + J * 4));
+        return N;
+    };
 }
 }

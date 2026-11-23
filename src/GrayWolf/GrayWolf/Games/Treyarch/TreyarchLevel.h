@@ -29,8 +29,10 @@ public:
         // (b - 127) x (scale + 192) / 32385, the scale in the fourth byte)
         Records44,
         // Black Ops II: a packed block (vd0) of vertexDataSize0 / vertexCount bytes each, xyz 0,
-        // colour 16, uv 20 (two halves), normal 28 (10:10:10, the game's "third based" decode);
-        // a surface's first vertex is a byte offset into the block
+        // binormal sign 12, colour 16, uv 20 (two halves), normal 24, tangent 28 (10:10:10, the
+        // game's "third based" decode), lightmap uv 32; a surface's first vertex is a byte offset
+        // into the block. mp_hijacked: a deck's floor has 0x1ff00000 (+z) at 24, its x running
+        // tangent 0x201 (-x) at 28; a wall at x = 177, 0x1ff (+x) at 24
         Packed
     };
 
@@ -41,6 +43,14 @@ public:
         // GfxWorldDraw, from GfxWorld
         int64_t VertexCount = 0, Vertices = 0, VertexBytes = -1, IndexCount = 0, Indices = 0;
         VertexFormat Format = VertexFormat::Records44;
+        // The layers' own UVs of a layered material's vertices (Black Ops' vld, Black Ops II's vd1):
+        // the block's size and pointer in GfxWorld, srfTriangles_t's byte offset into it (-1: not
+        // read). Per vertex: the UV (two floats, Packed two halves) of each layer after the first (its technique set's token
+        // "<op><K>...", K 1..3), then a tangent (4 bytes) for each such layer normal mapped ("n<K>")
+        // while vd0's tangent is taken (by a normal mapped base, "n0", or an earlier layer).
+        // mp_hijacked: the 150 composites' blocks are that size to the vertex (4, 8, 12, 16 bytes),
+        // and their decals' UVs span the decal (0..1) where the base's tile the deck
+        int64_t LayerDataSize = -1, LayerData = -1, SurfaceLayerData = -1;
         // brush models: count, array, record size, its surface count and first surface
         int64_t BrushCount = 0, Brushes = 0, BrushSize = 0, BrushSurfaceCount = 0, BrushFirstSurface = 0;
         // GfxWorldDpvsStatic, from GfxWorld: the static model count, the surfaces and the draw

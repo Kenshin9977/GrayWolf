@@ -65,12 +65,16 @@ namespace
     // dpvs 0x344 (smodelCount +0, surfaces +0x58 (0x50 each: srfTriangles_t firstVertex 0x1c,
     // triCount u16 0x22, baseIndex 0x24; the material 0x30), smodelDrawInsts +0x60 (0x4c each: the
     // placement 0, the model 0x38)). ComWorld (0x40): primaryLightCount 8, primaryLights 0xc (0xdc each).
+    // The layered materials' layer UVs (TreyarchLevel.h, Level32Layout::LayerData), floats: vertexLayerDataSize
+    // draw +0xa8, vld.data +0xac, srfTriangles_t's vertexLayerData 0xc (mp_nuked: the 78 composites' blocks
+    // 8 bytes a layer and 4 a normal mapped one to the vertex, "*5n_124n_113" the two UVs then the tangent).
     TreyarchLevelZone::Level32Layout Level()
     {
         constexpr int64_t Draw = 0x158, Dpvs = 0x344;
         TreyarchLevelZone::Level32Layout L;
         L.BaseName = 4, L.SurfaceCount = 0x10, L.SkyImage = 0x2c, L.SkyModel = 0x34;
         L.VertexCount = Draw + 0x9c, L.Vertices = Draw + 0xa0, L.IndexCount = Draw + 0xb8, L.Indices = Draw + 0xbc;
+        L.LayerDataSize = Draw + 0xa8, L.LayerData = Draw + 0xac, L.SurfaceLayerData = 0xc;
         L.Format = TreyarchLevelZone::VertexFormat::Records44;
         L.BrushCount = 0x250, L.Brushes = 0x254, L.BrushSize = 60, L.BrushSurfaceCount = 52, L.BrushFirstSurface = 56;
         L.SModelCount = Dpvs, L.Surfaces = Dpvs + 0x58, L.SModels = Dpvs + 0x60, L.SModelSize = 0x4c, L.SModelModel = 0x38;

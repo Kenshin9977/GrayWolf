@@ -898,20 +898,36 @@ void LoadGamePanel::DrawOptions()
 
     DrawFormats([&](DiskGame::Kind K) { return Exported.count(K) != 0 && Concerned(K); });
 
-    // the game's settings, each while one of the kinds it concerns is ticked or picked
-    bool AnySetting = false;
+    // the game's settings, each while one of the kinds it concerns is ticked or picked; with a map,
+    // "Export for" first (DiskGame::Targets), the settings it drives and the expert ones folded
+    // under "Advanced"
+    std::vector<const DiskGame::Setting*> Plain, Expert;
+    const bool Maps = Exported.count(DiskGame::Kind::Map) && Concerned(DiskGame::Kind::Map);
     for (const DiskGame::Setting* Each : Disk->AllSettings())
     {
-        const DiskGame::Setting& S = *Each;
+        if (DiskGame::Hidden(*Each)) continue;
         bool Shown = false;
-        for (DiskGame::Kind K : S.Concerns) Shown = Shown || Concerned(K);
-        if (!Shown) continue;
-        if (!AnySetting)
-        {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Settings");
-        }
-        AnySetting = true;
+        for (DiskGame::Kind K : Each->Concerns) Shown = Shown || Concerned(K);
+        if (Shown) (Maps && DiskGame::Advanced(*Each) ? Expert : Plain).push_back(Each);
+    }
+    const std::map<std::string, std::string> Values = DiskOptions(*Disk, GameBuf).Settings;
+    // mod_tools on: the tree it writes into, or why there is none
+    const auto ModToolsWhere = [&] {
+        if (DiskGame::ModToolsOutput.Of(Values) != "on") return;
+        bool Looking = false;
+        const std::string Found = ModToolsFound.Get("bo3", 30.0, [] {
+            std::string Why;
+            const std::string Root = ModToolsTree::Resolve(std::string(), Why);
+            return Root.empty() ? "!" + Why : Root;
+        }, &Looking);
+        ImGui::PushTextWrapPos(0.0f);
+        if (Found.empty() || Looking) ImGui::TextDisabled("Looking for the Black Ops III Mod Tools...");
+        else if (Found[0] == '!') ImGui::TextColored(Amber, "%s; the files stay in the export folder", Found.c_str() + 1);
+        else ImGui::TextDisabled("Into %s (map_source\\graywolf, model_export\\graywolf, source_data\\graywolf_*.gdt); "
+                                 "a .map, GDT or alias CSV already there is kept as .bak", Found.c_str());
+        ImGui::PopTextWrapPos();
+    };
+    const auto Row = [&](const DiskGame::Setting& S) {
         const std::string Key = SettingKey(*Disk, S);
         const std::string Value = SettingsManager::GetSetting(Key, S.Default);
         std::string Preview = Value;
@@ -926,22 +942,43 @@ void LoadGamePanel::DrawOptions()
                 if (ImGui::Selectable(L.c_str(), V == Value)) SettingsManager::SetSetting(Key, V);
             ImGui::EndCombo();
         }
-        // mod_tools on: the tree it writes into, or why there is none
-        if (std::string(S.Key) == DiskGame::ModToolsOutput.Key && Value == "on")
+        if (!Maps && std::string(S.Key) == DiskGame::ModToolsOutput.Key) ModToolsWhere();
+    };
+    if (!Plain.empty() || !Expert.empty() || Maps)
+    {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Settings");
+    }
+    if (Maps)
+    {
+        const DiskGame::Target* Now = DiskGame::TargetOf(Values);
+        ImGui::TextUnformatted("Export for");
+        ImGui::SameLine(ImGui::GetFontSize() * 12.0f);
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::BeginCombo("##disktarget", Now ? Now->Label : "Custom"))
         {
-            bool Looking = false;
-            const std::string Found = ModToolsFound.Get("bo3", 30.0, [] {
-                std::string Why;
-                const std::string Root = ModToolsTree::Resolve(std::string(), Why);
-                return Root.empty() ? "!" + Why : Root;
-            }, &Looking);
-            ImGui::PushTextWrapPos(0.0f);
-            if (Found.empty() || Looking) ImGui::TextDisabled("Looking for the Black Ops III Mod Tools...");
-            else if (Found[0] == '!') ImGui::TextColored(Amber, "%s; the files stay in the export folder", Found.c_str() + 1);
-            else ImGui::TextDisabled("Into %s (map_source\\graywolf, model_export\\graywolf, source_data\\graywolf_*.gdt); "
-                                     "a .map, GDT or alias CSV already there is kept as .bak", Found.c_str());
-            ImGui::PopTextWrapPos();
+            for (const DiskGame::Target& T : DiskGame::Targets())
+            {
+                if (ImGui::Selectable(T.Label, &T == Now))
+                    for (const auto& [Key, Value] : DiskGame::TargetValues(T, *Disk))
+                        SettingsManager::SetSetting(SettingKey(*Disk, Key), Value);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T.Tip);
+            }
+            if (Now == nullptr) ImGui::TextDisabled("Custom: set under Advanced");
+            ImGui::EndCombo();
         }
+        ModToolsWhere();
+    }
+    for (const DiskGame::Setting* S : Plain) Row(*S);
+    if (!Expert.empty())
+    {
+        constexpr const char* OpenKey = "disk_settings_advanced";
+        const bool WasOpen = SettingsManager::GetSetting(OpenKey, "false") == "true";
+        ImGui::SetNextItemOpen(WasOpen, ImGuiCond_Once);
+        const bool Open = ImGui::CollapsingHeader("Advanced##disksettings");
+        if (Open != WasOpen) SettingsManager::SetSetting(OpenKey, Open ? "true" : "false");
+        if (Open)
+            for (const DiskGame::Setting* S : Expert) Row(*S);
     }
 
     // the name filter, for a zone export of a game whose readers can filter

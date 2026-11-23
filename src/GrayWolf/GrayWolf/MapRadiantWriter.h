@@ -46,7 +46,7 @@ namespace Maps
         size_t Brushes = 0, BrushesDropped = 0, BrushesUnsound = 0, Faces = 0, Entities = 0, BrushEntities = 0, BrushEntitiesEmpty = 0;
         size_t Placements = 0, WorldModels = 0, ModelFiles = 0, ModelsElsewhere = 0, Triangles = 0, TrianglesDropped = 0, TriggerBrushes = 0;
         // the collision triangles' terrain patches (grids of them) and brushes (those left, merged plane by plane)
-        size_t TrianglesDuplicate = 0, TerrainPatches = 0, TriangleBrushes = 0, FloorOccluderBrushes = 0;
+        size_t TrianglesDuplicate = 0, TerrainPatches = 0, TriangleBrushes = 0, FloorOccluderBrushes = 0, FloorOccluderCell = 0, FloorOccluderLeftOut = 0, FloorsInModels = 0, CaulkVertices = 0;
         // the portal brushes left out (the source's visibility cells; Black Ops III's compiler
         // ignores them, warning) and the outer sky box's brushes (what seals the level for it)
         size_t PortalBrushes = 0, SkyboxBrushes = 0;
@@ -150,6 +150,9 @@ namespace Maps
         // are and left out of Materials: no entry of the GDT
         std::shared_ptr<const std::unordered_set<std::string>> Stock;
         std::set<std::string> StockNamed;     // those the files name
+        // layered materials named as the material whose entry theirs is (SharedFirstLayers), the
+        // files then naming it, the GDT defining it once
+        std::shared_ptr<const std::map<std::string, std::string>> Same;
     };
     // With Tree (a Black Ops III Mod Tools root, the mod_tools setting), the files go into it rather
     // than beside MapPath: map_source/graywolf/<map>.map, model_export/graywolf/<map>/,

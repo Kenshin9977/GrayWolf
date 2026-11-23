@@ -258,6 +258,39 @@ namespace DiskGame
     // to the shared images/ files (no disk space), which its files then name (ModelImages.h)
     extern const Setting ModelImagesFolder;
     const std::vector<Setting>& CommonSettings();
+
+    // What a map is exported for (the GUI's "Export for", the CLI's --target): a few settings a
+    // destination needs set together, written at once. Nothing of its own is kept: the choice shown
+    // is the target the settings match (TargetOf), "Custom" when none does.
+    //   blender       map_radiant off, material_gdt off, mod_tools off, bo3_usermap off
+    //   radiant       map_radiant on,  material_gdt on,  mod_tools off, bo3_usermap off
+    //   bo3-modtools  map_radiant on,  material_gdt on,  mod_tools on,  bo3_usermap off (+ sound_aliases on)
+    //   bo3-usermap   as bo3-modtools, bo3_usermap build
+    struct Target
+    {
+        const char* Name;    // "bo3-usermap" (--target)
+        const char* Label;   // "Black Ops III usermap (build)"
+        const char* Tip;
+        std::vector<std::pair<const Setting*, std::string>> Values;
+        bool SoundAliases = false;   // also sound_aliases on, for a game that exports sounds
+    };
+    const std::vector<Target>& Targets();
+    // by its name or label (case-insensitive); null when neither
+    const Target* FindTarget(const std::string& Text);
+    // the settings ("key" -> value) a target writes for Game: only those Game takes
+    class IDiskGame;
+    std::vector<std::pair<std::string, std::string>> TargetValues(const Target& T, const IDiskGame& Game);
+    // the target Values match, null for none ("Custom"). Compared as they take effect: bo3_usermap
+    // is moot without map_radiant, mod_tools without anything it places (map_radiant, material_gdt,
+    // sound_aliases off); sound_aliases is not compared.
+    const Target* TargetOf(const std::map<std::string, std::string>& Values);
+    // the settings a target drives, and the expert ones beside them: the GUI shows both under
+    // "Advanced", folded; Hidden ones it never shows (the CLI's alone)
+    bool Advanced(const Setting& S);
+    bool Hidden(const Setting& S);
+    // a mix no target makes that cannot work (bo3_usermap without map_radiant or mod_tools on): why,
+    // as a run's warning; empty when it can
+    std::string Inconsistent(const std::map<std::string, std::string>& Values);
     // char_heads: also each character's body with its head joined, one model on one skeleton
     // (models/<body>+<head>/), as the game's character data pairs them: off, the first head, every
     // head. Not common: a game whose zones give the pairs (ZonekitZone::CharacterHeads) lists it
