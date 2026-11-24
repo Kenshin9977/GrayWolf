@@ -980,8 +980,12 @@ namespace
             {
                 uint32_t X[3] = {};
                 MeshDecode::UnpackTable40Face(Tables, At<uint16_t>(Img, P + SfTables), Packed, Indices, T, X);
+                // in the game's order, as the models' (MeshDecode) and every other game's world:
+                // clockwise seen from the front (Maps::Surface). Taken the other way round, every
+                // world triangle faced against its normals (0.2 % of the area agreeing) and against
+                // the Havok collision lying on it
                 if (X[0] >= Vertices || X[1] >= Vertices || X[2] >= Vertices ||
-                    !Mesh.Triangle(Material, Sf << 16 | X[2], Sf << 16 | X[1], Sf << 16 | X[0]))
+                    !Mesh.Triangle(Material, Sf << 16 | X[0], Sf << 16 | X[1], Sf << 16 | X[2]))
                     Counter("map_triangles_unread") += 1;
             }
         });

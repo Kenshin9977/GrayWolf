@@ -987,7 +987,11 @@ namespace
                 // unit), the triangle's for one of no length; a triangle whose UVs have no area (no
                 // tangent) or whose corner normal lies near its plane gets corners of its own, the
                 // triangle's normal and, for no UV area, UVs a tiny planar mapping adds to (the
-                // same texel drawn)
+                // same texel drawn). The scene's triangles turn clockwise seen from their front (the
+                // game's order; MapGlbWriter reverses them for glTF): the face normal is (P2 - P0) x
+                // (P1 - P0). Taken the other way, every triangle's corner normals lay behind it and
+                // each got corners of its own and its back as their normal (every placed model
+                // faceted and lit from inside)
                 V3 Face{}, P[3];
                 bool Own = false;
                 if (Bin)
@@ -997,7 +1001,7 @@ namespace
                         const Vertex& V = S->Vertices[S->Indices[K + J]];
                         P[J] = { V.Pos[0], V.Pos[1], V.Pos[2] };
                     }
-                    Face = Cross(Sub(P[1], P[0]), Sub(P[2], P[0]));
+                    Face = Cross(Sub(P[2], P[0]), Sub(P[1], P[0]));
                     const double L = Length(Face);
                     Face = L > 0 ? Mul(Face, 1.0 / L) : V3{ 0, 0, 1 };
                     const Vertex* C[3] = { &S->Vertices[S->Indices[K]], &S->Vertices[S->Indices[K + 1]], &S->Vertices[S->Indices[K + 2]] };
@@ -2518,7 +2522,10 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
             for (size_t K = 1; K + 1 < F.Points.size(); K++) BrushCollision.push_back({ F.Points[0], F.Points[K], F.Points[K + 1] });
     }
     // a level whose game gives no collision (MW4's clip map is not read): its world's drawn triangles
-    // collide instead (as drawn, facing their front), fitted below like the rest, nearest play first
+    // collide instead (as drawn, facing their front), fitted below like the rest, nearest play first.
+    // A drawn triangle turns clockwise seen from its front, a collision one counter-clockwise (it
+    // faces along (b - a) x (c - a): the patches and prisms below): each turned round. Taken as
+    // drawn, every patch faced down and every prism stood 2 units out of its surface.
     size_t DrawnAsCollision = 0;
     if (Fitting && Scene.Collision.Triangles.empty() && Scene.Collision.Brushes.empty())
         for (const Mesh& M : Scene.Objects)
@@ -2534,6 +2541,7 @@ bool WriteRadiant(const MapScene& Scene, const std::string& MapPath, RadiantStat
                     std::array<V3, 3> T;
                     for (int J = 0; J < 3; J++) T[J] = { S.Vertices[I[J]].Pos[0], S.Vertices[I[J]].Pos[1], S.Vertices[I[J]].Pos[2] };
                     if (!Within(T[0]) || !Within(T[1]) || !Within(T[2])) continue;
+                    std::swap(T[1], T[2]);
                     BrushCollision.push_back(T);
                     DrawnAsCollision++;
                 }
