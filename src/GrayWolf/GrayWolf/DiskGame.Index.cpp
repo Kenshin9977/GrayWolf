@@ -24,6 +24,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 #include <string_view>
 #include <thread>
@@ -567,6 +568,76 @@ namespace
         Kept[Of] = { Now, Stamp };
         return Stamp;
     }
+
+    // FilesStamp's text from the folders' listings (one FindFirstFileEx per folder, the sizes and
+    // write times as the folder lists them) instead of three calls per file: Black Ops 6's 10 013
+    // zones in 30 ms, not 3 s. A folder's listing may lag a file's own record (a file still being
+    // written), so For tries this stamp first and FilesStamp's when its index does not match.
+    std::string ListedFilesStamp(const std::string& Install, const std::vector<std::string>& Names)
+    {
+        struct Entry
+        {
+            uint64_t Size = 0;
+            int64_t When = 0;
+            bool File = false, Odd = false;   // Odd: a link, read as FilesStamp reads it
+        };
+        std::unordered_map<std::wstring, Entry> Listed;   // lower-case full path
+        std::set<std::wstring> Folders;
+        const auto LowerW = [](std::wstring S) {
+            for (auto& C : S) C = (wchar_t)towlower(C);
+            return S;
+        };
+        const auto List = [&](const fs::path& Folder) {
+            const std::wstring Key = LowerW(Folder.wstring());
+            if (!Folders.insert(Key).second) return;
+            WIN32_FIND_DATAW D;
+            const HANDLE H = FindFirstFileExW((Folder / L"*").c_str(), FindExInfoBasic, &D, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+            if (H == INVALID_HANDLE_VALUE) return;
+            do
+            {
+                Entry E;
+                E.Size = (uint64_t)D.nFileSizeHigh << 32 | D.nFileSizeLow;
+                E.When = (int64_t)((uint64_t)D.ftLastWriteTime.dwHighDateTime << 32 | D.ftLastWriteTime.dwLowDateTime);
+                E.File = (D.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+                E.Odd = (D.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+                Listed[Key + L"\\" + LowerW(D.cFileName)] = E;
+            } while (FindNextFileW(H, &D));
+            FindClose(H);
+        };
+        std::string Text;
+        std::error_code Ec;
+        // (as FilesStamp: is_regular_file, file_size, last_write_time; a link read the same way)
+        const auto Find = [&](const fs::path& P, Entry& E) {
+            List(P.parent_path());
+            const auto It = Listed.find(LowerW(P.parent_path().wstring()) + L"\\" + LowerW(P.filename().wstring()));
+            if (It == Listed.end()) return false;
+            E = It->second;
+            if (!E.Odd) return true;
+            E.File = fs::is_regular_file(P, Ec);
+            E.Size = E.File ? fs::file_size(P, Ec) : 0;
+            if (!Ec) E.When = (int64_t)fs::last_write_time(P, Ec).time_since_epoch().count();
+            return !Ec;
+        };
+        const auto Add = [&](const fs::path& P) {
+            Entry E;
+            if (!Find(P, E) || !E.File) return false;
+            Text += P.filename().string() + " " + std::to_string(E.Size) + " " + std::to_string(E.When) + "\n";
+            return true;
+        };
+        const fs::path Root(Install);
+        for (const auto& N : Names)
+            for (fs::path P : { Root / N, Root / (N + ".ff") })
+            {
+                Entry E;
+                if (Find(P, E) && E.File && Add(P))
+                {
+                    for (const char* Patch : { ".fp", ".fd" }) Add(fs::path(P).replace_extension(Patch));
+                    break;
+                }
+            }
+        for (const char* Build : { ".build.info", ".product.db" }) Add(Root / Build);
+        return Hex16(Fnv1a(Text));
+    }
 }
 
 std::string ZoneFilesStamp(const std::string& Install, const std::vector<std::string>& Names)
@@ -595,15 +666,25 @@ std::unique_ptr<ZoneIndex> ZoneIndex::For(const IDiskGame& Game, const ExportOpt
     std::vector<std::string> Names;
     if (!Game.IndexedZones(Install, Options, Names, Error)) return nullptr;
     Siren::AddSearchDir(fs::path(Install).wstring());
-    const std::string Stamp = FilesStamp(Install, Names);
+    std::string Stamp;
     const auto KeyOf = [&](int Version) {
         std::string KeyText = "format " + std::to_string(Version) + "\n" + Game.Id() + "\n" + Lower(fs::absolute(Install).string()) +
                               "\n" + ReaderKey + "\nfiles " + Stamp + "\n";
         for (const auto& N : Names) KeyText += N + "\n";
         return Hex16(Fnv1a(KeyText));
     };
-    const std::string Key = KeyOf(Format);
     const std::string File = KeptFile(Game, Options, Install, ".gwi");
+    // the folders' listings first (ListedFilesStamp), each file's own record when they miss
+    Stamp = ListedFilesStamp(Install, Names);
+    if (Out->Ix.LoadMapped(File, KeyOf(Format)) && Out->Ix.Zones().size() == Names.size())
+    {
+        Out->File = File;
+        Out->Took();
+        Out->Seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
+        return Out;
+    }
+    Stamp = FilesStamp(Install, Names);
+    const std::string Key = KeyOf(Format);
     const std::string TextFile = KeptFile(Game, Options, Install, ".idx");   // the text index of before
     Out->File = File;
 

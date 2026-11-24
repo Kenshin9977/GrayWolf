@@ -247,18 +247,53 @@ void ToShared(Materials::Sidecar& S, const fs::path& File)
     });
 }
 
+namespace
+{
+    // the folders Note was given, not linked yet (lower case -> as given)
+    std::mutex NotedLock;
+    std::map<std::wstring, fs::path> Noted;
+}
+
+void Note(const std::string& ModelFileBase)
+{
+    const fs::path Dir = fs::path(ModelFileBase).parent_path().lexically_normal();
+    std::wstring Key = Dir.native();
+    std::transform(Key.begin(), Key.end(), Key.begin(), ::towlower);
+    std::lock_guard<std::mutex> G(NotedLock);
+    Noted.emplace(std::move(Key), Dir);
+}
+
 void LinkForRun(const DiskGame::Context& C, DiskGame::Totals& T)
 {
-    const fs::path Models = fs::path(C.OutRoot) / DiskGame::KindFolder(DiskGame::Kind::Model);
+    const fs::path Models = (fs::path(C.OutRoot) / DiskGame::KindFolder(DiskGame::Kind::Model)).lexically_normal();
+    C.Working("linking the models' images");
+    // the run's model folders (below its models/; another export's, a preview's, stay noted)
+    std::vector<fs::path> Dirs;
+    {
+        std::wstring Root = Models.native();
+        std::transform(Root.begin(), Root.end(), Root.begin(), ::towlower);
+        if (!Root.empty() && Root.back() != L'\\') Root += L'\\';
+        std::lock_guard<std::mutex> G(NotedLock);
+        for (auto It = Noted.lower_bound(Root); It != Noted.end() && It->first.compare(0, Root.size(), Root) == 0;)
+        {
+            Dirs.push_back(It->second);
+            It = Noted.erase(It);
+        }
+    }
     std::map<fs::path, std::vector<fs::path>> Folders;
     std::error_code Ec;
-    for (fs::recursive_directory_iterator It(Models, Ec), End; !Ec && It != End; It.increment(Ec))
+    for (const fs::path& Dir : Dirs)
+        for (fs::directory_iterator It(Dir, Ec), End; !Ec && It != End; It.increment(Ec))
+        {
+            const std::string Name = It->path().filename().string();
+            if (Name.size() > 15 && Name.compare(Name.size() - 15, 15, ".materials.json") == 0 && It->is_regular_file(Ec))
+                Folders[Dir].push_back(It->path());
+        }
+    if (Folders.empty())
     {
-        const std::string Name = It->path().filename().string();
-        if (It->is_regular_file(Ec) && Name.size() > 15 && Name.compare(Name.size() - 15, 15, ".materials.json") == 0)
-            Folders[It->path().parent_path()].push_back(It->path());
+        C.Working("");
+        return;
     }
-    if (Folders.empty()) return;
 
     const std::vector<std::pair<fs::path, std::vector<fs::path>>> List(Folders.begin(), Folders.end());
     const bool Split = DiskGame::SplitMaps.Of(C.Settings) == "on";

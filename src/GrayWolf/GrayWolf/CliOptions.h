@@ -70,6 +70,7 @@ struct CliOptions
     std::string XAnimRig;    // --xanim-rig: the model (.xmodel_bin, .xmodel_export) XANIM_BIN anims are posed on (setting xanim_bin_rig)
     std::string ImageFormat; // --image-format: png|tga|dds (sets exportimg)
     bool KeepImages = false; // --keep-images: an image file already there is neither written nor pulled again
+    bool CdnImages = false;  // --cdn-images: the high mips only the game's CDN holds fetched from it (setting cdn_images)
     std::string UiRes;       // --ui-res: 4k|1080|all, which BO4 UI resolution zones to read (4k)
     std::string MapPng;      // --map-png: on|off, PNG copies of map textures for glTF tools (off)
     std::string MapCast;     // --map-cast: on|off, the map also as a Cast scene (off)

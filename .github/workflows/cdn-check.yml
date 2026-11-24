@@ -1,0 +1,39 @@
+name: CDN check
+
+# Daily: each game's image CDN (the full-size mips GrayWolf downloads, cdn_images) still serves a
+# known object. When one is gone, opens an issue with where the object went, if it is found nearby.
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+concurrency: cdn-check
+
+jobs:
+  check:
+    name: Check the image CDNs
+    # the dev repo only (its issues are private); Linux, under a minute
+    if: github.repository != 'Kenshin9977/GrayWolf'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+
+      - name: Ask the CDNs
+        id: check
+        run: python3 .github/scripts/cdn-check.py .github/cdn-witnesses.json cdn-check.md || echo "gone=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open an issue
+        if: steps.check.outputs.gone == 'true'
+        run: |
+          title="Image CDN moved"
+          if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[].number')" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file cdn-check.md
+          fi
+          exit 1

@@ -16,6 +16,7 @@
 #include "ExportNaming.h"
 #include "ModToolsTree.h"
 #include "SettingsManager.h"
+#include "CdnObjects.h"
 #include "Strings.h"
 #include "WraithX.h"
 
@@ -116,38 +117,62 @@ namespace
         return ImGui::BeginCombo(Id, Preview.c_str());
     }
 
-    // Models or anims: each format its own on/off setting, several at once (what --model-format a,b sets)
+    // Models or anims: each format its own on/off setting, several at once (what --model-format a,b sets).
+    // XmodelRequired (DiskGame::ModelsNeedXmodel): XMODEL_BIN or XMODEL_EXPORT stays on, XMODEL_BIN
+    // shown on when neither is (the run adds it)
     template <size_t N>
-    void FormatsRow(const char* Label, const char* Tip, const char* Id, const ExportFormats::Format (&Formats)[N])
+    void FormatsRow(const char* Label, const char* Tip, const char* Id, const ExportFormats::Format (&Formats)[N], bool XmodelRequired = false)
     {
+        const auto IsXmodel = [](const ExportFormats::Format& F) {
+            return std::string(F.Setting) == "export_xmexport" || std::string(F.Setting) == "export_xmbin";
+        };
+        size_t XmodelsOn = 0;
+        for (const auto& F : Formats)
+            if (IsXmodel(F) && SettingsManager::GetSetting(F.Setting) == "true") XmodelsOn++;
+        const bool Added = XmodelRequired && XmodelsOn == 0;
+        const char* Why = "Required by the material GDT (material_gdt on): its xmodel entries name the "
+                          "XMODEL_BIN or XMODEL_EXPORT files. With neither ticked, XMODEL_BIN is written.";
         std::string Preview;
         for (const auto& F : Formats)
-            if (SettingsManager::GetSetting(F.Setting) == "true") Preview += (Preview.empty() ? "" : " + ") + std::string(F.Label);
+            if (SettingsManager::GetSetting(F.Setting) == "true" || (Added && std::string(F.Setting) == "export_xmbin"))
+                Preview += (Preview.empty() ? "" : " + ") + std::string(F.Label);
         if (Preview.empty()) Preview = "None (not written)";
         if (!BeginFormatCombo(Label, Tip, Id, Preview)) return;
         for (const auto& F : Formats)
         {
             bool On = SettingsManager::GetSetting(F.Setting) == "true";
+            // the only xmodel format on (or the one added): not unticked while the GDT needs one
+            const bool Locked = XmodelRequired && IsXmodel(F) && ((On && XmodelsOn == 1) || (Added && std::string(F.Setting) == "export_xmbin"));
+            if (Locked) On = true;
+            // the Blender script goes beside a Cast or glTF model only: greyed without one
+            const bool Moot = std::string(F.Setting) == "export_blender_script" && SettingsManager::GetSetting("export_castmdl") != "true" &&
+                              SettingsManager::GetSetting("export_gltf") != "true" && SettingsManager::GetSetting("export_glb") != "true";
+            ImGui::BeginDisabled(Locked || Moot);
             if (ImGui::Checkbox(F.Label, &On)) SettingsManager::SetSetting(F.Setting, On ? "true" : "false");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", Locked ? Why : Moot ? "Written beside a Cast, glTF or GLB model: tick one of them for the script" : F.Tip);
         }
         ImGui::EndCombo();
     }
 
-    // Images or sounds: one setting naming the format
+    // Images or sounds: one setting naming the format. Forced (DiskGame::ForcedSettings): the value
+    // the export writes instead, shown chosen, the others locked, Why their tooltip
     template <size_t N>
     void FormatRow(const char* Label, const char* Tip, const char* Id, const char* Setting, const char* Default,
-                   const ExportFormats::Format (&Formats)[N])
+                   const ExportFormats::Format (&Formats)[N], const DiskGame::Forced* Forced = nullptr)
     {
-        const std::string Current = Strings::ToUpper(SettingsManager::GetSetting(Setting, Default));
+        const std::string Current = Forced ? Forced->Value : Strings::ToUpper(SettingsManager::GetSetting(Setting, Default));
         std::string Preview = Current;
         for (const auto& F : Formats)
             if (Current == F.Setting) Preview = F.Label;
         if (!BeginFormatCombo(Label, Tip, Id, Preview)) return;
         for (const auto& F : Formats)
         {
+            ImGui::BeginDisabled(Forced != nullptr && Current != F.Setting);
             if (ImGui::Selectable(F.Label, Current == F.Setting)) SettingsManager::SetSetting(Setting, F.Setting);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", F.Tip);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", Forced ? Forced->Why.c_str() : F.Tip);
         }
         ImGui::EndCombo();
     }
@@ -190,8 +215,13 @@ namespace
     // The formats the ticked (or picked) kinds are written in: the settings every export reads,
     // the GUI's as the CLI's (--model-format, --anim-format, --image-format, --audio-format)
     template <class Pred>
-    void DrawFormats(const Pred& Concerned)
+    void DrawFormats(const Pred& Concerned, bool XmodelRequired, const std::vector<DiskGame::Forced>& Forcing)
     {
+        const auto ForcedOf = [&](const char* Key) -> const DiskGame::Forced* {
+            for (const auto& F : Forcing)
+                if (F.Key == Key) return &F;
+            return nullptr;
+        };
         using DiskGame::Kind;
         const bool Models = Concerned(Kind::Model), Anims = Concerned(Kind::Anim);
         const bool Images = Models || Concerned(Kind::Image), Sounds = Concerned(Kind::Sound);
@@ -199,18 +229,29 @@ namespace
         ImGui::Separator();
         ImGui::TextUnformatted("Formats");
         if (Models)
-            FormatsRow("Model format", "The files each model is written as; several may be ticked.\nThe Library shows Cast, SEModel and XMODEL_EXPORT models","##fmtmodel", ExportFormats::Models);
+            FormatsRow("Model format", "The files each model is written as; several may be ticked.\nThe Library shows Cast, SEModel and XMODEL_EXPORT models","##fmtmodel", ExportFormats::Models,
+                       XmodelRequired);
         if (Anims)
         {
             FormatsRow("Anim format", "The files each animation is written as; several may be ticked.\nThe Library shows Cast and SEAnim anims","##fmtanim", ExportFormats::Anims);
             if (SettingsManager::GetSetting("export_xanimbin") == "true") XAnimRigRow();
         }
         if (Images)
+        {
             FormatRow("Image format", "Images, and the textures written beside the models", "##fmtimage", ExportFormats::ImageSetting,
                       ExportFormats::ImageDefault, ExportFormats::Images);
+            // the setting --cdn-images turns on for a run
+            // (not chosen yet: unticked, and the first download asks)
+            bool Cdn = CdnObjects::Setting() == CdnObjects::Mode::On;
+            if (ImGui::Checkbox("Full-size images from the game's server##cdnimages", &Cdn)) SettingsManager::SetSetting("cdn_images", Cdn ? "on" : "off");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", "Modern Warfare 2019, III, Black Ops 6 and 7 install only an image's low mips (often 256 or 512 pixels):\n"
+                                        "the game downloads the others from its own server while it plays. Ticked, GrayWolf fetches them the\n"
+                                        "same way (kept in %LOCALAPPDATA%\\GrayWolf\\cdn). The game's own cache (xpak_cache) is read either way.");
+        }
         if (Sounds)
             FormatRow("Sound format", "Also in Settings > Sounds", "##fmtsound", ExportFormats::SoundSetting, ExportFormats::SoundDefault,
-                      ExportFormats::Sounds);
+                      ExportFormats::Sounds, ForcedOf(ExportFormats::SoundSetting));
     }
 }
 
@@ -896,7 +937,12 @@ void LoadGamePanel::DrawOptions()
     for (const auto& [K, N] : AssetPicks.Kinds) Picked.insert(K);
     const auto Concerned = [&](DiskGame::Kind K) { return ExportByAsset ? Picked.count(K) != 0 : DiskKindFlags[(size_t)K] != 0; };
 
-    DrawFormats([&](DiskGame::Kind K) { return Exported.count(K) != 0 && Concerned(K); });
+    const DiskGame::ExportOptions Opts = DiskOptions(*Disk, GameBuf);
+    const std::map<std::string, std::string>& Values = Opts.Settings;
+    std::set<DiskGame::Kind> Going;
+    for (DiskGame::Kind K : Exported)
+        if (Concerned(K)) Going.insert(K);
+    DrawFormats([&](DiskGame::Kind K) { return Going.count(K) != 0; }, DiskGame::ModelsNeedXmodel(Values), DiskGame::ForcedSettings(Opts, Going));
 
     // the game's settings, each while one of the kinds it concerns is ticked or picked; with a map,
     // "Export for" first (DiskGame::Targets), the settings it drives and the expert ones folded
@@ -910,7 +956,6 @@ void LoadGamePanel::DrawOptions()
         for (DiskGame::Kind K : Each->Concerns) Shown = Shown || Concerned(K);
         if (Shown) (Maps && DiskGame::Advanced(*Each) ? Expert : Plain).push_back(Each);
     }
-    const std::map<std::string, std::string> Values = DiskOptions(*Disk, GameBuf).Settings;
     // mod_tools on: the tree it writes into, or why there is none
     const auto ModToolsWhere = [&] {
         if (DiskGame::ModToolsOutput.Of(Values) != "on") return;

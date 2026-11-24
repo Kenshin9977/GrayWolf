@@ -333,6 +333,13 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
     while (reader.GetPosition() < reader.GetLength())
     {
         const auto blockHeader = reader.Read<BO3XPakDataHeader>();
+        // more commands than a header holds: not a block header (a CDN object read with the wrong
+        // alignment, a corrupt package)
+        if (blockHeader.Count > std::size(blockHeader.Commands))
+        {
+            resultSize = 0;
+            return nullptr;
+        }
 
         for (uint32_t i = 0; i < blockHeader.Count; i++)
         {
@@ -373,6 +380,11 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
                 case 0x8: // compressed (oodle)
                 {
                     blockDecompressedSize = *(uint32_t*)(dataBlock);
+                    if (blockSize < 4 || blockDecompressedSize > remaining)
+                    {
+                        resultSize = 0;
+                        return nullptr;
+                    }
                     Oodle(dataBlock + 4, blockSize - 4, blockDecompressedSize);
                     resultSize += blockDecompressedSize;
                     remaining -= blockDecompressedSize;
@@ -380,6 +392,11 @@ std::unique_ptr<uint8_t[]> XPAKCache::DecompressPackageObject(uint64_t cacheID, 
                 }
                 case 0x0: // raw data
                 {
+                    if (blockSize > remaining)
+                    {
+                        resultSize = 0;
+                        return nullptr;
+                    }
                     std::memcpy(result.get() + resultSize, dataBlock, blockSize);
                     resultSize += blockSize;
                     remaining -= blockSize;

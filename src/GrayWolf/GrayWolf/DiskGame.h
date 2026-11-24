@@ -225,7 +225,8 @@ namespace DiskGame
     // each, what a player misses least left out first; strict: at 0.7; off: only told, <map>.limits.txt)
     extern const Setting MapFit;
     // material_gdt: also Black Ops III Mod Tools GDT entries for the exported materials (MaterialGdt.h):
-    // the models' as source_data/graywolf_<out folder>.gdt (their XMODEL_EXPORT files naming them),
+    // the models' as source_data/graywolf_<out folder>.gdt (their XMODEL_BIN or XMODEL_EXPORT files
+    // naming them: with neither format on, the run writes XMODEL_BIN, ModelsNeedXmodel),
     // a map's in its Radiant GDT (with map_radiant)
     extern const Setting GdtMaterials;
     // sound_aliases: also the zone's sound aliases as a Black Ops III Mod Tools alias CSV beside the
@@ -291,6 +292,21 @@ namespace DiskGame
     // a mix no target makes that cannot work (bo3_usermap without map_radiant or mod_tools on): why,
     // as a run's warning; empty when it can
     std::string Inconsistent(const std::map<std::string, std::string>& Values);
+    // material_gdt on (models into the Mod Tools or a GDT beside them): the GDT's xmodel entries name
+    // each model's XMODEL_BIN or XMODEL_EXPORT, so one of them stays on (the GUI keeps it ticked)
+    bool ModelsNeedXmodel(const std::map<std::string, std::string>& Values);
+    // A setting an export needs for what else is on: set for that run only (a run setting, never
+    // saved), said once in the log and the report (Totals::Forced, Report), shown on and locked by
+    // the GUI (Why its tooltip).
+    //   material_gdt + models: XMODEL_BIN when no xmodel format is on (the GDT's xmodel entries
+    //     name it); the models' images (exportmodelimg) when off (the GDT's materials name them)
+    //   sound_aliases + sounds: WAV when the sounds would be Opus (the alias CSV names them for the
+    //     Black Ops III Mod Tools, which read WAV and FLAC), ExportOptions::AudioFormat too
+    struct Forced
+    {
+        std::string Key, Value, Why, Report;
+    };
+    std::vector<Forced> ForcedSettings(const ExportOptions& Options, const std::set<Kind>& Kinds);
     // char_heads: also each character's body with its head joined, one model on one skeleton
     // (models/<body>+<head>/), as the game's character data pairs them: off, the first head, every
     // head. Not common: a game whose zones give the pairs (ZonekitZone::CharacterHeads) lists it
@@ -445,6 +461,7 @@ namespace DiskGame
         // "<zone>: <what>": written, but past what the target's tools take (a Radiant .map past
         // Black Ops III's compiler limits, a mode turned down for the map's size). Not a failure.
         std::vector<std::string> Warnings;
+        std::vector<std::string> Forced;           // ForcedSettings' Report lines ("mod_tools_xmodel_format=xmodel_bin (added)")
         // the run's asset index: one row per file a data kind wrote (bundles, mapinfo, struct dumps,
         // mapents), written once after the run as <out>/asset_index.csv (Export)
         struct IndexRow
@@ -470,6 +487,11 @@ namespace DiskGame
         virtual ~IDiskZone() = default;
         virtual const std::string& Name() const = 0;
         virtual bool WalkedToEnd() const = 0;
+        // Opened whole for a few assets its resume index did not list (or one out of date), that
+        // index written again meanwhile: the run opens it again, partially now. Whole, its zones
+        // beside and materials elsewhere are read for every asset of the zone (a Black Ops 6
+        // global_shared_mp model previewed: 50 s whole, 5 s partially)
+        virtual bool OpensBetterAgain() const { return false; }
         // walked only the assets asked and what they reach (DiskGame::PartialScope): what it needs
         // may be its own assets, which a later open asking for them gives
         virtual bool OpenedPartially() const { return false; }

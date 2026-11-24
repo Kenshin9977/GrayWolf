@@ -5,6 +5,7 @@
 #include "DiskGame.h"
 
 #include "AnimOwners.h"
+#include "CdnObjects.h"
 #include "DiskGame.Materials.h"
 #include "DiskGame.Monitor.h"
 #include "ExportNaming.h"
@@ -220,6 +221,39 @@ namespace
         if (E[MapRadiant.Key] == "off" && E[GdtMaterials.Key] == "off" && SoundAliases.Of(Values) == "off") E[ModToolsOutput.Key] = "off";
         return E;
     }
+}
+
+bool ModelsNeedXmodel(const std::map<std::string, std::string>& Values)
+{
+    return GdtMaterials.Of(Values) == "on";
+}
+
+std::vector<Forced> ForcedSettings(const ExportOptions& Options, const std::set<Kind>& Kinds)
+{
+    std::vector<Forced> Out;
+    const auto On = [](const char* Key) { return SettingsManager::GetSetting(Key) == "true"; };
+    if (Kinds.count(Kind::Model) && ModelsNeedXmodel(Options.Settings))
+    {
+        if (!On("export_xmexport") && !On("export_xmbin"))
+            Out.push_back({ "export_xmbin", "true",
+                            "The material GDT's xmodel entries name each model's XMODEL_BIN or XMODEL_EXPORT: with neither ticked, "
+                            "XMODEL_BIN is written (material_gdt on).",
+                            "mod_tools_xmodel_format=xmodel_bin (added)" });
+        if (!On("exportmodelimg"))
+            Out.push_back({ "exportmodelimg", "true",
+                            "The material GDT's materials name the models' images: they are written with the models (material_gdt on).",
+                            "material_gdt_model_images=on (added)" });
+    }
+    if (Kinds.count(Kind::Sound) && SoundAliases.Of(Options.Settings) == "on")
+    {
+        const std::string Format = ExportNaming::Lower(Options.AudioFormat.empty() ? ExportWriters::SoundFormatSetting() : Options.AudioFormat);
+        if (Format == "opus")
+            Out.push_back({ "exportsnd", "WAV",
+                            "The alias CSV names the sounds for the Black Ops III Mod Tools, which read WAV and FLAC, not Opus: "
+                            "WAV is written (sound_aliases on).",
+                            "sound_aliases_audio_format=wav (was opus)" });
+    }
+    return Out;
 }
 
 const Target* TargetOf(const std::map<std::string, std::string>& Values)
@@ -597,6 +631,10 @@ std::string Report(const Totals& T)
     for (Kind K : T.Unsupported) Os << "unsupported=" << KindFolder(K) << "\n";
     for (const auto& [Name, N] : T.Counters) Os << Name << "=" << N << "\n";
     if (const auto It = T.Counters.find(WmaSounds::NoFfmpegCounter); It != T.Counters.end()) Os << "warning " << WmaSounds::NoFfmpegMessage(It->second) << "\n";
+    // the image mips only the game's CDN holds, not fetched (CdnObjects)
+    if (const size_t Skipped = CdnObjects::Skipped())
+        Os << "cdn_images_skipped=" << Skipped << "\nwarning " << Skipped
+           << " image mips are only on the game's CDN: --cdn-images (or the setting cdn_images=on) downloads them\n";
     Os << "failures=" << T.Failures.size() << "\n";
     for (const auto& F : T.Failures) Os << "failure " << F << "\n";
     if (!T.Absent.empty()) Os << "absent_from_install=" << T.Absent.size() << "\n";
@@ -608,6 +646,7 @@ std::string Report(const Totals& T)
     for (const auto& R : T.IndexRenamed) Os << "index_renamed " << R << "\n";
     if (T.Cancelled) Os << "cancelled=1\n";
     if (!T.ModTools.Error.empty()) Os << "mod_tools_error=" << T.ModTools.Error << "\n";
+    for (const auto& F : T.Forced) Os << F << "\n";
     if (!T.ModTools.Root.empty())
     {
         Os << "mod_tools_root=" << T.ModTools.Root << "\nmod_tools_files_placed=" << T.ModTools.Placed << "\n";
@@ -623,6 +662,25 @@ std::string Report(const Totals& T)
 
 namespace
 {
+    // the "zone" the run's last passes (model images, GDT, split maps) are said to be in
+    const std::string AfterZones = "after the zones";
+
+    // A zone opened for the assets Asked (all of it when none): walked only for them where its
+    // resume index can, and once more when it opened whole and wrote that index again meanwhile
+    // (IDiskZone::OpensBetterAgain), what it took then in FirstS
+    std::unique_ptr<IDiskZone> OpenZone(const IDiskGame& Game, const std::string& Path, const ExportOptions& Options,
+                                        std::shared_ptr<const Selection> Asked, std::string& Error, double& FirstS)
+    {
+        FirstS = 0;
+        const PartialScope Partial(std::move(Asked));
+        const auto Start = std::chrono::steady_clock::now();
+        auto Zone = Game.Open(Path, Options, Error);
+        if (!Zone || !Zone->OpensBetterAgain()) return Zone;
+        Zone.reset();
+        FirstS = std::chrono::duration<double>(std::chrono::steady_clock::now() - Start).count();
+        return Game.Open(Path, Options, Error);
+    }
+
     std::string Stem(const std::string& Zone)
     {
         return ExportNaming::Lower(fs::path(Zone).stem().string());
@@ -853,16 +911,17 @@ namespace
                         {
                             Mon.Where(From, "dependencies: opening");
                             Start = std::chrono::steady_clock::now();
+                            double FirstS = 0;
                             {
                                 // only the dependencies taken from it, where the zone can
                                 auto Asked = std::make_shared<Selection>();
                                 for (const auto& A : Take) Asked->insert(A);
-                                const PartialScope Partial(std::move(Asked));
-                                Zone = Game.Open(Paths.front(), Options, Error);
+                                Zone = OpenZone(Game, Paths.front(), Options, std::move(Asked), Error, FirstS);
                             }
                             const double OpenS = Seconds(Start);
                             Mon.AddTime("deps_open", OpenS);
-                            if (Zone) Mon.Log("  " + From + ": resolved in " + Ms(ResolveS) + ", " + Opened(*Zone, OpenS, Mon, "deps_open_"));
+                            if (FirstS > 0) Mon.Log("  " + From + ": opened whole in " + Ms(FirstS) + " (its resume index written again), then again for what is asked");
+                            if (Zone) Mon.Log("  " + From + ": resolved in " + Ms(ResolveS) + ", " + Opened(*Zone, OpenS - FirstS, Mon, "deps_open_"));
                         }
                         if (!Zone) Why = ZoneName + " did not open: " + Error;
                     }
@@ -1182,9 +1241,10 @@ PartialScope::~PartialScope() { PartialWanted = Previous; }
 
 const Selection* PartialScope::Wanted() { return PartialWanted.get(); }
 
-Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::vector<std::string>& Zones,
+Totals Export(const IDiskGame& Game, const ExportOptions& Asked, const std::vector<std::string>& Zones,
               const Context& C, const ProgressFn& OnProgress, const std::atomic<bool>* Cancel)
 {
+    ExportOptions Options = Asked;   // ForcedSettings may change the sounds' format
     Totals T;
     Progress P;
     P.Zones = Zones.size();
@@ -1283,6 +1343,34 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     // on map_radiant or mod_tools would write what was not asked, into a game install)
     if (C.Kinds.count(Kind::Map))
         if (const std::string Why = Inconsistent(Run.Settings); !Why.empty()) T.Warnings.push_back(Why);   // logged with the others at the end
+    // XANIM_BIN asked without the skeleton it is posed on (a file only the user can name): said, the
+    // anims' other formats written
+    if (C.Kinds.count(Kind::Anim) && SettingsManager::GetSetting("export_xanimbin") == "true")
+    {
+        const std::string Rig = SettingsManager::GetSetting("xanim_bin_rig", "");
+        std::error_code Ec;
+        if (Rig.empty() || !fs::is_regular_file(fs::path(Rig), Ec))
+            T.Warnings.push_back("XANIM_BIN asked without its skeleton (" + (Rig.empty() ? std::string("--xanim-rig not given") : "no file " + Rig) +
+                                 "): no XANIM_BIN is written");
+    }
+    // what the run needs for what else is on (ForcedSettings): run settings, the saved values back
+    // at the run's end
+    struct RunForced
+    {
+        std::vector<std::string> Keys;
+        ~RunForced()
+        {
+            for (const auto& K : Keys) SettingsManager::ClearRunSetting(K);
+        }
+    } Forcing;
+    for (const Forced& F : ForcedSettings(Options, C.Kinds))
+    {
+        SettingsManager::SetRunSetting(F.Key, F.Value);
+        if (F.Key == "exportsnd") Options.AudioFormat = F.Value;   // the readers given a format (BO3) too
+        Forcing.Keys.push_back(F.Key);
+        T.Forced.push_back(F.Report);
+        Mon.Log(F.Report + ": " + F.Why + " This run only, not saved.");
+    }
     ModToolsTree::Begin(ModToolsTree::RootOf(Run));
     const bool MaterialGdts = GdtMaterials.Of(Run.Settings) == "on";
     const MaterialGdt::AssetNamesInModelFiles ModToolsNames(MaterialGdts);
@@ -1316,7 +1404,8 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
             Phasing.Name = Phase;
             Phasing.Since = Now;
             const std::string Of = P.Current ? KindName(*P.Current) : std::string("reading");
-            Mon.Where(P.ZoneName, Phase.empty() ? Of : Of + ": " + Phase);
+            // (a pass over the whole run, past the zones: its own name, not the last kind's)
+            Mon.Where(P.ZoneName, Phase.empty() ? Of : P.Current || P.ZoneName != AfterZones ? Of + ": " + Phase : Phase);
         }
         else
             Mon.Touch();
@@ -1398,11 +1487,13 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
         Mon.Where(P.ZoneName, "opening");
         std::string Error;
         const auto Start = std::chrono::steady_clock::now();
-        std::unique_ptr<IDiskZone> Zone;
+        // a run asking for a few assets walks only them where the zone can (its resume index)
+        double FirstS = 0;
+        std::unique_ptr<IDiskZone> Zone = OpenZone(Game, Path, Options, C.Only, Error, FirstS);
+        if (FirstS > 0)
         {
-            // a run asking for a few assets walks only them where the zone can (its resume index)
-            const PartialScope Partial(C.Only);
-            Zone = Game.Open(Path, Options, Error);
+            Mon.Log("zone " + P.ZoneName + " opened whole in " + Ms(FirstS) + " (its resume index written again), then again for the assets asked");
+            Mon.AddTime("open_whole_first", FirstS);
         }
         const double OpenS = Seconds(Start);
         Mon.AddTime("open", OpenS);
@@ -1512,6 +1603,9 @@ Totals Export(const IDiskGame& Game, const ExportOptions& Options, const std::ve
     }
     // the asset index, once per run, of what the data kinds wrote
     if (!T.Indexed.empty() && !WriteIndex(C.OutRoot, T.Indexed)) T.Fail("", T.Indexed.front().K, "asset_index.csv", "write failed");
+    // the passes below are the run's, no zone's or kind's (what the progress and a stall name)
+    P.Current.reset();
+    P.ZoneName = AfterZones;
     // the models' material GDT, once their sidecars and textures are all written
     if (MaterialGdts && C.Kinds.count(Kind::Model) && !T.Cancelled)
     {

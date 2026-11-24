@@ -31,6 +31,12 @@ void AddSharedOptions(CLI::App& App, CliOptions& Options)
         "lacks are left out")
         ->check(CLI::ExistingFile)->group("Shared options");
     App.add_option("--image-format", Options.ImageFormat, "png|tga|dds")->group("Shared options");
+    App.add_flag("--cdn-images", Options.CdnImages,
+                 "Modern Warfare III, Black Ops 6 and 7: fetch the image mips (and any streamed object) that only the "
+                 "game's CDN holds, its installed files keeping the low ones; kept in %LOCALAPPDATA%\\GrayWolf\\cdn "
+                 "(setting cdn_images: ask, on, off; without --cdn-images a run downloads nothing and the report says "
+                 "how many objects it skipped; the game's own xpak_cache is read either way)")
+        ->group("Shared options");
     App.add_flag("--keep-images", Options.KeepImages,
                  "keep the image files an earlier run wrote: neither decoded nor written again, nor pulled from other zones "
                  "(a re-export whose geometry alone changes)")

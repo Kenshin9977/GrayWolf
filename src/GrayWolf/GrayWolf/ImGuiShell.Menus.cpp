@@ -9,6 +9,7 @@
 #include "ExportFormats.h"     // the sound formats offered
 #include "ImGuiUpdates.h"      // Settings > Updates, the new-version banner
 #include "ImGuiBlender.h"      // Settings > Blender
+#include "CdnObjects.h"         // the full-size images' question
 #include "ProjectLinks.h"      // GitHub, Discord, Ko-fi at the bar's right end
 
 #include "imgui.h"
@@ -131,5 +132,35 @@ namespace ShellUi
             if (ImGui::Button("Got it", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
+    }
+
+    // The question an export or a preview puts when it needs an image mip only the game's server
+    // holds and cdn_images is "ask" (CdnObjects): once ever (the answer is saved), the export
+    // waiting meanwhile
+    void DrawCdnConsent()
+    {
+        static const bool Attached = (CdnObjects::AttachAsker(), true);
+        (void)Attached;
+        std::string Host;
+        const bool Asked = CdnObjects::Question(Host);
+        if (Asked && !ImGui::IsPopupOpen("Full-size images")) ImGui::OpenPopup("Full-size images");
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (!ImGui::BeginPopupModal("Full-size images", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+        ImGui::TextUnformatted("Full-size images for this game are not on your disk.");
+        ImGui::Text("The game downloads them from its own server (%s) while you play.", Host.c_str());
+        ImGui::TextUnformatted("Download them now? They are kept in %LOCALAPPDATA%\\GrayWolf\\cdn.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("This choice is saved; the export formats' \"Full-size images\" box changes it.");
+        ImGui::Spacing();
+        const auto Close = [](bool Download) {
+            CdnObjects::Answer(Download);
+            ImGui::CloseCurrentPopup();
+        };
+        if (ImGui::Button("Download", ImVec2(140, 0))) Close(true);
+        ImGui::SameLine();
+        if (ImGui::Button("Don't download", ImVec2(140, 0))) Close(false);
+        // answered elsewhere (none pending any more): nothing left to ask
+        if (!Asked && ImGui::IsPopupOpen("Full-size images")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
     }
 }

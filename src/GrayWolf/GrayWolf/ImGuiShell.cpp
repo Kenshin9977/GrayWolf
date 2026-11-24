@@ -202,6 +202,7 @@ bool RunImGuiShell(const std::string& ModelsDir, const GridShotOptions* ShotMode
         DrawAssetsPanel(S, OpenHelp);
         DrawViewportPanel(S);
         DrawFilterHelp(OpenHelp);
+        DrawCdnConsent();
 
         // (kept until the window exists: the first frame has drawn none yet)
         if (const std::string Id = "###" + S.FocusWindow; !S.FocusWindow.empty() && ImGui::FindWindowByName(Id.c_str()) != nullptr)

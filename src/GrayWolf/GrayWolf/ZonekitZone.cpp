@@ -233,6 +233,21 @@ void ZonekitZone::ExportImageList(const DiskGame::Context& C, DiskGame::Totals& 
     ExportWriters::ImageSink Sink;
     const fs::path Dir = C.KindDir(Kind::Image);
     std::set<std::string> ReferencedHere, DefinedHere;
+    if (L.Prefetch)
+    {
+        // the images the loop below decodes, as it picks them
+        std::vector<int64_t> Wanted;
+        std::set<std::string> Names;
+        for (const int64_t Pos : L.Order)
+        {
+            std::string ImageName = AssetName(Kind::Image, Pos + L.NameAt);
+            const bool Reference = IsReference(Kind::Image, ImageName, Pos);
+            if (Reference) ImageName = Referenced(Kind::Image, ImageName);
+            if (Reference || ImageName.empty() || !C.Wants(Kind::Image, ImageName) || (L.Held && !L.Held(Pos))) continue;
+            if (Names.insert(ImageName).second || !L.OnePerName) Wanted.push_back(Pos);
+        }
+        L.Prefetch(Wanted, [&C](size_t Done, size_t Of) { return C.Advance(Done, Of, "downloading full-size images"); });
+    }
     for (size_t N = 0; N < L.Order.size(); N++)
     {
         const int64_t Pos = L.Order[N];
@@ -416,7 +431,8 @@ bool ZonekitZone::OpenSteps(std::string& Error)
         if (Want != nullptr)
         {
             if (OpenPartially(*Want, ResumeFile, Lap)) return true;
-            Lap("partial_fell_back");
+            Lap(FellBack != nullptr ? FellBack : "partial_fell_back");
+            Counters[FellBack != nullptr ? FellBack : "partial_fell_back"]++;
         }
     }
     {
@@ -456,20 +472,29 @@ bool ZonekitZone::OpenSteps(std::string& Error)
     {
         WriteResume(ResumeFile);
         Lap("resume_index");
+        // a few assets asked, the index now listing them: the run opens the zone again, partially
+        // (DiskGame::OpenZone), not every asset's zones beside and materials elsewhere read for them
+        BetterAgain = Want != nullptr && DefinesAll(*Want);
     }
     return true;
 }
 
 bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::string& File, const std::function<void(const char*)>& Lap)
 {
+    // why it is read whole, named in the open's steps (partial_fell_back_<why>)
+    const auto ReadWhole = [&](const char* Why) {
+        FellBack = Why;
+        return false;
+    };
     ZoneResume Z;
-    if (!ResumeIndex::Load(File, Z)) return false;
+    std::error_code Ec;
+    if (!ResumeIndex::Load(File, Z)) return ReadWhole(fs::exists(File, Ec) ? "partial_fell_back_index_unread" : "partial_fell_back_no_index");
     Lap("resume_read");
     // an index without a type the game counts is from before it did: read whole; so is one
     // without the heads the game keeps (Heads)
     for (const std::string& T : Ranked())
-        if (!Z.Ranked.count(T)) return false;
-    if (!HeadsKept(File)) return false;
+        if (!Z.Ranked.count(T)) return ReadWhole("partial_fell_back_type_not_ranked");
+    if (!HeadsKept(File)) return ReadWhole("partial_fell_back_no_heads");
     // an asset the index does not list (one written before the names it has now) is read whole
     std::vector<size_t> Targets;
     const std::vector<std::string> Types = ResumeTypes();
@@ -480,9 +505,9 @@ bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::stri
     if (!Unlisted.empty())
     {
         Counters["partial_not_indexed"] += Unlisted.size();
-        return false;
+        return ReadWhole("partial_fell_back_asset_unlisted");
     }
-    if (Targets.empty() || Targets.size() > Limits.Walks) return false;
+    if (Targets.empty() || Targets.size() > Limits.Walks) return ReadWhole("partial_fell_back_too_many");
     ZoneTables::StreamRules Rs = Loaded->Profile.Rules;
     Rs.StartOffset = LayoutOffset();
     ResolveHints H;
@@ -508,7 +533,7 @@ bool ZonekitZone::OpenPartially(const DiskGame::Selection& Want, const std::stri
             Listed = PW.ListedTypes();
         }
     });
-    if (!Ok) return false;
+    if (!Ok) return ReadWhole("partial_fell_back_walk_short");
     R = std::move(M);
     Walked = true;
     Partial = true;
@@ -543,6 +568,16 @@ bool ZonekitZone::DefinesAny(const std::vector<DiskGame::AssetId>& Assets) const
     std::set<std::pair<DiskGame::Kind, std::string>> Here;
     for (const auto& [A, Pos] : Named) Here.emplace(A.K, ExportNaming::Lower(A.Name));
     return std::any_of(Assets.begin(), Assets.end(), [&](const DiskGame::AssetId& A) { return Here.count({ A.K, ExportNaming::Lower(A.Name) }) > 0; });
+}
+
+bool ZonekitZone::DefinesAll(const DiskGame::Selection& Assets) const
+{
+    if (Assets.empty()) return false;
+    std::vector<std::pair<DiskGame::AssetId, int64_t>> Named;
+    DefinesAt(Named);
+    std::set<std::pair<DiskGame::Kind, std::string>> Here;
+    for (const auto& [A, Pos] : Named) Here.emplace(A.K, ExportNaming::Lower(A.Name));
+    return std::all_of(Assets.begin(), Assets.end(), [&](const DiskGame::AssetId& A) { return Here.count({ A.K, ExportNaming::Lower(A.Name) }) > 0; });
 }
 
 bool ZonekitZone::HeadsKept(const std::string& ResumeFile) const
@@ -1028,7 +1063,11 @@ void ZonekitZone::ExportLive(DiskGame::Kind K, const char* Type, const DiskGame:
         std::unordered_map<std::string, int64_t> Bodies;
         for (size_t N = 0; N < Assets.size(); N++)
             if (Counted[N]) Bodies.emplace(ExportNaming::Lower(Assets[N].second), Assets[N].first);
+        // its own phase, not the last model's time (a map's zones beside read for the characters'
+        // facts: 12 s after Modern Warfare 4's mp_rex_m_library, on its last model before)
+        C.Working("joining characters' bodies with their heads");
         ExportWithHeads(Bodies, Tex, C, T);
+        C.Working("");
     }
     C.Advance(Assets.size(), Assets.size());
     if (NotImage) T.Fail(ZoneName, K, "", std::to_string(NotImage) + " texture slots point at no image, left out");

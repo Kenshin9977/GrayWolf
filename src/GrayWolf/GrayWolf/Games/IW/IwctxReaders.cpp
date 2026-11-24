@@ -110,6 +110,21 @@ std::unique_ptr<XImageDDS> IwctxReaders::LoadXImage(const XImage_t& Image, const
     return nullptr;
 }
 
+void IwctxReaders::PrefetchImages(const std::vector<uint64_t>& Images, const std::function<bool(size_t, size_t)>& Progress)
+{
+    if (CoDAssets::GamePackageCache == nullptr) return;
+    // each streamed image's full-size level (the last mip record), the one LoadXImage reads first
+    std::vector<uint64_t> Keys;
+    for (const uint64_t At : Images)
+    {
+        if (Read<uint64_t>(At + 0x38) != 0 && Read<uint32_t>(At + 0x18) != 0) continue;
+        const uint64_t MipsAt = Read<uint64_t>(At + 0x30);
+        const uint32_t Count = Read<uint8_t>(At + 0x2e) & 0xF;
+        if (MipsAt != 0 && Count != 0) Keys.push_back(Read<uint64_t>(MipsAt + (Count - 1) * 24));
+    }
+    CoDAssets::GamePackageCache->Prefetch(Keys, Progress);
+}
+
 namespace
 {
     // why this thread's last ReadXSound gave no sound, or what its frames failed at (ExportSounds' report)

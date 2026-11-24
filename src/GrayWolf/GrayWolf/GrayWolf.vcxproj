@@ -156,6 +156,7 @@
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="CdnObjects.cpp" />
     <ClCompile Include="CoDAssets.cpp" />
     <ClCompile Include="LiveGames.cpp" />
     <ClCompile Include="LiveExport.cpp" />
@@ -325,6 +326,7 @@
     <ClInclude Include="ZoneTableWalker.h" />
     <ClInclude Include="AppLog.h" />
     <ClInclude Include="CascFileSystem.h" />
+    <ClInclude Include="CdnObjects.h" />
     <ClInclude Include="CoDAssets.h" />
     <ClInclude Include="LiveExport.h" />
     <ClInclude Include="PackageFileMode.h" />

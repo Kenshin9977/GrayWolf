@@ -80,6 +80,7 @@ void ApplyExportOverrides(const CliOptions& Options)
     if (!Options.AudioFormat.empty()) { const std::string V = Strings::ToUpper(Options.AudioFormat); SettingsManager::SetRunSetting("exportsnd", V); }
     if (Options.Lods)                 SettingsManager::SetRunSetting("exportalllods", "true");
     if (Options.KeepImages)           SettingsManager::SetRunSetting("keep_previous_images", "true");
+    if (Options.CdnImages)            SettingsManager::SetRunSetting("cdn_images", "on");
     if (!Options.Unit.empty())        SettingsManager::SetRunSetting("unit", Options.Unit);
     if (!Options.XAnimRig.empty())
     {

@@ -34,6 +34,7 @@
 #include "MaterialGdt.h"
 #include "CastMaterials.h"
 #include "ModelImportScript.h"
+#include "ModelImages.h"
 
 #include <filesystem>
 #include <format>
@@ -343,6 +344,8 @@ namespace
     // .cast carries the same material slots.
     bool ShouldExportModel(const std::string& ExportPath, const Materials::Sidecar* Expected = nullptr)
     {
+        // written or up to date, its folder is one this run's model_images pass links
+        ModelImages::Note(ExportPath);
         auto SkipPrevModels = SettingsManager::GetSetting("skipprevmodel") == "true";
 
         if (!SkipPrevModels)
@@ -351,6 +354,8 @@ namespace
         bool Result = Expected != nullptr && !Materials::SidecarHolds(ExportPath + ".materials.json", *Expected);
 
         if (SettingsManager::GetSetting("export_xmexport") == "true" && !ExportWriters::HasFile(ExportPath + ".XMODEL_EXPORT"))
+            Result = true;
+        if (SettingsManager::GetSetting("export_xmbin") == "true" && !ExportWriters::HasFile(ExportPath + ".XMODEL_BIN"))
             Result = true;
         if (SettingsManager::GetSetting("export_smd") == "true" && !ExportWriters::HasFile(ExportPath + ".smd"))
             Result = true;

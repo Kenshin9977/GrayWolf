@@ -24,6 +24,7 @@ public:
 
     void SetTimeout(uint32_t Milliseconds);
 
-    // The body of a GET, nothing when the request fails
-    std::optional<std::vector<uint8_t>> DownloadData(const std::string& Url);
+    // The body of a GET, nothing when the request fails; Status, when given, gets the HTTP status
+    // (0 when no response came)
+    std::optional<std::vector<uint8_t>> DownloadData(const std::string& Url, uint32_t* Status = nullptr);
 };

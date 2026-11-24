@@ -89,6 +89,7 @@ public:
     // the whole zone, which writes the index for the next time.
     bool Open(std::string& Error);
     bool OpenedPartially() const override { return Partial; }
+    bool OpensBetterAgain() const override { return BetterAgain; }
     // (the session serves a copy-on-write copy: Bytes stay as LoadBytes decoded them)
     std::span<const uint8_t> Decoded() const override { return Partial ? std::span<const uint8_t>() : std::span<const uint8_t>(Bytes.data(), Bytes.size()); }
 
@@ -116,7 +117,11 @@ private:
     bool HeadsKept(const std::string& ResumeFile) const;
     // one of Assets is among those the zone defines (DefinesAt)
     bool DefinesAny(const std::vector<DiskGame::AssetId>& Assets) const;
+    // every asset asked is among those the zone defines (DefinesAt)
+    bool DefinesAll(const DiskGame::Selection& Assets) const;
     std::vector<DiskGame::AssetId> Unlisted;   // asked of a partial open, not in its resume index
+    bool BetterAgain = false;                  // OpensBetterAgain
+    const char* FellBack = nullptr;            // why a partial open was read whole (its step's name)
 
 public:
     // the full walk and what it walked (the bytes before relocation), its profile's tables and type
@@ -383,6 +388,9 @@ protected:
         // the game streams on demand, a pack not installed): reported as absent (Totals::Lacks), not
         // failed, with what Absent returns; "" or unset: a failure
         std::function<std::string(int64_t Pos)> Absent;
+        // before any is decoded, the images this export will decode (their Pos): what their pixels
+        // need from the game's CDN fetched together (Progress(done, of): false cancels); unset: none
+        std::function<void(const std::vector<int64_t>& Positions, const std::function<bool(size_t, size_t)>& Progress)> Prefetch;
         bool OnePerName = false;     // a later image of a name already written is left out
         bool NamesChecked = false;   // an unnamed image is left out, an unreadable name failed
     };

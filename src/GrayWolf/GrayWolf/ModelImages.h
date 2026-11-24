@@ -27,7 +27,12 @@ namespace ModelImages
     // sidecar's; one that is not a model's (models/<model>/) is left as it is.
     void ToShared(Materials::Sidecar& S, const std::filesystem::path& File);
 
-    // Every model sidecar under the run's models/ folder: each image it names in its images/ folder
+    // A model's files at ModelFileBase (<dir>/<model>, no extension) written or found up to date:
+    // its folder is one LinkForRun links (any thread)
+    void Note(const std::string& ModelFileBase);
+
+    // Every model sidecar in the folders of the run's models (Note; not the whole models/ folder,
+    // which earlier runs may have filled with a hundred thousand): each image it names in its images/ folder
     // made a hard link to the shared file (with split_maps, the split files too), else copied. A
     // link or copy already there that no longer is the shared file's content (the file replaced
     // since) is made again; a file of images/ no sidecar of the folder names is removed.

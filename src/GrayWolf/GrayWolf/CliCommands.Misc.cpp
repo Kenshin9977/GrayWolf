@@ -1,6 +1,7 @@
 // NOMINMAX before <windows.h>: std::max/std::min below would be mangled by its macros.
 #define NOMINMAX
 
+#include "CdnObjects.h"
 #include <stdio.h>
 #include <cmath>
 #include <map>
@@ -566,6 +567,13 @@ static int SelfTest(std::string& Failures)
 
     // The mesh decoder every model reader shares
     Failed += MeshDecode::SelfTest(Failures);
+
+    // the CDN images' consent (ask / on / off, the GUI's question)
+    if (const std::string Cdn = CdnObjects::SelfTest(); !Cdn.empty())
+    {
+        Failures += Cdn;
+        Failed++;
+    }
 
     return Failed;
 }

@@ -58,8 +58,10 @@ namespace IwctxAnimOwners
     public:
         Zones(std::vector<Served> All, const Layout& L);
         ~Zones();
-        // sets {id, name, zone, anims, links}, characters {id, name, zone, body, head, archetype}
-        Json Facts() const;
+        // sets {id, name, zone, anims, links}, characters {id, name, zone, body, head, archetype};
+        // without WithSets the characters alone (what BodyHeads reads: 11 s less on a map with
+        // its global zones beside)
+        Json Facts(bool WithSets = true) const;
         // an xcompositemodel's xmodels (the zone-level xmodels its reads name), by its name
         std::vector<std::string> CompositeModels(const std::string& Name) const;
 

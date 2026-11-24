@@ -7,6 +7,16 @@
 #include "Siren.h"
 
 #include "CoDFileHandle.h"
+#include "CdnObjects.h"
+#include "ExportNaming.h"
+#include "WinFileSystem.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <thread>
+#include <unordered_set>
 
 #pragma pack(push, 1)
 struct BOCWXSubHeader
@@ -175,26 +185,230 @@ void XSUBCache::LoadPackageCache(const std::string& BasePath)
     // the tables kept (CoDPackageCache::LoadKept): Black Ops 6's 3 M objects are neither read from
     // its 154 packages nor hashed again per run (2.5 s)
     const std::string Kept = KeptFile(BasePath, ".xsk"), Key = KeptKey("*.xsub", "xsub");
-    if (LoadKept(Kept, Key, &PackageVersions))
+    if (!LoadKept(Kept, Key, &PackageVersions))
     {
-        this->SetLoadedState();
-        return;
+        FileSystem->EnumerateFiles("*.xsub", [this](const std::string& name, const size_t size)
+        {
+            try
+            {
+                this->LoadPackage(name);
+            }
+            catch (...)
+            {
+
+            }
+        });
+        SaveKept(Kept, Key, &PackageVersions);
     }
-
-    FileSystem->EnumerateFiles("*.xsub", [this](const std::string& name, const size_t size)
-    {
-        try
-        {
-            this->LoadPackage(name);
-        }
-        catch (...)
-        {
-
-        }
-    });
-    SaveKept(Kept, Key, &PackageVersions);
+    LoadOnDemandCache(BasePath);
 
     this->SetLoadedState();
+}
+
+void XSUBCache::LoadOnDemandCache(const std::string& BasePath)
+{
+    // the game's (Modern Warfare III, Black Ops 6 and 7: "xpak_cache" beside the exe, or above its
+    // folder): cache_<n>_2.xpak, a version-23 index (header type 1) whose objects lie in the
+    // .xpakdata of the same name, framed as the .xsub's (8 007 of 8 007 checked, Call of Duty HQ)
+    if (CdnObjects::Offline()) return;
+    std::error_code Ec;
+    std::filesystem::path Base(BasePath);
+    if (!Base.has_filename()) Base = Base.parent_path();
+    std::filesystem::path Dir = Base / "xpak_cache";
+    // (an install named by its game's folder, HQ's cod25: the exes' "..\xpak_cache")
+    if (!std::filesystem::is_directory(Dir, Ec)) Dir = Base.parent_path() / "xpak_cache";
+    if (!std::filesystem::is_directory(Dir, Ec)) return;
+    std::vector<std::filesystem::path> Indexes;
+    for (const auto& E : std::filesystem::directory_iterator(Dir, Ec))
+        if (E.path().extension() == ".xpak" && std::filesystem::is_regular_file(E.path().parent_path() / (E.path().stem().string() + ".xpakdata"), Ec))
+            Indexes.push_back(E.path());
+    if (Indexes.empty()) return;
+    std::sort(Indexes.begin(), Indexes.end());
+    Loose = std::make_unique<WinFileSystem>(Dir.string());
+    OnDemandFrom = PackageFilePaths.size();
+    for (const auto& Index : Indexes)
+    {
+        FILE* F = nullptr;
+        if (_wfopen_s(&F, Index.wstring().c_str(), L"rb") != 0 || F == nullptr) continue;
+        BOCWXSubHeader Header{};
+        std::vector<XSub23HashEntry> Table;
+        const bool Read = std::fread(&Header, sizeof(Header), 1, F) == 1 && Header.Magic == 0x4950414b && Header.Version >= FirstSizedVersion
+            && Header.HashCount > 0 && Header.HashCount < (1 << 24) && _fseeki64(F, Header.HashOffset, SEEK_SET) == 0
+            && (Table.resize((size_t)Header.HashCount), std::fread(Table.data(), sizeof(XSub23HashEntry), Table.size(), F) == Table.size());
+        std::fclose(F);
+        if (!Read) continue;
+        const auto Package = (uint32_t)PackageFilePaths.size();
+        for (const auto& Entry : Table)
+        {
+            // an object the installed packages hold is read from them
+            PackageCacheObject Held;
+            if (Entry.Size == 0 || Find(Entry.Key, Held)) continue;
+            PackageCacheObject NewObject;
+            NewObject.Offset = (uint64_t)Entry.Offset << 7;
+            NewObject.CompressedSize = Entry.PackedSize >> 1;
+            NewObject.UncompressedSize = Entry.Size;
+            NewObject.PackageFileIndex = Package;
+            NewObject.Flags = Entry.PackedSize & 1;
+            CacheObjects.insert(std::make_pair(Entry.Key, NewObject));
+        }
+        PackageFilePaths.push_back((Index.parent_path() / (Index.stem().string() + ".xpakdata")).string());
+        PackageVersions.push_back(Header.Version);
+    }
+}
+
+namespace
+{
+    // the CDN a *_cdn.xpak's objects come from: the URL the game's exe holds in clear (its folder's
+    // <folder>-cod.exe, or HQ's cod.exe above it), else by the folder, as the shipped exes say
+    // (cod23-cod.exe and sp24-cod.exe "pc/iw9_2"; cod24-cod.exe and HQ's cod.exe "pc/iw9_3")
+    std::string CdnBaseOf(const std::filesystem::path& Folder)
+    {
+        const std::string Name = Folder.filename().string();
+        for (const auto& Exe : { Folder / (Name + "-cod.exe"), Folder.parent_path() / (Name + "-cod.exe"), Folder.parent_path() / "cod.exe", Folder / "cod.exe" })
+            if (std::string Url = CdnObjects::BaseInExe(Exe); !Url.empty()) return Url;
+        const std::string Lower = ExportNaming::Lower(Name);
+        return std::string("http://cod-assets.cdn.callofduty.com/pc/") + (Lower == "cod23" || Lower == "sp24" ? "iw9_2" : "iw9_3");
+    }
+}
+
+std::string XSUBCache::RemoteBase(uint8_t Index)
+{
+    std::lock_guard<std::mutex> Lock(RemoteBaseLock);
+    if (RemoteUrls.size() != RemoteBases.size()) RemoteUrls.resize(RemoteBases.size());
+    if (RemoteUrls[Index].empty()) RemoteUrls[Index] = CdnBaseOf(RemoteBases[Index]);
+    return RemoteUrls[Index];
+}
+
+void XSUBCache::IndexRemote()
+{
+    if (FileSystem == nullptr || dynamic_cast<WinFileSystem*>(FileSystem.get()) == nullptr) return;
+    std::vector<std::string> Indexes;
+    // (Modern Warfare 4 names them *_cdn_stub.xpak: cod26's 13, sp26's 3, the same version-23
+    // index, every entry offset 0)
+    for (const char* Pattern : { "*_cdn.xpak", "*_cdn_stub.xpak" })
+        FileSystem->EnumerateFiles(Pattern, [&](const std::string& Name, const size_t) { Indexes.push_back(Name); });
+    std::sort(Indexes.begin(), Indexes.end());
+    Indexes.erase(std::unique(Indexes.begin(), Indexes.end()), Indexes.end());
+    for (const auto& Name : Indexes)
+    {
+        auto Reader = CoDFileHandle(FileSystem->OpenFile(Name, "r"), FileSystem.get());
+        if (Reader.Size() < sizeof(BOCWXSubHeader)) continue;
+        const auto Header = Reader.Read<BOCWXSubHeader>();
+        if (Header.Magic != 0x4950414b || Header.Version < FirstSizedVersion || Header.HashCount <= 0 || Header.HashCount >= (1 << 24)
+            || Header.HashOffset + Header.HashCount * (int64_t)sizeof(XSub23HashEntry) > (int64_t)Reader.Size())
+            continue;
+        // (the folder: its CDN's URL is looked up at the first download, RemoteBase)
+        const std::string Base = std::filesystem::path(Name).parent_path().string();
+        auto At = std::find(RemoteBases.begin(), RemoteBases.end(), Base);
+        if (At == RemoteBases.end()) At = RemoteBases.insert(RemoteBases.end(), Base);
+        const auto BaseIndex = (uint8_t)(At - RemoteBases.begin());
+        std::vector<XSub23HashEntry> Table((size_t)Header.HashCount);
+        Reader.Seek(Header.HashOffset, SEEK_SET);
+        if (Reader.Read(reinterpret_cast<uint8_t*>(Table.data()), 0, Table.size() * sizeof(XSub23HashEntry)) != Table.size() * sizeof(XSub23HashEntry))
+            continue;
+        // a CDN object: no offset (nothing in the file), its stored and decoded sizes
+        for (const auto& Entry : Table)
+            if (Entry.Offset == 0 && (Entry.PackedSize >> 1) != 0 && Entry.Size != 0)
+                Remote.push_back({ Entry.Key, Entry.PackedSize >> 1, Entry.Size, Header.Version, (uint8_t)(Entry.PackedSize & 1), BaseIndex });
+    }
+    std::sort(Remote.begin(), Remote.end(), [](const RemoteObject& A, const RemoteObject& B) { return A.Key < B.Key; });
+}
+
+const XSUBCache::RemoteObject* XSUBCache::FindRemote(uint64_t Key)
+{
+    // (off: still indexed, a copy fetched earlier is read)
+    if (CdnObjects::Offline()) return nullptr;
+    std::call_once(RemoteIndexed, [this] { IndexRemote(); });
+    const auto It = std::lower_bound(Remote.begin(), Remote.end(), Key, [](const RemoteObject& R, uint64_t K) { return R.Key < K; });
+    return It != Remote.end() && It->Key == Key ? &*It : nullptr;
+}
+
+bool XSUBCache::KeptRemote(const RemoteObject& Object)
+{
+    return CdnObjects::IsKept(RemoteBase(Object.Base), Object.Key);
+}
+
+std::optional<std::vector<uint8_t>> XSUBCache::StoredRemote(const RemoteObject& Object)
+{
+    constexpr uint32_t MaxObject = 1u << 30;
+    if (Object.Stored > MaxObject || Object.Size > MaxObject) return std::nullopt;
+    // what a framed object's first frame starts with: the magic and its key
+    const auto Whole = [&](const std::vector<uint8_t>& Stored) {
+        return Stored.size() == Object.Stored
+            && (!Object.Framed || (Stored.size() >= 10 && *(const uint16_t*)Stored.data() == FrameMagic && *(const uint64_t*)(Stored.data() + 2) == Object.Key));
+    };
+    // the game's request: <base>/<version>/<key's low byte>/<key>_<stored size>_<framed>
+    char Name[64];
+    std::snprintf(Name, sizeof(Name), "/%u/%02x/%016llx_%08x_%u", Object.Version, (unsigned)(uint8_t)Object.Key,
+                  (unsigned long long)Object.Key, Object.Stored, (unsigned)Object.Framed);
+    return CdnObjects::Fetch(RemoteBase(Object.Base), Name, Object.Key, Whole);
+}
+
+void XSUBCache::Prefetch(const std::vector<uint64_t>& Keys, const std::function<bool(size_t, size_t)>& Progress)
+{
+    std::vector<const RemoteObject*> Todo;
+    std::unordered_set<uint64_t> Seen;
+    for (const uint64_t Key : Keys)
+    {
+        PackageCacheObject O;
+        if (!Seen.insert(Key).second || Find(Key, O)) continue;
+        const RemoteObject* R = FindRemote(Key);
+        if (R != nullptr && !KeptRemote(*R)) Todo.push_back(R);
+    }
+    if (Todo.empty()) return;
+    // asked once (the GUI), else counted as skipped by the reads
+    if (!CdnObjects::Allowed()) return;
+    std::atomic<size_t> Next = 0, Done = 0;
+    std::atomic<bool> Stop = false;
+    const auto Work = [&] {
+        for (size_t I; !Stop && (I = Next++) < Todo.size();)
+        {
+            StoredRemote(*Todo[I]);
+            Done++;
+        }
+    };
+    // CdnObjects lets two requests per host run at once
+    std::vector<std::thread> Workers;
+    for (int W = 0; W < 2; W++) Workers.emplace_back(Work);
+    while (Done < Todo.size() && !Stop)
+    {
+        if (Progress && !Progress(Done, Todo.size())) Stop = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    for (auto& W : Workers) W.join();
+    if (Progress) Progress(Todo.size(), Todo.size());
+}
+
+std::unique_ptr<uint8_t[]> XSUBCache::FetchRemote(const RemoteObject& Object, uint32_t& ResultSize)
+{
+    ResultSize = 0;
+    const auto Stored = StoredRemote(Object);
+    if (!Stored) return nullptr;
+    auto Result = std::make_unique<uint8_t[]>(std::max<size_t>(Object.Size, 1));
+    if (!Object.Framed)
+    {
+        if (Stored->size() < Object.Size) return nullptr;
+        std::memcpy(Result.get(), Stored->data(), Object.Size);
+    }
+    else
+    {
+        std::vector<uint8_t> Decoded(Object.Size);
+        if (!DecodeXSub23(*Stored, Object.Key, Decoded)) return nullptr;
+        std::memcpy(Result.get(), Decoded.data(), Decoded.size());
+    }
+    ResultSize = Object.Size;
+    return Result;
+}
+
+bool XSUBCache::Exists(uint64_t CacheID)
+{
+    PackageCacheObject O;
+    if (Find(CacheID, O)) return true;
+    const RemoteObject* R = FindRemote(CacheID);
+    if (R == nullptr) return false;
+    if (KeptRemote(*R) || CdnObjects::Allowed()) return true;
+    CdnObjects::NoteSkipped(CacheID);
+    return false;
 }
 
 bool XSUBCache::LoadPackage(const std::string& FilePath)
@@ -282,7 +496,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObjectRaw(uint64_t CacheID, 
         std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
 
         auto& XPAKFileName = PackageFilePaths[CacheInfo.PackageFileIndex];
-        auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+        auto Reader = CoDFileHandle(FilesOf(CacheInfo.PackageFileIndex)->OpenFile(XPAKFileName, "r"), FilesOf(CacheInfo.PackageFileIndex));
         Reader.Seek(CacheInfo.Offset, SEEK_SET);
 
         // Allocate just the raw size of the buffer, that's all we're returning
@@ -312,7 +526,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
             {
                 // only the read holds the lock: the decode runs beside the other threads' reads
                 std::lock_guard<std::shared_mutex> Guard(ReadMutex);
-                auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+                auto Reader = CoDFileHandle(FilesOf(CacheInfo.PackageFileIndex)->OpenFile(XPAKFileName, "r"), FilesOf(CacheInfo.PackageFileIndex));
                 Reader.Seek(CacheInfo.Offset, SEEK_SET);
                 if (Reader.Read(Stored.data(), 0, Stored.size()) != Stored.size())
                     return nullptr;
@@ -351,7 +565,7 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
         }
 
         std::lock_guard<std::shared_mutex> Gaurd(ReadMutex);
-        auto Reader = CoDFileHandle(FileSystem->OpenFile(XPAKFileName, "r"), FileSystem.get());
+        auto Reader = CoDFileHandle(FilesOf(CacheInfo.PackageFileIndex)->OpenFile(XPAKFileName, "r"), FilesOf(CacheInfo.PackageFileIndex));
 #if _DEBUG
         printf("XSUBCache::ExtractPackageObject(): Streaming Object: 0x%llx from CASC File: %s\n", CacheID, XPAKFileName.c_str());
 #endif // _DEBUG
@@ -495,6 +709,8 @@ std::unique_ptr<uint8_t[]> XSUBCache::ExtractPackageObject(uint64_t CacheID, uin
     }
 
     ResultSize = 0;
+    // in no file: on the CDN (cdn_images on)
+    if (const RemoteObject* R = FindRemote(CacheID)) return FetchRemote(*R, ResultSize);
 
     return nullptr;
 }

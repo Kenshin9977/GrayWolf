@@ -84,6 +84,9 @@
     <ClCompile Include="ImGuiLoadGamePanel.Assets.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="CdnObjects.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="CoDAssets.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -213,6 +216,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CdnObjects.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="CoDAssets.h">
       <Filter>Header Files</Filter>
     </ClInclude>

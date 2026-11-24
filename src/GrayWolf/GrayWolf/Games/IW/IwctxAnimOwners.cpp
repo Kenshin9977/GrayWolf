@@ -152,7 +152,7 @@ namespace IwctxAnimOwners
 
     Zones::~Zones() = default;
 
-    Json Zones::Facts() const
+    Json Zones::Facts(bool WithSets) const
     {
         const Index& X = *I;
         Json Sets = Json::array(), Chars = Json::array();
@@ -167,6 +167,7 @@ namespace IwctxAnimOwners
                 const uint64_t Id = X.U64(Zi, Pos) & Mask;
                 if (Index::Is(T, X.L.Sets))
                 {
+                    if (!WithSets) continue;
                     // its xanims through the states and aliases it names, the sets it names (a scene
                     // set's base); a hash no zone here defines: an xanim of another zone, or a set
                     std::set<std::string> Anims;

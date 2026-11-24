@@ -92,8 +92,9 @@ void WebClient::SetTimeout(uint32_t Milliseconds)
     WinHttpSetTimeouts(this->InternetHandle, Milliseconds, Milliseconds, Milliseconds, Milliseconds);
 }
 
-std::optional<std::vector<uint8_t>> WebClient::DownloadData(const std::string& Url)
+std::optional<std::vector<uint8_t>> WebClient::DownloadData(const std::string& Url, uint32_t* Status)
 {
+    if (Status) *Status = 0;
     auto Uri = PreParseUrl(Url);
 
     HINTERNET hConnect = NULL, hRequest = NULL;
@@ -106,6 +107,13 @@ std::optional<std::vector<uint8_t>> WebClient::DownloadData(const std::string& U
         CanDownload = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, NULL, WINHTTP_NO_REQUEST_DATA, NULL, NULL, NULL);
     if (CanDownload)
         CanDownload = WinHttpReceiveResponse(hRequest, NULL);
+
+    if (CanDownload && Status)
+    {
+        DWORD Code = 0, CodeSize = sizeof(Code);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &Code, &CodeSize, WINHTTP_NO_HEADER_INDEX))
+            *Status = Code;
+    }
 
     if (CanDownload)
     {

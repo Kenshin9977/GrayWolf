@@ -43,42 +43,21 @@ namespace ModernIwReaders
         if (CoDAssets::GameInstance->Read((uint8_t*)&Mips.MipMaps, ImageInfo.MipMaps, MipCount * MipSize) != (MipCount * MipSize))
             return nullptr;
 
-        // Fallback: the best mip present in the local files, in case the CDN is not viable
-        size_t Fallback = 0;
-        size_t HighestIndex = (size_t)ImageInfo.MipCount - 1;
-
-        for (size_t i = 0; i < MipCount; i++)
-        {
-            if (CoDAssets::GamePackageCache->Exists(Mips.MipMaps[i].HashID))
-            {
-                Fallback = i;
-            }
-        }
-
         ImageInfo.ImageFormat = Formats[ImageInfo.ImageFormat];
 
-        if (Fallback != HighestIndex && CoDAssets::OnDemandCache != nullptr)
+        // the largest mip the packages give (the install's, the game's on-demand cache, the CDN
+        // when cdn_images is on: XSUBCache), the last record being the full size
+        size_t HighestIndex = MipCount;
+        for (size_t i = MipCount; i-- > 0 && ImageData == nullptr;)
         {
+            if (!CoDAssets::GamePackageCache->Exists(Mips.MipMaps[i].HashID)) continue;
             uint32_t PackageSize = 0;
-            ImageData = CoDAssets::OnDemandCache->ExtractPackageObject(Mips.MipMaps[HighestIndex].HashID, Mips.GetImageSize(HighestIndex), PackageSize);
+            ImageData = CoDAssets::GamePackageCache->ExtractPackageObject(Mips.MipMaps[i].HashID, Mips.GetImageSize(i), PackageSize);
             ImageSize = PackageSize;
+            HighestIndex = i;
         }
 
-        // Mips above the fallback: try the on-demand version from the CDN
-        if (Fallback != HighestIndex && CoDAssets::CDNDownloader != nullptr)
-        {
-            ImageData = CoDAssets::CDNDownloader->ExtractCDNObject(Mips.MipMaps[HighestIndex].HashID, Mips.GetImageSize(HighestIndex), ImageSize);
-        }
-
-        if (ImageData == nullptr)
-        {
-            uint32_t PackageSize = 0;
-            ImageData = CoDAssets::GamePackageCache->ExtractPackageObject(Mips.MipMaps[Fallback].HashID, Mips.GetImageSize(Fallback), PackageSize);
-            ImageSize = PackageSize;
-            HighestIndex = Fallback;
-        }
-
-        if (ImageData == nullptr)
+        if (ImageData == nullptr || ImageSize == 0)
             return nullptr;
 
         return CoDRawImageTranslator::TranslateBC(ImageData, ImageSize, ImageInfo.Width >> (MipCount - HighestIndex - 1), ImageInfo.Height >> (MipCount - HighestIndex - 1),

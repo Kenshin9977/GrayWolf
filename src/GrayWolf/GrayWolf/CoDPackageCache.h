@@ -87,6 +87,10 @@ public:
         };
     }
 
+    // Brings the objects Keys name that only a remote store holds (a game's CDN) to the disk
+    // together, before they are read one by one; Progress(done, of) false stops. Default: none.
+    virtual void Prefetch(const std::vector<uint64_t>& Keys, const std::function<bool(size_t, size_t)>& Progress) {}
+
     // Hashes a cache object id if needed
     virtual uint64_t HashPackageID(const std::string& Value) { return 0; }
 

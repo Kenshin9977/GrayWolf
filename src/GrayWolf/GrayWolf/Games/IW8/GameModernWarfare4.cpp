@@ -2,6 +2,11 @@
 
 #include "GameModernWarfare4.h"
 
+#include <format>
+
+#include "CdnObjects.h"
+#include "XPAKCache.h"
+
 #include "CoDAssets.h"
 #include "Games/Common/MeshDecode.h"
 #include "GameReaders.h"
@@ -153,18 +158,27 @@ std::unique_ptr<XImageDDS> GameModernWarfare4::LoadXImage(const XImage_t& Image)
             }
         }
 
-        // Highest mip not in the files: try the on-demand cache, then the CDN
-        // (no on-demand cache when the zone is read from disk)
-        if (HighestIndex != Fallback && CoDAssets::OnDemandCache != nullptr)
+        // Highest mip not in the files (most images: the install holds the levels up to a quarter
+        // of the size): the game's CDN, when cdn_images is on (CdnObjects). Its object at
+        // <base>/<key>: a u16 length, that many bytes of text ("width: 1024\nheight: ..."), then
+        // the object as an .xpak stores it
+        for (size_t Level = HighestIndex; Level < 4 && Level > Fallback && ImageData == nullptr; Level--)
         {
-            ImageData = CoDAssets::OnDemandCache->ExtractPackageObject(ImageInfo.Mips.Levels[HighestIndex].HashID, ImageInfo.Mips.GetImageSize(HighestIndex), ResultSize);
-
-            if (ImageData == nullptr && CoDAssets::CDNDownloader != nullptr)
-            {
-                size_t CDNSize = 0;
-                ImageData = CoDAssets::CDNDownloader->ExtractCDNObject(ImageInfo.Mips.Levels[HighestIndex].HashID, ImageInfo.Mips.GetImageSize(HighestIndex), CDNSize);
-                ResultSize = (uint32_t)CDNSize;
-            }
+            const uint64_t Key = ImageInfo.Mips.Levels[Level].HashID;
+            const size_t Expected = ImageInfo.Mips.GetImageSize(Level);
+            if (Key == 0 || Expected == 0) continue;
+            const auto Stored = CdnObjects::Fetch("http://cod-assets.cdn.blizzard.com/pc/0", std::format("/{:016x}", Key), Key,
+                                                  [](const std::vector<uint8_t>& B) { return B.size() > 2 && 2 + (size_t)*(const uint16_t*)B.data() < B.size(); });
+            if (!Stored) continue;
+            const size_t Skip = 2 + (size_t)*(const uint16_t*)Stored->data();
+            std::vector<uint8_t> Object(Stored->begin() + Skip, Stored->end());
+            size_t Got = 0;
+            // (blocks aligned to 4 bytes, as in the game's version 0xD packages)
+            auto Decoded = XPAKCache::DecompressPackageObject(Key, Object.data(), Object.size(), Expected, Got, true);
+            if (Decoded == nullptr || Got != Expected) continue;
+            ImageData = std::move(Decoded);
+            ResultSize = (uint32_t)Got;
+            HighestIndex = Level;
         }
 
         // No CDN version available: fall back to the files

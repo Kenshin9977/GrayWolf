@@ -991,6 +991,11 @@ namespace
                 return std::string("streamed: none of its mip levels is in a package of the install (a texture the game streams on demand, "
                                    "or a pack not installed)");
             };
+            L.Prefetch = [this](const std::vector<int64_t>& Positions, const std::function<bool(size_t, size_t)>& Progress) {
+                std::vector<uint64_t> Images;
+                for (const int64_t Pos : Positions) Images.push_back(Live().Addr((uint64_t)Pos));
+                IwctxReaders::PrefetchImages(Images, Progress);
+            };
             L.OnePerName = true;
             ExportImageList(C, T, L);
         }
@@ -1836,7 +1841,8 @@ namespace
             All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
             if (Tables != nullptr) IwctxReaders::RegisterScriptStrings(IwctxReaders::ZoneStrings(S->Bytes, Tables->Profile.Dir));
         }
-        return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts());
+        // (the characters alone: the anim sets' walk is the anim owners')
+        return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts(false));
     }
 
     std::string BO7Zone::AnimOwnerFacts() const

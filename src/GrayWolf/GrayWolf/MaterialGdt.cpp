@@ -9,6 +9,8 @@
 #include "GdtWriter.h"
 #include "ModelImages.h"
 #include "ModToolsTree.h"
+#include "XAnimBinExport.h"
+#include "XAnimBinReader.h"
 
 #include "DirectXTex.h"
 #include <nlohmann/json.hpp>
@@ -975,9 +977,15 @@ std::string Builder::NamesJson() const
 
 namespace
 {
-    // XMODEL_EXPORT's bone count: one is a rigid model
+    // the model's bone count (XMODEL_EXPORT's text, XMODEL_BIN's records): one is a rigid model
     bool Rigid(const fs::path& File)
     {
+        if (ExportNaming::Lower(File.extension().string()) == ".xmodel_bin")
+        {
+            XAnimBinRig Rig;
+            std::string Error;
+            return !ReadXAnimBinRig(File.string(), Rig, Error) || Rig.Bones.size() <= 1;
+        }
         std::ifstream In(File);
         std::string Line;
         for (int K = 0; K < 64 && std::getline(In, Line); K++)
@@ -1016,7 +1024,7 @@ void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T)
         if (It->is_regular_file(Ec) && Name.size() > 15 && Name.compare(Name.size() - 15, 15, ".materials.json") == 0) Sidecars.push_back(It->path());
     }
     std::sort(Sidecars.begin(), Sidecars.end());
-    // the models' XMODEL_EXPORT files by model folder, LOD by LOD
+    // the models' XMODEL_BIN / XMODEL_EXPORT files by model folder, LOD by LOD
     std::map<fs::path, std::vector<fs::path>> Xmodels;
     const std::regex Lod(R"(_lod(\d+)$)", std::regex::icase);
     // every sidecar's materials, added in the sidecars' order (AddAll: their images' work on every core)
@@ -1033,7 +1041,11 @@ void WriteForModels(const DiskGame::Context& C, DiskGame::Totals& T)
         T.Counters["material_gdt_sidecars"]++;
         Sides.emplace_back(std::move(Side), S.parent_path());
         const std::string Stem = S.filename().string().substr(0, S.filename().string().size() - 15);
-        const fs::path X = S.parent_path() / (Stem + ".XMODEL_EXPORT");
+        // the model file its xmodel entry names: XMODEL_BIN, else XMODEL_EXPORT (only one of them
+        // may be written: with XMODEL_BIN alone the model was missing from the GDT). The BIN first:
+        // the linker refuses our XMODEL_EXPORT's version 6 (MapRadiantWriter's WriteXmodel)
+        fs::path X = S.parent_path() / (Stem + ".XMODEL_BIN");
+        if (!fs::is_regular_file(X, Ec)) X = S.parent_path() / (Stem + ".XMODEL_EXPORT");
         if (std::regex_search(Stem, Lod) && fs::is_regular_file(X, Ec)) Xmodels[S.parent_path()].push_back(X);
     }
     std::vector<Builder::Item> Items;

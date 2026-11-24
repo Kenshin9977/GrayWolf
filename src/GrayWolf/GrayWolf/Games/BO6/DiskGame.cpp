@@ -200,7 +200,7 @@ namespace
         {
             std::vector<IwctxAnimOwners::Served> All{ { Name(), Image(), Live().Origin(), &Walk() } };
             for (const auto& S : Beside.All()) All.push_back({ S->Name, S->Bytes, S->Base, &S->R });
-            return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts());
+            return IwctxAnimOwners::BodyHeads(IwctxAnimOwners::Zones(std::move(All), AnimOwnerLayout()).Facts(false));
         }
 
         // its string tables, and the anim owners' facts of the zone (and of the zones loaded beside
@@ -568,6 +568,11 @@ namespace
                 return GameBlackOps6::LoadXImage(XImage_t(ImageUsageType::DiffuseMap, 0, Live().Addr((uint64_t)Pos), Name));
             };
             L.FailWhy = [this](int64_t Pos) { return std::string(PointerAt(Pos + GameBlackOps6::ImagePixels) != 0 ? "in zone" : "streamed"); };
+            L.Prefetch = [this](const std::vector<int64_t>& Positions, const std::function<bool(size_t, size_t)>& Progress) {
+                std::vector<uint64_t> Images;
+                for (const int64_t Pos : Positions) Images.push_back(Live().Addr((uint64_t)Pos));
+                IwctxReaders::PrefetchImages(Images, Progress);
+            };
             L.OnePerName = true;
             for (const int64_t Pos : L.Order)
                 if (AssetName(Kind::Image, Pos).rfind("ximage_", 0) != 0) Counter("images_named")++;

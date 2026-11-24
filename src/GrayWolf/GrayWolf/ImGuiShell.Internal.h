@@ -323,4 +323,6 @@ namespace ShellUi
     void DrawStatusBar(const ShellState& S);
     void BuildDockLayout(unsigned int DockId);
     void DrawFilterHelp(bool OpenHelp);
+    // the full-size images' question (CdnObjects), when an export asks it
+    void DrawCdnConsent();
 }

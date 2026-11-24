@@ -1,0 +1,8 @@
+{
+  "_": "Objects each game's CDN served on 2026-11-24 (one per base, from GrayWolf's cdn cache). .github/workflows/cdn-check.yml asks for them daily.",
+  "witnesses": [
+    { "game": "Modern Warfare III, Black Ops 6 campaign", "host": "cod-assets.cdn.callofduty.com", "base": "pc/iw9_2", "path": "/23/72/00a6cb2b020d8c72_00003875_1" },
+    { "game": "Black Ops 6, Black Ops 7, Modern Warfare 4", "host": "cod-assets.cdn.callofduty.com", "base": "pc/iw9_3", "path": "/23/38/1c2b89050bed7338_00019dae_1" },
+    { "game": "Modern Warfare (2019)", "host": "cod-assets.cdn.blizzard.com", "base": "pc/0", "path": "/6022fdc875f1a874" }
+  ]
+}

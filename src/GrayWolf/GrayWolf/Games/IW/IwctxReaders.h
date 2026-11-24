@@ -28,6 +28,9 @@ namespace IwctxReaders
     // mip count u8 0x2e (low 4 bits), 24-byte mip records {u64 package key, u64, u64 packed} at 0x30
     // (smallest first), in-zone pixels at 0x38. Formats: the game's format -> DXGI
     std::unique_ptr<XImageDDS> LoadXImage(const XImage_t& Image, const uint8_t* Formats, uint32_t FormatCount);
+    // the full-size levels of these images (addresses) that only the game's CDN holds, fetched
+    // together before LoadXImage reads them one by one (ImageList::Prefetch)
+    void PrefetchImages(const std::vector<uint64_t>& Images, const std::function<bool(size_t, size_t)>& Progress);
 
     // sndasset: flags u8 at Flags, seek table size u32 0x20, frames' size u32 0x24, frame count
     // u32 0x28, rate u16 at Rate. Where its Opus frames are, by the flags: the .xsub object a key

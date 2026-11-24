@@ -414,6 +414,8 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
             { "xanim_bin_rig", "" },   // the model XANIM_BIN anims are posed on (.xmodel_bin, .xmodel_export)
             { "directxanim_ver", "17" },
             { "global_images", "false" },
+            // the high mips Modern Warfare III, Black Ops 6 and 7 stream from their CDN (XSUBCache)
+            { "cdn_images", "ask" },   // ask (the GUI asks once), on, off
             { "patchnormals", "true" },
             { "patchcolor", "true" },
             { "showxanim", "true" },
