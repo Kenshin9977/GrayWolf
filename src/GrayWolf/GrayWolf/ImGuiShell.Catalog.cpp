@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "CastReader.h"        // ReadCastAnim, CastFile::ModelCounts / FileKind
 #include "UiAsync.h"           // the folder walks off the frame
+#include "ExportNaming.h"      // SafeFileName: a preview's name as its files spell it
 
 #include <nlohmann/json.hpp>   // a .glb's JSON chunk
 
@@ -445,18 +446,30 @@ namespace ShellUi
                 if (S.Catalog.Models[k].Name == Want) { LoadSelection(S, k); break; }
             S.ShotSelectWait = 60;
         }
-        // Load Game's preview, once its folder is listed: the asset whose file names it
+        // Load Game's preview, once its folder is listed: the asset named so (a model's "<name>_LOD0"),
+        // not the first file under its folder (a model's images sit there too, and earlier previews of
+        // longer names: "p7_wes_wagon_01" showed its $black image)
         if (!S.SelectWhenListed.empty() && !Walking)
         {
-            for (int k = 0; k < (int)S.Catalog.Models.size(); k++)
+            // spelled as its files are ("tm/x" is written tm_x)
+            const std::string Want = ExportNaming::SafeFileName(S.SelectWhenListed);
+            const std::string W = ExportNaming::Lower(Want);
+            int Best = -1, BestRank = 3;
+            for (int k = 0; k < (int)S.Catalog.Models.size() && BestRank > 0; k++)
             {
                 const Item& I = S.Catalog.Models[k];
-                if (!ContainsNoCase(I.Path, "graywolf_preview") || !ContainsNoCase(I.Path, S.SelectWhenListed.c_str())) continue;
-                LoadSelection(S, k);
+                if (!ContainsNoCase(I.Path, "graywolf_preview") || !ContainsNoCase(I.Path, Want.c_str())) continue;
+                const std::string N = ExportNaming::Lower(I.Name);
+                const bool Lod = N.size() > W.size() && N.compare(0, W.size(), W) == 0 && N.compare(W.size(), 4, "_lod") == 0;
+                const int Rank = (N == W || Lod) ? 0 : N.compare(0, W.size(), W) == 0 ? 1 : 2;
+                if (Rank < BestRank) { Best = k; BestRank = Rank; }
+            }
+            if (Best >= 0)
+            {
+                LoadSelection(S, Best);
                 S.ScrollToSelected = true;
                 S.SelectWhenListed.clear();
                 ImGui::SetWindowFocus("Viewport");
-                break;
             }
             if (!S.SelectWhenListed.empty() && --S.SelectWhenListedFrames <= 0) S.SelectWhenListed.clear();
         }
